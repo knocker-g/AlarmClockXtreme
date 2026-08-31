@@ -774,11 +774,12 @@
     <string name="settings_night_clock">夜間時計</string>
     <string name="settings_night_clock_description">枕元で使用するための、温かみのある低輝度フルスクリーン時計。</string>
     <string name="settings_language">アプリの言語</string>
-    <string name="settings_language_description">アプリの言語を選択します。現在は英語のみが同梱されています。</string>
+    <string name="settings_language_description">アプリの言語を選択します。現在は英語と日本語が同梱されています。</string>
     <string name="settings_language_android_required">アプリごとの言語選択は Android 13 以降で利用できます。</string>
     <string name="settings_language_dialog_title">アプリの言語を選択</string>
     <string name="settings_language_system_default">システムデフォルト</string>
     <string name="settings_language_english">English</string>
+    <string name="settings_language_japanese">日本語</string>
     <string name="settings_export_support_bundle">サポートバンドルをエクスポート</string>
     <string name="settings_packaging_diagnostics">ローカルのクラッシュログと匿名化された診断情報をパッケージ化しています…</string>
     <string name="settings_support_bundle_description">ローカルのクラッシュログに加えて、匿名化された起床、不具合、およびアラーム診断情報を共有します。</string>
