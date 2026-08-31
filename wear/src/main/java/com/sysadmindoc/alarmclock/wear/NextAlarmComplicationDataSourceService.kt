@@ -39,9 +39,10 @@ class NextAlarmComplicationDataSourceService : SuspendingComplicationDataSourceS
     }
 
     private fun shortTextData(snapshot: WearAlarmSnapshot): ShortTextComplicationData {
+        val res = this.resources
         return ShortTextComplicationData.Builder(
-            text = plainText(WearAlarmText.complicationShortText(snapshot)),
-            contentDescription = plainText(WearAlarmText.contentDescription(snapshot))
+            text = plainText(WearAlarmText.complicationShortText(res, snapshot)),
+            contentDescription = plainText(WearAlarmText.contentDescription(res, snapshot))
         )
             .setTitle(plainText(WearAlarmText.complicationShortTitle(snapshot)))
             .setMonochromaticImage(icon())
@@ -49,11 +50,12 @@ class NextAlarmComplicationDataSourceService : SuspendingComplicationDataSourceS
     }
 
     private fun longTextData(snapshot: WearAlarmSnapshot): LongTextComplicationData {
+        val res = this.resources
         return LongTextComplicationData.Builder(
-            text = plainText(WearAlarmText.complicationLongText(snapshot)),
-            contentDescription = plainText(WearAlarmText.contentDescription(snapshot))
+            text = plainText(WearAlarmText.complicationLongText(res, snapshot)),
+            contentDescription = plainText(WearAlarmText.contentDescription(res, snapshot))
         )
-            .setTitle(plainText("AlarmClockXtreme"))
+            .setTitle(plainText(res.getString(R.string.app_name)))
             .setMonochromaticImage(icon())
             .build()
     }

@@ -1,14 +1,18 @@
 package com.sysadmindoc.alarmclock.data.repository
 
 import com.sysadmindoc.alarmclock.data.local.AlarmDao
+import com.sysadmindoc.alarmclock.data.local.AlarmGroupDao
+import com.sysadmindoc.alarmclock.data.local.entity.AlarmGroup
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class AlarmRepository @Inject constructor(
-    private val dao: AlarmDao
+    private val dao: AlarmDao,
+    private val groupDao: AlarmGroupDao
 ) {
     fun observeAll(): Flow<List<Alarm>> = dao.observeAll()
     fun observeEnabled(): Flow<List<Alarm>> = dao.observeEnabled()
@@ -21,6 +25,9 @@ class AlarmRepository @Inject constructor(
 
     suspend fun save(alarm: Alarm): Long {
         val sanitized = alarm.sanitized()
+        if (sanitized.group.isNotBlank()) {
+            groupDao.insert(AlarmGroup(sanitized.group))
+        }
         val ordered = if (sanitized.id == 0L && sanitized.sortOrder == 0) {
             sanitized.copy(sortOrder = nextSortOrder())
         } else {
@@ -28,6 +35,12 @@ class AlarmRepository @Inject constructor(
         }
         return dao.insert(ordered)
     }
+
+    fun observeGroups(): Flow<List<String>> =
+        groupDao.observeAll().map { list -> list.map { it.name } }
+
+    suspend fun getAllGroups(): List<String> =
+        groupDao.getAll().map { it.name }
 
     suspend fun importDisabledAtomically(alarms: List<Alarm>): List<Long> =
         dao.insertAllWithStableOrder(

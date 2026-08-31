@@ -4,31 +4,88 @@
     android:height="108dp"
     android:viewportWidth="512"
     android:viewportHeight="512">
+
+    <!-- Clock feet -->
     <path
-        android:fillColor="#F6FAFF"
-        android:pathData="M256,256m-154,0a154,154 0,1 0,308 0a154,154 0,1 0,-308 0" />
+        android:fillColor="#050814"
+        android:pathData="M176,368a8,8 0,0 1,8 -8h24a8,8 0,0 1,8 8v16a8,8 0,0 1,-8 8h-24a8,8 0,0 1,-8 -8z" />
     <path
-        android:fillColor="@android:color/transparent"
-        android:pathData="M256,256m-154,0a154,154 0,1 0,308 0a154,154 0,1 0,-308 0"
-        android:strokeColor="#5CA6FF"
+        android:fillColor="#050814"
+        android:pathData="M296,368a8,8 0,0 1,8 -8h24a8,8 0,0 1,8 8v16a8,8 0,0 1,-8 8h-24a8,8 0,0 1,-8 -8z" />
+
+    <!-- Top cap -->
+    <path
+        android:fillColor="#050814"
+        android:pathData="M226,123a13,13 0,0 1,13 -13h34a13,13 0,0 1,13 13v0a13,13 0,0 1,-13 13h-34a13,13 0,0 1,-13 -13z" />
+
+    <!-- Clock body -->
+    <path
+        android:fillColor="#050814"
+        android:pathData="M256,256m-170,0a170,170 0,1 0,340 0a170,170 0,1 0,-340 0" />
+
+    <!-- Inner face subtle ring -->
+    <path
+        android:strokeColor="#0D1224"
+        android:strokeWidth="10"
+        android:pathData="M256,256m-140,0a140,140 0,1 0,280 0a140,140 0,1 0,-280 0" />
+
+    <!-- Alarm burst lines - Left -->
+    <path
+        android:strokeColor="#FF9A2A"
+        android:strokeWidth="12"
+        android:strokeLineCap="round"
+        android:pathData="M140,170L110,145" />
+    <path
+        android:strokeColor="#FF9A2A"
+        android:strokeWidth="10"
+        android:strokeLineCap="round"
+        android:pathData="M150,145L120,115" />
+    <path
+        android:strokeColor="#FF9A2A"
+        android:strokeWidth="10"
+        android:strokeLineCap="round"
+        android:pathData="M165,200L135,185" />
+
+    <!-- Alarm burst lines - Right -->
+    <path
+        android:strokeColor="#FF9A2A"
+        android:strokeWidth="12"
+        android:strokeLineCap="round"
+        android:pathData="M372,170L402,145" />
+    <path
+        android:strokeColor="#FF9A2A"
+        android:strokeWidth="10"
+        android:strokeLineCap="round"
+        android:pathData="M362,145L392,115" />
+    <path
+        android:strokeColor="#FF9A2A"
+        android:strokeWidth="10"
+        android:strokeLineCap="round"
+        android:pathData="M347,200L377,185" />
+
+    <!-- X-shaped hands -->
+    <path
+        android:strokeColor="#FF9A2A"
+        android:strokeWidth="22"
         android:strokeLineCap="round"
         android:strokeLineJoin="round"
-        android:strokeWidth="18" />
+        android:pathData="M190,322L256,256L340,172" />
     <path
-        android:fillColor="@android:color/transparent"
-        android:pathData="M256,256 L214,214"
-        android:strokeColor="#102237"
+        android:strokeColor="#FF9A2A"
+        android:strokeWidth="22"
         android:strokeLineCap="round"
         android:strokeLineJoin="round"
-        android:strokeWidth="26" />
+        android:pathData="M172,190L256,256L322,340" />
+
+    <!-- Center hub -->
     <path
-        android:fillColor="@android:color/transparent"
-        android:pathData="M256,256 L320,224"
-        android:strokeColor="#102237"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:strokeWidth="22" />
-    <path
-        android:fillColor="#5CA6FF"
+        android:fillColor="#FF9A2A"
         android:pathData="M256,256m-18,0a18,18 0,1 0,36 0a18,18 0,1 0,-36 0" />
+
+    <!-- Subtle depth -->
+    <path
+        android:strokeColor="#59000000"
+        android:strokeWidth="18"
+        android:pathData="M256,256m-170,0a170,170 0,1 0,340 0a170,170 0,1 0,-340 0" />
+
 </vector>

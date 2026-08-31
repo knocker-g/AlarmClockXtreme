@@ -142,6 +142,7 @@ import com.sysadmindoc.alarmclock.ui.theme.SurfaceMedium
 import com.sysadmindoc.alarmclock.ui.theme.TextMuted
 import com.sysadmindoc.alarmclock.ui.theme.TextPrimary
 import com.sysadmindoc.alarmclock.ui.theme.TextSecondary
+import com.sysadmindoc.alarmclock.util.AlarmPublicText
 import com.sysadmindoc.alarmclock.util.AlarmTimeFormatter
 import java.time.Instant
 import java.time.ZoneId
@@ -956,7 +957,7 @@ private fun AlarmDetailPane(
                     AppStatusChip(label = alarm.fixedTimezoneId, color = SnoozeYellow)
                 }
                 if (alarm.group.isNotBlank()) {
-                    AppStatusChip(label = alarm.group)
+                    AppStatusChip(label = AlarmPublicText.getLocalizedName(alarm.group, LocalContext.current))
                 }
                 alarm.challengeChainLabel()?.let { challengeLabel ->
                     AppStatusChip(label = challengeLabel, color = SnoozeYellow)
@@ -1172,7 +1173,7 @@ private fun GroupFilterRow(
             )
             groups.forEach { group ->
                 AppFilterChip(
-                    label = group,
+                    label = AlarmPublicText.getLocalizedName(group, LocalContext.current),
                     selected = selectedGroup == group,
                     onClick = { onSelectGroup(if (selectedGroup == group) null else group) },
                     selectionSemantics = true,
@@ -1457,11 +1458,12 @@ private fun AlarmCard(
             val silentLabel = stringResource(R.string.alarm_edit_silent)
             val chainLabel = alarm.challengeChainLabel()
             val cardRepeatLabel = alarm.repeatLabel(LocalContext.current)
+            val metadataContext = LocalContext.current
             val metadata = buildList {
                 if (alarm.label.isNotBlank() && cardRepeatLabel.isNotBlank()) add(cardRepeatLabel)
                 alarm.shiftPatternChipLabel()?.let(::add)
                 if (alarm.usesFixedTimezone) add(alarm.fixedTimezoneId)
-                if (alarm.group.isNotBlank()) add(alarm.group)
+                if (alarm.group.isNotBlank()) add(AlarmPublicText.getLocalizedName(alarm.group, metadataContext))
                 chainLabel?.let(::add)
                 if (alarm.ringtoneUri == "silent") add(silentLabel)
             }

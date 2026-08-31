@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AlarmClockXtreme</string>
+    <string name="wear_tile_label">次のアラーム</string>
+    <string name="wear_tile_description">次のアラームを表示し、スキップ、スヌーズ、解除の操作をウォッチ側から行えます。</string>
+    <string name="wear_complication_label">次のアラーム</string>
+    <string name="wear_complication_description">対応するウォッチフェイスに次のアラームを表示します。</string>
+
+    <!-- UI Strings extracted from code -->
+    <string name="wear_sync">同期</string>
+    <string name="wear_snooze">スヌーズ</string>
+    <string name="wear_dismiss">停止</string>
+    <string name="wear_skip_next">次をスキップ</string>
+    <string name="wear_next_alarm">次のアラーム</string>
+    <string name="wear_no_alarm">アラームなし</string>
+    <string name="wear_ringing">鳴動中</string>
+    <string name="wear_scheduled">スケジュール済み</string>
+    <string name="wear_alarm">アラーム</string>
+    <string name="wear_open_phone_app">スマホでアプリを開く</string>
+    <string name="wear_waiting_phone_sync">スマホとの同期を待機中</string>
+    <string name="wear_phone_sync_stale">同期データが古い可能性があります</string>
+    <string name="wear_alarm_is_ringing">アラームが鳴っています</string>
+    <string name="wear_ready_on_phone">スマホ側で準備完了</string>
+    <string name="wear_no_phone_alarm_synced">同期されたアラームはありません</string>
+    <string name="wear_remaining_due_now">今すぐ</string>
+    <string name="wear_remaining_days">%1$d日 %2$dh</string>
+    <string name="wear_remaining_hours">%1$dh %2$dm</string>
+    <string name="wear_remaining_minutes">%1$dm</string>
+    <string name="wear_remaining_less_than_minute">1分未満</string>
+</resources>

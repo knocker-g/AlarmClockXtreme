@@ -105,15 +105,16 @@ class NextAlarmTileService : TileService() {
         snapshot: WearAlarmSnapshot,
         actionStatus: String?,
     ): LayoutElementBuilders.LayoutElement {
+        val res = this@NextAlarmTileService.resources
         return primaryLayout(
             titleSlot = {
-                text("AlarmClockXtreme".layoutString, typography = BODY_MEDIUM)
+                text(res.getString(R.string.app_name).layoutString, typography = BODY_MEDIUM)
             },
             mainSlot = {
                 LayoutElementBuilders.Column.Builder()
                     .addContent(
                         text(
-                            if (snapshot.hasAlarm) "Next alarm".layoutString else "No alarm".layoutString,
+                            if (snapshot.hasAlarm) res.getString(R.string.wear_next_alarm).layoutString else res.getString(R.string.wear_no_alarm).layoutString,
                             typography = BODY_MEDIUM
                         )
                     )
@@ -140,10 +141,11 @@ class NextAlarmTileService : TileService() {
     private fun MaterialScope.bottomControls(
         snapshot: WearAlarmSnapshot,
     ): LayoutElementBuilders.LayoutElement {
+        val res = this@NextAlarmTileService.resources
         if (!snapshot.hasAlarm || WearAlarmText.isStale(snapshot)) {
             return textButton(
                 shape = shapes.small,
-                labelContent = { text("Sync".layoutString) },
+                labelContent = { text(res.getString(R.string.wear_sync).layoutString) },
                 onClick = clickable(id = CLICK_REFRESH, action = loadAction()),
             )
         }
@@ -153,14 +155,14 @@ class NextAlarmTileService : TileService() {
                 buttonGroupItem {
                     textButton(
                         shape = shapes.small,
-                        labelContent = { text("Snooze".layoutString) },
+                        labelContent = { text(res.getString(R.string.wear_snooze).layoutString) },
                         onClick = clickable(id = WearAlarmData.CLICK_SNOOZE, action = loadAction()),
                     )
                 }
                 buttonGroupItem {
                     textButton(
                         shape = shapes.small,
-                        labelContent = { text("Dismiss".layoutString) },
+                        labelContent = { text(res.getString(R.string.wear_dismiss).layoutString) },
                         onClick = clickable(id = WearAlarmData.CLICK_DISMISS, action = loadAction()),
                     )
                 }
@@ -169,16 +171,16 @@ class NextAlarmTileService : TileService() {
 
         return textButton(
             shape = shapes.small,
-            labelContent = { text("Skip next".layoutString) },
+            labelContent = { text(res.getString(R.string.wear_skip_next).layoutString) },
             onClick = clickable(id = WearAlarmData.CLICK_SKIP, action = loadAction()),
         )
     }
 
     private fun mainTimeLabel(snapshot: WearAlarmSnapshot): String =
-        WearAlarmText.mainTimeLabel(snapshot)
+        WearAlarmText.mainTimeLabel(this.resources, snapshot)
 
     private fun secondaryLabel(snapshot: WearAlarmSnapshot, actionStatus: String?): String =
-        WearAlarmText.secondaryLabel(snapshot, actionStatus)
+        WearAlarmText.secondaryLabel(this.resources, snapshot, actionStatus)
 
     private fun readLatestSnapshot(): WearAlarmSnapshot {
         val cached = WearAlarmStore.load(applicationContext)

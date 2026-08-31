@@ -405,6 +405,8 @@
     <string name="alarm_edit_group_gym">Gym</string>
     <string name="alarm_edit_group_medication">Medication</string>
     <string name="alarm_edit_group_personal">Personal</string>
+    <string name="alarm_edit_group_calendar">Calendar</string>
+    <string name="alarm_edit_profile_calendar_auto">Calendar auto-alarm</string>
     <string name="alarm_edit_group_custom">Custom…</string>
     <string name="alarm_edit_group_custom_name">Custom group name</string>
     <string name="alarm_edit_partner_mode">Don’t wake partner</string>
@@ -802,11 +804,12 @@
     <string name="settings_night_clock">Night clock</string>
     <string name="settings_night_clock_description">Full-screen bedside clock with a warm low-light glow for bedside use.</string>
     <string name="settings_language">App language</string>
-    <string name="settings_language_description">Choose the app language. English is the only bundled language today.</string>
+    <string name="settings_language_description">Choose the app language. English and Japanese are bundled.</string>
     <string name="settings_language_android_required">Per-app language choices are available on Android 13 and newer.</string>
     <string name="settings_language_dialog_title">Choose app language</string>
     <string name="settings_language_system_default">System default</string>
     <string name="settings_language_english">English</string>
+    <string name="settings_language_japanese">日本語</string>
     <string name="settings_export_support_bundle">Export support bundle</string>
     <string name="settings_packaging_diagnostics">Packaging local crash logs and redacted diagnostics…</string>
     <string name="settings_support_bundle_description">Share local crash logs plus redacted wake, incident, and alarm diagnostics.</string>
@@ -1449,6 +1452,25 @@
     <string name="onboarding_dependable_mornings_less_friction">Dependable mornings with less friction</string>
     <string name="onboarding_recommended_setup">Recommended setup</string>
     <string name="onboarding_test_alarm">Test alarm</string>
+
+    <!-- Onboarding highlights -->
+    <string name="onboarding_highlight_exact_alarms">Exact alarms designed to survive Doze mode</string>
+    <string name="onboarding_highlight_battery_guidance">Battery guidance for aggressive device vendors</string>
+    <string name="onboarding_highlight_challenges">Math, shake, memory, steps, barcode, and more</string>
+    <string name="onboarding_highlight_layer_challenges">Layer multiple challenges when you need extra certainty</string>
+    <string name="onboarding_highlight_dashboard">A quick daily dashboard with forecast and events</string>
+    <string name="onboarding_highlight_context">Useful context without ads or noisy clutter</string>
+    <string name="onboarding_highlight_permissions">Permissions are optional and can be changed later</string>
+    <string name="onboarding_highlight_data_privacy">Data stays on your device unless you configure an integration</string>
+
+    <!-- Feedback messages -->
+    <string name="feedback_alarm_paused">Alarm paused</string>
+    <string name="feedback_alarm_enabled_for">Alarm enabled for %1$s</string>
+    <string name="feedback_cancellation_lock_overridden_paused">Cancellation lock overridden — alarm paused</string>
+    <plurals name="feedback_multialarm_paused">
+        <item quantity="one">1 alarm paused</item>
+        <item quantity="other">%1$d alarms paused</item>
+    </plurals>
     <!-- Stopwatch -->
     <string name="stopwatch_close_stopwatch">Close stopwatch</string>
     <string name="stopwatch_current_run">Current run</string>

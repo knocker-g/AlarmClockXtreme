@@ -2,6 +2,8 @@ package com.sysadmindoc.alarmclock.wear
 
 import android.content.Context
 import androidx.core.content.edit
+import android.content.res.Resources
+import com.sysadmindoc.alarmclock.wear.R
 import com.google.android.gms.wearable.DataMap
 
 object WearAlarmData {
@@ -62,58 +64,59 @@ object WearAlarmText {
     const val SHORT_TITLE_LIMIT = 12
     const val STALE_AFTER_MS = 5 * 60_000L
 
-    fun formatRemaining(triggerTime: Long, now: Long = System.currentTimeMillis()): String {
+    fun formatRemaining(resources: Resources, triggerTime: Long, now: Long = System.currentTimeMillis()): String {
         val diff = triggerTime - now
-        if (diff <= 0L) return "due now"
+        if (diff <= 0L) return resources.getString(R.string.wear_remaining_due_now)
         val days = diff / 86_400_000L
         val hours = (diff % 86_400_000L) / 3_600_000L
         val minutes = (diff % 3_600_000L) / 60_000L
         return when {
-            days > 0 -> "${days}d ${hours}h"
-            hours > 0 -> "${hours}h ${minutes}m"
-            minutes > 0 -> "${minutes}m"
-            else -> "<1m"
+            days > 0 -> resources.getString(R.string.wear_remaining_days, days, hours)
+            hours > 0 -> resources.getString(R.string.wear_remaining_hours, hours, minutes)
+            minutes > 0 -> resources.getString(R.string.wear_remaining_minutes, minutes)
+            else -> resources.getString(R.string.wear_remaining_less_than_minute)
         }
     }
 
     fun isStale(snapshot: WearAlarmSnapshot, now: Long = System.currentTimeMillis()): Boolean =
         snapshot.hasAlarm && (snapshot.updatedAt <= 0L || now - snapshot.updatedAt > STALE_AFTER_MS)
 
-    fun mainTimeLabel(snapshot: WearAlarmSnapshot): String = when {
-        !snapshot.hasAlarm -> "Open phone app"
+    fun mainTimeLabel(resources: Resources, snapshot: WearAlarmSnapshot): String = when {
+        !snapshot.hasAlarm -> resources.getString(R.string.wear_open_phone_app)
         snapshot.timeLabel.isNotBlank() -> snapshot.timeLabel
-        else -> "Scheduled"
+        else -> resources.getString(R.string.wear_scheduled)
     }
 
     fun secondaryLabel(
+        resources: Resources,
         snapshot: WearAlarmSnapshot,
         actionStatus: String? = null,
         now: Long = System.currentTimeMillis()
     ): String {
         actionStatus?.let { return it }
-        if (!snapshot.hasAlarm) return "Waiting for phone sync"
-        if (isStale(snapshot, now)) return "Phone sync stale"
-        if (snapshot.isFiring) return "Alarm is ringing"
-        val remaining = formatRemaining(snapshot.triggerTime, now)
+        if (!snapshot.hasAlarm) return resources.getString(R.string.wear_waiting_phone_sync)
+        if (isStale(snapshot, now)) return resources.getString(R.string.wear_phone_sync_stale)
+        if (snapshot.isFiring) return resources.getString(R.string.wear_alarm_is_ringing)
+        val remaining = formatRemaining(resources, snapshot.triggerTime, now)
         return listOf(snapshot.label, remaining, fixedZoneLabel(snapshot))
             .filter { it.isNotBlank() }
             .joinToString(SEPARATOR)
-            .ifBlank { "Ready on phone" }
+            .ifBlank { resources.getString(R.string.wear_ready_on_phone) }
     }
 
-    fun contentDescription(snapshot: WearAlarmSnapshot): String = when {
-        isStale(snapshot) -> "AlarmClockXtreme phone alarm sync is stale"
-        snapshot.isFiring -> "AlarmClockXtreme alarm is ringing"
-        snapshot.hasAlarm -> "Next AlarmClockXtreme alarm ${snapshot.timeLabel.ifBlank { "scheduled" }}"
-        else -> "No AlarmClockXtreme alarm synced from phone"
+    fun contentDescription(resources: Resources, snapshot: WearAlarmSnapshot): String = when {
+        isStale(snapshot) -> resources.getString(R.string.wear_phone_sync_stale)
+        snapshot.isFiring -> resources.getString(R.string.wear_alarm_is_ringing)
+        snapshot.hasAlarm -> resources.getString(R.string.wear_next_alarm) + " " + snapshot.timeLabel.ifBlank { resources.getString(R.string.wear_scheduled) }
+        else -> resources.getString(R.string.wear_no_phone_alarm_synced)
     }
 
-    fun complicationShortText(snapshot: WearAlarmSnapshot): String = when {
-        isStale(snapshot) -> "Sync"
-        snapshot.isFiring -> "Ringing"
+    fun complicationShortText(resources: Resources, snapshot: WearAlarmSnapshot): String = when {
+        isStale(snapshot) -> resources.getString(R.string.wear_sync)
+        snapshot.isFiring -> resources.getString(R.string.wear_ringing)
         snapshot.hasAlarm && snapshot.timeLabel.isNotBlank() -> snapshot.timeLabel
-        snapshot.hasAlarm -> "Alarm"
-        else -> "No alarm"
+        snapshot.hasAlarm -> resources.getString(R.string.wear_alarm)
+        else -> resources.getString(R.string.wear_no_alarm)
     }
 
     fun complicationShortTitle(snapshot: WearAlarmSnapshot): String = when {
@@ -123,18 +126,19 @@ object WearAlarmText {
     }
 
     fun complicationLongText(
+        resources: Resources,
         snapshot: WearAlarmSnapshot,
         now: Long = System.currentTimeMillis()
     ): String = when {
-        isStale(snapshot, now) -> "Phone sync stale"
-        snapshot.isFiring -> "Alarm is ringing"
+        isStale(snapshot, now) -> resources.getString(R.string.wear_phone_sync_stale)
+        snapshot.isFiring -> resources.getString(R.string.wear_alarm_is_ringing)
         snapshot.hasAlarm -> listOf(
-            snapshot.timeLabel.ifBlank { "Scheduled" },
+            snapshot.timeLabel.ifBlank { resources.getString(R.string.wear_scheduled) },
             snapshot.label,
             fixedZoneLabel(snapshot),
-            formatRemaining(snapshot.triggerTime, now)
+            formatRemaining(resources, snapshot.triggerTime, now)
         ).filter { it.isNotBlank() }.joinToString(SEPARATOR)
-        else -> "No phone alarm synced"
+        else -> resources.getString(R.string.wear_no_phone_alarm_synced)
     }
 
     private fun fixedZoneLabel(snapshot: WearAlarmSnapshot): String =

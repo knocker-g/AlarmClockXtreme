@@ -4,28 +4,42 @@
     android:height="108dp"
     android:viewportWidth="512"
     android:viewportHeight="512">
+
+    <!-- Silhouette of the clock -->
     <path
-        android:fillColor="@android:color/transparent"
-        android:pathData="M256,256m-154,0a154,154 0,1 0,308 0a154,154 0,1 0,-308 0"
-        android:strokeColor="#FFFFFF"
+        android:fillColor="#000000"
+        android:pathData="M176,368a8,8 0,0 1,8 -8h24a8,8 0,0 1,8 8v16a8,8 0,0 1,-8 8h-24a8,8 0,0 1,-8 -8zM296,368a8,8 0,0 1,8 -8h24a8,8 0,0 1,8 8v16a8,8 0,0 1,-8 8h-24a8,8 0,0 1,-8 -8zM226,123a13,13 0,0 1,13 -13h34a13,13 0,0 1,13 13v0a13,13 0,0 1,-13 13h-34a13,13 0,0 1,-13 -13zM256,256m-170,0a170,170 0,1 0,340 0a170,170 0,1 0,-340 0" />
+
+    <!-- Alarm lines (solid for silhouette) -->
+    <path
+        android:strokeColor="#000000"
+        android:strokeWidth="12"
         android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:strokeWidth="28" />
+        android:pathData="M140,170L110,145" />
     <path
-        android:fillColor="@android:color/transparent"
-        android:pathData="M256,256 L214,214"
-        android:strokeColor="#FFFFFF"
+        android:strokeColor="#000000"
+        android:strokeWidth="10"
         android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:strokeWidth="28" />
+        android:pathData="M150,145L120,115" />
     <path
-        android:fillColor="@android:color/transparent"
-        android:pathData="M256,256 L320,224"
-        android:strokeColor="#FFFFFF"
+        android:strokeColor="#000000"
+        android:strokeWidth="10"
         android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:strokeWidth="24" />
+        android:pathData="M165,200L135,185" />
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M256,256m-18,0a18,18 0,1 0,36 0a18,18 0,1 0,-36 0" />
+        android:strokeColor="#000000"
+        android:strokeWidth="12"
+        android:strokeLineCap="round"
+        android:pathData="M372,170L402,145" />
+    <path
+        android:strokeColor="#000000"
+        android:strokeWidth="10"
+        android:strokeLineCap="round"
+        android:pathData="M362,145L392,115" />
+    <path
+        android:strokeColor="#000000"
+        android:strokeWidth="10"
+        android:strokeLineCap="round"
+        android:pathData="M347,200L377,185" />
+
 </vector>

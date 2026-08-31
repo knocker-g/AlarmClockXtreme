@@ -8,6 +8,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import com.sysadmindoc.alarmclock.data.local.entity.ActigraphySession
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmEvent
+import com.sysadmindoc.alarmclock.data.local.entity.AlarmGroup
 import com.sysadmindoc.alarmclock.data.local.entity.PreSleepTagEntry
 import com.sysadmindoc.alarmclock.data.local.entity.SnoreEvent
 import com.sysadmindoc.alarmclock.data.model.Alarm
@@ -19,9 +20,10 @@ import com.sysadmindoc.alarmclock.data.model.Alarm
         ActigraphySession::class,
         AlarmIncidentEvent::class,
         SnoreEvent::class,
-        PreSleepTagEntry::class
+        PreSleepTagEntry::class,
+        AlarmGroup::class
     ],
-    version = 24,
+    version = 25,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -32,6 +34,7 @@ abstract class AlarmDatabase : RoomDatabase() {
     abstract fun alarmIncidentEventDao(): AlarmIncidentEventDao
     abstract fun snoreEventDao(): SnoreEventDao
     abstract fun preSleepTagDao(): PreSleepTagDao
+    abstract fun alarmGroupDao(): AlarmGroupDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -363,6 +366,20 @@ abstract class AlarmDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v1.15.42: dedicated table for group names to enable reusability even
+         * when no alarm currently uses a group.
+         */
+        val MIGRATION_24_25 = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS alarm_groups (name TEXT PRIMARY KEY NOT NULL)")
+                // Seed standard groups
+                db.execSQL("INSERT OR IGNORE INTO alarm_groups (name) VALUES ('Work'), ('School'), ('Gym'), ('Medication'), ('Personal'), ('Calendar')")
+                // Seed existing user groups from alarms table
+                db.execSQL("INSERT OR IGNORE INTO alarm_groups (name) SELECT DISTINCT `group` FROM alarms WHERE `group` != ''")
+            }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -387,6 +404,7 @@ abstract class AlarmDatabase : RoomDatabase() {
             MIGRATION_21_22,
             MIGRATION_22_23,
             MIGRATION_23_24,
+            MIGRATION_24_25,
         )
     }
 }
