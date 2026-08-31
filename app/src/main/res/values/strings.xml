@@ -405,6 +405,8 @@
     <string name="alarm_edit_group_gym">Gym</string>
     <string name="alarm_edit_group_medication">Medication</string>
     <string name="alarm_edit_group_personal">Personal</string>
+    <string name="alarm_edit_group_calendar">Calendar</string>
+    <string name="alarm_edit_profile_calendar_auto">Calendar auto-alarm</string>
     <string name="alarm_edit_group_custom">Custom…</string>
     <string name="alarm_edit_group_custom_name">Custom group name</string>
     <string name="alarm_edit_partner_mode">Don’t wake partner</string>
@@ -1449,6 +1451,25 @@
     <string name="onboarding_dependable_mornings_less_friction">Dependable mornings with less friction</string>
     <string name="onboarding_recommended_setup">Recommended setup</string>
     <string name="onboarding_test_alarm">Test alarm</string>
+
+    <!-- Onboarding highlights -->
+    <string name="onboarding_highlight_exact_alarms">Exact alarms designed to survive Doze mode</string>
+    <string name="onboarding_highlight_battery_guidance">Battery guidance for aggressive device vendors</string>
+    <string name="onboarding_highlight_challenges">Math, shake, memory, steps, barcode, and more</string>
+    <string name="onboarding_highlight_layer_challenges">Layer multiple challenges when you need extra certainty</string>
+    <string name="onboarding_highlight_dashboard">A quick daily dashboard with forecast and events</string>
+    <string name="onboarding_highlight_context">Useful context without ads or noisy clutter</string>
+    <string name="onboarding_highlight_permissions">Permissions are optional and can be changed later</string>
+    <string name="onboarding_highlight_data_privacy">Data stays on your device unless you configure an integration</string>
+
+    <!-- Feedback messages -->
+    <string name="feedback_alarm_paused">Alarm paused</string>
+    <string name="feedback_alarm_enabled_for">Alarm enabled for %1$s</string>
+    <string name="feedback_cancellation_lock_overridden_paused">Cancellation lock overridden — alarm paused</string>
+    <plurals name="feedback_multialarm_paused">
+        <item quantity="one">1 alarm paused</item>
+        <item quantity="other">%1$d alarms paused</item>
+    </plurals>
     <!-- Stopwatch -->
     <string name="stopwatch_close_stopwatch">Close stopwatch</string>
     <string name="stopwatch_current_run">Current run</string>

@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import com.sysadmindoc.alarmclock.util.AlarmPublicText
 import androidx.annotation.StringRes
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -220,15 +221,9 @@ internal fun LazyListScope.alarmEditOverviewSections(
     // Group
     SettingsSection(editorPage, AlarmEditorSection.GROUP) {
         var showGroupMenu by remember { mutableStateOf(false) }
-        val defaultGroups = listOf(
-            "" to stringResource(R.string.alarm_edit_group_none),
-            "Work" to stringResource(R.string.alarm_edit_group_work),
-            "School" to stringResource(R.string.alarm_edit_group_school),
-            "Gym" to stringResource(R.string.alarm_edit_group_gym),
-            "Medication" to stringResource(R.string.alarm_edit_group_medication),
-            "Personal" to stringResource(R.string.alarm_edit_group_personal)
-        )
-        val defaultGroupValues = defaultGroups.map { it.first }
+        val defaultGroups = listOf("" to stringResource(R.string.alarm_edit_group_none)) +
+            state.allGroups.map { it to it }
+        val defaultGroupValues = state.allGroups.toSet()
         val isCustomGroup = state.group.isNotBlank() && state.group !in defaultGroupValues
         SettingsRow(label = stringResource(R.string.alarm_edit_alarm_group)) {
             Box {

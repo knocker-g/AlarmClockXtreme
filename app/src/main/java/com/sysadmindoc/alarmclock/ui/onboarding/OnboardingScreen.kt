@@ -95,7 +95,7 @@ data class OnboardingPage(
     @StringRes val titleRes: Int,
     @StringRes val descriptionRes: Int,
     val accentColor: Color,
-    val highlights: List<String>
+    val highlights: List<Int>
 )
 
 private val onboardingPages = listOf(
@@ -105,8 +105,8 @@ private val onboardingPages = listOf(
         descriptionRes = R.string.onboarding_alarmclockxtreme_built_stay_dependable_even,
         accentColor = AccentBlue,
         highlights = listOf(
-            "Exact alarms designed to survive Doze mode",
-            "Battery guidance for aggressive device vendors"
+            R.string.onboarding_highlight_exact_alarms,
+            R.string.onboarding_highlight_battery_guidance
         )
     ),
     OnboardingPage(
@@ -115,8 +115,8 @@ private val onboardingPages = listOf(
         descriptionRes = R.string.onboarding_challenge_based_dismiss_flows_help,
         accentColor = SnoozeYellow,
         highlights = listOf(
-            "Math, shake, memory, steps, barcode, and more",
-            "Layer multiple challenges when you need extra certainty"
+            R.string.onboarding_highlight_challenges,
+            R.string.onboarding_highlight_layer_challenges
         )
     ),
     OnboardingPage(
@@ -125,8 +125,8 @@ private val onboardingPages = listOf(
         descriptionRes = R.string.onboarding_see_weather_calendar_next_alarm,
         accentColor = DismissGreen,
         highlights = listOf(
-            "A quick daily dashboard with forecast and events",
-            "Useful context without ads or noisy clutter"
+            R.string.onboarding_highlight_dashboard,
+            R.string.onboarding_highlight_context
         )
     ),
     OnboardingPage(
@@ -135,8 +135,8 @@ private val onboardingPages = listOf(
         descriptionRes = R.string.onboarding_no_ads_no_tracking_no,
         accentColor = AccentRed,
         highlights = listOf(
-            "Permissions are optional and can be changed later",
-            "Data stays on your device unless you configure an integration"
+            R.string.onboarding_highlight_permissions,
+            R.string.onboarding_highlight_data_privacy
         )
     )
 )
@@ -526,7 +526,7 @@ private fun OnboardingPageContent(
             ) {
                 page.highlights.forEach { highlight ->
                     FeatureRow(
-                        text = highlight,
+                        text = stringResource(highlight),
                         accent = page.accentColor
                     )
                 }

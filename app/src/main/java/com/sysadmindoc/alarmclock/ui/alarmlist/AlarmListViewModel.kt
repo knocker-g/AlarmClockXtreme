@@ -329,11 +329,7 @@ class AlarmListViewModel @Inject constructor(
             clearSelection()
             if (ids.isNotEmpty()) {
                 emitFeedback(
-                    if (ids.size == 1) {
-                        "1 alarm paused"
-                    } else {
-                        "${ids.size} alarms paused"
-                    }
+                    context.resources.getQuantityString(R.plurals.feedback_multialarm_paused, ids.size, ids.size)
                 )
             }
         }
@@ -354,7 +350,7 @@ class AlarmListViewModel @Inject constructor(
                 val nextTrigger = calculator.calculate(alarm)
                 repository.setEnabled(alarm.id, enabled = true, nextTrigger = nextTrigger)
                 scheduler.schedule(alarm.copy(isEnabled = true, nextTriggerTime = nextTrigger))
-                emitFeedback("Alarm enabled for ${formatFeedbackTime(nextTrigger)}")
+                emitFeedback(context.getString(R.string.feedback_alarm_enabled_for, formatFeedbackTime(nextTrigger)))
             } else {
                 val lockMinutes = preferencesManager.getCachedSettings().cancellationLockMinutes
                 if (lockMinutes > 0 && alarm.nextTriggerTime > 0) {
@@ -372,7 +368,7 @@ class AlarmListViewModel @Inject constructor(
     fun forceDisableAlarm(alarm: Alarm) {
         viewModelScope.launch {
             disableAlarm(alarm)
-            emitFeedback("Cancellation lock overridden — alarm paused")
+            emitFeedback(context.getString(R.string.feedback_cancellation_lock_overridden_paused))
         }
     }
 
@@ -380,7 +376,7 @@ class AlarmListViewModel @Inject constructor(
         repository.setEnabled(alarm.id, enabled = false, nextTrigger = 0)
         scheduler.cancel(alarm.id)
         scheduler.syncBedtimeDndRule()
-        emitFeedback("Alarm paused")
+        emitFeedback(context.getString(R.string.feedback_alarm_paused))
     }
 
     fun deleteAlarm(alarm: Alarm) {

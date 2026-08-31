@@ -8,6 +8,7 @@ import com.sysadmindoc.alarmclock.data.local.ActigraphySessionDao
 import com.sysadmindoc.alarmclock.data.local.AlarmDao
 import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 import com.sysadmindoc.alarmclock.data.local.AlarmEventDao
+import com.sysadmindoc.alarmclock.data.local.AlarmGroupDao
 import com.sysadmindoc.alarmclock.data.local.AlarmIncidentEventDao
 import com.sysadmindoc.alarmclock.data.local.DatabaseDowngradeNotice
 import com.sysadmindoc.alarmclock.data.local.PreSleepTagDao
@@ -80,5 +81,11 @@ object DatabaseModule {
     @Singleton
     fun providePreSleepTagDao(database: AlarmDatabase): PreSleepTagDao {
         return database.preSleepTagDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideAlarmGroupDao(database: AlarmDatabase): AlarmGroupDao {
+        return database.alarmGroupDao()
     }
 }

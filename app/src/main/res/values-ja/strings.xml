@@ -1,30 +1,20 @@
-<?xml version="1.0" encoding="utf-8"?>
+<?xml version='1.0' encoding='utf-8'?>
 <resources>
     <string name="app_name">AlarmClockXtreme</string>
-
-    <!-- Notification channels -->
     <string name="alarm_notification_channel">アラーム</string>
     <string name="upcoming_notification_channel">今後のアラーム</string>
-    <string name="missed_notification_channel">不在着信アラーム</string>
+    <string name="missed_notification_channel">未対応アラーム</string>
     <string name="bedtime_notification_channel">就寝時刻のリマインダー</string>
     <string name="bedtime_dnd_rule_name">AlarmClockXtreme 就寝モード</string>
     <string name="bedtime_dnd_rule_type">就寝モード</string>
-
-    <!-- Widget -->
-    <string name="widget_description">次にスケジュールされているアラーム時刻とカウントダウンを表示します</string>
+    <string name="widget_description">次のアラーム時刻とカウントダウンを表示</string>
     <string name="widget_loading">読み込み中…</string>
     <string name="direct_boot_alarm_title">アラーム</string>
-    <string name="direct_boot_alarm_message">再起動後、デバイスはまだロックされています。このフォールバックアラームを停止し、ロックを解除して完全なアラーム制御を復元してください。</string>
+    <string name="direct_boot_alarm_message">再起動後も端末がロックされています。アラームを停止してロックを解除すると、通常の制御に戻ります。</string>
     <string name="direct_boot_alarm_stop">アラームを停止</string>
-
-    <!-- Navigation -->
-    <string name="timer_restart">再開始</string>
+    <string name="timer_restart">再開</string>
     <string name="nav_stopwatch">ストップウォッチ</string>
     <string name="nav_bedtime">就寝時刻</string>
-
-    <!-- Alarm list -->
-
-    <!-- Alarm edit -->
     <string name="edit_alarm">アラームを編集</string>
     <string name="new_alarm">新しいアラーム</string>
     <string name="save">保存</string>
@@ -33,13 +23,7 @@
     <string name="volume">音量</string>
     <string name="snooze_duration">スヌーズ間隔</string>
     <string name="dismiss_challenge">解除チャレンジ</string>
-
-    <!-- Challenges -->
-
-    <!-- Alarm firing -->
     <string name="dismiss_alarm">アラームを停止</string>
-
-    <!-- Settings -->
     <string name="settings_title">設定</string>
     <string name="format_24h">24時間形式</string>
     <string name="auto_silence">自動消音</string>
@@ -48,29 +32,17 @@
     <string name="show_weather">天気を表示</string>
     <string name="show_calendar">カレンダーを表示</string>
     <string name="about">このアプリについて</string>
-
-    <!-- Bedtime -->
-
-    <!-- Dashboard -->
-
-    <!-- General -->
     <string name="cancel">キャンセル</string>
-
-    <!-- v1.4.0: Quick Settings tile -->
     <string name="qs_tile_skip_next_alarm">次のアラームをスキップ</string>
-
-    <!-- Launcher shortcuts -->
     <string name="shortcut_new_alarm">新しいアラーム</string>
     <string name="shortcut_new_alarm_long">新しいアラームを作成</string>
     <string name="shortcut_timer">タイマー</string>
     <string name="shortcut_timer_long">タイマーを開始</string>
     <string name="shortcut_bedtime">就寝時刻</string>
     <string name="shortcut_bedtime_long">就寝トラッカーを開く</string>
-
-    <!-- Notification text (system surfaces, highest i18n priority) -->
     <string name="notif_channel_database_downgrade">復元の問題</string>
     <string name="notif_database_downgrade_title">アラームを復元できませんでした</string>
-    <string name="notif_database_downgrade_text">復元されたデータはアプリの新しいバージョンからのもので、このバージョンでは読み取ることができません。アラームは保持されず、スケジュールもされていません。もう一度追加するか、新しいバージョンをインストールして再度復元してください。</string>
+    <string name="notif_database_downgrade_text">復元データが新しいバージョンのため読めません。アラームとスケジュールは復元されません。再追加するか、新しいバージョンで復元してください。</string>
     <string name="notif_alarm_title">アラーム</string>
     <string name="notif_alarm_ringing">アラーム鳴動中</string>
     <string name="notif_snooze_action">%1$d分スヌーズ</string>
@@ -83,14 +55,14 @@
     <string name="notif_dismiss_action">停止</string>
     <string name="notif_skip_action">このアラームをスキップ</string>
     <string name="notif_next_alarm_title">次: %1$s</string>
-    <string name="notif_missed_title">不在着信アラーム</string>
+    <string name="notif_missed_title">未対応アラーム</string>
     <string name="notif_smart_alarm_title">スマートアラーム作動中</string>
     <string name="notif_smart_alarm_text">睡眠の質をモニタリング中…</string>
     <string name="notif_timer_finished_title">タイマー終了</string>
     <string name="notif_timer_generic">タイマー</string>
     <string name="notif_timer_running_text">カウントダウン中</string>
     <string name="notif_timer_stop_action">停止</string>
-    <string name="notif_timer_restart_labeled">%1$sを再開始</string>
+    <string name="notif_timer_restart_labeled">%1$sを再開</string>
     <plurals name="notif_timers_finished_count">
         <item quantity="other">%1$d個のタイマーが終了しました</item>
     </plurals>
@@ -104,33 +76,31 @@
     <string name="alarm_list_move_down">下へ移動</string>
     <string name="alarm_edit_numpad_entry_desc">時刻入力: %1$s</string>
     <string name="alarm_edit_numpad_entry_empty_desc">時刻入力: 空</string>
-
-    <!-- Wake confirmation -->
     <string name="wake_confirm_title">起床確認</string>
     <string name="wake_confirm_question">本当に起きていますか？</string>
     <string name="wake_confirm_yes">はい、起きています</string>
     <string name="wake_confirm_not_yet">いいえ、まだです。確認を続けてください</string>
     <string name="wake_confirm_confirm_label">確認して再チェックを停止</string>
     <string name="wake_confirm_final_label">最終チェック。これ以上は鳴りません</string>
-
-    <!-- Alarm firing screen -->
     <string name="firing_controls_title">アラーム操作</string>
-    <plurals name="firing_snoozes_left"><item quantity="other">残りスヌーズ回数: %1$d回</item></plurals>
-    <string name="firing_snoozes_none_left">スヌーズはもう残っていません。チャレンジを解いてアラームを停止してください。</string>
-    <string name="firing_snooze_hint">スヌーズを長押しして正確な分数を指定するか、時刻を選択してください。保存されているデフォルト設定は変更されません。</string>
+    <plurals name="firing_snoozes_left">
+        <item quantity="other">残りスヌーズ回数: %1$d回</item>
+    </plurals>
+    <string name="firing_snoozes_none_left">スヌーズは残っていません。チャレンジを解いて停止してください。</string>
+    <string name="firing_snooze_hint">長押しで分数を指定するか、時刻を選択。デフォルト設定は変わりません。</string>
     <string name="firing_exact_snooze">正確なスヌーズ</string>
-    <string name="firing_exact_snooze_hint">このアラームに一度だけ適用されます。</string>
+    <string name="firing_exact_snooze_hint">1回だけ適用します。</string>
     <string name="firing_flip_to_snooze">裏返してスヌーズ</string>
     <string name="firing_hold_dismiss">停止ボタンを%1$.1f秒間長押し</string>
-    <string name="firing_leave_area_hint">保存されたエリアから離れると停止できるようになります。スヌーズは引き続き利用可能です。</string>
-    <string name="firing_leave_place_title">保存された場所から離れる</string>
+    <string name="firing_leave_area_hint">保存済みエリアを離れると停止できます。スヌーズは利用できます。</string>
+    <string name="firing_leave_place_title">保存済みの場所から離れる</string>
     <string name="firing_step_of">ステップ %1$d / %2$d</string>
     <string name="firing_single_step">シングルステップ停止</string>
-    <string name="firing_status_hold_or_snooze">起床ステップが完了しました。停止ボタンを%1$.1f秒間長押しするか、右にスワイプしてスヌーズしてください。</string>
-    <string name="firing_status_swipe_or_snooze">起床ステップが完了しました。左にスワイプして停止するか、右にスワイプしてスヌーズしてください。</string>
-    <string name="firing_status_hold_to_stop">停止ボタンを%1$.1f秒間長押ししてアラームを停止してください。</string>
-    <string name="firing_status_swipe_to_stop">左にスワイプまたは停止をタップしてアラームを停止してください。</string>
-    <string name="firing_hold_button_hint">停止ボタンを%1$.1f秒間長押ししてください。</string>
+    <string name="firing_status_hold_or_snooze">起床ステップ完了。停止を%1$.1f秒長押し、または右スワイプでスヌーズ。</string>
+    <string name="firing_status_swipe_or_snooze">起床ステップ完了。左スワイプで停止、右スワイプでスヌーズ。</string>
+    <string name="firing_status_hold_to_stop">%1$.1f秒長押しで停止。</string>
+    <string name="firing_status_swipe_to_stop">左スワイプまたは停止タップで停止。</string>
+    <string name="firing_hold_button_hint">停止を%1$.1f秒長押し</string>
     <string name="firing_hold_dismiss_short">停止を%1$.1f秒間長押し</string>
     <string name="firing_release_dismiss">離して停止</string>
     <string name="firing_release_snooze">離してスヌーズ</string>
@@ -147,7 +117,7 @@
     <string name="firing_weather_early">早めに作動: %1$s</string>
     <string name="firing_weather_summary">%1$s %2$s</string>
     <string name="firing_wakeup_check">起床チェック</string>
-    <string name="firing_left_saved_place">保存された場所から離れました</string>
+    <string name="firing_left_saved_place">保存済みの場所から離れました</string>
     <string name="firing_distance_from_place">場所から%1$d m</string>
     <string name="firing_location_lock">位置ロック</string>
     <plurals name="firing_retry_count">
@@ -155,31 +125,31 @@
     </plurals>
     <string name="firing_default_snooze_minutes">デフォルトスヌーズ %1$d分</string>
     <string name="firing_ready_title">アラーム停止の準備ができました</string>
-    <string name="firing_ready_hold_description">すべての必須ステップをクリアしました。停止ボタンを長押しして終了するか、少し休みが必要な場合はスヌーズしてください。</string>
-    <string name="firing_ready_description">すべての必須ステップをクリアしました。今すぐ停止するか、少し休みが必要な場合はスヌーズしてください。</string>
-    <string name="firing_move_outside">保存されたエリアの外へ移動してください</string>
-    <string name="firing_swipe_hold_flip_hint">停止を%1$.1f秒間長押しするか、右にスワイプしてスヌーズしてください。スマホを裏返すとすぐにスヌーズできます。</string>
-    <string name="firing_swipe_hold_hint">停止を%1$.1f秒間長押しするか、右にスワイプしてスヌーズしてください。</string>
-    <string name="firing_swipe_flip_hint">左にスワイプして停止するか、右にスワイプしてスヌーズしてください。スマホを裏返すとすぐにスヌーズできます。</string>
-    <string name="firing_swipe_hint">左にスワイプして停止するか、右にスワイプしてスヌーズしてください。</string>
-    <string name="firing_location_snooze_hint">少しリセットが必要な場合は右にスワイプしてスヌーズしてください。保存された場所を離れると停止できるようになります。</string>
-    <string name="firing_challenge_snooze_hint">少しリセットが必要な場合は右にスワイプしてスヌーズしてください。起床タスクが完了すると停止できるようになります。</string>
-    <string name="firing_controls_hold_description">長押しして停止を確定します。スヌーズはクイックアクションとして利用可能です。</string>
-    <string name="firing_controls_ready_description">起床タスクが完了しました。アラームを終了する方法を選択してください。</string>
-    <string name="firing_controls_location_description">スヌーズは引き続き利用可能です。保存されたエリアを離れたことが位置情報で確認されると停止できるようになります。</string>
-    <string name="firing_controls_locked_description">スヌーズは常に利用可能です。現在の起床ステップが完了するとすぐに停止できるようになります。</string>
+    <string name="firing_ready_hold_description">必須ステップ完了。停止を長押しして終了、休むならスヌーズ。</string>
+    <string name="firing_ready_description">必須ステップ完了。停止するか、少し休むならスヌーズ。</string>
+    <string name="firing_move_outside">保存済みのエリアの外へ移動してください</string>
+    <string name="firing_swipe_hold_flip_hint">停止を%1$.1f秒長押し、または右スワイプでスヌーズ。裏返してもスヌーズできます。</string>
+    <string name="firing_swipe_hold_hint">停止を%1$.1f秒長押し、または右スワイプでスヌーズ。</string>
+    <string name="firing_swipe_flip_hint">左スワイプで停止、右スワイプでスヌーズ。裏返してもスヌーズできます。</string>
+    <string name="firing_swipe_hint">左スワイプで停止、右スワイプでスヌーズ。</string>
+    <string name="firing_location_snooze_hint">右スワイプでスヌーズ。保存済みエリアを離れると停止できます。</string>
+    <string name="firing_challenge_snooze_hint">右スワイプでスヌーズ。起床タスク完了後に停止できます。</string>
+    <string name="firing_controls_hold_description">長押しで停止を確定。スヌーズはクイック操作で利用できます。</string>
+    <string name="firing_controls_ready_description">起床タスク完了。終了方法を選択してください。</string>
+    <string name="firing_controls_location_description">スヌーズは利用できます。保存済みエリアを離れると停止できます。</string>
+    <string name="firing_controls_locked_description">スヌーズは常に利用できます。起床ステップ完了後に停止できます。</string>
     <string name="firing_hold_to_finish">長押しして終了</string>
     <string name="firing_tap_dismiss">タップして停止</string>
     <string name="firing_dismiss_after_location">位置確認後に停止可能</string>
     <string name="firing_dismiss_after_challenge">チャレンジ完了後に停止可能</string>
     <string name="firing_tap_snooze">タップしてスヌーズ</string>
-    <string name="firing_leave_place_to_dismiss">保存された場所を離れて停止</string>
+    <string name="firing_leave_place_to_dismiss">保存済みの場所を離れて停止</string>
     <string name="firing_finish_challenge">起床チャレンジを完了する</string>
     <string name="firing_hide_snooze_choices">スヌーズの選択肢を隠す</string>
     <string name="firing_choose_snooze">プリセットまたは正確な分数を選択</string>
     <string name="firing_choose_snooze_until">時刻を指定してスヌーズ</string>
     <string name="firing_snooze_until_title">スヌーズ終了時刻…</string>
-    <string name="firing_snooze_until_hint">アラームは次にこの時刻になったときに鳴ります。</string>
+    <string name="firing_snooze_until_hint">次にこの時刻になると鳴ります。</string>
     <string name="firing_snooze_until_save">スヌーズをスケジュール</string>
     <string name="firing_hold_accessibility">停止ボタンを%1$.1f秒間長押し</string>
     <string name="firing_challenge_before_dismiss">停止する前に起床チャレンジを完了してください</string>
@@ -191,8 +161,6 @@
     <string name="firing_increase_snooze">スヌーズ時間を増やす</string>
     <string name="firing_snooze_minutes">%1$d分スヌーズ</string>
     <string name="firing_default">デフォルト</string>
-
-    <!-- Alarm firing challenge summaries -->
     <string name="firing_challenge_none_title">アラーム準備完了</string>
     <string name="firing_challenge_math_title">最後の問題を解く</string>
     <string name="firing_challenge_shake_title">振って完全に目を覚ます</string>
@@ -223,17 +191,17 @@
     <string name="firing_challenge_chess_title">1手詰めを見つける</string>
     <string name="firing_challenge_rsvp_title">速読</string>
     <string name="firing_challenge_none_support">このアラームには追加のチャレンジは必要ありません。</string>
-    <string name="firing_challenge_math_support">アラームを止める前に簡単な暗算チェックを行います。</string>
+    <string name="firing_challenge_math_support">アラームを止める前に簡単な暗算チェックをします。</string>
     <string name="firing_challenge_shake_support">体を動かすことで、寝ぼけたまま止めてしまうのを防ぎます。</string>
     <string name="firing_challenge_sequence_support">順序を間違えずに数字をタップしてください。</string>
     <string name="firing_challenge_memory_support">タイルをよく見て、同じパターンを正確に繰り返してください。</string>
     <string name="firing_challenge_typing_support">フレーズを入力することで、十分に目が覚めていることを確認します。</string>
     <string name="firing_challenge_voice_support">フレーズを発声するハンズフリーの起床チェックです。</string>
-    <string name="firing_challenge_handwriting_support">単語を書くことで、脳と手の起床チェックを行います。</string>
+    <string name="firing_challenge_handwriting_support">単語を書くことで、脳と手の起床チェックをします。</string>
     <string name="firing_challenge_walk_support">数歩歩くことで、適切に目を覚ますのに十分な動きを作ります。</string>
     <string name="firing_challenge_nfc_support">このアラーム用に保存したタグを使用してください。</string>
     <string name="firing_challenge_barcode_support">この起床ルーティンに紐付けたコードをスキャンしてください。</string>
-    <string name="firing_challenge_photo_support">保存された参照写真と密接に一致する写真を撮影してください。</string>
+    <string name="firing_challenge_photo_support">保存済みの参照写真と密接に一致する写真を撮影してください。</string>
     <string name="firing_challenge_squat_support">短い運動チャレンジで、実際に動き出すのを助けます。</string>
     <string name="firing_challenge_pushup_support">腕立て伏せにより上半身を動かし、眠気をリセットします。</string>
     <string name="firing_challenge_plank_support">一定時間維持することで、目が覚めてコントロールできていることを証明します。</string>
@@ -259,8 +227,8 @@
     <string name="firing_challenge_voice_status">下のフレーズを発声するか、入力フォールバックを使用してください。</string>
     <string name="firing_challenge_handwriting_status">表示された単語を描画するか、入力フォールバックを使用してください。</string>
     <string name="firing_challenge_walk_status">十分に歩いて、起きていることを証明してください。</string>
-    <string name="firing_challenge_nfc_status">保存されたNFCタグをタップして続けてください。</string>
-    <string name="firing_challenge_barcode_status">保存されたバーコードまたはQRコードをスキャンしてください。</string>
+    <string name="firing_challenge_nfc_status">保存済みのNFCタグをタップして続けてください。</string>
+    <string name="firing_challenge_barcode_status">保存済みのバーコードまたはQRコードをスキャンしてください。</string>
     <string name="firing_challenge_photo_status">一致する写真を撮影して、この起床ステップを完了してください。</string>
     <string name="firing_challenge_squat_status">指定された回数のスクワットを完了してください。</string>
     <string name="firing_challenge_pushup_status">スマホを床に置き、指定された回数の腕立て伏せを完了してください。</string>
@@ -280,22 +248,20 @@
     <string name="firing_challenge_chess_status">1手詰めの手を選択してください。</string>
     <string name="firing_challenge_rsvp_status">単語をよく見て、覚えた単語を選択してください。</string>
     <string name="firing_challenge_none_status">準備ができたら、スワイプまたは停止をタップしてください。</string>
-
-    <!-- Alarm editor navigation and sections -->
     <string name="alarm_edit_page_overview">アラーム概要</string>
-    <string name="alarm_edit_page_overview_subtitle">時刻、繰り返し、ラベル、現在の設定概要。</string>
+    <string name="alarm_edit_page_overview_subtitle">時刻・繰り返し・ラベル・設定。</string>
     <string name="alarm_edit_page_sound">音とバイブレーション</string>
-    <string name="alarm_edit_page_sound_subtitle">着信音、音量、フェードイン、バイブレーションの挙動。</string>
+    <string name="alarm_edit_page_sound_subtitle">着信音・音量・フェード・バイブレーション。</string>
     <string name="alarm_edit_page_dismiss">スヌーズと停止</string>
-    <string name="alarm_edit_page_dismiss_subtitle">スヌーズの間隔、チャレンジ、停止の保護機能。</string>
+    <string name="alarm_edit_page_dismiss_subtitle">スヌーズ間隔・チャレンジ・停止保護。</string>
     <string name="alarm_edit_page_schedule">スケジュールとスマートウェイク</string>
-    <string name="alarm_edit_page_schedule_subtitle">今後の鳴動、祝日ポリシー、スマートウェイクの時間。</string>
+    <string name="alarm_edit_page_schedule_subtitle">今後の鳴動・祝日・スマートウェイク。</string>
     <string name="alarm_edit_page_wake">起床体験</string>
-    <string name="alarm_edit_page_wake_subtitle">起床エフェクト、アナウンス、起床確認、モーニングルーティン。</string>
+    <string name="alarm_edit_page_wake_subtitle">起床エフェクト・アナウンス・確認・ルーティン。</string>
     <string name="alarm_edit_page_integrations">連携と安全性</string>
-    <string name="alarm_edit_page_integrations_subtitle">Hue、オーディオサービス、ガーディアンエスカレーション。</string>
+    <string name="alarm_edit_page_integrations_subtitle">Hue・オーディオサービス・ガーディアン。</string>
     <string name="alarm_edit_page_advanced">高度な挙動</string>
-    <string name="alarm_edit_page_advanced_subtitle">シフト、ソーラー、ハードウェア、パワーユーザー向け制御。</string>
+    <string name="alarm_edit_page_advanced_subtitle">シフト・ソーラー・ハードウェア等。</string>
     <string name="alarm_edit_group">グループ</string>
     <string name="alarm_edit_sound">サウンド</string>
     <string name="alarm_edit_snooze">スヌーズ</string>
@@ -315,56 +281,54 @@
     <string name="alarm_edit_guardian">ガーディアンエンジェル</string>
     <string name="alarm_edit_morning_routine">モーニングルーティン</string>
     <string name="alarm_edit_advanced">詳細設定</string>
-    <string name="alarm_edit_section_label_description">一目で認識しやすいアラーム名を付けます。</string>
-    <string name="alarm_edit_section_group_description">コンテキストごとにアラームを整理し、関連するスケジュールを管理しやすくします。</string>
-    <string name="alarm_edit_section_sound_description">アラームのトーン、音量、立ち上がりの挙動を形作ります。</string>
-    <string name="alarm_edit_section_vibration_description">バイブレーションがリングパターンをどのようにサポートするかを制御します。</string>
-    <string name="alarm_edit_section_snooze_description">起きるのを遅らせるための余地をどれくらい持たせるかを決めます。</string>
-    <string name="alarm_edit_section_upcoming_description">次に予定されている鳴動日や休暇によるスキップを確認します。</string>
-    <string name="alarm_edit_section_challenge_description">アラームを止めるのに明確な意図が必要になるよう、起床タスクを追加します。</string>
-    <string name="alarm_edit_section_location_description">スマホが保存されたエリアを離れるまで停止ボタンをロックしたままにします。</string>
-    <string name="alarm_edit_section_wake_effects_description">視覚的または物理的な合図を重ねて、アラームを無視しにくくします。</string>
-    <string name="alarm_edit_section_announcement_description">起き上がった後に有用なコンテキストをアラームに読み上げさせます。</string>
-    <string name="alarm_edit_section_wake_confirmation_description">このアラームにさらなる説明責任が必要な場合、2回目のチェックインを要求します。</string>
-    <string name="alarm_edit_section_smart_alarm_description">より自然なタイミングのウィンドウ内でアラームを鳴らすことを許可します。</string>
-    <string name="alarm_edit_section_holidays_description">柔軟に過ごすべき日にルーティンのアラームが鳴るのを防ぎます。</string>
-    <string name="alarm_edit_section_spotify_description">一般的なアラーム音以外の音で起きたい場合にミュージックサービスを使用します。</string>
-    <string name="alarm_edit_section_hue_description">枕元の照明をアラームと連動させ、より穏やかな目覚めを実現します。</string>
-    <string name="alarm_edit_section_chain_description">1つのチャレンジでは不十分な場合、複数の起床ステップを積み重ねます。</string>
-    <string name="alarm_edit_section_anti_snooze_description">繰り返しのスヌーズを困難にするガードレールを追加します。</string>
-    <string name="alarm_edit_section_sunrise_description">画面をより明るい起床前の色の遷移にブレンドします。</string>
-    <string name="alarm_edit_section_radio_description">ローカルの着信音の代わりにライブストリームで目を覚まします。</string>
-    <string name="alarm_edit_section_guardian_description">このアラームを逃すことが寝坊以上の結果を招く場合にエスカレーションを行います。</string>
-    <string name="alarm_edit_section_routine_description">アラームが終わった直後に最初に行いたいことをキャプチャします。</string>
-    <string name="alarm_edit_section_advanced_description">Fine-tune fallback behavior and edge-case wake-up protections.</string>
-
-    <!-- Alarm editor shell and common values -->
+    <string name="alarm_edit_section_label_description">識別しやすい名前を設定。</string>
+    <string name="alarm_edit_section_group_description">グループ化して管理。</string>
+    <string name="alarm_edit_section_sound_description">トーン・音量・立ち上がり。</string>
+    <string name="alarm_edit_section_vibration_description">バイブレーションの動作。</string>
+    <string name="alarm_edit_section_snooze_description">スヌーズ間隔。</string>
+    <string name="alarm_edit_section_upcoming_description">次の鳴動日・休暇スキップ。</string>
+    <string name="alarm_edit_section_challenge_description">停止前の起床タスク。</string>
+    <string name="alarm_edit_section_location_description">エリア外まで停止をロック。</string>
+    <string name="alarm_edit_section_wake_effects_description">視覚・物理エフェクトで起床を促す。</string>
+    <string name="alarm_edit_section_announcement_description">起床後に時刻・日付・天気を読み上げ。</string>
+    <string name="alarm_edit_section_wake_confirmation_description">停止後の起床確認。</string>
+    <string name="alarm_edit_section_smart_alarm_description">自然なタイミングで早めに鳴動。</string>
+    <string name="alarm_edit_section_holidays_description">祝日の鳴動をスキップ。</string>
+    <string name="alarm_edit_section_spotify_description">ミュージックサービスをアラーム音に。</string>
+    <string name="alarm_edit_section_hue_description">照明を連動して穏やかに起こす。</string>
+    <string name="alarm_edit_section_chain_description">複数の起床ステップを順番に実行。</string>
+    <string name="alarm_edit_section_anti_snooze_description">繰り返しスヌーズを防止。</string>
+    <string name="alarm_edit_section_sunrise_description">起床前に明るい色へ変化。</string>
+    <string name="alarm_edit_section_radio_description">ライブストリームをアラーム音に。</string>
+    <string name="alarm_edit_section_guardian_description">停止できない場合にエスカレーション。</string>
+    <string name="alarm_edit_section_routine_description">終了後に行うことをチェックリスト化。</string>
+    <string name="alarm_edit_section_advanced_description">特殊状況での起床保護。</string>
     <string name="alarm_edit_photo_none_captured">参照写真が撮影されていません。</string>
     <string name="alarm_edit_photo_saved">参照写真が保存されました。</string>
     <string name="alarm_edit_photo_save_failed">参照写真を保存できませんでした。</string>
     <string name="alarm_edit_camera_permission_required">参照写真を撮影するにはカメラの権限が必要です。</string>
     <string name="alarm_edit_background_none_selected">背景画像が選択されていません。</string>
     <string name="alarm_edit_background_selected">背景画像が選択されました。</string>
-    <string name="alarm_edit_background_permission_warning">背景画像が選択されました。Androidがアクセスを無効にした場合は再選択してください。</string>
+    <string name="alarm_edit_background_permission_warning">背景画像を選択済みです。Androidがアクセスを無効にした場合は再選択してください。</string>
     <string name="alarm_edit_location_saved">位置による停止ロックのために現在の場所を保存しました。</string>
-    <string name="alarm_edit_location_fix_failed">位置情報を取得できませんでした。位置情報をオンにして再度お試しください。</string>
+    <string name="alarm_edit_location_fix_failed">位置情報を取得できません。位置情報をオンにして再試行してください。</string>
     <string name="alarm_edit_location_permission_required">この停止ロックを保存するには位置情報の権限が必要です。</string>
     <string name="alarm_edit_discard_title">保存されていない変更を破棄しますか？</string>
-    <string name="alarm_edit_discard_message">アラームの編集内容は保存されていません。編集を続けるか、破棄してください。</string>
+    <string name="alarm_edit_discard_message">未保存の変更があります。編集を続けるか破棄してください。</string>
     <string name="alarm_edit_discard_action">変更を破棄</string>
     <string name="alarm_edit_keep_editing">編集を続ける</string>
-    <string name="alarm_edit_existing_subtitle">時間、音、起床の挙動を微調整します。</string>
-    <string name="alarm_edit_new_subtitle">最初の鳴動から意図を感じられるアラームを構築します。</string>
+    <string name="alarm_edit_existing_subtitle">時間・音・起床動作を調整します。</string>
+    <string name="alarm_edit_new_subtitle">最初の鳴動から意図した起床を設定します。</string>
     <string name="alarm_edit_cancel_accessibility">アラーム編集をキャンセル</string>
     <string name="alarm_edit_back_overview_accessibility">アラーム概要に戻る</string>
     <string name="alarm_edit_saving">アラームを保存中…</string>
     <string name="alarm_edit_save_changes">変更を保存</string>
     <string name="alarm_edit_create">アラームを作成</string>
     <string name="alarm_edit_preview_title">アラームプレビュー</string>
-    <string name="alarm_edit_preview_description">下の時間または曜日をタップして、このアラームをいつ鳴らすかを設定してください。</string>
+    <string name="alarm_edit_preview_description">時間または曜日をタップして鳴動日時を設定します。</string>
     <string name="alarm_edit_existing_status">既存のアラームを編集内容</string>
     <string name="alarm_edit_new_status">新しいアラーム</string>
-    <string name="alarm_edit_adjust_time_hint">時間をタップして正確に調整してください。</string>
+    <string name="alarm_edit_adjust_time_hint">時間をタップして調整します。</string>
     <string name="alarm_edit_rings_in">%1$s後に鳴ります</string>
     <string name="alarm_edit_default">デフォルト</string>
     <string name="alarm_edit_none">なし</string>
@@ -383,16 +347,30 @@
     <string name="alarm_edit_minutes_seconds_short">%1$d分 %2$d秒</string>
     <string name="alarm_edit_minutes_before_short">%1$d分前</string>
     <string name="alarm_edit_meters_short">%1$d m</string>
-    <plurals name="alarm_edit_minutes"><item quantity="other">%1$d分</item></plurals>
-    <plurals name="alarm_edit_seconds"><item quantity="other">%1$d秒</item></plurals>
-    <plurals name="alarm_edit_steps"><item quantity="other">%1$d歩</item></plurals>
-    <plurals name="alarm_edit_squats"><item quantity="other">%1$d回</item></plurals>
-    <plurals name="alarm_edit_meters"><item quantity="other">%1$dメートル</item></plurals>
-    <plurals name="alarm_edit_challenges"><item quantity="other">%1$d個のチャレンジ</item></plurals>
-    <plurals name="alarm_edit_step_chain"><item quantity="other">%1$dステップのチェーン</item></plurals>
-    <plurals name="alarm_edit_active_integrations"><item quantity="other">%1$d個のアクティブな連携</item></plurals>
-
-    <!-- Alarm editor overview, sound, and vibration -->
+    <plurals name="alarm_edit_minutes">
+        <item quantity="other">%1$d分</item>
+    </plurals>
+    <plurals name="alarm_edit_seconds">
+        <item quantity="other">%1$d秒</item>
+    </plurals>
+    <plurals name="alarm_edit_steps">
+        <item quantity="other">%1$d歩</item>
+    </plurals>
+    <plurals name="alarm_edit_squats">
+        <item quantity="other">%1$d回</item>
+    </plurals>
+    <plurals name="alarm_edit_meters">
+        <item quantity="other">%1$dメートル</item>
+    </plurals>
+    <plurals name="alarm_edit_challenges">
+        <item quantity="other">%1$d個のチャレンジ</item>
+    </plurals>
+    <plurals name="alarm_edit_step_chain">
+        <item quantity="other">%1$dステップのチェーン</item>
+    </plurals>
+    <plurals name="alarm_edit_active_integrations">
+        <item quantity="other">%1$d個のアクティブな連携</item>
+    </plurals>
     <string name="alarm_edit_label_placeholder">アラームラベル</string>
     <string name="alarm_edit_alarm_group">アラームグループ</string>
     <string name="alarm_edit_group_none">なし</string>
@@ -401,15 +379,17 @@
     <string name="alarm_edit_group_gym">ジム</string>
     <string name="alarm_edit_group_medication">服薬</string>
     <string name="alarm_edit_group_personal">個人用</string>
+    <string name="alarm_edit_group_calendar">カレンダー</string>
+    <string name="alarm_edit_profile_calendar_auto">カレンダー自動アラーム</string>
     <string name="alarm_edit_group_custom">カスタム…</string>
     <string name="alarm_edit_group_custom_name">カスタムグループ名</string>
-    <string name="alarm_edit_partner_mode">パートナーを起こさない</string>
-    <string name="alarm_edit_partner_mode_hint">このアラームをバイブレーションのみに設定します。アラーム音は消音され、フェードインはオフになり、穏やかに繰り返されるバイブレーションが有効になります。</string>
+    <string name="alarm_edit_partner_mode">バイブレーションモード</string>
+    <string name="alarm_edit_partner_mode_hint">バイブレーションのみで作動します。音とフェードはオフ、穏やかな反復振動を使います。</string>
     <string name="alarm_edit_haptic_profile_active">バイブレーションのみのプロファイルが有効</string>
     <string name="alarm_edit_alarm_sound">アラーム音</string>
     <string name="alarm_edit_override_volume">システム音量を上書き</string>
     <string name="alarm_edit_gradual_volume">音量を徐々に上げる</string>
-    <string name="alarm_edit_off_full_volume">オフ (すぐに最大音量)</string>
+    <string name="alarm_edit_off_full_volume">オフ</string>
     <string name="alarm_edit_vibration_pattern">バイブレーションパターン</string>
     <string name="alarm_edit_gentle">穏やか</string>
     <string name="alarm_edit_strong">強い</string>
@@ -422,7 +402,7 @@
     <string name="alarm_edit_vibration_escalating">エスカレート (徐々に強く)</string>
     <string name="alarm_edit_vibration_sos">SOS (緊急パターン)</string>
     <string name="alarm_edit_ramp_strength">立ち上がりの強さ</string>
-    <string name="alarm_edit_haptic_envelope_hint">Android 16ではスムーズな触覚エンベロープを使用します。古いデバイスでは同じ穏やかから強いパルスパターンを使用します。</string>
+    <string name="alarm_edit_haptic_envelope_hint">Android 16では滑らかな触覚エンベロープを使用。旧端末では同様のパルスパターンを使用します。</string>
     <string name="alarm_edit_vibration_delay">バイブレーション開始までの時間</string>
     <string name="alarm_edit_immediately">すぐに</string>
     <string name="alarm_edit_immediately_default">すぐに (デフォルト)</string>
@@ -430,7 +410,7 @@
     <string name="alarm_edit_fire_date">%1$s %2$s</string>
     <string name="alarm_edit_will_not_ring">このアラームは現在の設定では鳴りません。</string>
     <string name="alarm_edit_settings_title">アラーム設定</string>
-    <string name="alarm_edit_settings_description">カテゴリを開いて調整してください。現在の選択内容はここに表示されたままになります。</string>
+    <string name="alarm_edit_settings_description">カテゴリを開いて設定します。選択内容をここに表示します。</string>
     <string name="alarm_edit_feature_flash">フラッシュ</string>
     <string name="alarm_edit_feature_sunrise">サンライズ</string>
     <string name="alarm_edit_feature_announcement">アナウンス</string>
@@ -463,42 +443,39 @@
     <string name="alarm_edit_day_friday_short">金</string>
     <string name="alarm_edit_day_saturday_short">土</string>
     <string name="alarm_edit_day_sunday_short">日</string>
-
-    <!-- Alarm editor challenges and dismissal -->
     <string name="alarm_edit_challenge_type">チャレンジタイプ</string>
     <string name="alarm_edit_challenge_ready">このチャレンジはデバイスで準備ができています。</string>
     <string name="alarm_edit_steps_required">必要な歩数</string>
     <string name="alarm_edit_squats_required">必要なスクワット回数</string>
     <string name="alarm_edit_nfc_id">NFCタグID</string>
-    <string name="alarm_edit_nfc_missing">NFCタグが登録されていません。タグIDが設定されるまで、このチャレンジは作動時にスキップされます。</string>
+    <string name="alarm_edit_nfc_missing">NFCタグ未登録。登録されるまでこのチャレンジをスキップします。</string>
     <string name="alarm_edit_barcode_value">バーコードまたはQRの値</string>
     <string name="alarm_edit_barcode_value_short">バーコードの値</string>
-    <string name="alarm_edit_barcode_missing">バーコードまたはQRコードが登録されていません。値が設定されるまで、このチャレンジは作動時にスキップされます。</string>
+    <string name="alarm_edit_barcode_missing">バーコード/QRコード未登録。登録されるまでこのチャレンジをスキップします。</string>
     <string name="alarm_edit_wifi_name">Wi-Fiネットワーク名 (SSID)</string>
     <string name="alarm_edit_wifi_ssid">Wi-Fi SSID</string>
-    <string name="alarm_edit_wifi_missing">Wi-Fiネットワークが指定されていません。アラーム解除のために接続を要求するSSIDを設定してください。</string>
+    <string name="alarm_edit_wifi_missing">Wi-Fiネットワーク未指定。停止に必要なSSIDを設定してください。</string>
     <string name="alarm_edit_reference_photo">参照写真</string>
     <string name="alarm_edit_reference_photo_lower">参照写真</string>
     <string name="alarm_edit_capture">撮影</string>
-    <string name="alarm_edit_capture_photo_hint">アラーム解除時に要求される場所や角度からの参照写真を撮影してください。</string>
+    <string name="alarm_edit_capture_photo_hint">停止時に照合する場所・角度の参照写真を撮影します。</string>
     <string name="alarm_edit_photo_saved_for_alarm">このアラーム用の参照写真が保存されました。</string>
-    <string name="alarm_edit_require_leaving">保存された場所からの離脱を要求</string>
-    <string name="alarm_edit_saved_place">保存された場所</string>
+    <string name="alarm_edit_require_leaving">保存済みの場所からの離脱を要求</string>
+    <string name="alarm_edit_saved_place">保存済みの場所</string>
     <string name="alarm_edit_not_saved">保存されていません</string>
     <string name="alarm_edit_unlock_radius">解除半径</string>
-    <string name="alarm_edit_update_saved_place">保存された場所を更新</string>
+    <string name="alarm_edit_update_saved_place">保存済みの場所を更新</string>
     <string name="alarm_edit_save_current_place">現在の場所を保存</string>
-    <string name="alarm_edit_location_radius_hint">スマホが保存された%1$d mの半径の外に出るまで停止ボタンはロックされたままになります。スヌーズは引き続き利用可能です。</string>
-    <string name="alarm_edit_location_save_first">このロックを有効にする前に、アラームが開始される場所を保存してください。</string>
-    <string name="alarm_edit_location_optional_hint">オプションのアンチスリーピーヘッドモード: 位置情報によって保存されたエリアを離れたことが確認された後にのみ停止可能になります。</string>
+    <string name="alarm_edit_location_radius_hint">保存済みエリアから%1$d m以内では停止できません。スヌーズは利用できます。</string>
+    <string name="alarm_edit_location_save_first">有効にする前に、開始場所を保存してください。</string>
+    <string name="alarm_edit_location_optional_hint">位置情報で保存済みエリア外を確認後にのみ停止できます。</string>
     <string name="alarm_edit_challenge_chain">チャレンジチェーン</string>
     <string name="alarm_edit_chain_override">高度なチェーンの上書き</string>
     <string name="alarm_edit_chain_placeholder" translatable="false">MATH_EASY,SHAKE,TYPING</string>
-
-    <string name="alarm_edit_chain_hint">複数のチャレンジを順番に積み重ねます。上のピッカーを使用してガイドに従ってセットアップするか、コードを知っている場合は直接未加工のチェーンを編集してください。</string>
+    <string name="alarm_edit_chain_hint">複数のチャレンジを順番に実行します。上のピッカーで設定できます。</string>
     <string name="alarm_edit_missing_references">%1$s が不足しています。これらのチャレンジは作動時にスキップされます。</string>
-    <string name="alarm_edit_chain_picker_description">起床タスクが発生する順序で選択してください。最初の項目はアラームが鳴ったときに最初に表示されます。</string>
-    <string name="alarm_edit_chain_picker_empty_hint">単一の計算やシェイクタスクよりも、停止をより慎重に行いたい場合は、2つ以上のチャレンジから始めてください。</string>
+    <string name="alarm_edit_chain_picker_description">起床タスクの順番で選択します。最初の項目から表示されます。</string>
+    <string name="alarm_edit_chain_picker_empty_hint">停止を慎重にするなら、2つ以上のチャレンジを設定します。</string>
     <string name="alarm_edit_move_earlier">%1$s を前に移動</string>
     <string name="alarm_edit_move_later">%1$s を後に移動</string>
     <string name="alarm_edit_remove_challenge">%1$s を削除</string>
@@ -537,21 +514,21 @@
     <string name="alarm_edit_challenge_chess">チェス 1手詰め</string>
     <string name="alarm_edit_challenge_rsvp">RSVP 速読</string>
     <string name="alarm_edit_challenge_unknown">%1$s</string>
-    <string name="alarm_edit_challenge_math_easy_description">停止するために簡単な計算問題を解きます。</string>
+    <string name="alarm_edit_challenge_math_easy_description">停止するため簡単な計算問題を解きます。</string>
     <string name="alarm_edit_challenge_math_medium_description">アラームが止まる前に、2つの演算を含む問題を解きます。</string>
     <string name="alarm_edit_challenge_math_hard_description">より強力な起床が必要な場合に、より大きな数字と集中力を使用します。</string>
-    <string name="alarm_edit_challenge_shake_description">実際に動いていることを証明するために、スマホを繰り返し振ります。</string>
+    <string name="alarm_edit_challenge_shake_description">実際に動いていることを証明するため、スマホを繰り返し振ります。</string>
     <string name="alarm_edit_challenge_sequence_description">ステップを逃さずに、数字を昇順にタップします。</string>
     <string name="alarm_edit_challenge_memory_description">短い視覚的パターンを覚えて再現します。</string>
     <string name="alarm_edit_challenge_typing_description">停止する前に起床フレーズを正確に入力します。</string>
     <string name="alarm_edit_challenge_voice_description">Androidの音声認識を使用して起床フレーズを言います（入力フォールバックあり）。</string>
-    <string name="alarm_edit_challenge_handwriting_description">デバイス上の手書き認識を使用して起床ワードを描きます（入力フォールバックあり）。</string>
+    <string name="alarm_edit_challenge_handwriting_description">端末の手書き認識を使用して起床ワードを描きます（入力フォールバックあり）。</string>
     <string name="alarm_edit_challenge_walk_description">完全に体を起こすために、設定された歩数だけ歩きます。</string>
     <string name="alarm_edit_challenge_nfc_description">ベッドから離れた場所に置かれた特定のNFCタグをスキャンします。</string>
-    <string name="alarm_edit_challenge_barcode_description">保存されたバーコードをスキャンしてチャレンジを完了します。</string>
+    <string name="alarm_edit_challenge_barcode_description">保存済みのバーコードをスキャンしてチャレンジを完了します。</string>
     <string name="alarm_edit_challenge_photo_description">正しい場所に移動する必要があるように、参照写真と一致させます。</string>
-    <string name="alarm_edit_challenge_squat_description">スマホを持ちながら素早くスクワットを行います。</string>
-    <string name="alarm_edit_challenge_pushup_description">床に下向きに置かれたスマホの上で腕立て伏せを行います。</string>
+    <string name="alarm_edit_challenge_squat_description">スマホを持ちながら素早くスクワットします。</string>
+    <string name="alarm_edit_challenge_pushup_description">床に下向きに置かれたスマホの上で腕立て伏せします。</string>
     <string name="alarm_edit_challenge_plank_description">プランクの姿勢でスマホを30秒間水平に保ちます。</string>
     <string name="alarm_edit_challenge_wifi_description">アラームが止まる前に特定のWi-Fiネットワークに接続します。</string>
     <string name="alarm_edit_challenge_maze_description">寝ぼけたままタップしてしまうのを防ぐために、簡単な迷路を完了します。</string>
@@ -567,35 +544,32 @@
     <string name="alarm_edit_challenge_difference_description">2つのカラーグリッドを比較し、変化した1つのタイルをタップします。</string>
     <string name="alarm_edit_challenge_chess_description">小さなチェスの盤面から1手詰めの手を選びます。</string>
     <string name="alarm_edit_challenge_rsvp_description">急速に流れる単語を読み、表示された単語を特定します。</string>
-    <string name="alarm_edit_challenge_default_description">停止する前にこのチャレンジを完了する必要があります。</string>
-
-    <!-- Alarm editor wake experience and integrations -->
+    <string name="alarm_edit_challenge_default_description">停止する前にこのチャレンジを完了してください。</string>
     <string name="alarm_edit_gentle_wake_active">ジェントルウェイク有効</string>
     <string name="alarm_edit_apply_gentle_wake">ジェントルウェイクのプリセットを適用</string>
-    <string name="alarm_edit_gentle_wake_hint">穏やかな目覚めのために、2分間の音量フェード、1分間のバイブレーション遅延、サンライズシミュレーションを設定します。</string>
-
+    <string name="alarm_edit_gentle_wake_hint">音量フェード2分、バイブレーション遅延1分、サンライズを設定します。</string>
     <string name="alarm_edit_flash_wake">フラッシュウェイク（画面を明るくする）</string>
     <string name="alarm_edit_flash_wake_hint">音量とともに画面の明るさを徐々に上げます。</string>
     <string name="alarm_edit_background_image">作動時の背景画像</string>
-    <string name="alarm_edit_background_optional_hint">オプション。画像を選択するまで、アラーム画面は標準のグラデーションのままです。</string>
+    <string name="alarm_edit_background_optional_hint">任意。画像を選ぶまで標準グラデーションを使います。</string>
     <string name="alarm_edit_show_ringing_image">鳴動中に画像を表示</string>
     <string name="alarm_edit_blur_image">画像をぼかす (Android 12+)</string>
     <string name="alarm_edit_clear_background">背景画像をクリア</string>
-    <string name="alarm_edit_background_enabled_hint">このアラームではアラーム画面の画像が有効になっています。</string>
-    <string name="alarm_edit_background_disabled_hint">画像はこのアラーム用に保存されていますが、アラーム画面では引き続き標準のグラデーションが使用されます。</string>
+    <string name="alarm_edit_background_enabled_hint">アラーム画面の背景画像を使用します。</string>
+    <string name="alarm_edit_background_disabled_hint">画像は保存済みですが、アラーム画面は標準グラデーションを使います。</string>
     <string name="alarm_edit_speak_context">時刻、日付、天気を読み上げる</string>
-    <string name="alarm_edit_speak_context_hint">停止後に、デバイス上の音声合成を使用して時刻、日付、天気をアナウンスします。</string>
+    <string name="alarm_edit_speak_context_hint">停止後に時刻・日付・天気を読み上げます。</string>
     <string name="alarm_edit_confirm_awake">起床を確認する</string>
     <string name="alarm_edit_realarm_delay">未確認時の再アラーム遅延</string>
-    <string name="alarm_edit_realarm_hint">停止後に通知が表示されます。遅延時間内に確認しない場合、アラームが再作動します。</string>
+    <string name="alarm_edit_realarm_hint">停止後に通知。確認しないと再作動します。</string>
     <string name="alarm_edit_light_sleep">浅い眠りの時に起こす</string>
     <string name="alarm_edit_detection_window">検出ウィンドウ</string>
-    <string name="alarm_edit_smart_alarm_hint">スマホの動きのスコアリングを使用し、十分な証拠が得られるまで待ってから早めに作動させます。</string>
+    <string name="alarm_edit_smart_alarm_hint">動きのスコアを使い、十分な証拠が得られるまで待って早めに作動します。</string>
     <string name="alarm_edit_skip_holidays">公休日はスキップ</string>
-    <string name="alarm_edit_holidays_hint">[設定] → [連携] で祝日の自動スキップと国コードを設定する必要があります。</string>
+    <string name="alarm_edit_holidays_hint">[設定] → [連携] で祝日スキップと国コードを設定します。</string>
     <string name="alarm_edit_spotify_uri">Spotify URI (例: spotify:track:…)</string>
-    <string name="alarm_edit_default_ringtone_placeholder">デフォルトの着信音を使用するには空白のままにします</string>
-    <string name="alarm_edit_spotify_hint">Spotifyアプリがインストールされ、サインインしている必要があります。トラック、アルバム、またはプレイリストのリンクを貼り付けてください。数秒以内にSpotifyの再生が開始されない場合は、デフォルトのアラーム音が引き継ぎます。</string>
+    <string name="alarm_edit_default_ringtone_placeholder">デフォルト着信音を使用するには空白のままにします</string>
+    <string name="alarm_edit_spotify_hint">Spotifyにサインインし、トラック等のリンクを貼り付けます。再生できなければデフォルト音に切り替えます。</string>
     <string name="alarm_edit_dismiss_action">停止時に実行</string>
     <string name="alarm_edit_dismiss_action_none">なし</string>
     <string name="alarm_edit_dismiss_action_webhook">Webhookを呼び出す</string>
@@ -604,86 +578,83 @@
     <string name="alarm_edit_dismiss_action_payload_webhook">https://…</string>
     <string name="alarm_edit_dismiss_action_payload_hue_scene">シーンID</string>
     <string name="alarm_edit_dismiss_action_payload_broadcast">インテントアクション</string>
-    <string name="alarm_edit_dismiss_action_hint">アラームを停止した直後に一度だけ作動します。WebhookはHTTPSである必要があります。Hueシーンには設定でブリッジのセットアップが必要です。ブロードキャストアクションはTaskerなどの自動化アプリ用です。</string>
+    <string name="alarm_edit_dismiss_action_hint">停止直後に1回実行。WebhookはHTTPS必須。Hueはブリッジ設定、ブロードキャストはTasker等向けです。</string>
     <string name="alarm_edit_dismiss_action_invalid">その値は受け入れられません。選択したアクションの形式を確認してください。</string>
     <string name="alarm_edit_hue_sunrise">サンライズ照明シミュレーション</string>
     <string name="alarm_edit_hue_start">アラームの前に点灯を開始</string>
-    <string name="alarm_edit_hue_hint">[設定] → [Philips Hue] でHueブリッジのIPとAPIキーを設定する必要があります。</string>
+    <string name="alarm_edit_hue_hint">[設定] → [Philips Hue] でブリッジのIPとAPIキーを設定します。</string>
     <string name="alarm_edit_snooze_limit">スヌーズ制限</string>
     <string name="alarm_edit_snooze_limit_unlimited">無制限</string>
-    <string name="alarm_edit_snooze_limit_hint">最後のスヌーズの後にアラームが停止します。停止チャレンジのあるアラームでは、チャレンジを解決するまで鳴り続けます。</string>
-    <plurals name="alarm_edit_snooze_limit_value"><item quantity="other">%1$d回のスヌーズ</item></plurals>
-    <string name="alarm_edit_progressive_snooze">プログレッシブスヌーズ (回ごとに短縮)</string>
-    <string name="alarm_edit_progressive_snooze_hint">10 → 9 → 8 のように、スヌーズするたびに1分短くなります。</string>
+    <string name="alarm_edit_snooze_limit_hint">最後のスヌーズ後に停止。チャレンジ付きなら解くまで鳴り続けます。</string>
+    <plurals name="alarm_edit_snooze_limit_value">
+        <item quantity="other">%1$d回のスヌーズ</item>
+    </plurals>
+    <string name="alarm_edit_progressive_snooze">プログレッシブスヌーズ（回ごとに短縮）</string>
+    <string name="alarm_edit_progressive_snooze_hint">10 → 9 → 8 のように、回ごとに1分短くなります。</string>
     <string name="alarm_edit_backup_sound">バックアップサウンドのエスカレーション</string>
     <string name="alarm_edit_escalate_after">エスカレートまでの時間</string>
-    <string name="alarm_edit_backup_sound_hint">遅延時間内に操作がない場合、音量を最大にします。</string>
+    <string name="alarm_edit_backup_sound_hint">遅延時間内に操作がなければ音量を最大にします。</string>
     <string name="alarm_edit_flashlight_strobe">懐中電灯ストロボ</string>
-    <string name="alarm_edit_flashlight_warning">警告: 素早い点滅は、てんかんの発作や不快感を引き起こす可能性があります。[設定] で動きと点滅を抑える設定にすると、この効果は無効になります。</string>
+    <string name="alarm_edit_flashlight_warning">警告: 素早い点滅は、てんかん発作や不快感を引き起こす可能性があります。[設定] で動きと点滅を抑えると無効になります。</string>
     <string name="alarm_edit_screen_sunrise">画面サンライズ (色の遷移)</string>
     <string name="alarm_edit_duration">持続時間</string>
-    <string name="alarm_edit_sunrise_hint">日の出をシミュレートするために、画面を深紅から暖かい黄色に遷移させます。</string>
+    <string name="alarm_edit_sunrise_hint">日の出をシミュレートし、深紅から暖色へ変化させます。</string>
     <string name="alarm_edit_stream_url">ストリームURL (https://…)</string>
-    <string name="alarm_edit_radio_https_required">httpsストリームアドレスのみ再生可能です。Androidはプレーンなhttpをブロックします。</string>
-    <string name="alarm_edit_radio_hint">インターネットラジオをアラーム音としてストリーミングし、失敗した場合はデフォルトの着信音にフォールバックします。アドレスはhttpsである必要があります。</string>
+    <string name="alarm_edit_radio_https_required">HTTPSのストリームのみ再生できます。AndroidはHTTPをブロックします。</string>
+    <string name="alarm_edit_radio_hint">インターネットラジオを再生。失敗時はデフォルト音に切り替えます。HTTPS必須です。</string>
     <string name="alarm_edit_emergency_alert">緊急連絡先アラート</string>
     <string name="alarm_edit_emergency_phone">緊急電話番号</string>
     <string name="alarm_edit_alert_after">アラートまでの時間</string>
     <string name="alarm_edit_guardian_call_granted">直接通話の権限が付与されています。</string>
     <string name="alarm_edit_guardian_call_dialer">CALL_PHONE権限が付与されていないため、通話フォールバックはダイヤラーを開きます。</string>
-    <string name="alarm_edit_guardian_inactive">このアラームではガーディアンエンジェルはオフです。</string>
-    <string name="alarm_edit_guardian_direct_sms">緊急SMSを自動的に送信し、アラームが停止されない場合は通話パスを開きます。%1$s</string>
+    <string name="alarm_edit_guardian_inactive">ガーディアンエンジェルはオフです。</string>
+    <string name="alarm_edit_guardian_direct_sms">緊急SMSを自動的に送信し、アラームが停止されない場合通話パスを開きます。%1$s</string>
     <string name="alarm_edit_guardian_needs_sms">SEND_SMSが許可されると、F-Droidは自動的にSMSを送信できます。それまでは、事前入力されたSMSコンポーザーを開きます。%1$s</string>
     <string name="alarm_edit_guardian_composer">アラームが停止されない場合は、事前入力された緊急SMSコンポーザーを開き、その後通話またはダイヤラーにフォールバックします。%1$s</string>
-
-
     <string name="alarm_edit_checklist_label">チェックリスト項目 (1行に1つ)</string>
     <string name="alarm_edit_checklist_placeholder">ストレッチ\n水を飲む\n歯を磨く</string>
-    <string name="alarm_edit_checklist_hint">停止後、モーニングブリーフィング画面にチェックリストとして表示されます。</string>
-
-    <!-- Alarm editor advanced behavior -->
+    <string name="alarm_edit_checklist_hint">停止後、モーニングブリーフィングにチェックリストを表示します。</string>
     <string name="alarm_edit_profile">アラームプロファイル</string>
     <string name="alarm_edit_profile_placeholder">例: 仕事、旅行、週末</string>
-    <string name="alarm_edit_specific_date">特定の日付 (YYYY-MM-DD、繰り返しの場合は空白)</string>
+    <string name="alarm_edit_specific_date">特定の日付 (YYYY-MM-DD、繰り返しの場合空白)</string>
     <string name="alarm_edit_time_zone">タイムゾーン</string>
     <string name="alarm_edit_fixed_zone">固定ゾーン</string>
     <string name="alarm_edit_follow_device">デバイスに従う</string>
     <string name="alarm_edit_follow_device_zone">デバイスのタイムゾーンに従う</string>
     <string name="alarm_edit_keep_fixed_zone">時間を固定ゾーンに保つ</string>
     <string name="alarm_edit_iana_zone">IANAタイムゾーン (例: America/New_York)</string>
-    <string name="alarm_edit_fixed_zone_hint">旅行中も、このアラームはこのゾーンの %1$s:%2$s に維持されます。</string>
+    <string name="alarm_edit_fixed_zone_hint">旅行中もこのゾーンの%1$s:%2$sを維持します。</string>
     <string name="alarm_edit_unknown_zone">不明なゾーン。保存するとデバイスに従うように安全にフォールバックされます。</string>
     <string name="alarm_edit_shift_pattern">シフトパターン</string>
     <string name="alarm_edit_shift_start">シフトサイクルの開始日 (YYYY-MM-DD)</string>
-    <string name="alarm_edit_shift_hint">日勤、夜勤、勤務エントリは鳴り、非番の日はスキップされます。曜日の選択によってパターンを絞り込むことができます。</string>
-
+    <string name="alarm_edit_shift_hint">日勤・夜勤は鳴動、非番はスキップします。曜日で絞り込めます。</string>
     <string name="alarm_edit_shift_ddnno_description">昼勤2回、夜勤2回、非番1回。</string>
-    <string name="alarm_edit_shift_four_description">4日間の勤務の後、4日間の非番。</string>
-    <string name="alarm_edit_shift_panama_description">2日勤務、2日非番、3日勤務、その後2日非番、2日勤務、3日非番。</string>
-    <string name="alarm_edit_shift_dupont_description">夜勤4回、非番3回、昼勤3回、非番1回、夜勤3回、非番3回、昼勤4回、非番7回。</string>
+    <string name="alarm_edit_shift_four_description">4日勤務、4日非番。</string>
+    <string name="alarm_edit_shift_panama_description">2日勤務、2日非番、3日勤務、2日非番、2日勤務、3日非番。</string>
+    <string name="alarm_edit_shift_dupont_description">夜勤4、非番3、昼勤3、非番1、夜勤3、非番3、昼勤4、非番7。</string>
     <string name="alarm_edit_shift_pitman_description">2日勤務、2日非番、3日勤務、2日非番、2日勤務、3日非番。</string>
     <string name="alarm_edit_shift_default_description">カスタムシフトパターン。</string>
     <string name="alarm_edit_weather_early">天候による早めの作動</string>
-    <string name="alarm_edit_weather_early_hint">雪、みぞれ、または凍結が予想される場合に、このアラームを早めに作動させます。キャッシュされた気象データを使用します。</string>
+    <string name="alarm_edit_weather_early_hint">雪・みぞれ・凍結時は早めに作動します。キャッシュした気象データを使用します。</string>
     <string name="alarm_edit_early_dismiss">早めの停止ウィンドウ</string>
-    <string name="alarm_edit_early_dismiss_hint">鳴り始める前に、今後のアラーム通知から意図的に早めにスキップできるようにします。</string>
+    <string name="alarm_edit_early_dismiss_hint">鳴動前に今後のアラームを早めにスキップできます。</string>
     <string name="alarm_edit_wifi_dismiss_ssid">Wi-Fi停止SSID (このネットワークに接続して停止)</string>
     <string name="alarm_edit_hardware_action">ハードウェアボタンのアクション</string>
     <string name="alarm_edit_hardware_none">なし (デフォルト)</string>
     <string name="alarm_edit_hardware_snooze">任意のキーでスヌーズ</string>
     <string name="alarm_edit_hardware_dismiss">任意のキーで停止</string>
-    <string name="alarm_edit_hardware_hint">アラーム中に音量、カメラ、またはヘッドセットのキーを押したときの動作を選択します。[なし] は通常の音量調節のままにします。</string>
+    <string name="alarm_edit_hardware_hint">アラーム中の音量・カメラ・ヘッドセットキーの動作を選択します。［なし］は通常の音量調節です。</string>
     <string name="alarm_edit_hold_to_dismiss">長押しして停止</string>
-    <string name="alarm_edit_hold_to_dismiss_hint">有効にすると、作動画面で設定された時間だけ停止ボタンを長押しする必要があります。左スワイプによる停止は、長押しプロンプトに置き換えられます。</string>
+    <string name="alarm_edit_hold_to_dismiss_hint">有効にすると停止ボタンを設定時間長押し。左スワイプ停止も長押しになります。</string>
     <string name="alarm_edit_dismiss_song_end">曲が終わったら停止</string>
-    <string name="alarm_edit_dismiss_song_end_hint">選択した着信音やトラックが自然に終了したときに、ループをオフにしてアラームを自動的に停止します。インターネットラジオはこの設定を無視します。</string>
+    <string name="alarm_edit_dismiss_song_end_hint">曲や着信音の終了時にループを止め、自動停止します。インターネットラジオは対象外です。</string>
     <string name="alarm_edit_ringtone_pool">着信音プール</string>
     <string name="alarm_edit_remove_ringtone">着信音プールから %1$s を削除</string>
     <string name="alarm_edit_add_ringtone">着信音を追加</string>
     <string name="alarm_edit_add_ringtone_accessibility">着信音プールに着信音を追加</string>
-    <string name="alarm_edit_ringtone_pool_hint">プールが空でない場合、作動のたびにランダムなエントリが選択され、上記の単一の着信音設定を上書きします。チップをタップして削除します。</string>
+    <string name="alarm_edit_ringtone_pool_hint">空でなければ鳴動ごとにランダム選択し、上の着信音を上書きします。チップをタップして削除します。</string>
     <string name="alarm_edit_add_ringtone_title">着信音プールに着信音を追加</string>
-    <string name="alarm_edit_ringtone_uri_hint">このデバイス上のサウンドファイルへのリンクを貼り付けてください。このアラームが作動するたびに、プールから1つのエントリが再生されます。</string>
+    <string name="alarm_edit_ringtone_uri_hint">端末のサウンドファイルへのリンクを入力します。鳴動ごとにプールから1つ再生します。</string>
     <string name="alarm_edit_ringtone_uri">着信音URI</string>
     <string name="alarm_edit_ringtone_uri_placeholder" translatable="false">content://… または file://…</string>
     <string name="alarm_edit_ringtone_duplicate">その着信音はすでにプールにあります。</string>
@@ -695,7 +666,7 @@
     <string name="alarm_edit_positive_minutes_short">+%1$d 分</string>
     <string name="alarm_edit_solar_after">+%1$d 分 (%2$s の後)</string>
     <string name="alarm_edit_solar_before">%1$d 分 (%2$s の前)</string>
-    <string name="alarm_edit_solar_hint">オフセットがゼロ以外の場合、アラームは最後に確認された現在地での選択された日の出または日の入りイベントに関連して作動します。</string>
+    <string name="alarm_edit_solar_hint">オフセットがある場合、最後に確認した現在地の日の出/日の入りに連動して作動します。</string>
     <string name="alarm_edit_save_time">時刻を保存</string>
     <string name="alarm_edit_keep_current">現在を維持</string>
     <string name="alarm_edit_24_hour">24時間表記</string>
@@ -705,9 +676,8 @@
     <string name="alarm_edit_default_sound">デフォルトサウンド</string>
     <string name="alarm_edit_custom_tone">カスタムトーン</string>
     <string name="alarm_edit_spotify_short">Spotify</string>
-
     <string name="settings_pane_readiness">利用準備</string>
-    <string name="settings_pane_readiness_description">権限、診断、バッテリー、休暇、および一時停止の設定。</string>
+    <string name="settings_pane_readiness_description">権限・診断・バッテリー・休暇・一時停止の設定。</string>
     <string name="settings_pane_defaults">デフォルト設定</string>
     <string name="settings_pane_defaults_description">新しいアラームの動作、ダッシュボードの内容、およびナビゲーションタブ。</string>
     <string name="settings_pane_integrations">連携</string>
@@ -730,19 +700,19 @@
     <string name="settings_selected">選択済み</string>
     <string name="settings_not_selected">未選択</string>
     <string name="settings_alarm_defaults">アラームのデフォルト設定</string>
-    <string name="settings_alarm_defaults_description">新しいアラームを作成する際の初期動作を設定し、セットアップをより速く、予測可能にします。</string>
+    <string name="settings_alarm_defaults_description">新しいアラームの初期動作を設定し、セットアップを簡単・予測可能にします。</string>
     <string name="settings_24h_description">アプリ全体で24時間表記を使用します。</string>
     <string name="settings_alarm_status_icon">次回の通知アイコンを表示</string>
-    <string name="settings_alarm_status_icon_description">ステータスバーに次のアラームを常に表示します。ステータスバーを静かにしたい場合はオフにしてください。正確なアイドルスケジューリングは有効なままです。</string>
+    <string name="settings_alarm_status_icon_description">ステータスバーに次のアラームを常に表示します。静かにしたい場合はオフにしてください。正確なアイドルスケジューリングは有効です。</string>
     <string name="settings_hide_public_labels">公開ラベルを非表示にする</string>
     <string name="settings_hide_public_labels_description">ロック画面、タイマー通知、ウィジェット、クイック設定、Wearの各画面で中立的なテキストを使用します。</string>
     <string name="settings_phone_speakers">スマホのスピーカーを使用</string>
     <string name="settings_phone_speakers_description">アクセサリが接続されていても、アラーム音をラウドスピーカーから再生します。</string>
     <string name="settings_flip_snooze">スマホを裏返してスヌーズ</string>
     <string name="settings_flip_snooze_description">画面をタップする代わりに、スマホを裏返すジェスチャーでスヌーズできます。</string>
-    <string name="settings_default_snooze">デフォルトのスヌーズ時間</string>
+    <string name="settings_default_snooze">デフォルトスヌーズ時間</string>
     <string name="settings_default_snooze_description">新しいアラームで個別のスヌーズ時間が指定されていない場合に使用されます。</string>
-    <string name="settings_default_volume_ramp">デフォルトの音量立ち上がり</string>
+    <string name="settings_default_volume_ramp">デフォルト音量立ち上がり</string>
     <string name="settings_default_volume_ramp_description">新しいアラームが最大音量に達するまで、どの程度穏やかにフェードインするかを制御します。</string>
     <string name="settings_auto_silence_description">アラームが鳴り続けた場合のフェイルセーフタイムアウトです。</string>
     <string name="settings_never">なし</string>
@@ -758,7 +728,7 @@
     <string name="settings_post_dismiss_summary_description">最終的な停止ステップの後、キャッシュされた天気と次のローカルカレンダーイベントを表示します。ネットワークリクエストは行われません。</string>
     <string name="settings_first_meeting_alarm">最初の会議への自動アラーム</string>
     <string name="settings_first_meeting_enabled_description">カレンダーのアラームを明日の最初の予定時刻に合わせて移動させます。</string>
-    <string name="settings_first_meeting_disabled_description">明日の最初の予定の前に、再利用可能なアラームを1つ作成します。</string>
+    <string name="settings_first_meeting_disabled_description">明日の最初の予定の前に、再利用できるアラームを1つ作成します。</string>
     <string name="settings_meeting_lead_time">会議のリードタイム</string>
     <string name="settings_meeting_lead_description">最初の会議の何分前にカレンダーアラームを作動させるか。</string>
     <string name="settings_commute_aware">通勤を考慮した自動アラーム</string>
@@ -766,7 +736,7 @@
     <string name="settings_normal_commute">通常の通勤時間</string>
     <string name="settings_use_lead_time">リードタイムを使用</string>
     <string name="settings_use_meeting_lead">会議のリードタイムを使用</string>
-    <string name="settings_normal_commute_description">ルート予測がこの基準値を超える場合、自動アラームを早めます。</string>
+    <string name="settings_normal_commute_description">ルート予測がこの基準値を超える場合は、自動アラームを早めます。</string>
     <string name="settings_weather_buffer">悪天候バッファ</string>
     <string name="settings_weather_buffer_description">イベント当日の予報が雪、凍結、嵐、または激しい降水の場合に追加されます。</string>
     <string name="settings_no_weather_buffer">悪天候バッファなし</string>
@@ -776,7 +746,7 @@
     <string name="settings_commute_fallback_description">3回のルート予測に成功した後、失敗時には保守的な45日間のデバイス内履歴と天候バッファを使用できます。</string>
     <string name="settings_commute_history">学習された通勤履歴</string>
     <string name="settings_clear">クリア</string>
-    <string name="settings_commute_history_description">ハッシュ化されたルートキーと、ルートごとの最大8つの最近の所要時間をこのデバイスにのみ保存します。場所の情報はサポートバンドルから除外されます。</string>
+    <string name="settings_commute_history_description">ハッシュ化されたルートキーと、ルートごとの最大8つの直近の所要時間をこのデバイスにのみ保存します。場所の情報はサポートバンドルから除外されます。</string>
     <string name="settings_celsius">摂氏 (°C)</string>
     <string name="settings_fahrenheit">華氏 (°F)</string>
     <string name="settings_temperature_description">ダッシュボードと天気カードに適用されます。</string>
@@ -784,7 +754,7 @@
     <string name="settings_clear_commute_message">十分な新しいローカルサンプルが学習されるまで、カレンダー自動アラームはライブのRoutes予測または手動の基準値を使用します。</string>
     <string name="settings_clear_history">履歴をクリア</string>
     <string name="settings_bottom_navigation">ボトムナビゲーション</string>
-    <string name="settings_bottom_navigation_description">決して使用しないタブを非表示にします。「アラーム」と「設定」は常に利用可能です。</string>
+    <string name="settings_bottom_navigation_description">使わないタブを非表示にします。「アラーム」と「設定」は常に表示されます。</string>
     <string name="settings_show_today_tab">「今日」タブを表示</string>
     <string name="settings_show_today_description">一日の概要: 天気、時間別、UV、日の出・日の入り、ライブレーダー。</string>
     <string name="settings_show_timer_tab">「タイマー」タブを表示</string>
@@ -805,7 +775,7 @@
     <string name="settings_night_clock_description">枕元で使用するための、温かみのある低輝度フルスクリーン時計。</string>
     <string name="settings_language">アプリの言語</string>
     <string name="settings_language_description">アプリの言語を選択します。現在は英語のみが同梱されています。</string>
-    <string name="settings_language_android_required">アプリごとの言語選択は Android 13 以降で利用可能です。</string>
+    <string name="settings_language_android_required">アプリごとの言語選択は Android 13 以降で利用できます。</string>
     <string name="settings_language_dialog_title">アプリの言語を選択</string>
     <string name="settings_language_system_default">システムデフォルト</string>
     <string name="settings_language_english">English</string>
@@ -827,10 +797,8 @@
     <string name="settings_license_value">Apache License 2.0</string>
     <string name="settings_source">ソース</string>
     <string name="settings_source_value">github.com/SysAdminDoc/AlarmClockXtreme</string>
-
-    <!-- Settings readiness, diagnostics, pause, and vacation -->
     <string name="settings_diagnostics">アラーム診断</string>
-    <string name="settings_diagnostics_description">最近の匿名化された不具合コードにより、ラベル、URL、連絡先、場所を保存せずにアラームの配信状況を説明します。</string>
+    <string name="settings_diagnostics_description">直近の匿名化された不具合コードにより、ラベル、URL、連絡先、場所を保存せずにアラームの配信状況を説明します。</string>
     <string name="settings_incident_history">不具合履歴</string>
     <string name="settings_incident_empty">不具合イベントはまだありません。新しいアラームが作動すると、コンパクトなローカル診断コードがここに追加されます。</string>
     <string name="settings_incident_retention">この履歴は「統計」とは別のもので、最新の100行または30日間に制限されています。</string>
@@ -861,7 +829,7 @@
     <string name="settings_ready_count">%2$d 個中 %1$d 個が準備完了</string>
     <string name="settings_exact_alarm_access">正確なアラームへのアクセス</string>
     <string name="settings_alarm_notifications">アラーム通知</string>
-    <string name="settings_fullscreen_access">フルスクリーンアラームへのアクセス</string>
+    <string name="settings_fullscreen_access">フルスクリーンへのアクセス</string>
     <string name="settings_battery_protection">バッテリー保護</string>
     <string name="settings_open_battery">バッテリー設定を開く</string>
     <string name="settings_open_manufacturer_battery">%1$s の信頼性設定を開く</string>
@@ -885,7 +853,7 @@
     <string name="settings_resume_now">今すぐ再開</string>
     <string name="settings_choose_start_date">開始日を選択</string>
     <string name="settings_choose_end_date">終了日を選択</string>
-    <string name="settings_vacation_description">アラームを完全にオフにすることなく、不在の間だけ繰り返しの設定を停止します。</string>
+    <string name="settings_vacation_description">アラームを完全にオフにせず、不在中だけ繰り返し設定を停止します。</string>
     <string name="settings_active">アクティブ</string>
     <string name="settings_enable_vacation">休暇スケジュールを有効にする</string>
     <string name="settings_enable_vacation_description">繰り返しのアラームは有効なまま、以下の範囲の日付のみスキップされます。</string>
@@ -897,34 +865,32 @@
     <string name="settings_action_recommended">推奨されるアクション</string>
     <string name="settings_manufacturer_battery_steps">%1$s のバッテリー対策</string>
     <string name="settings_battery_guide_link">dontkillmyapp.com で最新の %1$s ガイドを表示</string>
-
-    <!-- Settings integrations and connection disclosure -->
     <string name="settings_webhook_integrations">Webhook 連携</string>
-    <string name="settings_webhook_description">アラームイベントを自動化、ホームセットアップ、またはデバッグ用エンドポイントに接続します。</string>
+    <string name="settings_webhook_description">アラームイベントを自動化、ホーム環境、デバッグ用エンドポイントに接続します。</string>
     <string name="settings_enable_webhook">Webhook を有効にする</string>
     <string name="settings_enable_webhook_description">alarm_fired, alarm_snoozed, alarm_dismissed, alarm_missed, alarm_skipped の v1 JSONイベントを送信します。</string>
     <string name="settings_webhook_url">Webhook URL</string>
     <string name="settings_webhook_url_placeholder">https://example.com/hook</string>
     <string name="settings_webhook_include_labels">アラームのラベルを含める</string>
-    <string name="settings_webhook_labels_description">オフの場合、ラベルを送信する代わりに非表示であることを通知します。</string>
+    <string name="settings_webhook_labels_description">オフの場合は、ラベルを送信する代わりに非表示であることを通知します。</string>
     <string name="settings_signing_secret">署名シークレット</string>
     <string name="settings_signing_secret_placeholder">HMACシークレット (任意)</string>
     <string name="settings_webhook_blocked">Webhook がブロックされました</string>
-    <string name="settings_webhook_blocked_description">プレーンなHTTP Webhookはブロックされます。HTTPSエンドポイント、またはHome AssistantやTasker用のローカルHTTPSブリッジを使用してください。</string>
+    <string name="settings_webhook_blocked_description">HTTP Webhookはブロックされます。HTTPSエンドポイント、またはHome Assistant・Tasker用のローカルHTTPSブリッジを使用してください。</string>
     <string name="settings_local_network_needed">ローカルネットワークへのアクセスが必要</string>
     <string name="settings_webhook_network_description">Android 17 以降では、LAN内のWebhookをテストまたは作動させる前に、ローカルネットワークへのアクセス権限が必要です。</string>
     <string name="settings_webhook_payload_description">すべてのペイロードには、スキーマバージョン、イベントID、発生時刻、アラーム予定時刻、表示時刻、およびラベルが含まれているかどうかの情報が含まれます。</string>
     <string name="settings_testing">テスト</string>
     <string name="settings_test">テスト</string>
-    <string name="settings_recent_deliveries">最近の配信</string>
+    <string name="settings_recent_deliveries">直近の配信</string>
     <string name="settings_public_holidays">公休日</string>
-    <string name="settings_public_holidays_description">アラーム自体を無効にすることなく、国別の祝日にアラームを自動的にスキップします。</string>
+    <string name="settings_public_holidays_description">アラームを無効にせず、国別の祝日に自動スキップします。</string>
     <string name="settings_skip_holidays">祝日にアラームをスキップ</string>
     <string name="settings_skip_holidays_description">銀行休業日や公的な休業日を尊重すべき平日のアラームに便利です。</string>
     <string name="settings_country_code">国コード</string>
     <string name="settings_country_code_placeholder">JP, US, GB, DE…</string>
     <string name="settings_holiday_enabled_description">祝日データは Nager.Date から取得され、ローカルに1週間キャッシュされます。</string>
-    <string name="settings_holiday_disabled_description">必要に応じて今すぐ国を選択できます。祝日スキップは上のトグルがオンの場合のみ有効になります。</string>
+    <string name="settings_holiday_disabled_description">必要なら今すぐ国を選択できます。祝日スキップは上のトグルがオンの場合のみ有効になります。</string>
     <string name="settings_hue_sunrise">Philips Hue サンライズ</string>
     <string name="settings_hue_sunrise_description">アラーム音が鳴る前に、部屋を徐々に明るくします。</string>
     <string name="settings_hue_ip">ブリッジ IP アドレス</string>
@@ -935,16 +901,16 @@
     <string name="settings_hue_light_ids_placeholder" translatable="false">1,2,3</string>
     <string name="settings_hue_cert_pinned">ブリッジ証明書をピン留めしました</string>
     <string name="settings_forget">削除</string>
-    <string name="settings_hue_network_description">Android 17 以降では、AlarmClockXtremeがこのHueブリッジに到達するためにローカルネットワークへのアクセス権限が必要です。</string>
-    <string name="settings_hue_test_description">IPとAPIキーが設定されたら、クイックブリッジチェックを実行します。</string>
+    <string name="settings_hue_network_description">Android 17 以降では、AlarmClockXtremeがこのHueブリッジに到達するためローカルネットワークへのアクセス権限が必要です。</string>
+    <string name="settings_hue_test_description">IPとAPIキーが設定されたら、クイックブリッジチェックします。</string>
     <string name="settings_hue_forget_title">Hueの証明書を削除しますか？</string>
     <string name="settings_hue_forget_message">ブリッジを交換したか、証明書が変更されたことを確認した後にのみ続行してください。次の暗号化接続の成功時に、新しい証明書が信頼され保存されます。</string>
     <string name="settings_hue_forget_action">証明書を削除</string>
     <string name="settings_health_connect">Health Connect</string>
     <string name="settings_health_fdroid_description">このビルドには Health Connect は含まれていません。この設定は、含まれているビルドからのバックアップを復元できるように保持されています。</string>
-    <string name="settings_health_read_sleep">最近の睡眠セッションを読み取る</string>
+    <string name="settings_health_read_sleep">直近の睡眠セッションを読み取る</string>
     <string name="settings_health_read_sleep_description">睡眠セッションのみを読み取ります。概要はデバイスに残り、「就寝時刻」「統計」または「設定」画面が開いているときに更新されます。</string>
-    <string name="settings_health_fdroid_permission">No Health Connect permissions are requested on F-Droid.</string>
+    <string name="settings_health_fdroid_permission">F-Droid版ではHealth Connectの権限は要求されません。</string>
     <string name="settings_health_sdk_available">このデバイスで利用可能</string>
     <string name="settings_health_update_needed">更新が必要</string>
     <string name="settings_health_unavailable">利用不可</string>
@@ -958,10 +924,10 @@
     <string name="settings_health_grant_access">アクセスを許可</string>
     <string name="settings_health_update_description">Health Connect はインストールされていますが、睡眠セッションを読み取る前に更新が必要です。</string>
     <string name="settings_health_unavailable_description">このデバイスでは Health Connect を利用できません。</string>
-    <string name="settings_health_opt_in_description">「就寝時刻」や「統計」のために、デバイス上の最近の Health Connect 睡眠セッションの読み取りを有効にします。</string>
-    <string name="settings_health_grant_description">最近の睡眠概要を表示するには、Health Connect で睡眠データへのアクセスを許可してください。</string>
-    <string name="settings_health_available_description">最近の睡眠概要を Health Connect からローカルで取得できます。</string>
-    <string name="settings_health_empty_description">睡眠データへのアクセスは許可されています。最近の Health Connect 睡眠セッションはまだありません。</string>
+    <string name="settings_health_opt_in_description">「就寝時刻」や「統計」のために、端末の直近の Health Connect 睡眠セッションの読み取りを有効にします。</string>
+    <string name="settings_health_grant_description">直近の睡眠概要を表示するには、Health Connect で睡眠データへのアクセスを許可してください。</string>
+    <string name="settings_health_available_description">直近の睡眠概要を Health Connect からローカルで取得できます。</string>
+    <string name="settings_health_empty_description">睡眠データへのアクセスは許可されています。直近の Health Connect 睡眠セッションはまだありません。</string>
     <string name="settings_health_no_session">セッションなし</string>
     <string name="settings_hours_minutes_short">%1$dh %2$dm</string>
     <string name="settings_hours_short">%1$dh</string>
@@ -977,7 +943,7 @@
     <string name="settings_connection_us_location_data">緯度、経度 (米国のみ)</string>
     <string name="settings_connection_embed_location">緯度、経度 (埋め込みURL経由)</string>
     <string name="settings_connection_cached_forecast">最後にキャッシュされた予報</string>
-    <string name="settings_connection_hidden_unavailable">利用不可な場合は非表示</string>
+    <string name="settings_connection_hidden_unavailable">利用不可の場合は非表示</string>
     <string name="settings_connection_no_alerts">アラートは表示されません</string>
     <string name="settings_connection_cached_holidays">キャッシュされた祝日。スキップは無効</string>
     <string name="settings_connection_radar_hidden">レーダーカードは非表示</string>
@@ -997,27 +963,23 @@
     <string name="settings_connections_data_description">オプションのネットワークサービスと、それらが送信する内容。有効にしない限り、デバイス外にデータが出ることはありません。</string>
     <string name="settings_connection_sends">送信: %1$s</string>
     <string name="settings_connection_offline">オフライン: %1$s</string>
-
-    <!-- Settings personalization -->
     <string name="settings_personalization">パーソナライズ</string>
     <string name="settings_personalization_description">アクセントカラーの選択、アダプティブ難易度の有効化、起床画面の調整。</string>
     <string name="settings_motivational_quotes">アラームに格言を表示</string>
     <string name="settings_motivational_quotes_description">作動画面に時刻とともに短い格言を表示します。</string>
     <string name="settings_adaptive_difficulty">アダプティブ・チャレンジ難易度</string>
     <string name="youtube_https_youtube_com_watch_v" translatable="false">https://youtube.com/watch?v=...</string>
-
     <string name="settings_adaptive_difficulty_description">スヌーズ率が50%を超えると、計算チャレンジを自動的に引き上げます (初級 → 中級 → 上級)。</string>
-
     <string name="settings_dynamic_color">Material You ダイナミックカラー</string>
     <string name="settings_dynamic_color_description">アプリのアクセントカラーを壁紙のパレットとブレンドします (Android 12+)。</string>
-    <string name="settings_expressive_surfaces">表情豊かなサーフェス</string>
-    <string name="settings_expressive_surfaces_description">共有アプリのサーフェス全体に、より大胆な形状のリズムと明確なアクセントのセマンティクスを追加します。</string>
+    <string name="settings_expressive_surfaces">表現力豊かなデザイン</string>
+    <string name="settings_expressive_surfaces_description">アプリ全体のデザインに、より大胆な形状と明確なアクセントを取り入れます。</string>
     <string name="settings_reduce_motion">動きと点滅を抑える</string>
     <string name="settings_reduce_motion_description">装飾的なループと懐中電灯のストロボを停止します。Androidの「アニメーションを無効化」設定も尊重されます。</string>
     <string name="settings_cover_to_snooze">覆ってスヌーズ</string>
     <string name="settings_cover_to_snooze_description">アラーム中に近接センサーの上に手を約1.5秒間かざすとスヌーズします。</string>
-    <string name="settings_repeat_missed">不在着信アラームを繰り返す</string>
-    <string name="settings_repeat_missed_description">アラームが自動消音された場合、10分以内にロック解除またはプラグを抜いたときに短時間再作動させます。</string>
+    <string name="settings_repeat_missed">未対応アラームを繰り返す</string>
+    <string name="settings_repeat_missed_description">アラームが自動消音された場合は、10分以内にロック解除またはプラグを抜いたときに短時間再作動させます。</string>
     <string name="settings_cancellation_lock">キャンセルロック</string>
     <string name="settings_cancellation_lock_description">作動直前のアラーム無効化を防止</string>
     <string name="settings_disabled">無効</string>
@@ -1026,7 +988,7 @@
     <string name="settings_long_press_threshold_description">作動画面の停止ボタンを押し続ける時間を選択します (0.5～5秒)。</string>
     <string name="settings_hold_duration_short">%1$.1f 秒</string>
     <string name="settings_firing_controls">作動時の操作</string>
-    <string name="settings_firing_controls_description">アラームの停止とスヌーズの方法。スクリーンリーダーを使用する場合は「ボタン」モードを推奨します。</string>
+    <string name="settings_firing_controls_description">停止・スヌーズの操作方法。スクリーンリーダーでは「ボタン」推奨。</string>
     <string name="settings_firing_buttons">ボタン</string>
     <string name="settings_firing_swipe">スワイプ</string>
     <string name="settings_firing_hybrid">ハイブリッド</string>
@@ -1035,7 +997,7 @@
     <string name="settings_firing_swipe_description">スワイプのみ: ジェスチャー駆動</string>
     <string name="settings_custom_typing_phrases">カスタムタイピングフレーズ</string>
     <string name="settings_custom_typing_phrases_placeholder">1行に1つのフレーズ、組み込みリストに追加されます</string>
-    <string name="settings_custom_typing_phrases_description">これらは組み込みのフレーズライブラリの後に追加されるため、タイピングチャレンジをより自分らしくすることができます。</string>
+    <string name="settings_custom_typing_phrases_description">これらは組み込みのフレーズライブラリの後に追加されるため、タイピングチャレンジをより自分らしくできます。</string>
     <string name="settings_challenge_bypass">チャレンジのアクセシビリティバイパス</string>
     <string name="settings_challenge_bypass_description">チャレンジを完了せずに、一定の遅延の後に停止することを許可します。物理的なチャレンジを実行できないユーザーを助けます。</string>
     <string name="settings_bypass_delay">バイパス遅延</string>
@@ -1057,19 +1019,17 @@
     <string name="settings_accent_mono">Mono</string>
     <string name="settings_use_accent">%1$s アクセントを使用</string>
     <string name="settings_accent_semantics">%1$s アクセントカラー</string>
-
-    <!-- Settings backup and restore -->
     <string name="settings_unexpected_error">予期しないエラー</string>
     <string name="settings_backup_inspection_failed">バックアップ内容を検査できませんでした: %1$s</string>
     <string name="settings_backup_restore">バックアップと復元</string>
-    <string name="settings_backup_restore_description">新しいデバイスへの移行や安心のために、アラームとアプリの設定のポータブルなコピーを保持します。</string>
+    <string name="settings_backup_restore_description">新しい端末への移行やバックアップ用に、アラームと設定のコピーを保存します。</string>
     <string name="settings_export">エクスポート</string>
     <string name="settings_import">インポート</string>
-    <string name="settings_plain_backup_description">プレーンバックアップには、アラームとグローバル設定が読み取り可能なJSONファイルに含まれます。機密情報や個人用リファレンスをエクスポートする前に、AlarmClockXtremeが警告を表示します。</string>
+    <string name="settings_plain_backup_description">プレーンバックアップはアラームと設定を読み取り可能なJSONで保存します。機密情報や個人用リファレンスを出力する前に警告します。</string>
     <string name="settings_import_fossify">Fossify Clock JSONをインポート</string>
-    <string name="settings_import_fossify_description">アラームを変更せずに、制限付きのFossifyエクスポートをプレビューします。確定したアラームは無効状態で追加されるため、時刻、曜日、バイブレーション、利用可能なサウンドを最初に確認できます。</string>
+    <string name="settings_import_fossify_description">アラームを変更せず、Fossifyエクスポートをプレビューします。確定したアラームは無効で追加されるので、時刻、曜日、バイブレーション、サウンドを確認できます。</string>
     <string name="settings_encrypted_backup">暗号化バックアップ</string>
-    <string name="settings_encrypted_backup_description">パスフレーズを使用して、AES-256で暗号化されたバックアップを作成します。パスフレーズは安全な場所に保管してください。アプリで復元することはできません。</string>
+    <string name="settings_encrypted_backup_description">パスフレーズでAES-256暗号化バックアップを作成します。パスフレーズは安全に保管してください。アプリでは復元できません。</string>
     <string name="settings_passphrase">パスフレーズ</string>
     <string name="settings_passphrase_required">暗号化ファイルには必須です</string>
     <string name="settings_confirm_passphrase">パスフレーズの確認</string>
@@ -1086,10 +1046,14 @@
     <string name="settings_review_fossify_alarms">Fossifyのアラームを確認</string>
     <string name="settings_fossify_preview_counts">有効なアラーム: %1$d、スキップされた無効な行: %2$d</string>
     <string name="settings_fossify_import_disabled_summary">すべてのインポートは無効になります。Fossifyで有効なもの: %1$d</string>
-    <plurals name="settings_fossify_unreadable_ringtones"><item quantity="other">このデバイスで読み取れない着信音URIが %1$d 個あります。デフォルトのアラーム音が使用されます。</item></plurals>
+    <plurals name="settings_fossify_unreadable_ringtones">
+        <item quantity="other">このデバイスで読み取れない着信音URIが %1$d 個あります。デフォルトのアラーム音が使用されます。</item>
+    </plurals>
     <string name="settings_fossify_days_suffix">" • %1$s"</string>
-    <string name="settings_fossify_alarm_summary">"%1$s  %2$s%3$s"</string>
-    <plurals name="settings_more_items"><item quantity="other">他 %1$d 項目</item></plurals>
+    <string name="settings_fossify_alarm_summary">"%1$s %2$s%3$s"</string>
+    <plurals name="settings_more_items">
+        <item quantity="other">他 %1$d 項目</item>
+    </plurals>
     <string name="settings_import_disabled">無効としてインポート</string>
     <string name="settings_review_backup">復元前にバックアップを確認</string>
     <string name="settings_review_backup_description">このバックアップをどのように復元するかを選択するまで、何も変更されません。</string>
@@ -1097,7 +1061,9 @@
     <string name="settings_unknown">不明</string>
     <string name="settings_close">閉じる</string>
     <string name="settings_backup_alarm_counts">アラーム %1$d 個、有効 %2$d 個</string>
-    <plurals name="settings_backup_invalid_rows"><item quantity="other">読み取れなかったためスキップされるアラーム行が %1$d 行あります。</item></plurals>
+    <plurals name="settings_backup_invalid_rows">
+        <item quantity="other">読み取れなかったためスキップされるアラーム行が %1$d 行あります。</item>
+    </plurals>
     <string name="settings_global_settings_restored">グローバル設定が復元されます。</string>
     <string name="settings_global_settings_missing">このバックアップにはグローバル設定が含まれていません。</string>
     <string name="settings_private_values_detected">検出された非公開の値:</string>
@@ -1106,7 +1072,7 @@
     <string name="settings_import_settings">アプリの設定も復元する</string>
     <string name="settings_keep_integrations">連携とガーディアンの連絡先を復元</string>
     <string name="settings_keep_integrations_warning">このファイルは以下をインストールします:</string>
-    <string name="settings_keep_integrations_hint">ファイルが自分自身のバックアップである場合を除き、これをオフのままにしてください。これらの値は、サーバーへのアラームイベントの送信や、あなたの代わりに電話番号へのテキスト送信または通話を行います。</string>
+    <string name="settings_keep_integrations_hint">自分のバックアップ以外ではオフにしてください。アラームイベントの送信や、代理でのSMS送信・通話に使われます。</string>
     <string name="settings_append_alarms">アラームを追加</string>
     <string name="settings_replace_alarms">アラームを置換</string>
     <string name="settings_export_time_unknown">エクスポート時刻不明</string>
@@ -1116,11 +1082,9 @@
     <string name="settings_private_values_encrypted">これらの値は暗号化ファイル内に含まれます:</string>
     <string name="settings_private_values_plain">これらの値はエクスポートされたJSONで読み取り可能です:</string>
     <string name="settings_encrypted_backup_warning">パスフレーズは非公開にしてください。ファイルとパスフレーズがあれば、誰でもこれらの値を復元できます。</string>
-    <string name="settings_plain_backup_warning">Use encrypted export when sharing or storing backups outside your own device.</string>
+    <string name="settings_plain_backup_warning">自分のデバイス外でバックアップを共有・保存する場合は、暗号化エクスポートを使用してください。</string>
     <string name="settings_export_encrypted_backup">暗号化バックアップをエクスポート</string>
     <string name="settings_export_plain_backup">プレーンバックアップをエクスポート</string>
-
-    <!-- Settings generated summaries and accessibility copy -->
     <string name="settings_incident_timing">%1$s - %2$s</string>
     <string name="settings_dashboard_weather_calendar">天気 + カレンダー</string>
     <string name="settings_dashboard_weather_only">天気のみ</string>
@@ -1130,8 +1094,12 @@
     <string name="settings_time_unknown">時刻不明</string>
     <string name="settings_no_schedule_delta">スケジュール誤差なし</string>
     <string name="settings_within_minute_schedule">スケジュールから1分以内</string>
-    <plurals name="settings_minutes_before_schedule"><item quantity="other">スケジュールの %1$d 分前</item></plurals>
-    <plurals name="settings_minutes_after_schedule_plural"><item quantity="other">スケジュールの %1$d 分後</item></plurals>
+    <plurals name="settings_minutes_before_schedule">
+        <item quantity="other">スケジュールの %1$d 分前</item>
+    </plurals>
+    <plurals name="settings_minutes_after_schedule_plural">
+        <item quantity="other">スケジュールの %1$d 分後</item>
+    </plurals>
     <string name="settings_readiness_exact_alarms">正確なアラーム</string>
     <string name="settings_readiness_notifications">通知</string>
     <string name="settings_readiness_fullscreen_alarm">フルスクリーンアラームアクセス</string>
@@ -1141,7 +1109,7 @@
     <string name="settings_readiness_fullscreen">フルスクリーンアクセス</string>
     <string name="settings_readiness_lan">LANアクセス</string>
     <string name="settings_readiness_standby">スタンバイ</string>
-    <string name="settings_readiness_ready">正確なアラーム、アラート、%1$s の準備ができました</string>
+    <string name="settings_readiness_ready">正確なアラームと%1$sの準備ができました</string>
     <string name="settings_readiness_review">%1$s を確認</string>
     <string name="settings_recently">最近</string>
     <string name="settings_last_delivery">最終配信 %1$s: %2$s</string>
@@ -1159,16 +1127,14 @@
     <string name="alarm_edit_pm">午後</string>
     <string name="alarm_edit_clear_short">クリア</string>
     <string name="alarm_edit_delete_digit">数字を削除</string>
-
-    <!-- Onboarding -->
-
-    <!-- Bedtime jet-lag planner -->
     <string name="bedtime_jetlag_title">時差ぼけプランナー</string>
     <string name="bedtime_jetlag_aligned_description">目標の起床時間はすでにリンクされた起床時間と一致しています。光の合図を一定に保ってください。</string>
     <string name="bedtime_jetlag_shift_description">起床時間と就寝時間を徐々にずらし、明るい光と薄暗い光のウィンドウをタイミングの合図として使用します。</string>
     <string name="bedtime_jetlag_current_chip">現在 %1$s</string>
     <string name="bedtime_jetlag_target_chip">目標 %1$s</string>
-    <plurals name="bedtime_jetlag_days"><item quantity="other">%1$d 日間</item></plurals>
+    <plurals name="bedtime_jetlag_days">
+        <item quantity="other">%1$d 日間</item>
+    </plurals>
     <string name="bedtime_jetlag_current_title">現在</string>
     <string name="bedtime_jetlag_target_title">目標</string>
     <string name="bedtime_jetlag_daily_move_title">1日の移動量</string>
@@ -1196,34 +1162,28 @@
     <string name="bedtime_picker_keep_current">現在を維持</string>
     <string name="bedtime_jetlag_travel_target">旅行の目標</string>
     <string name="bedtime_jetlag_choose_target_wake">目標の起床時間を選択</string>
-
-    <!-- Fossify import feedback -->
-    <plurals name="settings_fossify_import_success"><item quantity="other">%1$d 個の Fossify アラームを、確認のために無効状態でインポートしました。</item></plurals>
+    <plurals name="settings_fossify_import_success">
+        <item quantity="other">%1$d 個の Fossify アラームを、確認のために無効状態でインポートしました。</item>
+    </plurals>
     <string name="settings_fossify_preview_not_export">このファイルをプレビューできませんでした。Fossify Clock のエクスポートではないようです。Fossify Clock でエクスポートされた JSON ファイルを選択してください。</string>
-    <string name="settings_fossify_preview_unreadable">このファイルをプレビューできませんでした。このデバイスで引き続きアクセス可能であることを確認して、もう一度お試しください。</string>
+    <string name="settings_fossify_preview_unreadable">このファイルをプレビューできませんでした。このデバイスで引き続きアクセス可能であることを確認して、再試行してください。</string>
     <string name="settings_fossify_import_failed_not_export">Fossify アラームをインポートできませんでした。ファイルが Fossify Clock のエクスポートではないようです。</string>
-    <string name="settings_fossify_import_failed_unreadable">Fossify アラームをインポートできませんでした。ファイルが引き続きアクセス可能であることを確認して、もう一度お試しください。</string>
+    <string name="settings_fossify_import_failed_unreadable">Fossify アラームをインポートできませんでした。ファイルが引き続きアクセス可能であることを確認して、再試行してください。</string>
     <string name="settings_fossify_import_failed_changed">Fossify アラームをインポートできませんでした。プレビュー後にファイルが変更されたため、もう一度選択して再チェックしてください。</string>
     <string name="settings_fossify_import_failed_no_alarms">Fossify アラームをインポートできませんでした。ファイルに有効なアラームがありません。</string>
-    <string name="settings_fossify_import_failed_generic">Fossify アラームをインポートできませんでした。ファイルを確認してもう一度お試しください。</string>
-
-    <!-- Backup status copy -->
-    <plurals name="settings_backup_alarm_count"><item quantity="other">%1$d 個のアラーム</item></plurals>
-
-    <!-- Webhook delivery log -->
+    <string name="settings_fossify_import_failed_generic">Fossify アラームをインポートできませんでした。ファイルを確認して再試行してください。</string>
+    <plurals name="settings_backup_alarm_count">
+        <item quantity="other">%1$d 個のアラーム</item>
+    </plurals>
     <string name="settings_webhook_log_empty">配信はまだありません。次のアラームまたはテストの後にイベントがここに表示されます。</string>
-
-    <!-- Alarm editor save errors -->
     <string name="alarm_edit_save_error_missing_refs">最初にチャレンジのセットアップを完了してください: %1$s が不足しています。</string>
     <string name="alarm_edit_save_error_location">現在の場所を保存してから位置情報による停止を有効にしてください。</string>
-    <string name="alarm_edit_save_error_generic">このアラームを保存できませんでした。詳細を確認してもう一度お試しください。</string>
+    <string name="alarm_edit_save_error_generic">このアラームを保存できませんでした。詳細を確認して再試行してください。</string>
     <string name="alarm_edit_challenge_ref_nfc">NFCタグ</string>
     <string name="alarm_edit_challenge_ref_barcode">バーコード値</string>
     <string name="alarm_edit_challenge_ref_photo">参照写真</string>
     <string name="alarm_edit_challenge_ref_wifi">Wi-Fiネットワーク名</string>
     <string name="alarm_edit_challenge_ref_generic">チャレンジの詳細</string>
-
-    <!-- Notification channel names and descriptions (visible in system settings) -->
     <string name="notif_channel_alarm_desc">アラーム通知</string>
     <string name="notif_channel_upcoming_desc">今後のアラーム情報を表示</string>
     <string name="notif_channel_missed_desc">自動消音されたアラームの通知</string>
@@ -1234,7 +1194,6 @@
     <string name="notif_channel_bedtime_countdown_desc">就寝時刻リマインダーの1時間前のファイナルカウントダウンを表示</string>
     <string name="notif_channel_snooze_countdown">スヌーズカウントダウン</string>
     <string name="notif_channel_snooze_countdown_desc">スヌーズされたアラームが再び鳴るまでの時間を表示</string>
-    <!-- Alarms screen -->
     <string name="alarm_list_stats_window">過去30日間</string>
     <string name="alarm_list_stats_empty">このアラームは過去30日間にまだ作動していません。</string>
     <string name="alarm_list_stats_avg_snoozes">1作動あたり平均 %1$s 回のスヌーズ</string>
@@ -1251,7 +1210,7 @@
     <string name="alarm_list_duplicate_time_title">鳴動時刻の重複</string>
     <string name="alarm_list_duplicate_time_message">%1$s に設定された有効なアラームが複数あります。意図的でない場合は確認してください。</string>
     <string name="alarm_list_templates">テンプレート</string>
-    <string name="alarm_list_browse_templates">テンプレートをブラウズ</string>
+    <string name="alarm_list_browse_templates">テンプレートを表示</string>
     <string name="alarm_list_detail_empty_title">アラームを選択</string>
     <string name="alarm_list_detail_empty_description">リストからアラームを選択して、次の鳴動時刻とアクションを確認してください。</string>
     <string name="alarm_list_paused_by_vacation">休暇により一時停止中</string>
@@ -1273,7 +1232,6 @@
     <string name="alarm_list_pause">一時停止</string>
     <string name="alarm_list_alarm_sounds">アラーム音</string>
     <string name="alarm_list_youtube_downloads">YouTubeダウンロード</string>
-    <!-- Today tab -->
     <string name="dashboard_retry">再試行</string>
     <string name="dashboard_retry_weather">天気を再試行</string>
     <string name="dashboard_next_few_hours">今後数時間</string>
@@ -1289,7 +1247,7 @@
     <string name="dashboard_today">今日</string>
     <string name="dashboard_tornado_warning">竜巻警告</string>
     <string name="dashboard_loading_current_weather">現在の天気を読み込み中</string>
-    <string name="dashboard_showing_saved_forecast">保存された予報を表示中</string>
+    <string name="dashboard_showing_saved_forecast">保存済みの予報を表示中</string>
     <string name="dashboard_change_weather_location">天気の場所を変更</string>
     <string name="dashboard_high">最高</string>
     <string name="dashboard_low">最低</string>
@@ -1311,7 +1269,6 @@
     <string name="dashboard_type_at_least_two_characters">場所を見つけるために少なくとも2文字入力するか、現在のデバイスの位置情報を使用してください。</string>
     <string name="dashboard_no_matching_places">一致する場所はありません</string>
     <string name="dashboard_try_broader_city_name_postal">より広い都市名、郵便番号、または近くの地域を試してください。</string>
-    <!-- Dismiss challenge screens -->
     <string name="challenge_choose_correct_answer_unlock_dismiss">停止を解除するには正しい答えを選択してください。</string>
     <string name="challenge_strong_shake_helps_break_sleepy">強く振ることで、アラームが解除される前に寝ぼけたオートパイロット状態を打破するのに役立ちます。</string>
     <string name="challenge_type_same_words_punctuation_letter">同じ単語と句読点を入力してください。大文字と小文字は区別されません。</string>
@@ -1326,11 +1283,11 @@
     <string name="challenge_check_typed_word">入力ワードを確認</string>
     <string name="challenge_walking_few_steps_helps_make">数歩歩くことで、本当に起きていることを確認するのに役立ちます。</string>
     <string name="challenge_continue_without_step_count">歩数カウントなしで続行</string>
-    <string name="challenge_tap_saved_tag_against_back">このステップをクリアするには、保存されたタグをスマホの背面にタップしてください。</string>
-    <string name="challenge_enter_saved_barcode_qr_payload">停止を解除するには、保存されたバーコードまたはQRのペイロードを入力してください。</string>
-    <string name="challenge_continue_without_saved_code">保存されたコードなしで続行</string>
+    <string name="challenge_tap_saved_tag_against_back">このステップをクリアするには、保存済みのタグをスマホの背面にタップしてください。</string>
+    <string name="challenge_enter_saved_barcode_qr_payload">停止を解除するには、保存済みのバーコードまたはQRのペイロードを入力してください。</string>
+    <string name="challenge_continue_without_saved_code">保存済みのコードなしで続行</string>
     <string name="challenge_submit_code">コードを送信</string>
-    <string name="challenge_take_fresh_photo_saved_location">そこにたどり着いたことを証明するために、保存された場所または角度から新しい写真を撮影してください。</string>
+    <string name="challenge_take_fresh_photo_saved_location">そこにたどり着いたことを証明するため、保存済みの場所または角度から新しい写真を撮影してください。</string>
     <string name="challenge_short_movement_burst_makes_harder">短い運動のバーストにより、ベッドに戻るのが難しくなります。</string>
     <string name="challenge_place_phone_face_down_floor">スマホを床に下向きに置き、その上で腕立て伏せをしてください。</string>
     <string name="challenge_hold_phone_level_face_down">プランクの姿勢でスマホを水平かつ下向きに保ってください。</string>
@@ -1367,14 +1324,13 @@
     <string name="challenge_wi_fi">Wi-Fi</string>
     <string name="challenge_no_network_specified_yet_any">ネットワークがまだ指定されていません。今はどのWi-Fi接続でも機能します。</string>
     <string name="challenge_watch_sequence_then_tap_back">シーケンスを見て、同じ順序でタップして戻してください。1回間違えるとラウンドが最初からやり直しになります。</string>
-    <string name="challenge_too_slow_too_many_word">遅すぎるか、単語エラーが多すぎます。ペースをリセットしてもう一度お試しください。</string>
+    <string name="challenge_too_slow_too_many_word">遅すぎるか、単語エラーが多すぎます。ペースを整えて再試行してください。</string>
     <string name="challenge_original">オリジナル</string>
     <string name="challenge_changed">変更後</string>
     <string name="challenge_tile_matches_look_single_color">そのタイルは一致しています。単一の色が入れ替わった場所を探してください。</string>
     <string name="challenge_not_mate_yet_find_move">まだ詰んでいません。詰みの手を見つけてください。</string>
     <string name="challenge_rapid_reading">速読</string>
     <string name="challenge_word_was_not_stream_pick">その単語はこのストリームにはありませんでした。見た記憶のある単語を選択してください。</string>
-    <!-- Stats screen -->
     <string name="stats_clear_alarm_history">アラーム履歴をクリアしますか？</string>
     <string name="stats_removes_recorded_alarm_outcomes_resets">これにより、記録されたアラームの結果が削除され、この画面に表示される統計がリセットされます。実際のアラームは削除されません。</string>
     <string name="stats_search_label_challenge_action_day">ラベル、チャレンジ、アクション、または曜日を検索</string>
@@ -1393,7 +1349,7 @@
     <string name="stats_where_alarms_cluster_most_often">アラームが最も頻繁に集中する場所。</string>
     <string name="stats_alarms_by_day">日別のアラーム</string>
     <string name="stats_quick_visual_read_which_days">どの日が最もアラーム負荷が高いかを視覚的に素早く把握。</string>
-    <string name="stats_recent_history">最近の履歴</string>
+    <string name="stats_recent_history">直近の履歴</string>
     <string name="stats_last_few_alarm_outcomes_useful">パターンの特定に役立つ、直近数回のアラーム結果。</string>
     <string name="stats_no_alarm_history_yet">アラーム履歴はまだありません</string>
     <string name="stats_dismissed_snoozed_skipped_missed_alarms">停止、スヌーズ、スキップ、ミスされたアラームは、アプリが学習できる内容が蓄積されるとここに表示されます。</string>
@@ -1407,15 +1363,14 @@
     <string name="stats_next_streak_badge">次のストリークバッジ</string>
     <string name="stats_sleep_context">睡眠の文脈</string>
     <string name="stats_wake_consistency">起床の一貫性</string>
-    <string name="stats_how_steady_wake_up_times">最近の停止履歴からデバイス上で計算された、起床時間の安定性。</string>
-    <string name="stats_dismiss_few_more_alarms_see">起床時間がどの程度一貫しているかを確認するために、あと数回アラームを停止してください。</string>
+    <string name="stats_how_steady_wake_up_times">直近の停止履歴からデバイス上で計算された、起床時間の安定性。</string>
+    <string name="stats_dismiss_few_more_alarms_see">起床時間がどの程度一貫しているかを確認するため、あと数回アラームを停止してください。</string>
     <string name="stats_sleep_wake_patterns">睡眠と起床のパターン</string>
     <string name="stats_no_sleep_wake_trend_yet">睡眠または起床のトレンドはまだありません</string>
     <string name="stats_alarm_history_optional_health_connect">アラーム履歴と（オプションの）Health Connect睡眠セッションにより、このビューがローカルで構築されます。</string>
     <string name="stats_sleep_motion_buckets">睡眠時の動きバケット</string>
     <string name="stats_no_sleep_motion_sessions_yet">睡眠時の動きのセッションはまだありません</string>
     <string name="stats_enable_smart_alarm_window_start">スマートアラームウィンドウを有効にするか、就寝時刻からSonarを開始して、コンパクトなローカル概要を収集してください。</string>
-    <!-- Bedtime screen -->
     <string name="bedtime_grant_dnd_access">DNDアクセスを許可</string>
     <string name="bedtime_save_bedtime">就寝時刻を保存</string>
     <string name="bedtime_choose_bedtime">就寝時刻を選択</string>
@@ -1444,7 +1399,6 @@
     <string name="bedtime_waiting_next_alarm">次のアラームを待機中</string>
     <string name="bedtime_once_alarm_set_bedtime_will">アラームが設定されると、就寝時刻によってより簡単なサイクルに沿った睡眠時間が提案されます。</string>
     <string name="bedtime_wind_down_target">リラックス目標</string>
-    <!-- Onboarding -->
     <string name="onboarding_set_up_later">後でセットアップ</string>
     <string name="onboarding_reliable_wake_ups">信頼できる起床</string>
     <string name="onboarding_alarmclockxtreme_built_stay_dependable_even">AlarmClockXtremeは、Androidがバックグラウンドで電力を節約しようとしているときでも、信頼性を維持するように構築されています。</string>
@@ -1452,18 +1406,17 @@
     <string name="onboarding_challenge_based_dismiss_flows_help">チャレンジベースの停止フローは、アラームが止まる前に本当に起きていることを確認するのに役立ちます。</string>
     <string name="onboarding_start_day_informed">情報を得て一日を始める</string>
     <string name="onboarding_see_weather_calendar_next_alarm">天気、カレンダー、次のアラームを1か所で確認できるため、一目見たときから朝がより穏やかに感じられます。</string>
-    <string name="onboarding_private_by_default">デフォルトでプライベート</string>
+    <string name="onboarding_private_by_default">デフォルトプライベート</string>
     <string name="onboarding_no_ads_no_tracking_no">広告なし。トラッキングなし。アカウントなし。</string>
     <string name="onboarding_welcome">ようこそ</string>
-    <string name="onboarding_dependable_mornings_less_friction">摩擦の少ない信頼できる朝</string>
+    <string name="onboarding_dependable_mornings_less_friction">手間の少ない、信頼できる朝</string>
     <string name="onboarding_recommended_setup">推奨セットアップ</string>
     <string name="onboarding_test_alarm">テストアラーム</string>
-    <!-- Stopwatch -->
     <string name="stopwatch_close_stopwatch">ストップウォッチを閉じる</string>
-    <string name="stopwatch_current_run">現在の走行</string>
+    <string name="stopwatch_current_run">現在の計測</string>
     <string name="stopwatch_high_contrast_display_built_quick">素早く確認できるように構築された高コントラスト表示。</string>
     <string name="stopwatch_no_laps_recorded_yet">ラップはまだ記録されていません</string>
-    <string name="stopwatch_tap_lap_while_stopwatch_running">ストップウォッチの実行中に「ラップ」をタップして、スプリットタイムをキャプチャし、ペースを比較します。</string>
+    <string name="stopwatch_tap_lap_while_stopwatch_running">ストップウォッチの実行中に「ラップ」をタップして、スプリットタイムを記録し、ペースを比較します。</string>
     <string name="stopwatch_lap_history">ラップ履歴</string>
     <string name="stopwatch_best_slowest_splits_are_highlighted">最高と最低のスプリットが自動的にハイライトされます。</string>
     <string name="stopwatch_start_stopwatch">ストップウォッチを開始</string>
@@ -1472,7 +1425,6 @@
     <string name="stopwatch_resume">再開</string>
     <string name="stopwatch_split_time">スプリットタイム</string>
     <string name="stopwatch_total">合計</string>
-    <!-- World clock -->
     <string name="world_add_city">都市を追加</string>
     <string name="world_remove_city">都市を削除</string>
     <string name="world_keep_city">都市を保持</string>
@@ -1482,12 +1434,10 @@
     <string name="world_world_clock">世界時計</string>
     <string name="world_no_world_clocks_yet">世界時計はまだありません</string>
     <string name="world_add_cities_check_most_often">最も頻繁にチェックする都市を追加して、ワンタップで確認できるようにします。</string>
-    <!-- Timer screen -->
     <string name="timer_screen_clear_entry">入力をクリア</string>
     <string name="timer_screen_active_timers">実行中のタイマー</string>
     <string name="timer_screen_timer_finished">timer-finished</string>
     <string name="timer_screen_timer_progress">timer-progress</string>
-    <!-- YouTube sound download -->
     <string name="youtube_download_alarm_sound">アラーム音をダウンロード</string>
     <string name="youtube_search_youtube">YouTubeを検索</string>
     <string name="youtube_paste_url">URLを貼り付け</string>
@@ -1506,9 +1456,7 @@
     <string name="youtube_try_shorter_phrase_different_sound">より短いフレーズや別のサウンド名を試すか、代わりに直接URLを貼り付けてください。</string>
     <string name="youtube_loading_preview_tap_cancel">プレビューを読み込み中、タップしてキャンセル</string>
     <string name="youtube_download_progress">download-progress</string>
-
     <string name="youtube_take_10_60_seconds_depending">クリップの内容と接続状況によりますが、10〜60秒ほどかかる場合があります。</string>
-    <!-- Ringtone picker -->
     <string name="ringtone_folder">フォルダから</string>
     <string name="ringtone_youtube">YouTubeから</string>
     <string name="ringtone_search_alarm_sounds">アラーム音を検索</string>
@@ -1523,7 +1471,6 @@
     <string name="ringtone_recommended">おすすめ</string>
     <string name="ringtone_quiet_mode">静音モード</string>
     <string name="ringtone_current_alarm_sound">現在のアラーム音</string>
-    <!-- Shared alarm import -->
     <string name="share_import_discard">破棄</string>
     <string name="share_import_saving">保存中</string>
     <string name="share_import_save_without_enabling">有効にせずに保存</string>
@@ -1539,21 +1486,18 @@
     <string name="share_import_sanitizing_keeps_wake_time_repeat">サニタイズにより起床時刻と繰り返しのパターンは維持されますが、デバイス、場所、人物、メディア、またはチャレンジの秘密を特定できる値は削除されます。</string>
     <string name="share_import_import_could_not_saved">インポートを保存できませんでした</string>
     <string name="share_import_strip_private_references">非公開のリファレンスを除去</string>
-    <!-- News tab -->
     <string name="news_news">ニュース</string>
     <string name="news_refresh_feed">フィードを更新</string>
-    <string name="news_showing_saved_headlines">保存された見出しを表示中</string>
+    <string name="news_showing_saved_headlines">保存済みの見出しを表示中</string>
     <string name="news_couldn_t_load_feed">フィードを読み込めませんでした</string>
     <string name="news_no_headlines_yet">まだ見出しはありません</string>
     <string name="news_pick_feed_chips_above">上のチップからフィードを選択してください。</string>
     <string name="news_couldn_t_refresh">更新できませんでした</string>
     <string name="news_open_article">記事を開く</string>
-    <!-- Night clock -->
     <string name="night_clock_nightambient">nightAmbient</string>
     <string name="night_clock_exit_night_clock">夜間時計を終了</string>
     <string name="night_clock_bedside_mode">ベッドサイドモード</string>
     <string name="night_clock_long_press_anywhere_exit">どこかを長押しして終了</string>
-    <!-- Morning briefing -->
     <string name="briefing_good_morning">おはようございます</string>
     <string name="briefing_re_clear_alarm_here_s">アラームが解除されました。一日の始まりに役立つ情報です。</string>
     <string name="briefing_morning_briefing">モーニングブリーフィング</string>
@@ -1561,56 +1505,44 @@
     <string name="briefing_nothing_urgent_queued_right_now">現在、急ぎの予定はありません。穏やかな一日の始まりをお楽しみください。</string>
     <string name="briefing_short_checklist_get_momentum_without">決断疲れを避けて勢いをつけるための短いチェックリスト。</string>
     <string name="briefing_close_briefing">ブリーフィングを閉じる</string>
-    <!-- Permission prompts -->
     <string name="permission_notifications">通知</string>
-    <string name="permission_show_active_alarms_timer_finish">アクティブなアラーム、タイマー終了アラート、起床リマインダーを表示します。</string>
+    <string name="permission_show_active_alarms_timer_finish">アクティブなアラーム、タイマー終了通知、起床リマインダーを表示します。</string>
     <string name="permission_calendar">カレンダー</string>
     <string name="permission_bring_today_s_events_into">今日のイベントをダッシュボードとモーニングブリーフィングに取り込みます。</string>
     <string name="permission_location">位置情報</string>
     <string name="permission_show_local_weather_without_asking">毎回都市を設定しなくてもローカルな天気を表示します。</string>
     <string name="permission_android_will_still_ask_confirm">Androidは引き続き各リクエストの確認を求めます。これらは後でシステム設定で変更できます。</string>
     <string name="permission_missing">不足</string>
-    <!-- Bedtime sleep tracking -->
     <string name="bedtime_tracking_pre_sleep_factors">就寝前の要因</string>
     <string name="bedtime_tracking_local_chart_appears_after_tagged">Sonarやスマートウェイクの概要とタグ付けされた夜が重なると、ローカルチャートが表示されます。</string>
     <string name="bedtime_tracking_sonar_sleep_tracking">Sonar睡眠トラッキング</string>
     <string name="bedtime_tracking_no_audio_saved">音声は保存されていません</string>
     <string name="bedtime_tracking_health_connect_sleep">Health Connectの睡眠データ</string>
-    <!-- Bedtime sleep sounds -->
     <string name="bedtime_sounds_stop_sound">音を停止</string>
     <string name="bedtime_sounds_sleep_sounds">睡眠サウンド</string>
     <string name="bedtime_sounds_continuous_procedural_soundscapes_no_looping">ループによる不自然な繋ぎ目のない、連続的な手続き型サウンドスケープ。</string>
     <string name="bedtime_sounds_fade_out_after">フェードアウトまでの時間</string>
     <string name="bedtime_sounds_final_taper_length">最終テーパー長</string>
-    <!-- What is new dialog -->
     <string name="whats_new_continue">続行</string>
     <string name="whats_new_what_s_next">次は何？</string>
     <string name="whats_new_what_s_new">新機能</string>
     <string name="whats_new_quick_tour_biggest_additions_release">このリリースの最大の追加機能のクイックツアー。</string>
-    <!-- Weather radar card -->
     <string name="radar_radar_fade">レーダーフェードイン</string>
     <string name="radar_radar_skeleton_fade">レーダースケルトンフェード</string>
     <string name="radar_open_windy">Windyで開く</string>
-    <!-- Alarm swipe actions -->
     <string name="swipe_swipe_bg">スワイプ背景</string>
     <string name="swipe_undo_available_right_after_removal">削除直後に元に戻すことができます</string>
-    <!-- Template picker -->
     <string name="template_quick_start_templates">クイックスタートテンプレート</string>
     <string name="template_start_thoughtful_preset_common_routines">一般的なルーティンのための考え抜かれたプリセットから始めて、後で詳細を微調整してください。</string>
     <string name="template_creates_draft_alarm">下書きアラームを作成</string>
     <string name="template_fully_editable">完全に編集可能</string>
-    <!-- Breathing exercise -->
     <string name="breathing_guided_breathing">ガイド付き呼吸</string>
-    <!-- Wind-down checklist -->
     <string name="wind_down_reset_checklist">チェックリストをリセット</string>
     <string name="wind_down_wind_down_checklist">リラックスチェックリスト</string>
     <string name="wind_down_tick_each_step_as_settle">夜の準備を整えながら、各ステップにチェックを入れます。</string>
-    <!-- Chronotype -->
     <string name="chronotype_chronotype_estimate">クロノタイプの推定</string>
-    <!-- Wake confirmation -->
     <string name="wake_confirm_ui_time_s_up_alarm_ringing">時間です。アラームが再び鳴っています。</string>
     <string name="wake_confirm_ui_quick_second_check_alarms_need">さらなる責任が必要なアラームのための、素早い2回目のチェック。</string>
-    <!-- Templated challenge and stats text -->
     <string name="challenge_answer_choice">答え: %1$s</string>
     <string name="challenge_heard_transcript">聞き取り: %1$s</string>
     <string name="challenge_drawing_pad_for">%1$s 用の手書きパッド</string>
@@ -1623,7 +1555,6 @@
     <string name="challenge_wordle_reveal">単語は %1$s でした。新しい単語が来ます…</string>
     <string name="challenge_pvt_trial">試行 %1$d / %2$d</string>
     <string name="challenge_pvt_average">平均: %1$d ms</string>
-
     <string name="stats_streak_next">次の %1$s</string>
     <string name="stats_sleep_last">昨夜の %1$s</string>
     <string name="stats_sleep_deep">深い %1$s</string>
@@ -1631,12 +1562,11 @@
     <string name="stats_sleep_average">睡眠平均 %1$s</string>
     <string name="stats_sleep_score">睡眠スコア %1$s</string>
     <string name="stats_sleep_debt">睡眠負債 %1$s</string>
-    <!-- Templated text across the secondary screens -->
-    <string name="wake_confirm_keep_protection">この画面を閉じても起床チェック保護は有効なままです。確認しない場合、アラームはあと %1$d 回まで鳴ることがあります。</string>
+    <string name="wake_confirm_keep_protection">この画面を閉じても起床チェック保護は有効なままです。確認しない場合は、アラームはあと %1$d 回まで鳴ることがあります。</string>
     <string name="breathing_cycle_progress">サイクル %1$d/%2$d</string>
     <string name="bedtime_dnd_sync_error">「応答不可」同期に注意が必要です: %1$s</string>
     <string name="bedtime_battery_warning">バッテリー残量 %1$d%%。次のアラームが失敗しないよう、寝る前に充電器に繋いでください。</string>
-    <string name="bedtime_aim_for_bedtime">次のアラームの前に %2$s を確保するために、%1$s の就寝を目指してください。</string>
+    <string name="bedtime_aim_for_bedtime">次のアラームの前に %2$s を確保するため、%1$s の就寝を目指してください。</string>
     <string name="bedtime_last_session">前回のセッション: %1$s</string>
     <string name="app_dismiss">停止</string>
     <string name="weather_tornado_warning">竜巻警告</string>
@@ -1645,20 +1575,17 @@
     <string name="onboarding_step_of">ステップ %1$d / %2$d</string>
     <string name="stopwatch_lap_number">ラップ %1$d</string>
     <string name="world_remove_city_title">%1$s を削除しますか？</string>
-    <string name="world_remove_city_message">これにより、%1$s の保存された世界時計が削除されます。後で再び追加できます。</string>
-    <!-- Onboarding test alarm -->
-    <string name="test_alarm_alarmclockxtreme_wake_device_dismiss_test">AlarmClockXtremeはこのデバイスをスリープ解除できます。セットアップを完了するためにテストを停止してください。</string>
-    <string name="test_alarm_device_launch_alarm_screen_play">デバイスはアラーム画面の起動、音声再生、バイブレーションが可能です。これにより、保存されたアラームが作成または変更されることはありません。</string>
+    <string name="world_remove_city_message">%1$s の世界時計を削除します。後で再追加できます。</string>
+    <string name="test_alarm_alarmclockxtreme_wake_device_dismiss_test">AlarmClockXtremeはこのデバイスをスリープ解除できます。セットアップを完了するためテストを停止してください。</string>
+    <string name="test_alarm_device_launch_alarm_screen_play">デバイスはアラーム画面の起動、音声再生、バイブレーションが可能です。これにより、保存済みのアラームが作成または変更されることはありません。</string>
     <string name="test_alarm_dismiss_test_alarm">テストアラームを停止</string>
-    <string name="test_alarm_if_did_not_hear_feel">このテストが聞こえなかったり感じられなかったりした場合は、宿泊のアラームを信頼する前に、音量、応答不可、バッテリーの設定を確認してください。</string>
-    <!-- Remaining templated text -->
+    <string name="test_alarm_if_did_not_hear_feel">このテストが聞こえなかったり感じられなかったりした場合は、実際のアラームに頼る前に、音量、応答不可、バッテリーの設定を確認してください。</string>
     <string name="youtube_search_hint">「雄鶏の鳴き声」「ピアノのベル」「森の鳥」などを試してください。まずプレビューして、自分に合った結果を保存してください。</string>
     <string name="ringtone_nothing_matches">「%1$s」に一致するものはありません。より短い単語や別の単語を試してください。</string>
     <string name="stats_response_avg">平均応答 %1$s</string>
     <string name="world_add_city_action">%1$s, %2$s, %3$s を追加</string>
-    <string name="firing_challenge_reference_missing">このアラームには照合するための保存されたタグ、コード、写真、またはネットワークがありません。代わりに計算問題を表示します。アラームを編集して設定してください。</string>
-    <string name="settings_hue_ip_not_local">192.168.1.42 や philips-hue.local のように、ブリッジのローカルアドレスを入力してください。ブリッジの証明書を確認できないため、パブリックホスト名は拒否されます。</string>
-    <!-- Accessibility and per-screen labels that were reusing another screen’s string -->
+    <string name="firing_challenge_reference_missing">照合用の保存済みタグ、コード、写真、ネットワークがありません。代わりに計算問題を表示します。アラームを編集して設定してください。</string>
+    <string name="settings_hue_ip_not_local">192.168.1.42 や philips-hue.local など、ブリッジのローカルアドレスを入力してください。証明書を確認できないため、パブリックホスト名は拒否されます。</string>
     <string name="world_remove_city_action">%1$s を削除</string>
     <string name="challenge_rps_cpu">%1$d CPU</string>
     <string name="challenge_rps_you_won">このラウンドの勝ちです！</string>
@@ -1680,7 +1607,7 @@
         <item quantity="other">%1$d 日間の起床ストリーク</item>
     </plurals>
     <string name="news_custom_feed">カスタムフィード</string>
-    <string name="news_pick_a_different_source_or_try">別のソースを選択するか、もう一度お試しください。</string>
+    <string name="news_pick_a_different_source_or_try">別のソースを選択するか、再試行してください。</string>
     <string name="permissions_recommended_permissions">推奨される権限</string>
     <string name="permissions_context_permissions">コンテキスト権限</string>
     <string name="permissions_of_ready">%1$s / %2$s 準備完了</string>
@@ -1725,7 +1652,7 @@
     <string name="onboarding_test_alarm_completed">テストアラーム完了</string>
     <string name="onboarding_test_alarm_unavailable">テストアラーム利用不可</string>
     <string name="onboarding_finish_setup">セットアップを完了</string>
-    <string name="onboarding_enable_alarm_alerts">アラームアラートを有効にする</string>
+    <string name="onboarding_enable_alarm_alerts">アラーム通知を有効にする</string>
     <string name="onboarding_finish_without_more_changes">これ以上の変更なしで完了</string>
     <string name="onboarding_skip_permissions">権限をスキップ</string>
     <string name="ringtone_download_needs_attention">ダウンロードに注意が必要です</string>
@@ -1793,10 +1720,10 @@
     <string name="bedtime_tap_to_preview">タップしてプレビュー</string>
     <string name="bedtime_tag_the_signals_that_may_shape">%1$s: 明日の起床時の負担を左右する可能性のある要因にタグを付けます。</string>
     <string name="bedtime_no_sleep_data">睡眠データなし</string>
-    <string name="bedtime_update_health_connect_before_recent_sleep">最近の睡眠セッションを表示するには、Health Connectを更新してください。</string>
-    <string name="bedtime_grant_read_sleep_in_settings_to">最近のセッションを就寝計画に取り入れるには、設定で READ_SLEEP を許可してください。</string>
-    <string name="bedtime_recent_sessions_stay_local_and_help">最近のセッションはローカルに保存され、目標と実際の睡眠を比較するのに役立ちます。</string>
-    <string name="bedtime_read_sleep_is_granted_but_no">READ_SLEEP は許可されていますが、過去14日間に最近の睡眠セッションは見つかりませんでした。</string>
+    <string name="bedtime_update_health_connect_before_recent_sleep">直近の睡眠セッションを表示するには、Health Connectを更新してください。</string>
+    <string name="bedtime_grant_read_sleep_in_settings_to">直近のセッションを就寝計画に取り入れるには、設定で READ_SLEEP を許可してください。</string>
+    <string name="bedtime_recent_sessions_stay_local_and_help">直近のセッションはローカルに保存され、目標と実際の睡眠を比較するのに役立ちます。</string>
+    <string name="bedtime_read_sleep_is_granted_but_no">READ_SLEEP は許可されていますが、過去14日間に直近の睡眠セッションは見つかりませんでした。</string>
     <string name="bedtime_read_sleep_granted">READ_SLEEP 許可済み</string>
     <string name="bedtime_sessions">%1$s セッション</string>
     <string name="bedtime_best_match">ベストマッチ</string>
@@ -1860,14 +1787,14 @@
     <string name="stats_your_alarm_habits_will_start_to">履歴が蓄積されると、アラームの習慣が表示され始めます。</string>
     <string name="stats_track_consistency_snooze_behavior_and_which">一貫性、スヌーズの挙動、そしてどの朝が対処しやすいかを追跡します。</string>
     <string name="stats_this_week">今週の %1$s</string>
-    <string name="stats_recent_events">最近のイベント %1$s 件</string>
+    <string name="stats_recent_events">直近のイベント %1$s 件</string>
     <string name="stats_no_data">データなし</string>
     <string name="stats_alarm_history_will_fill_this_in">アラーム履歴によってここが埋められます。</string>
     <string name="stats_need_more_dismiss_history_for_day">日別の応答トレンドを表示するには、より多くの停止履歴が必要です。</string>
     <string name="stats_update_health_connect_before_sleep_sessions">睡眠セッションを含めるには、Health Connectを更新してください。</string>
-    <string name="stats_grant_sleep_data_access_in_settings">起床時の挙動を最近の睡眠と比較するには、設定で睡眠データへのアクセスを許可してください。</string>
-    <string name="stats_recent_health_connect_sessions_stay_local">最近のHealth Connectセッションはローカルに保持され、アラーム履歴の横に表示されます。</string>
-    <string name="stats_sleep_data_access_is_granted_but">睡眠データへのアクセスは許可されていますが、最近の睡眠セッションは見つかりませんでした。</string>
+    <string name="stats_grant_sleep_data_access_in_settings">起床時の挙動を直近の睡眠と比較するには、設定で睡眠データへのアクセスを許可してください。</string>
+    <string name="stats_recent_health_connect_sessions_stay_local">直近のHealth Connectセッションはローカルに保持され、アラーム履歴の横に表示されます。</string>
+    <string name="stats_sleep_data_access_is_granted_but">睡眠データへのアクセスは許可されていますが、直近の睡眠セッションは見つかりませんでした。</string>
     <string name="stats_retries">再試行 %1$s 回</string>
     <string name="stats_sonar_session">Sonarセッション</string>
     <string name="stats_fired_early">早めに作動</string>
@@ -1903,8 +1830,8 @@
     <string name="bedtime_not_set">未設定</string>
     <string name="bedtime_local_estimate">ローカル推定</string>
     <string name="bedtime_fits_sleep_target">%1$s の睡眠目標に適合</string>
-    <string name="alarmfiring_no_saved_place_is_set_so">保存された場所が設定されていないため、位置情報による停止ロックはかかっていません。</string>
-    <string name="alarmfiring_waiting_for_a_location_fix_leave">位置情報の取得を待機中。保存された %1$d mのエリアを離れて停止を解除してください。</string>
+    <string name="alarmfiring_no_saved_place_is_set_so">保存済みの場所が設定されていないため、位置情報による停止ロックはかかっていません。</string>
+    <string name="alarmfiring_waiting_for_a_location_fix_leave">位置情報の取得を待機中。保存済みの %1$d mのエリアを離れて停止を解除してください。</string>
     <string name="alarmfiring_handwriting_recognition_is_unavailable_type_the">手書き認識は利用できません。代わりに単語を入力してください。</string>
     <string name="alarmfiring_recognized_draw_again">「%1$s」を認識しました。%2$s をもう一度描いてください。</string>
     <string name="alarmfiring_no_handwriting_match_draw_again">手書きが一致しません。%1$s をもう一度描いてください。</string>
@@ -1927,7 +1854,7 @@
     <string name="settings_webhook_ok">Webhook OK</string>
     <string name="settings_webhook_failed_endpoint_did_not_return">Webhook失敗。エンドポイントが2xxを返しませんでした。</string>
     <string name="settings_checking_hue_bridge">Hueブリッジを確認中…</string>
-    <string name="settings_hue_certificate_changed_verify_the_bridge">Hueの証明書が変更されました。ブリッジを確認し、保存された証明書を消去してください。</string>
+    <string name="settings_hue_certificate_changed_verify_the_bridge">Hueの証明書が変更されました。ブリッジを確認し、保存済みの証明書を消去してください。</string>
     <string name="settings_hue_bridge_returned_an_invalid_certificate">Hueブリッジが無効な証明書フィンガープリントを返しました</string>
     <string name="settings_hue_bridge_not_checked_enter_a">Hueブリッジは確認されていません。有効なIPとAPIキーを入力してください。</string>
     <string name="settings_hue_bridge_not_found_check_the">Hueブリッジが見つかりません。IPとAPIキーを確認してください。</string>
@@ -1947,12 +1874,12 @@
     <string name="settings_backup_support_bundle_failed">サポートバンドルを作成できませんでした。</string>
     <string name="settings_backup_failure_with_hint">%1$s %2$s</string>
     <string name="settings_backup_hint_passphrase">パスフレーズを確認し、暗号化バックアップをもう一度選択してください。</string>
-    <string name="settings_backup_hint_permission">ファイルアクセスを許可して、もう一度お試しください。</string>
+    <string name="settings_backup_hint_permission">ファイルアクセスを許可して、再試行してください。</string>
     <string name="settings_backup_hint_missing_file">このデバイスが引き続きアクセス可能なファイルの場所を選択してください。</string>
-    <string name="settings_backup_hint_storage">ストレージへのアクセスを確認して、もう一度お試しください。</string>
+    <string name="settings_backup_hint_storage">ストレージへのアクセスを確認して、再試行してください。</string>
     <string name="settings_backup_hint_version">サポートされているアプリバージョンのバックアップを選択してください。</string>
     <string name="settings_backup_hint_malformed">有効な AlarmClockXtreme バックアップファイルを選択してください。</string>
-    <string name="settings_backup_hint_generic">ファイルまたは保存先を確認して、もう一度お試しください。</string>
+    <string name="settings_backup_hint_generic">ファイルまたは保存先を確認して、再試行してください。</string>
     <string name="settings_support_no_share_target">サポートバンドルを共有できるアプリがありません</string>
     <string name="settings_crash_log_ready">クラッシュログの共有準備完了</string>
     <string name="stats_action_dismissed">停止</string>
@@ -1990,38 +1917,37 @@
     <string name="alarmfiring_no_speech_was_heard_try_again">音声が聞こえませんでした。もう一度試すか、フレーズを入力してください。</string>
     <string name="alarmfiring_speech_recognition_failed_try_again_or">音声認識に失敗しました。もう一度試すか、フレーズを入力してください。</string>
     <string name="dashboard_earlier">前</string>
-    <string name="dashboard_showing_the_last_saved_forecast">最後に保存された予報を表示中。</string>
+    <string name="dashboard_showing_the_last_saved_forecast">最後に保存済みの予報を表示中。</string>
     <string name="dashboard_m_ago">%1$d分前</string>
     <string name="dashboard_h_ago">%1$d時間前</string>
     <string name="dashboard_d_ago">%1$d日前</string>
-    <string name="ringtone_uses_your_device_s_current_default">デバイスの現在のデフォルトのアラーム音を使用します。</string>
+    <string name="ringtone_uses_your_device_s_current_default">デバイスの現在のデフォルトアラーム音を使用します。</string>
     <string name="ringtone_no_audio_best_paired_with_vibration">音声なし。バイブレーションや他の起床エフェクトとの組み合わせに最適です。</string>
     <string name="ringtone_tap_to_preview_then_choose_use">タップしてプレビューし、気に入ったら [使用] を選択してください。</string>
     <string name="ringtone_ready_to_apply">適用する準備ができました。</string>
     <string name="stats_dismiss_one_alarm_to_start_building">起床ストリークの構築を開始するには、アラームを1つ停止してください。</string>
     <string name="stats_today_s_wake_is_already_counted">今日の起床はすでにカウントされています。明日もチェーンを続けましょう。</string>
     <string name="stats_still_alive_from_yesterday_dismiss_today">昨日のストリークはまだ有効です。維持するには今日のアラームを停止してください。</string>
-
-    <string name="stats_compares_recent_sleep_duration_with_dismiss">最近の睡眠時間と、このデバイスでの停止速度、スヌーズ回数、チャレンジの再試行回数を比較します。</string>
+    <string name="stats_compares_recent_sleep_duration_with_dismiss">直近の睡眠時間と、このデバイスでの停止速度、スヌーズ回数、チャレンジの再試行回数を比較します。</string>
     <string name="stats_enable_health_connect_to_layer_sleep">Health Connectを有効にして、ローカルの起床時の挙動に睡眠時間を重ねて表示します。</string>
     <string name="stats_grant_read_sleep_to_add_sleep">睡眠時間を追加するには READ_SLEEP を許可してください。アラームの応答、スヌーズ、再試行のトレンドはローカルに保持されます。</string>
     <string name="stats_sleep_sessions_are_ready_alarm_outcomes">睡眠セッションの準備ができました。アラームの結果が発生すると、起床時の挙動を示すバーが追加されます。</string>
-    <string name="stats_wake_behavior_bars_are_ready_sleep">起床時の挙動を示すバーの準備ができました。Health Connectが最近のセッションを返すと、睡眠を示すバーが表示されます。</string>
-    <string name="stats_recent_sleep_sessions_and_alarm_outcomes">最近の睡眠セッションとアラームの結果により、このチャートがローカルで構築されます。</string>
+    <string name="stats_wake_behavior_bars_are_ready_sleep">起床時の挙動を示すバーの準備ができました。Health Connectが直近のセッションを返すと、睡眠を示すバーが表示されます。</string>
+    <string name="stats_recent_sleep_sessions_and_alarm_outcomes">直近の睡眠セッションとアラームの結果により、このチャートがローカルで構築されます。</string>
     <string name="dashboard_stale_forecast_line">%1$s 最終更新 %2$s。</string>
     <string name="youtube_error_unavailable_build">このビルドではYouTubeのダウンロードは利用できません。</string>
-    <string name="youtube_error_no_connection">接続を確認して、もう一度お試しください。</string>
-    <string name="youtube_error_timeout">YouTubeからの応答に時間がかかりすぎました。後でもう一度お試しください。</string>
-    <string name="youtube_error_tls">YouTubeに安全に接続できませんでした。後でもう一度お試しください。</string>
-    <string name="youtube_error_blocked">YouTubeがこのリクエストをブロックしています。ダウンローダーエンジンを更新するか、後でもう一度お試しください。</string>
-    <string name="youtube_error_no_audio_stream">YouTubeから利用可能なオーディオストリームが返されませんでした。別の結果を試すか、後でもう一度お試しください。</string>
-    <string name="youtube_error_extractor">YouTubeの配信方法が変更されました。ダウンローダーエンジンを更新して、もう一度お試しください。</string>
+    <string name="youtube_error_no_connection">接続を確認して、再試行してください。</string>
+    <string name="youtube_error_timeout">YouTubeの応答が遅すぎます。後で再試行してください。</string>
+    <string name="youtube_error_tls">YouTubeに安全に接続できませんでした。後で再試行してください。</string>
+    <string name="youtube_error_blocked">YouTubeがこのリクエストをブロックしています。ダウンローダーエンジンを更新するか、後で再試行してください。</string>
+    <string name="youtube_error_no_audio_stream">YouTubeから利用できるオーディオストリームが返されませんでした。別の結果を試すか、後で再試行してください。</string>
+    <string name="youtube_error_extractor">YouTubeの配信方法が変更されました。ダウンローダーエンジンを更新して、再試行してください。</string>
     <string name="youtube_error_invalid_link">有効なYouTubeリンクを入力してください。</string>
-    <string name="youtube_error_io">YouTubeリクエストを完了できませんでした。接続を確認して、もう一度お試しください。</string>
+    <string name="youtube_error_io">YouTubeリクエストを完了できませんでした。接続を確認して、再試行してください。</string>
     <string name="youtube_error_preview">プレビューストリームを取得できませんでした。別の結果をお試しください。</string>
-    <string name="youtube_error_search">検索に失敗しました。より短いフレーズを試すか、後でもう一度お試しください。</string>
-    <string name="youtube_error_download">ダウンロードに失敗しました。別のリンクを試すか、ダウンローダーエンジンを更新してください。</string>
-    <string name="youtube_error_engine_update">更新に失敗しました。現在のエンジンが保持されました。接続を確認して、もう一度お試しください。</string>
+    <string name="youtube_error_search">検索に失敗しました。より短いフレーズを試すか、後で再試行してください。</string>
+    <string name="youtube_error_download">ダウンロードに失敗しました。別のリンクを試すか、エンジンを更新してください。</string>
+    <string name="youtube_error_engine_update">更新に失敗しました。現在のエンジンが保持されました。接続を確認して、再試行してください。</string>
     <string name="template_repeat_one_time">1回のみ</string>
     <string name="template_repeat_daily">毎日</string>
     <string name="template_repeat_weekdays">平日</string>
@@ -2065,17 +1991,17 @@
     <string name="chess_puzzle_battery_finish_title">バッテリーフィニッシュ</string>
     <string name="chess_puzzle_battery_finish_explanation">ビショップのサポートを受けたクイーンがf7に着地し、キングの逃げ場をなくします。</string>
     <string name="chess_side_white">白</string>
-    <string name="news_error_no_connection">接続を確認して、もう一度お試しください。</string>
-    <string name="news_error_timeout">このフィードからの応答に時間がかかりすぎました。後でもう一度お試しください。</string>
+    <string name="news_error_no_connection">接続を確認して、再試行してください。</string>
+    <string name="news_error_timeout">フィードの応答が遅すぎます。後で再試行してください。</string>
     <string name="news_error_tls">このフィードを安全に読み込めませんでした。別のソースを選択してください。</string>
     <string name="news_error_invalid_url">このフィードURLは無効です。設定で別のソースを選択してください。</string>
     <string name="news_error_forbidden">このフィードはアプリが持っていないアクセス権限を必要としています。別のソースを選択してください。</string>
-    <string name="news_error_unresponsive">このフィードソースが応答していません。別のソースを試すか、後で更新してください。</string>
+    <string name="news_error_unresponsive">フィードが応答していません。別のソースを試すか、後で更新してください。</string>
     <string name="news_error_empty">このソースはフィード内容を返しませんでした。</string>
-    <string name="news_error_io">フィードにアクセスできませんでした。接続を確認して、もう一度お試しください。</string>
-    <string name="news_error_unreadable">このフィードを読み取れませんでした。別のソースを試すか、後で更新してください。</string>
+    <string name="news_error_io">フィードにアクセスできません。接続を確認して再試行してください。</string>
+    <string name="news_error_unreadable">フィードを読み取れません。別のソースを試すか、後で更新してください。</string>
     <string name="news_error_generic">フィードを更新できませんでした。</string>
-    <string name="news_stale_headlines">保存された見出しを表示しています。更新して再試行してください。%1$s</string>
+    <string name="news_stale_headlines">保存済みの見出しを表示しています。更新して再試行してください。%1$s</string>
     <plurals name="worldclock_match_count">
         <item quantity="other">%1$d 件の一致</item>
     </plurals>
@@ -2121,7 +2047,7 @@
     <string name="readiness_needs_ssid">保存する前にWi-Fiネットワーク名を入力してください。</string>
     <string name="readiness_needs_location_wifi">Wi-Fiネットワークを検出できるよう、位置情報の権限を許可してください。</string>
     <string name="alarmlist_set_power_nap">%1$d 分のパワーナップを設定</string>
-    <string name="alarmlist_set_power_nap_default">デフォルトの長さである %1$d 分のパワーナップを設定</string>
+    <string name="alarmlist_set_power_nap_default">デフォルト長さである %1$d 分のパワーナップを設定</string>
     <string name="alarmlist_bulk_scope_all">一括アクションは、現在画面に表示されているすべての項目に適用されます</string>
     <string name="alarmlist_bulk_scope_selected">一括アクションは、選択したアラームにのみ適用されます</string>
     <string name="alarmlist_copy_of">%1$s (コピー)</string>
@@ -2148,8 +2074,8 @@
     </string-array>
     <string name="notif_channel_external_alarm">他のアプリによって追加されたアラーム</string>
     <string name="notif_external_alarm_title">アラームが追加されました</string>
-    <string name="notif_external_alarm_text_named">%1$s がアプリを開かずにアラームを追加しました。タップして確認してください。</string>
-    <string name="notif_external_alarm_text">別のアプリが、アプリを開かずにアラームを追加しました。タップして確認してください。</string>
+    <string name="notif_external_alarm_text_named">%1$s がアラームを追加しました。タップして確認してください。</string>
+    <string name="notif_external_alarm_text">別のアプリがアラームを追加しました。タップして確認してください。</string>
     <string name="youtube_downloading">「%1$s」をダウンロード中…</string>
     <string name="youtube_fallback_sound_name">アラーム音</string>
     <string name="youtube_updating_engine">ダウンローダーエンジンを更新中…</string>
@@ -2266,10 +2192,10 @@
     <string name="calendar_all_day">終日</string>
     <string name="calendar_time_range">%1$s から %2$s</string>
     <string name="share_default_alarm_label">共有アラーム</string>
-    <string name="alarmfiring_photo_no_match">一致しません。もう一度お試しください (類似度 %1$d%%)</string>
+    <string name="alarmfiring_photo_no_match">一致しません。再試行してください (類似度 %1$d%%)</string>
     <string name="alarmfiring_nfc_wrong_tag">タグが違います。登録されたタグを試してください。</string>
     <string name="alarmfiring_barcode_wrong_code">コードが違います。登録されたバーコードをスキャンしてください。</string>
-    <string name="alarmfiring_location_not_locked">保存された場所が設定されていないため、位置情報による停止ロックはかかっていません。</string>
+    <string name="alarmfiring_location_not_locked">保存済みの場所が設定されていないため、位置情報による停止ロックはかかっていません。</string>
     <string name="alarm_list_quick_alarm_for">%1$s にクイックアラームを設定</string>
     <string name="alarm_list_share_default_title">アラーム %1$s</string>
     <string name="dashboard_your_area">お住まいの地域</string>
@@ -2282,13 +2208,13 @@
     <string name="bedtime_sonar_stop_failed">Sonarを正常に停止できませんでした: %1$s</string>
     <string name="bedtime_sonar_mic_denied">マイクの権限が拒否されました。Sonarはオフのままです。</string>
     <string name="bedtime_sonar_monitoring">動きと大きな睡眠音をモニタリング中。生の音声は記録されません。</string>
-    <string name="bedtime_sonar_unconfirmed">Sonarによるマイク監視を確認できませんでした。もう一度お試しください。</string>
+    <string name="bedtime_sonar_unconfirmed">Sonarによるマイク監視を確認できませんでした。再試行してください。</string>
     <string name="bedtime_snore_peak_average">推定ピーク %1$d dB / 平均 %2$d</string>
     <string name="onboarding_test_alarm_completed_detail">テストアラーム完了。デバイスでアラーム画面が正常に開きました。</string>
     <string name="onboarding_test_alarm_scheduled_detail">テストアラームをスケジュールしました。10秒後に鳴ります。</string>
-    <string name="onboarding_readiness_review">宿泊のアラームに頼る前に、正確なアラーム、通知、バッテリーアクセス、およびテストアラームを確認してください。</string>
+    <string name="onboarding_readiness_review">宿泊先でアラームを使う前に、正確なアラーム・通知・バッテリー・テストアラームを確認してください。</string>
     <string name="ringtone_folder_added">フォルダが追加されました。そのオーディオファイルが以下で利用可能になりました。</string>
-    <string name="ringtone_folder_lost">そのフォルダへのアクセスを維持できませんでした。必要に応じて再度選択してください。</string>
+    <string name="ringtone_folder_lost">そのフォルダへのアクセスを維持できませんでした。必要なら再度選択してください。</string>
     <string name="stats_default_alarm_label">アラーム</string>
     <string name="timer_default_label">タイマー</string>
     <string name="bedtime_reminder_minutes_value">%1$d 分</string>
@@ -2337,7 +2263,7 @@
     <string name="breathing_cue_exhale">ゆっくりと息を吐き出してください。</string>
     <string name="breathing_cue_hold_after_exhale">次の呼吸の前にリラックスした状態を保ってください。</string>
     <string name="breathing_running_description">カウントに従い、落ち着くまでスマホを近くに置いておいてください。</string>
-    <string name="breathing_idle_description">寝る前に短い 4-7-8 呼吸またはボックスブリーシングを行ってリセットしましょう。</string>
+    <string name="breathing_idle_description">寝る前に 4-7-8 呼吸またはボックスブリーシングを行ってリセットしましょう。</string>
     <string name="geocoding_unknown_place">不明</string>
     <string name="calendar_untitled_event">無題</string>
     <string name="default_alarm_label">起床</string>
@@ -2358,4 +2284,21 @@
     <string name="oem_huawei_title">Huaweiでバックグラウンド活動を許可する</string>
     <string name="oem_coloros_title">ColorOSでバックグラウンド活動を許可する</string>
     <string name="oem_vivo_title">Vivoでバックグラウンド活動を許可する</string>
+
+    <!-- Onboarding highlights -->
+    <string name="onboarding_highlight_exact_alarms">Doze中も確実に鳴る正確なアラーム</string>
+    <string name="onboarding_highlight_battery_guidance">省電力が強い端末向け設定</string>
+    <string name="onboarding_highlight_challenges">計算・シェイク・記憶・歩数・バーコードなど</string>
+    <string name="onboarding_highlight_layer_challenges">複数の解除条件を組み合わせ可能</string>
+    <string name="onboarding_highlight_dashboard">天気や予定をすぐ確認</string>
+    <string name="onboarding_highlight_context">広告なしで必要な情報を表示</string>
+
+    <!-- Feedback messages -->
+    <string name="feedback_alarm_paused">アラームを一時停止</string>
+    <string name="feedback_alarm_enabled_for">有効: %1$s</string>
+    <string name="feedback_cancellation_lock_overridden_paused">ロックを上書きして一時停止</string>
+    <plurals name="feedback_multialarm_paused">
+        <item quantity="one">1件のアラームを一時停止</item>
+        <item quantity="other">%1$d件のアラームを一時停止</item>
+    </plurals>
 </resources>

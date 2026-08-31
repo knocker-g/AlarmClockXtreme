@@ -16,6 +16,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -123,6 +124,7 @@ data class AlarmEditUiState(
     val timezonePolicy: String = Alarm.TIMEZONE_POLICY_LOCAL,
     val fixedTimezoneId: String = "",
     val forecastDates: List<ForecastEntry> = emptyList(),
+    val allGroups: List<String> = emptyList(),
     val hasUnsavedChanges: Boolean = false
 )
 
@@ -156,13 +158,16 @@ class AlarmEditViewModel @Inject constructor(
 
     private var loadedDraft: AlarmEditUiState? = null
     private val _uiState = MutableStateFlow(AlarmEditUiState())
-    val uiState: StateFlow<AlarmEditUiState> = _uiState
-        .map { state ->
-            state.copy(
-                hasUnsavedChanges = loadedDraft?.let { state.hasDraftChangesFrom(it) } == true
-            )
-        }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, _uiState.value)
+    val uiState: StateFlow<AlarmEditUiState> = combine(
+        _uiState,
+        repository.observeGroups()
+    ) { state, groups ->
+        state.copy(
+            allGroups = groups,
+            hasUnsavedChanges = loadedDraft?.let { state.hasDraftChangesFrom(it) } == true
+        )
+    }
+    .stateIn(viewModelScope, SharingStarted.Eagerly, _uiState.value)
 
     init {
         viewModelScope.launch {
