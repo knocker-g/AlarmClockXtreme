@@ -357,6 +357,7 @@ fun AlarmEditScreen(
     if (showRingtonePicker) {
         RingtonePickerSheet(
             currentUri = state.ringtoneUri,
+            previewVolume = state.volume,
             onSelect = viewModel::updateRingtoneUri,
             onDismiss = { showRingtonePicker = false }
         )

@@ -104,6 +104,7 @@ data class RingtoneLoadResult(
 @Composable
 fun RingtonePickerSheet(
     currentUri: String,
+    previewVolume: Int = 100,
     onSelect: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -243,8 +244,10 @@ fun RingtonePickerSheet(
         playingUri = uri
         previewError = ""
         try {
+            val gain = (previewVolume.coerceIn(0, 100) / 100f).coerceIn(0f, 1f)
             player.setAudioAttributes(AlarmAudioRouting.alarmSonificationAttributes())
             player.setDataSource(context, Uri.parse(uri))
+            player.setVolume(gain, gain)
             player.isLooping = false
             player.setOnPreparedListener { it.start() }
             player.setOnErrorListener { _, _, _ ->
