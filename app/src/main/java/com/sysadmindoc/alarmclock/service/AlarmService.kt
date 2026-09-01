@@ -192,6 +192,8 @@ class AlarmService : Service() {
     @Volatile
     private var forceBuiltInSpeakerForFallback: Boolean = false
     private var currentAlarmId: Long = -1
+    @Volatile
+    private var currentAlarmVolume: Int = 100
     private var currentFireId: String = ""
     private var currentScheduledAt: Long = 0L
     private var alarmFiredAt: Long = 0
@@ -419,6 +421,7 @@ class AlarmService : Service() {
             return
         }
 
+        currentAlarmVolume = alarm.volume
         val settings = preferencesManager.getCurrentSettings()
         OnCallDndOverride.begin(this, settings.onCallModeEnabled)
 
@@ -992,7 +995,8 @@ class AlarmService : Service() {
                     callMuted = callMutedAudio,
                     challengeDuckingActive = challengeAudioDuckingActive,
                     challengeDuckPercent = challengeAudioDuckPercent,
-                    rampGain = 1f
+                    rampGain = 1f,
+                    alarmVolume = alarm.volume
                 ),
                 onReady = {
                     playbackStarted.set(true)
@@ -1055,7 +1059,8 @@ class AlarmService : Service() {
                     callMuted = callMutedAudio,
                     challengeDuckingActive = challengeAudioDuckingActive,
                     challengeDuckPercent = challengeAudioDuckPercent,
-                    rampGain = 1f
+                    rampGain = 1f,
+                    alarmVolume = alarm.volume
                 )
             }
             playbackRampGain = if (fadeInMs > 0) 0f else 1f
@@ -1486,7 +1491,8 @@ class AlarmService : Service() {
                     callMuted = callMutedAudio,
                     challengeDuckingActive = challengeAudioDuckingActive,
                     challengeDuckPercent = challengeAudioDuckPercent,
-                    rampGain = playbackRampGain
+                    rampGain = playbackRampGain,
+                    alarmVolume = alarm.volume
                 )
                 setVolume(initialGain, initialGain)
                 start()
@@ -1545,7 +1551,8 @@ class AlarmService : Service() {
                             callMuted = callMutedAudio,
                             challengeDuckingActive = challengeAudioDuckingActive,
                             challengeDuckPercent = challengeAudioDuckPercent,
-                            rampGain = playbackRampGain
+                            rampGain = playbackRampGain,
+                            alarmVolume = alarm.volume
                         )
                         setVolume(gain, gain)
                         start()
@@ -2380,7 +2387,8 @@ class AlarmService : Service() {
             callMuted = callMutedAudio,
             challengeDuckingActive = challengeAudioDuckingActive,
             challengeDuckPercent = challengeAudioDuckPercent,
-            rampGain = playbackRampGain
+            rampGain = playbackRampGain,
+            alarmVolume = currentAlarmVolume
         )
         try { alarmPlayback?.setVolume(gain, gain) } catch (_: Exception) {}
     }
