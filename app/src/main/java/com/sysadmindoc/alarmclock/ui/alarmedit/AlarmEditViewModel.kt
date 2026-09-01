@@ -639,12 +639,16 @@ class AlarmEditViewModel @Inject constructor(
                 return@launch
             }
 
+            val hasChanges = loadedDraft?.let { s.hasDraftChangesFrom(it) } == true
+
             val alarm = Alarm(
                 id = if (s.isEditing) alarmId else 0,
                 hour = s.hour,
                 minute = s.minute,
                 label = s.label,
-                isEnabled = if (s.isEditing) s.isEnabled else true,
+                isEnabled = if (s.isEditing) {
+                    if (hasChanges) true else s.isEnabled
+                } else true,
                 repeatDays = s.repeatDays,
                 ringtoneUri = s.ringtoneUri,
                 vibrationEnabled = s.vibrationEnabled,
