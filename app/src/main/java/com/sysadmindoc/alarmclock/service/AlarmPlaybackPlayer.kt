@@ -24,13 +24,15 @@ internal fun alarmPlaybackGain(
     callMuted: Boolean,
     challengeDuckingActive: Boolean,
     challengeDuckPercent: Int,
-    rampGain: Float
+    rampGain: Float,
+    alarmVolume: Int
 ): Float {
     if (callMuted) return 0f
     val duckGain = if (challengeDuckingActive) {
         challengeDuckPercent.coerceIn(10, 80) / 100f
     } else 1f
-    return (rampGain.coerceIn(0f, 1f) * duckGain).coerceIn(0f, 1f)
+    val baseGain = (rampGain.coerceIn(0f, 1f) * duckGain).coerceIn(0f, 1f)
+    return baseGain * (alarmVolume.coerceIn(0, 100) / 100f)
 }
 
 private object PlaybackMainThread {
