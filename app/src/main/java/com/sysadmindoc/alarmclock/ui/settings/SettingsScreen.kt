@@ -1,5 +1,6 @@
 package com.sysadmindoc.alarmclock.ui.settings
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.Manifest
@@ -344,6 +345,11 @@ fun SettingsScreen(
     ) {
         val useTwoPane = shouldUseTwoPaneLayout(maxWidth.value)
         var selectedPaneId by rememberSaveable { mutableStateOf<String?>(null) }
+
+        BackHandler(enabled = selectedPaneId != null && !useTwoPane) {
+            selectedPaneId = null
+        }
+
         val selectedPane = settingsPaneCategories.firstOrNull { it.id == selectedPaneId }
             ?: settingsPaneCategories.first()
         val showSettingsHome = !useTwoPane && selectedPaneId == null
