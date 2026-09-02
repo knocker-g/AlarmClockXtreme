@@ -36,6 +36,7 @@ import androidx.navigation.navArgument
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.ui.alarmedit.AlarmEditScreen
 import com.sysadmindoc.alarmclock.ui.alarmlist.AlarmListScreen
+import com.sysadmindoc.alarmclock.ui.alarmlist.AlarmListViewModel
 import com.sysadmindoc.alarmclock.ui.bedtime.BedtimeScreen
 import com.sysadmindoc.alarmclock.ui.components.BottomNavContainer
 import com.sysadmindoc.alarmclock.ui.dashboard.DashboardScreen
@@ -49,6 +50,7 @@ import com.sysadmindoc.alarmclock.ui.timer.TimerScreen
 import com.sysadmindoc.alarmclock.ui.worldclock.WorldClockScreen
 import com.sysadmindoc.alarmclock.ui.news.NewsScreen
 import com.sysadmindoc.alarmclock.util.ReliabilityDoctor
+import androidx.hilt.navigation.compose.hiltViewModel
 
 sealed class Screen(val route: String) {
     data object Dashboard : Screen("dashboard")
@@ -437,10 +439,16 @@ private fun AppNavHost(
         }
 
         composable(Screen.AlarmList.route) {
+            // v1.15.35: Scope the list ViewModel to the Activity so it can
+            // drive the SplashScreen condition in MainActivity. This also
+            // warms up the database observation as soon as the app process
+            // starts.
+            val viewModel: AlarmListViewModel = hiltViewModel(context as ComponentActivity)
             AlarmListScreen(
                 onAddAlarm = { navController.navigate(Screen.AlarmEdit.createRoute(-1)) },
                 onEditAlarm = { id -> navController.navigate(Screen.AlarmEdit.createRoute(id)) },
-                onOpenSettings = { navController.navigate(Screen.Settings.route) }
+                onOpenSettings = { navController.navigate(Screen.Settings.route) },
+                viewModel = viewModel
             )
         }
 

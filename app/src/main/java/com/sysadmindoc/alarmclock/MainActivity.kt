@@ -7,10 +7,12 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.preferences.AppSettings
@@ -19,6 +21,7 @@ import com.sysadmindoc.alarmclock.data.share.AlarmShareCodec
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.service.AlarmService
 import com.sysadmindoc.alarmclock.ui.alarmfiring.AlarmFiringActivity
+import com.sysadmindoc.alarmclock.ui.alarmlist.AlarmListViewModel
 import com.sysadmindoc.alarmclock.ui.components.WhatsNewDialog
 import com.sysadmindoc.alarmclock.ui.navigation.AppNavigation
 import com.sysadmindoc.alarmclock.ui.theme.AlarmClockXtremeTheme
@@ -32,11 +35,16 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var preferencesManager: PreferencesManager
 
+    private val alarmListViewModel: AlarmListViewModel by viewModels()
+
     private var lastHandledShareTokenKey: String? = null
     private var pendingSharedAlarmToken: String? = null
     private var pendingSharedAlarmDraft by mutableStateOf<Alarm?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen().setKeepOnScreenCondition {
+            alarmListViewModel.uiState.value.isInitialLoading
+        }
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         lastHandledShareTokenKey = savedInstanceState?.getString(KEY_LAST_HANDLED_SHARE_TOKEN_KEY)

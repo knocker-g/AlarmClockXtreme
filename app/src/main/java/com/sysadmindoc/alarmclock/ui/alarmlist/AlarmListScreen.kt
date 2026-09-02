@@ -1,11 +1,14 @@
 package com.sysadmindoc.alarmclock.ui.alarmlist
 
+import androidx.lifecycle.ViewModelStoreOwner
+import androidx.activity.ComponentActivity
 import com.sysadmindoc.alarmclock.ui.alarmedit.toAlarmChallengeSummary
 import androidx.compose.ui.res.pluralStringResource
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -16,8 +19,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -99,6 +104,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -128,10 +134,14 @@ import com.sysadmindoc.alarmclock.ui.components.AppSectionTitle
 import com.sysadmindoc.alarmclock.ui.components.AppStatusChip
 import com.sysadmindoc.alarmclock.ui.components.AppSurfaceCard
 import com.sysadmindoc.alarmclock.ui.components.AppInputShape
+import com.sysadmindoc.alarmclock.ui.components.YouTubeDownloadDialog
+import com.sysadmindoc.alarmclock.ui.components.YouTubeDownloadResults
 import com.sysadmindoc.alarmclock.ui.components.appOutlinedTextFieldColors
 import com.sysadmindoc.alarmclock.ui.components.appSwitchColors
+import com.sysadmindoc.alarmclock.ui.components.isYouTubeDownloaderAvailable
 import com.sysadmindoc.alarmclock.ui.templates.TemplatePickerSheet
 import com.sysadmindoc.alarmclock.ui.theme.AccentRed
+import com.sysadmindoc.alarmclock.ui.theme.BorderSubtle
 import com.sysadmindoc.alarmclock.ui.theme.ClockTimeSmall
 import com.sysadmindoc.alarmclock.ui.theme.DismissGreen
 import com.sysadmindoc.alarmclock.ui.theme.LocalAppShapeTokens
@@ -155,7 +165,7 @@ fun AlarmListScreen(
     onAddAlarm: () -> Unit,
     onEditAlarm: (Long) -> Unit,
     onOpenSettings: () -> Unit = {},
-    viewModel: AlarmListViewModel = hiltViewModel()
+    viewModel: AlarmListViewModel = hiltViewModel(LocalContext.current as ViewModelStoreOwner)
 ) {
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -168,7 +178,7 @@ fun AlarmListScreen(
     // Saveable: a rotation used to close the dialog while the download it
     // started carried on in the ViewModel.
     var showYouTubeDialog by rememberSaveable { mutableStateOf(false) }
-    val youTubeAvailable = com.sysadmindoc.alarmclock.ui.components.isYouTubeDownloaderAvailable()
+    val youTubeAvailable = isYouTubeDownloaderAvailable()
 
     var statsAlarmLabel by remember { mutableStateOf<String?>(null) }
     val alarmStats by viewModel.alarmStats.collectAsStateWithLifecycle()
@@ -230,7 +240,7 @@ fun AlarmListScreen(
     }
 
     val snackbarHostState = remember { SnackbarHostState() }
-    val snackbarScope = androidx.compose.runtime.rememberCoroutineScope()
+    val snackbarScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     var draggingAlarmId by remember { mutableStateOf<Long?>(null) }
     var dragOffsetPx by remember { mutableStateOf(0f) }
@@ -241,26 +251,26 @@ fun AlarmListScreen(
 
     // Outside the visibility check on purpose: a download started here keeps
     // running after the dialog closes, and its result still has to arrive.
-    com.sysadmindoc.alarmclock.ui.components.YouTubeDownloadResults(
-        onDownloaded = { savedTitle ->
-            showYouTubeDialog = false
-            snackbarScope.launch {
-                snackbarHostState.showSnackbar(
-                    savedToneMessage(savedTitle),
-                    duration = SnackbarDuration.Long
-                )
+        YouTubeDownloadResults(
+            onDownloaded = { savedTitle ->
+                showYouTubeDialog = false
+                snackbarScope.launch {
+                    snackbarHostState.showSnackbar(
+                        savedToneMessage(savedTitle),
+                        duration = SnackbarDuration.Long
+                    )
+                }
+            },
+            onError = { msg ->
+                showYouTubeDialog = false
+                snackbarScope.launch {
+                    snackbarHostState.showSnackbar(msg, duration = SnackbarDuration.Long)
+                }
             }
-        },
-        onError = { msg ->
-            showYouTubeDialog = false
-            snackbarScope.launch {
-                snackbarHostState.showSnackbar(msg, duration = SnackbarDuration.Long)
-            }
-        }
-    )
+        )
 
     if (showYouTubeDialog) {
-        com.sysadmindoc.alarmclock.ui.components.YouTubeDownloadDialog(
+        YouTubeDownloadDialog(
             onDismiss = { showYouTubeDialog = false }
         )
     }
@@ -370,7 +380,7 @@ fun AlarmListScreen(
         // AppNavigation Scaffold already paddings NavHost with the bottom-nav
         // inset. Without this, both scaffolds compete for the same insets and
         // the alarm list stops well short of the floating nav.
-        contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
         Column(
@@ -407,345 +417,345 @@ fun AlarmListScreen(
                 }
 
                 val alarmListContent: LazyListScope.() -> Unit = {
-                item {
-                    AlarmHeader(
-                        remainingTime = state.remainingTime,
-                        hasAlarms = state.nextAlarm != null,
-                        alarmCount = state.alarms.size,
-                        vacationActive = state.vacationActive,
-                        pausedUntilMillis = state.pausedUntilMillis,
-                        onResumeAlarms = viewModel::resumeAlarms,
-                        sortLabel = when (state.sortOrder) {
-                            AlarmSortOrder.TIME -> stringResource(R.string.alarmlist_sort_by_time)
-                            AlarmSortOrder.MANUAL -> stringResource(R.string.alarmlist_manual_order)
-                            AlarmSortOrder.CREATED -> stringResource(R.string.alarmlist_newest_first)
-                            AlarmSortOrder.ENABLED_FIRST -> stringResource(R.string.alarmlist_active_first)
-                        },
-                        onCycleSort = viewModel::cycleSortOrder,
-                    )
-                }
-
-                if (state.groups.any { it.isNotBlank() } || state.alarms.size > 3) {
-                    item {
-                        Column(
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                            verticalArrangement = Arrangement.spacedBy(14.dp)
-                        ) {
-                            if (state.groups.any { it.isNotBlank() }) {
-                                GroupFilterRow(
-                                    title = stringResource(R.string.alarm_list_groups),
-                                    groups = state.groups.filter { it.isNotBlank() },
-                                    selectedGroup = state.selectedGroup,
-                                    onSelectGroup = viewModel::selectGroup
-                                )
-                            }
-
-                            if (state.profiles.any { it.isNotBlank() }) {
-                                GroupFilterRow(
-                                    title = stringResource(R.string.alarm_list_profiles),
-                                    groups = state.profiles.filter { it.isNotBlank() },
-                                    selectedGroup = state.selectedProfile,
-                                    onSelectGroup = viewModel::selectProfile
-                                )
-                            }
-
-                            if (state.alarms.size > 3) {
-                                AppSurfaceCard(contentPadding = androidx.compose.foundation.layout.PaddingValues(14.dp)) {
-                                    OutlinedTextField(
-                                        value = searchQuery,
-                                        onValueChange = { searchQuery = it },
-                                        placeholder = { Text(stringResource(R.string.alarm_list_search_placeholder)) },
-                                        leadingIcon = { Icon(Icons.Default.Search, null, tint = TextMuted) },
-                                        trailingIcon = {
-                                            if (searchQuery.isNotBlank()) {
-                                                IconButton(onClick = { searchQuery = "" }) {
-                                                    Icon(Icons.Default.Clear, "Clear search", tint = TextMuted)
-                                                }
-                                            }
-                                        },
-                                        colors = appOutlinedTextFieldColors(),
-                                        shape = AppInputShape,
-                                        singleLine = true,
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                when {
-                    state.alarms.isEmpty() -> {
+                    if (!state.isInitialLoading) {
                         item {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(320.dp)
-                                    .padding(horizontal = 16.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                AppSurfaceCard(modifier = Modifier.fillMaxWidth()) {
-                                    AppEmptyState(
-                                        icon = Icons.Default.AlarmAdd,
-                                        title = stringResource(R.string.alarm_list_empty_title),
-                                        description = stringResource(R.string.alarm_list_empty_description),
-                                        footer = {
-                                            AlarmListEmptyActions(
-                                                onAddAlarm = onAddAlarm,
-                                                onBrowseTemplates = { showTemplates = true }
-                                            )
-                                        }
-                                    )
-                                }
-                            }
+                            AlarmHeader(
+                                remainingTime = state.remainingTime,
+                                hasAlarms = state.nextAlarm != null,
+                                alarmCount = state.alarms.size,
+                                vacationActive = state.vacationActive,
+                                pausedUntilMillis = state.pausedUntilMillis,
+                                onResumeAlarms = viewModel::resumeAlarms,
+                                sortLabel = when (state.sortOrder) {
+                                    AlarmSortOrder.TIME -> stringResource(R.string.alarmlist_sort_by_time)
+                                    AlarmSortOrder.MANUAL -> stringResource(R.string.alarmlist_manual_order)
+                                    AlarmSortOrder.CREATED -> stringResource(R.string.alarmlist_newest_first)
+                                    AlarmSortOrder.ENABLED_FIRST -> stringResource(R.string.alarmlist_active_first)
+                                },
+                                onCycleSort = viewModel::cycleSortOrder,
+                            )
                         }
-                    }
 
-                    filteredAlarms.isEmpty() -> {
-                        item {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(320.dp)
-                                    .padding(horizontal = 16.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                AppSurfaceCard(modifier = Modifier.fillMaxWidth()) {
-                                    AppEmptyState(
-                                        icon = Icons.Default.Search,
-                                        title = stringResource(R.string.alarm_list_no_matches_title),
-                                        description = stringResource(R.string.alarm_list_no_matches_description),
-                                        footer = {
-                                            TextButton(
-                                                onClick = {
-                                                    searchQuery = ""
-                                                    viewModel.selectGroup(null)
-                                                    viewModel.selectProfile(null)
-                                                }
-                                            ) {
-                                                Text(stringResource(R.string.alarm_list_clear_filters), color = MaterialTheme.colorScheme.primary)
-                                            }
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    else -> {
-                        val conflictTimes = filteredAlarms
-                            .filter { it.isEnabled }
-                            .groupBy { it.hour * 60 + it.minute }
-                            .filterValues { it.size > 1 }
-                            .keys
-                        if (conflictTimes.isNotEmpty()) {
+                        if (state.groups.any { it.isNotBlank() } || state.alarms.size > 3) {
                             item {
-                                val timeLabels = conflictTimes.joinToString(", ") { totalMin ->
-                                    val h = totalMin / 60
-                                    val m = totalMin % 60
-                                    AlarmTimeFormatter.format(h, m, state.is24HourFormat)
-                                }
-                                AppInlineNotice(
-                                    title = stringResource(R.string.alarm_list_duplicate_time_title),
-                                    message = stringResource(
-                                        R.string.alarm_list_duplicate_time_message,
-                                        timeLabels
-                                    ),
-                                    icon = Icons.Default.Warning,
-                                    color = SnoozeYellow,
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                                )
-                            }
-                        }
-                        items(filteredAlarms, key = { it.id }) { alarm ->
-                            val isDragging = draggingAlarmId == alarm.id
-                            Row(
-                                modifier = Modifier
-                                    .padding(horizontal = 16.dp)
-                                    .graphicsLayer {
-                                        translationY = if (isDragging) dragOffsetPx else 0f
-                                        alpha = if (isDragging) 0.94f else 1f
-                                        scaleX = if (isDragging) 1.01f else 1f
-                                        scaleY = if (isDragging) 1.01f else 1f
+                                Column(
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                                ) {
+                                    if (state.groups.any { it.isNotBlank() }) {
+                                        GroupFilterRow(
+                                            title = stringResource(R.string.alarm_list_groups),
+                                            groups = state.groups.filter { it.isNotBlank() },
+                                            selectedGroup = state.selectedGroup,
+                                            onSelectGroup = viewModel::selectGroup
+                                        )
                                     }
-                                    .zIndex(if (isDragging) 1f else 0f)
-                                    .animateItem(),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                if (canReorderAlarms) {
-                                    AlarmReorderHandle(
-                                        enabled = canReorderAlarms,
-                                        alarmLabel = alarm.label.ifBlank { formatAlarmTime(alarm, state.is24HourFormat) },
-                                        // v1.13.15: TalkBack-reachable reorder — same persistence path as drag.
-                                        onMoveUp = {
-                                            val ids = currentVisibleAlarmIds
-                                            val index = ids.indexOf(alarm.id)
-                                            if (index > 0) {
-                                                viewModel.moveAlarm(
-                                                    movedAlarmId = alarm.id,
-                                                    targetAlarmId = ids[index - 1],
-                                                    visibleAlarmIds = ids
-                                                )
-                                                true
-                                            } else {
-                                                false
-                                            }
-                                        },
-                                        onMoveDown = {
-                                            val ids = currentVisibleAlarmIds
-                                            val index = ids.indexOf(alarm.id)
-                                            if (index in 0 until ids.lastIndex) {
-                                                viewModel.moveAlarm(
-                                                    movedAlarmId = alarm.id,
-                                                    targetAlarmId = ids[index + 1],
-                                                    visibleAlarmIds = ids
-                                                )
-                                                true
-                                            } else {
-                                                false
-                                            }
-                                        },
-                                        modifier = Modifier.pointerInput(canReorderAlarms, alarm.id) {
-                                            if (canReorderAlarms) {
-                                                detectDragGesturesAfterLongPress(
-                                                    onDragStart = {
-                                                        draggingAlarmId = alarm.id
-                                                        dragOffsetPx = 0f
-                                                    },
-                                                    onDragEnd = {
-                                                        draggingAlarmId = null
-                                                        dragOffsetPx = 0f
-                                                    },
-                                                    onDragCancel = {
-                                                        draggingAlarmId = null
-                                                        dragOffsetPx = 0f
-                                                    },
-                                                    onDrag = { change, dragAmount ->
-                                                        change.consume()
-                                                        dragOffsetPx += dragAmount.y
-                                                        val draggedInfo = listState.layoutInfo.visibleItemsInfo
-                                                            .firstOrNull { it.key == alarm.id }
-                                                        val targetInfo = draggedInfo?.let { dragged ->
-                                                            val draggedCenter = dragged.offset + (dragged.size / 2) + dragOffsetPx
-                                                            listState.layoutInfo.visibleItemsInfo.firstOrNull { candidate ->
-                                                                candidate.key is Long &&
-                                                                    candidate.key != alarm.id &&
-                                                                    draggedCenter >= candidate.offset &&
-                                                                    draggedCenter <= candidate.offset + candidate.size
-                                                            }
-                                                        }
-                                                        val targetAlarmId = targetInfo?.key as? Long
-                                                        if (targetAlarmId != null) {
-                                                            viewModel.moveAlarm(
-                                                                movedAlarmId = alarm.id,
-                                                                targetAlarmId = targetAlarmId,
-                                                                visibleAlarmIds = currentVisibleAlarmIds
-                                                            )
-                                                            dragOffsetPx = 0f
+
+                                    if (state.profiles.any { it.isNotBlank() }) {
+                                        GroupFilterRow(
+                                            title = stringResource(R.string.alarm_list_profiles),
+                                            groups = state.profiles.filter { it.isNotBlank() },
+                                            selectedGroup = state.selectedProfile,
+                                            onSelectGroup = viewModel::selectProfile
+                                        )
+                                    }
+
+                                    if (state.alarms.size > 3) {
+                                        AppSurfaceCard(contentPadding = PaddingValues(14.dp)) {
+                                            OutlinedTextField(
+                                                value = searchQuery,
+                                                onValueChange = { searchQuery = it },
+                                                placeholder = { Text(stringResource(R.string.alarm_list_search_placeholder)) },
+                                                leadingIcon = { Icon(Icons.Default.Search, null, tint = TextMuted) },
+                                                trailingIcon = {
+                                                    if (searchQuery.isNotBlank()) {
+                                                        IconButton(onClick = { searchQuery = "" }) {
+                                                            Icon(Icons.Default.Clear, "Clear search", tint = TextMuted)
                                                         }
                                                     }
-                                                )
-                                            }
+                                                },
+                                                colors = appOutlinedTextFieldColors(),
+                                                shape = AppInputShape,
+                                                singleLine = true,
+                                                modifier = Modifier.fillMaxWidth()
+                                            )
                                         }
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
+                                    }
                                 }
-                                Box(modifier = Modifier.weight(1f)) {
-                                val isSelected = alarm.id in state.selectedIds
-                                if (state.isSelectionMode) {
-                                    SelectableAlarmCard(
-                                        alarm = alarm,
-                                        is24Hour = state.is24HourFormat,
-                                        isSelected = isSelected,
-                                        onToggleSelect = { viewModel.toggleSelection(alarm.id) }
-                                    )
-                                } else {
-                                    SwipeableAlarmCard(
-                                        onDelete = { viewModel.deleteAlarm(alarm) }
+                            }
+                        }
+
+                        when {
+                            state.alarms.isEmpty() -> {
+                                item {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(320.dp)
+                                            .padding(horizontal = 16.dp),
+                                        contentAlignment = Alignment.Center
                                     ) {
-                                        // v1.5.2: Surface vacation suppression per-card.
-                                        val suppressedByVacation = alarm.isEnabled &&
-                                            state.vacationStartMillis > 0L &&
-                                            state.vacationEndMillis > state.vacationStartMillis &&
-                                            alarm.nextTriggerTime in
-                                                state.vacationStartMillis..state.vacationEndMillis
-                                        AlarmCard(
-                                            alarm = alarm,
-                                            is24Hour = state.is24HourFormat,
-                                            suppressedByVacation = suppressedByVacation,
-                                            pausedUntilMillis = state.pausedUntilMillis,
-                                            isActivePaneSelection = useTwoPane && selectedAlarmId == alarm.id,
-                                            onToggle = { viewModel.toggleAlarm(alarm) },
-                                            onForceToggle = { viewModel.forceDisableAlarm(alarm) },
-                                            onClick = {
-                                                if (useTwoPane) {
-                                                    selectedAlarmId = alarm.id
-                                                } else {
-                                                    onEditAlarm(alarm.id)
+                                        AppSurfaceCard(modifier = Modifier.fillMaxWidth()) {
+                                            AppEmptyState(
+                                                icon = Icons.Default.AlarmAdd,
+                                                title = stringResource(R.string.alarm_list_empty_title),
+                                                description = stringResource(R.string.alarm_list_empty_description),
+                                                footer = {
+                                                    AlarmListEmptyActions(
+                                                        onAddAlarm = onAddAlarm,
+                                                        onBrowseTemplates = { showTemplates = true }
+                                                    )
                                                 }
-                                            },
-                                            onDelete = { viewModel.deleteAlarm(alarm) },
-                                            onSkipNext = { viewModel.skipNextOccurrence(alarm) },
-                                            onDuplicate = { viewModel.duplicateAlarm(alarm) },
-                                            onShare = { shareAlarm(context, alarm, state.is24HourFormat) },
-                                            onShowHistory = {
-                                                statsAlarmLabel = alarm.label.ifBlank { "%d:%02d".format(alarm.hour, alarm.minute) }
-                                                viewModel.loadAlarmStats(alarm.id)
-                                            },
-                                            onLongClick = { viewModel.toggleSelection(alarm.id) }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            filteredAlarms.isEmpty() -> {
+                                item {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(320.dp)
+                                            .padding(horizontal = 16.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        AppSurfaceCard(modifier = Modifier.fillMaxWidth()) {
+                                            AppEmptyState(
+                                                icon = Icons.Default.Search,
+                                                title = stringResource(R.string.alarm_list_no_matches_title),
+                                                description = stringResource(R.string.alarm_list_no_matches_description),
+                                                footer = {
+                                                    TextButton(
+                                                        onClick = {
+                                                            searchQuery = ""
+                                                            viewModel.selectGroup(null)
+                                                            viewModel.selectProfile(null)
+                                                        }
+                                                    ) {
+                                                        Text(stringResource(R.string.alarm_list_clear_filters), color = MaterialTheme.colorScheme.primary)
+                                                    }
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            else -> {
+                                val conflictTimes = filteredAlarms
+                                    .filter { it.isEnabled }
+                                    .groupBy { it.hour * 60 + it.minute }
+                                    .filterValues { it.size > 1 }
+                                    .keys
+                                if (conflictTimes.isNotEmpty()) {
+                                    item {
+                                        val timeLabels = conflictTimes.joinToString(", ") { totalMin ->
+                                            val h = totalMin / 60
+                                            val m = totalMin % 60
+                                            AlarmTimeFormatter.format(h, m, state.is24HourFormat)
+                                        }
+                                        AppInlineNotice(
+                                            title = stringResource(R.string.alarm_list_duplicate_time_title),
+                                            message = stringResource(
+                                                R.string.alarm_list_duplicate_time_message,
+                                                timeLabels
+                                            ),
+                                            icon = Icons.Default.Warning,
+                                            color = SnoozeYellow,
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                                         )
                                     }
                                 }
+                                items(filteredAlarms, key = { it.id }) { alarm ->
+                                    val isDragging = draggingAlarmId == alarm.id
+                                    Row(
+                                        modifier = Modifier
+                                            .padding(horizontal = 16.dp)
+                                            .graphicsLayer {
+                                                translationY = if (isDragging) dragOffsetPx else 0f
+                                                alpha = if (isDragging) 0.94f else 1f
+                                                scaleX = if (isDragging) 1.01f else 1f
+                                                scaleY = if (isDragging) 1.01f else 1f
+                                            }
+                                            .zIndex(if (isDragging) 1f else 0f)
+                                            .animateItem(),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        if (canReorderAlarms) {
+                                            AlarmReorderHandle(
+                                                enabled = canReorderAlarms,
+                                                alarmLabel = alarm.label.ifBlank { formatAlarmTime(alarm, state.is24HourFormat) },
+                                                onMoveUp = {
+                                                    val ids = currentVisibleAlarmIds
+                                                    val index = ids.indexOf(alarm.id)
+                                                    if (index > 0) {
+                                                        viewModel.moveAlarm(
+                                                            movedAlarmId = alarm.id,
+                                                            targetAlarmId = ids[index - 1],
+                                                            visibleAlarmIds = ids
+                                                        )
+                                                        true
+                                                    } else {
+                                                        false
+                                                    }
+                                                },
+                                                onMoveDown = {
+                                                    val ids = currentVisibleAlarmIds
+                                                    val index = ids.indexOf(alarm.id)
+                                                    if (index in 0 until ids.lastIndex) {
+                                                        viewModel.moveAlarm(
+                                                            movedAlarmId = alarm.id,
+                                                            targetAlarmId = ids[index + 1],
+                                                            visibleAlarmIds = ids
+                                                        )
+                                                        true
+                                                    } else {
+                                                        false
+                                                    }
+                                                },
+                                                modifier = Modifier.pointerInput(canReorderAlarms, alarm.id) {
+                                                    if (canReorderAlarms) {
+                                                        detectDragGesturesAfterLongPress(
+                                                            onDragStart = {
+                                                                draggingAlarmId = alarm.id
+                                                                dragOffsetPx = 0f
+                                                            },
+                                                            onDragEnd = {
+                                                                draggingAlarmId = null
+                                                                dragOffsetPx = 0f
+                                                            },
+                                                            onDragCancel = {
+                                                                draggingAlarmId = null
+                                                                dragOffsetPx = 0f
+                                                            },
+                                                            onDrag = { change, dragAmount ->
+                                                                change.consume()
+                                                                dragOffsetPx += dragAmount.y
+                                                                val draggedInfo = listState.layoutInfo.visibleItemsInfo
+                                                                    .firstOrNull { it.key == alarm.id }
+                                                                val targetInfo = draggedInfo?.let { dragged ->
+                                                                    val draggedCenter = dragged.offset + (dragged.size / 2) + dragOffsetPx
+                                                                    listState.layoutInfo.visibleItemsInfo.firstOrNull { candidate ->
+                                                                        candidate.key is Long &&
+                                                                            candidate.key != alarm.id &&
+                                                                            draggedCenter >= candidate.offset &&
+                                                                            draggedCenter <= candidate.offset + candidate.size
+                                                                    }
+                                                                }
+                                                                val targetAlarmId = targetInfo?.key as? Long
+                                                                if (targetAlarmId != null) {
+                                                                    viewModel.moveAlarm(
+                                                                        movedAlarmId = alarm.id,
+                                                                        targetAlarmId = targetAlarmId,
+                                                                        visibleAlarmIds = currentVisibleAlarmIds
+                                                                    )
+                                                                    dragOffsetPx = 0f
+                                                                }
+                                                            }
+                                                        )
+                                                    }
+                                                }
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                        }
+                                        Box(modifier = Modifier.weight(1f)) {
+                                            val isSelected = alarm.id in state.selectedIds
+                                            if (state.isSelectionMode) {
+                                                SelectableAlarmCard(
+                                                    alarm = alarm,
+                                                    is24Hour = state.is24HourFormat,
+                                                    isSelected = isSelected,
+                                                    onToggleSelect = { viewModel.toggleSelection(alarm.id) }
+                                                )
+                                            } else {
+                                                SwipeableAlarmCard(
+                                                    onDelete = { viewModel.deleteAlarm(alarm) }
+                                                ) {
+                                                    val suppressedByVacation = alarm.isEnabled &&
+                                                        state.vacationStartMillis > 0L &&
+                                                        state.vacationEndMillis > state.vacationStartMillis &&
+                                                        alarm.nextTriggerTime in
+                                                            state.vacationStartMillis..state.vacationEndMillis
+                                                    AlarmCard(
+                                                        alarm = alarm,
+                                                        is24Hour = state.is24HourFormat,
+                                                        suppressedByVacation = suppressedByVacation,
+                                                        pausedUntilMillis = state.pausedUntilMillis,
+                                                        isActivePaneSelection = useTwoPane && selectedAlarmId == alarm.id,
+                                                        onToggle = { viewModel.toggleAlarm(alarm) },
+                                                        onForceToggle = { viewModel.forceDisableAlarm(alarm) },
+                                                        onClick = {
+                                                            if (useTwoPane) {
+                                                                selectedAlarmId = alarm.id
+                                                            } else {
+                                                                onEditAlarm(alarm.id)
+                                                            }
+                                                        },
+                                                        onDelete = { viewModel.deleteAlarm(alarm) },
+                                                        onSkipNext = { viewModel.skipNextOccurrence(alarm) },
+                                                        onDuplicate = { viewModel.duplicateAlarm(alarm) },
+                                                        onShare = { shareAlarm(context, alarm, state.is24HourFormat) },
+                                                        onShowHistory = {
+                                                            statsAlarmLabel = alarm.label.ifBlank { "%d:%02d".format(alarm.hour, alarm.minute) }
+                                                            viewModel.loadAlarmStats(alarm.id)
+                                                        },
+                                                        onLongClick = { viewModel.toggleSelection(alarm.id) }
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                item {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 4.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        TextButton(
+                                            onClick = { showTemplates = true },
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(stringResource(R.string.alarm_list_templates))
+                                        }
+                                        TextButton(
+                                            onClick = onAddAlarm,
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(stringResource(R.string.new_alarm))
+                                        }
+                                    }
                                 }
                             }
                         }
+
                         item {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                TextButton(
-                                    onClick = { showTemplates = true },
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(stringResource(R.string.alarm_list_templates))
-                                }
-                                TextButton(
-                                    onClick = onAddAlarm,
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(stringResource(R.string.new_alarm))
-                                }
+                            Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+                                QuickAlarmRow(
+                                    onQuickAlarm = viewModel::createQuickAlarm,
+                                    napDefaultMinutes = state.napDefaultMinutes
+                                )
+                            }
+                        }
+                        if (youTubeAvailable) {
+                            item {
+                                YouTubeDownloadCard(
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                                    onClick = { showYouTubeDialog = true }
+                                )
                             }
                         }
                     }
                 }
 
-                item {
-                    Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
-                        QuickAlarmRow(
-                            onQuickAlarm = viewModel::createQuickAlarm,
-                            napDefaultMinutes = state.napDefaultMinutes
-                        )
-                    }
-                }
-                if (youTubeAvailable) {
-                    item {
-                        YouTubeDownloadCard(
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                            onClick = { showYouTubeDialog = true }
-                        )
-                    }
-                }
-                }
-
-                val alarmListPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp)
+                val alarmListPadding = PaddingValues(bottom = 24.dp)
                 if (useTwoPane) {
                     Row(
                         modifier = Modifier.fillMaxSize(),
@@ -798,9 +808,9 @@ fun AlarmListScreen(
                         content = alarmListContent
                     )
                 }
+            }
         }
     }
-}
 }
 
 @Composable
@@ -991,9 +1001,9 @@ private fun AlarmDetailPane(
                     },
                 shape = RoundedCornerShape(10.dp),
                 color = SurfaceMedium,
-                border = androidx.compose.foundation.BorderStroke(
+                border = BorderStroke(
                     width = 1.dp,
-                    color = com.sysadmindoc.alarmclock.ui.theme.BorderSubtle
+                    color = BorderSubtle
                 )
             ) {
                 Row(
@@ -1240,7 +1250,7 @@ private fun QuickAlarmRow(
     onQuickAlarm: (Int) -> Unit,
     napDefaultMinutes: Int = 20
 ) {
-    AppSurfaceCard(contentPadding = androidx.compose.foundation.layout.PaddingValues(14.dp)) {
+    AppSurfaceCard(contentPadding = PaddingValues(14.dp)) {
         AppSectionTitle(
             title = stringResource(R.string.alarm_list_quick_alarms)
         )
@@ -1497,7 +1507,7 @@ private fun SelectionActionBar(
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 10.dp),
         highlighted = true,
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 14.dp)
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(
@@ -1606,7 +1616,7 @@ private fun SelectableAlarmCard(
         border = androidx.compose.foundation.BorderStroke(
             width = if (isSelected) 2.dp else 1.dp,
             color = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.34f)
-            else com.sysadmindoc.alarmclock.ui.theme.BorderSubtle
+            else BorderSubtle
         )
     ) {
         Row(
@@ -1698,7 +1708,7 @@ internal fun Alarm.challengeChainSteps(): List<String> {
  *
  * Composable because the step names come from the same resources the alarm
  * editor uses; the private copy this used to keep named the same challenges
- * differently ("Math (Easy)" against "Easy math").
+ * differently (\"Math (Easy)\" against \"Easy math\").
  */
 @Composable
 internal fun Alarm.challengeChainLabel(): String? {
@@ -1715,7 +1725,7 @@ internal fun Alarm.challengeChainLabel(): String? {
 /**
  * How this alarm repeats, in the reader's language.
  *
- * [Alarm.repeatLabelRes] is null for an arbitrary set of days, which is the
+ * [repeatLabelRes] is null for an arbitrary set of days, which is the
  * case that has no name and falls back to the day list.
  */
 internal fun Alarm.repeatLabel(context: Context): String =
@@ -1735,7 +1745,7 @@ private fun nextOccurrenceLabel(
     pausedUntilMillis: Long = 0L
 ): String {
     if (alarm.isEnabled && pausedUntilMillis > 0L) {
-        // "Pause alarms for N days" zeroes every trigger, so the card used to
+        // \"Pause alarms for N days\" zeroes every trigger, so the card used to
         // claim the alarm needed re-enabling by hand. It does not.
         val until = Instant.ofEpochMilli(pausedUntilMillis)
             .atZone(ZoneId.systemDefault())
@@ -1761,7 +1771,7 @@ private fun YouTubeDownloadCard(
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .clickable(role = androidx.compose.ui.semantics.Role.Button, onClick = onClick),
+            .clickable(role = Role.Button, onClick = onClick),
         shape = shapeTokens.card,
         colors = CardDefaults.cardColors(
             containerColor = SurfaceCard

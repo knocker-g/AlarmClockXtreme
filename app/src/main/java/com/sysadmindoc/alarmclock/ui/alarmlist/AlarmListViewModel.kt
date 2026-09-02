@@ -92,7 +92,13 @@ data class AlarmListUiState(
      * each card claimed it had to be re-enabled by hand, which is untrue, and
      * the only Resume control was three screens away in Settings.
      */
-    val pausedUntilMillis: Long = 0L
+    val pausedUntilMillis: Long = 0L,
+    /**
+     * v1.15.35: Explicit loading state for the first-run database sync.
+     * Prevents the list from briefly rendering the "No Alarms" empty state
+     * while Room is warming up.
+     */
+    val isInitialLoading: Boolean = true
 )
 
 @HiltViewModel
@@ -179,12 +185,13 @@ class AlarmListViewModel @Inject constructor(
             vacationEndMillis = if (VacationAlarmPolicy.hasConfiguredWindow(settings)) {
                 settings.vacationEndMillis
             } else 0L,
-            pausedUntilMillis = if (settings.isPaused(now)) settings.pauseUntilMillis else 0L
+            pausedUntilMillis = if (settings.isPaused(now)) settings.pauseUntilMillis else 0L,
+            isInitialLoading = false
         )
     }.stateIn(
         viewModelScope,
-        SharingStarted.WhileSubscribed(5000),
-        AlarmListUiState()
+        SharingStarted.Eagerly,
+        AlarmListUiState(isInitialLoading = true)
     )
 
     init {
