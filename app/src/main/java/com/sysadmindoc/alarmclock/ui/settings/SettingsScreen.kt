@@ -1,20 +1,26 @@
 package com.sysadmindoc.alarmclock.ui.settings
 
-import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.StringRes
 import androidx.core.content.ContextCompat
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,6 +29,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -30,6 +37,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -352,24 +361,27 @@ fun SettingsScreen(
 
         val selectedPane = settingsPaneCategories.firstOrNull { it.id == selectedPaneId }
             ?: settingsPaneCategories.first()
-        val showSettingsHome = !useTwoPane && selectedPaneId == null
         val settingsListState = rememberLazyListState()
 
-        androidx.compose.runtime.LaunchedEffect(useTwoPane, selectedPane.id) {
+        LaunchedEffect(useTwoPane, selectedPaneId) {
             if (useTwoPane) settingsListState.scrollToItem(0)
         }
 
-        val settingsContent: @Composable (Modifier) -> Unit = { contentModifier ->
+        val settingsContent: @Composable (Modifier, String?) -> Unit = { contentModifier, currentPaneId ->
+            val pane = settingsPaneCategories.firstOrNull { it.id == currentPaneId }
+                ?: settingsPaneCategories.first()
+            val isHome = !useTwoPane && currentPaneId == null
+
             LazyColumn(
                 modifier = contentModifier,
                 state = settingsListState,
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 if (useTwoPane) {
-                    item(key = "pane-header-${selectedPane.id}") {
-                        SettingsPaneHeader(selectedPane, state)
+                    item(key = "pane-header-${pane.id}") {
+                        SettingsPaneHeader(pane, state)
                     }
-                } else if (showSettingsHome) {
+                } else if (isHome) {
                     item(key = "settings-hero") {
                         AlarmClockHeroHeader(
                             title = stringResource(R.string.settings_title),
@@ -389,9 +401,9 @@ fun SettingsScreen(
                         )
                     }
                 } else {
-                    item(key = "settings-pane-header-${selectedPane.id}") {
+                    item(key = "settings-pane-header-${pane.id}") {
                         AlarmClockHeroHeader(
-                            title = stringResource(selectedPane.titleRes),
+                            title = stringResource(pane.titleRes),
                             subtitle = "",
                             actions = {
                                 TextButton(onClick = { selectedPaneId = null }) {
@@ -401,7 +413,7 @@ fun SettingsScreen(
                         )
                     }
                 }
-            if (!showSettingsHome && selectedPane.id == "readiness") {
+            if (!isHome && pane.id == "readiness") {
             settingsItem("readiness-wake") {
             WakeReadinessSection(
                 state = state,
@@ -440,7 +452,7 @@ fun SettingsScreen(
             }
             }
 
-            if (!showSettingsHome && selectedPane.id == "defaults") {
+            if (!isHome && pane.id == "defaults") {
             settingsItem("defaults-alarm") {
             SettingsGroup(
                 title = stringResource(R.string.settings_alarm_defaults),
@@ -793,7 +805,7 @@ fun SettingsScreen(
             }
             }
 
-            if (!showSettingsHome && selectedPane.id == "integrations") {
+            if (!isHome && pane.id == "integrations") {
             settingsItem("integrations-services") {
                 IntegrationsSection(state, viewModel)
             }
@@ -814,18 +826,18 @@ fun SettingsScreen(
                 ConnectionsSection(state)
             }
             }
-            if (!showSettingsHome && selectedPane.id == "personalization") {
+            if (!isHome && pane.id == "personalization") {
             settingsItem("personalization") {
                 PersonalizationSection(state, viewModel)
             }
             }
-            if (!showSettingsHome && selectedPane.id == "backup") {
+            if (!isHome && pane.id == "backup") {
             settingsItem("backup-restore") {
                 BackupRestoreSection(viewModel, is24HourFormat = state.settings.is24HourFormat)
             }
             }
 
-            if (!showSettingsHome && selectedPane.id == "utilities") {
+            if (!isHome && pane.id == "utilities") {
             settingsItem("utilities-shortcuts") {
             SettingsGroup(
                 title = stringResource(R.string.settings_utilities),
@@ -1006,14 +1018,33 @@ fun SettingsScreen(
                 settingsContent(
                     Modifier
                         .weight(1f)
-                        .fillMaxHeight()
+                        .fillMaxHeight(),
+                    selectedPaneId
                 )
             }
         } else {
-            settingsContent(
-                Modifier
-                    .fillMaxSize()
-            )
+            AnimatedContent(
+                targetState = selectedPaneId,
+                transitionSpec = {
+                    if (targetState != null) {
+                        // Forward: sub-item enters from right
+                        (slideInHorizontally { it / 2 } + fadeIn()).togetherWith(
+                            slideOutHorizontally { -it / 4 } + fadeOut(targetAlpha = 0.72f)
+                        )
+                    } else {
+                        // Backward: home enters from left
+                        (slideInHorizontally { -it / 4 } + fadeIn()).togetherWith(
+                            slideOutHorizontally { it / 2 } + fadeOut(targetAlpha = 0.72f)
+                        ).apply { targetContentZIndex = -1f }
+                    }
+                },
+                label = "settings-pane-transition"
+            ) { targetId ->
+                settingsContent(
+                    Modifier.fillMaxSize(),
+                    targetId
+                )
+            }
         }
     }
 
