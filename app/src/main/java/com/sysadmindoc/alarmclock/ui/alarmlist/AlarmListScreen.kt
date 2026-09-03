@@ -969,6 +969,9 @@ private fun AlarmDetailPane(
                 if (alarm.group.isNotBlank()) {
                     AppStatusChip(label = AlarmPublicText.getLocalizedName(alarm.group, LocalContext.current))
                 }
+                if (alarm.profileName.isNotBlank()) {
+                    AppStatusChip(label = alarm.profileName, color = MaterialTheme.colorScheme.secondary)
+                }
                 alarm.challengeChainLabel()?.let { challengeLabel ->
                     AppStatusChip(label = challengeLabel, color = SnoozeYellow)
                 }
@@ -1479,6 +1482,7 @@ private fun AlarmCard(
                 alarm.shiftPatternChipLabel()?.let(::add)
                 if (alarm.usesFixedTimezone) add(alarm.fixedTimezoneId)
                 if (alarm.group.isNotBlank()) add(AlarmPublicText.getLocalizedName(alarm.group, metadataContext))
+                if (alarm.profileName.isNotBlank()) add(alarm.profileName)
                 chainLabel?.let(::add)
                 if (alarm.ringtoneUri == "silent") add(silentLabel)
             }

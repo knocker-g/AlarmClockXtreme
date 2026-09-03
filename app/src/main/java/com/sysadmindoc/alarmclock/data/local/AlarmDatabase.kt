@@ -23,7 +23,7 @@ import com.sysadmindoc.alarmclock.data.model.Alarm
         PreSleepTagEntry::class,
         AlarmGroup::class
     ],
-    version = 25,
+    version = 26,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -380,6 +380,20 @@ abstract class AlarmDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v1.15.43: Ensure standard groups are seeded even for users who already
+         * migrated to v25 but missed the initial seeding due to onCreate only
+         * firing on fresh database files.
+         */
+        val MIGRATION_25_26 = object : Migration(25, 26) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "INSERT OR IGNORE INTO alarm_groups (name) " +
+                        "VALUES ('Work'), ('School'), ('Gym'), ('Medication'), ('Personal'), ('Calendar')"
+                )
+            }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -405,6 +419,7 @@ abstract class AlarmDatabase : RoomDatabase() {
             MIGRATION_22_23,
             MIGRATION_23_24,
             MIGRATION_24_25,
+            MIGRATION_25_26,
         )
     }
 }
