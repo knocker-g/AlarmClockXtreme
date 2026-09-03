@@ -1260,7 +1260,12 @@ private fun QuickAlarmRow(
                 .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            listOf(10 to "10 min", 30 to "30 min", 60 to "1 hour", 120 to "2 hours").forEach { (minutes, label) ->
+            listOf(
+                10 to stringResource(R.string.alarm_list_quick_10min),
+                30 to stringResource(R.string.alarm_list_quick_30min),
+                60 to stringResource(R.string.alarm_list_quick_1h),
+                120 to stringResource(R.string.alarm_list_quick_2h)
+            ).forEach { (minutes, label) ->
                 AppFilterChip(
                     label = label,
                     selected = false,
@@ -1755,10 +1760,17 @@ private fun nextOccurrenceLabel(
     if (!alarm.isEnabled || alarm.nextTriggerTime <= 0) {
         return stringResource(R.string.alarm_list_paused_until_reenabled)
     }
-    val pattern = "EEE, MMM d • " + AlarmTimeFormatter.pattern(is24Hour)
-    val formatted = Instant.ofEpochMilli(alarm.nextTriggerTime)
+
+    val locale = LocalConfiguration.current.locales[0]
+    val datePattern = stringResource(R.string.alarmlist_date_pattern)
+    val format = stringResource(R.string.alarmlist_next_occurrence_format)
+
+    val dateFormatted = Instant.ofEpochMilli(alarm.nextTriggerTime)
         .atZone(ZoneId.systemDefault())
-        .format(DateTimeFormatter.ofPattern(pattern))
+        .format(DateTimeFormatter.ofPattern(datePattern, locale))
+    val timeFormatted = AlarmTimeFormatter.format(alarm.nextTriggerTime, is24Hour, locale = locale)
+
+    val formatted = format.format(dateFormatted, timeFormatted)
     return stringResource(R.string.alarm_list_next_occurrence, formatted)
 }
 

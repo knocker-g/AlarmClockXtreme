@@ -614,8 +614,8 @@
     <string name="alarm_edit_checklist_label">チェックリスト項目 (1行に1つ)</string>
     <string name="alarm_edit_checklist_placeholder">ストレッチ\n水を飲む\n歯を磨く</string>
     <string name="alarm_edit_checklist_hint">停止後、モーニングブリーフィングにチェックリストを表示します。</string>
-    <string name="alarm_edit_profile">アラームプロファイル</string>
-    <string name="alarm_edit_profile_placeholder">例: 仕事、旅行、週末</string>
+    <string name="alarm_edit_profile">プロファイル</string>
+    <string name="alarm_edit_profile_placeholder">例: 仕事、旅行</string>
     <string name="alarm_edit_specific_date">特定の日付 (YYYY-MM-DD、繰り返しの場合空白)</string>
     <string name="alarm_edit_time_zone">タイムゾーン</string>
     <string name="alarm_edit_fixed_zone">固定ゾーン</string>
@@ -662,7 +662,7 @@
     <string name="alarm_edit_solar_sunrise">日の出</string>
     <string name="alarm_edit_solar_sunset">日の入り</string>
     <string name="alarm_edit_solar_offset">ソーラーオフセット</string>
-    <string name="alarm_edit_solar_off">オフ (時計の時刻を使用)</string>
+    <string name="alarm_edit_solar_off">オフ</string>
     <string name="alarm_edit_positive_minutes_short">+%1$d 分</string>
     <string name="alarm_edit_solar_after">+%1$d 分 (%2$s の後)</string>
     <string name="alarm_edit_solar_before">%1$d 分 (%2$s の前)</string>
@@ -1036,8 +1036,8 @@
     <string name="settings_confirm_passphrase">パスフレーズの確認</string>
     <string name="settings_confirm_passphrase_required">暗号化エクスポートの前に必須です</string>
     <string name="settings_passphrase_mismatch">パスフレーズが一致しません。暗号化インポートでは最初のフィールドのみを使用します。</string>
-    <string name="settings_encrypt_export">暗号化してエクスポート</string>
-    <string name="settings_decrypt_import">復号してインポート</string>
+    <string name="settings_encrypt_export">暗号化して\nエクスポート</string>
+    <string name="settings_decrypt_import">復号して\nインポート</string>
     <string name="settings_inspecting_backup">バックアップを検査中</string>
     <string name="settings_backup_in_progress">バックアップ操作が進行中</string>
     <string name="settings_restore_choices_description">ファイルのチェック後に復元の選択肢が表示されます。</string>
@@ -1202,7 +1202,7 @@
     <string name="alarm_list_stats_missed">%1$d 回のミス</string>
     <string name="alarm_list_groups">グループ</string>
     <string name="alarm_list_profiles">プロファイル</string>
-    <string name="alarm_list_search_placeholder">「平日」「ジム」「服薬」などを検索</string>
+    <string name="alarm_list_search_placeholder">ラベル・グループ名検索</string>
     <string name="alarm_list_empty_title">アラームはまだありません</string>
     <string name="alarm_list_empty_description">最初のアラームを作成するか、テンプレートから始めてください。</string>
     <string name="alarm_list_no_matches_title">検索に一致するアラームはありません</string>
@@ -1225,12 +1225,29 @@
     <string name="alarm_list_resume_alarms">アラームを再開</string>
     <string name="alarm_list_group_all">すべて</string>
     <string name="alarm_list_quick_alarms">クイックアラーム</string>
+    <string name="alarm_list_quick_10min">10分</string>
+    <string name="alarm_list_quick_30min">30分</string>
+    <string name="alarm_list_quick_1h">1時間</string>
+    <string name="alarm_list_quick_2h">2時間</string>
+    <string name="alarmlist_manual_order_saved">並び順を保存しました</string>
+    <string name="alarmlist_snooze_suggestion">「%1$s」のスヌーズが平均 %2$d 回に達しています。時刻を 15 分遅らせることを検討してください</string>
+    <plurals name="feedback_multialarm_deleted">
+        <item quantity="other">%1$d 件のアラームを削除しました</item>
+    </plurals>
+    <plurals name="feedback_multialarm_enabled">
+        <item quantity="other">%1$d 件のアラームを有効にしました</item>
+    </plurals>
+    <string name="alarmlist_cancellation_locked">ロック中 — %1$d 分後に作動します。解除するには長押ししてください</string>
+    <string name="alarmlist_duplicated">アラームを複製しました</string>
+    <string name="alarmlist_label_duplicated">「%1$s」を複製しました</string>
+    <string name="alarmlist_quick_alarm_set">クイックアラームを %1$s に設定しました</string>
+    <string name="alarmlist_skip_next_feedback">次回：%1$s</string>
     <string name="alarm_list_power_nap">パワーナップ</string>
     <string name="alarm_list_edit">編集</string>
     <string name="alarm_list_skip_next">次をスキップ</string>
     <string name="alarm_list_select_visible">表示中を選択</string>
-    <string name="alarm_list_enable">有効にする</string>
-    <string name="alarm_list_pause">一時停止</string>
+    <string name="alarm_list_enable">有効</string>
+    <string name="alarm_list_pause">停止</string>
     <string name="alarm_list_alarm_sounds">アラーム音</string>
     <string name="alarm_list_youtube_downloads">YouTubeダウンロード</string>
     <string name="dashboard_retry">再試行</string>
@@ -1240,8 +1257,8 @@
     <string name="dashboard_pollen">花粉</string>
     <string name="dashboard_source_open_meteo_cams">ソース: Open-Meteo + CAMS</string>
     <string name="dashboard_schedule">スケジュール</string>
-    <string name="dashboard_city_region_zip_code">都市、地域、または郵便番号</string>
-    <string name="dashboard_use_current_device_location">現在のデバイスの位置情報を使用</string>
+    <string name="dashboard_city_region_zip_code">都市、地域、郵便番号</string>
+    <string name="dashboard_use_current_device_location">現在の位置情報を使用</string>
     <string name="dashboard_today_quiet">今日は予定がありません</string>
     <string name="dashboard_weather_calendar_cards_are_off">天気とカレンダーのカードがオフになっています。設定でオンにしてください。</string>
     <string name="dashboard_view">表示</string>
@@ -1402,7 +1419,7 @@
     <string name="bedtime_wind_down_target">リラックス目標</string>
     <string name="onboarding_set_up_later">後でセットアップ</string>
     <string name="onboarding_reliable_wake_ups">信頼できる起床</string>
-    <string name="onboarding_alarmclockxtreme_built_stay_dependable_even">AlarmClockXtremeは、Androidがバックグラウンドで電力を節約しようとしているときでも、信頼性を維持するように構築されています。</string>
+    <string name="onboarding_alarmclockxtreme_built_stay_dependable_even">Androidがバックグラウンドで電力を節約しようとしているときでも、信頼性を維持するように構築されています。</string>
     <string name="onboarding_wake_up_real">確実に起きる</string>
     <string name="onboarding_challenge_based_dismiss_flows_help">チャレンジベースの停止フローは、アラームが止まる前に本当に起きていることを確認するのに役立ちます。</string>
     <string name="onboarding_start_day_informed">情報を得て一日を始める</string>
@@ -2084,7 +2101,9 @@
     <string name="ringtone_saved_to_alarms">「%1$s」をアラームに保存しました。</string>
     <string name="alarm_list_all_alarms_paused_until">すべてのアラームは %1$s まで一時停止中です</string>
     <string name="alarm_list_paused_until_reenabled">再び有効にするまで一時停止中です</string>
-    <string name="alarm_list_next_occurrence">次回の鳴動: %1$s</string>
+    <string name="alarm_list_next_occurrence">次回：%1$s</string>
+    <string name="alarmlist_next_occurrence_format">%1$s %2$s</string>
+    <string name="alarmlist_date_pattern">M/d(E)</string>
     <string name="bedtime_delayed_until">%1$s まで遅延中</string>
     <string name="bedtime_sonar_last_session">前回のセッション: %1$d分、動き %2$d分、落ち着かない %3$d分、静止 %4$d分</string>
     <string name="bedtime_sonar_loud_bursts">; %1$d 回の大きな音、推定ピーク %2$d dB</string>
@@ -2287,7 +2306,7 @@
     <string name="oem_vivo_title">Vivoでバックグラウンド活動を許可する</string>
 
     <!-- Onboarding highlights -->
-    <string name="onboarding_highlight_exact_alarms">Doze中も確実に鳴る正確なアラーム</string>
+    <string name="onboarding_highlight_exact_alarms">Dozeモード中でも確実に鳴る</string>
     <string name="onboarding_highlight_battery_guidance">省電力が強い端末向け設定</string>
     <string name="onboarding_highlight_challenges">計算・シェイク・記憶・歩数・バーコードなど</string>
     <string name="onboarding_highlight_layer_challenges">複数の解除条件を組み合わせ可能</string>
