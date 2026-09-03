@@ -12,7 +12,13 @@ object AlarmPublicText {
      * System profiles are still localized as they are technical identifiers.
      */
     val SYSTEM_PROFILES = mapOf(
-        "calendar_auto" to R.string.alarm_edit_profile_calendar_auto
+        "calendar_auto" to R.string.alarm_edit_profile_calendar_auto,
+        "Work" to R.string.alarm_edit_group_work,
+        "School" to R.string.alarm_edit_group_school,
+        "Gym" to R.string.alarm_edit_group_gym,
+        "Medication" to R.string.alarm_edit_group_medication,
+        "Personal" to R.string.alarm_edit_group_personal,
+        "Calendar" to R.string.alarm_edit_group_calendar
     )
 
     fun requiredAlarmLabel(label: String, hideLabel: Boolean): String {

@@ -224,15 +224,16 @@ internal fun LazyListScope.alarmEditOverviewSections(
         val defaultGroups = listOf("" to stringResource(R.string.alarm_edit_group_none)) +
             state.allGroups.map { it to it }
         val defaultGroupValues = state.allGroups.toSet()
-        val isCustomGroup = state.group.isNotBlank() && state.group !in defaultGroupValues
+        val isCustomGroup = state.group.isNotEmpty() && state.group !in defaultGroupValues
         SettingsRow(label = stringResource(R.string.alarm_edit_alarm_group)) {
             Box {
                 SettingsValueButton(
                     label = if (isCustomGroup) {
                         state.group
                     } else {
-                        defaultGroups.firstOrNull { it.first == state.group }?.second
-                            ?: stringResource(R.string.alarm_edit_group_none)
+                        AlarmPublicText.getLocalizedName(state.group, LocalContext.current).ifBlank {
+                            stringResource(R.string.alarm_edit_group_none)
+                        }
                     },
                     onClick = { showGroupMenu = true }
                 )
@@ -244,7 +245,7 @@ internal fun LazyListScope.alarmEditOverviewSections(
                         DropdownMenuItem(
                             text = {
                                 Text(
-                                    groupLabel,
+                                    AlarmPublicText.getLocalizedName(group, LocalContext.current).ifBlank { groupLabel },
                                     color = if (group == state.group) MaterialTheme.colorScheme.primary else TextPrimary
                                 )
                             },
@@ -272,7 +273,7 @@ internal fun LazyListScope.alarmEditOverviewSections(
             }
         }
         // Show custom text field only when a non-preset group is set.
-        if (isCustomGroup || (state.group.isNotBlank() && state.group == " ")) {
+        if (isCustomGroup || (state.group.isNotEmpty() && state.group == " ")) {
             OutlinedTextField(
                 value = state.group.trim(),
                 onValueChange = viewModel::updateGroup,

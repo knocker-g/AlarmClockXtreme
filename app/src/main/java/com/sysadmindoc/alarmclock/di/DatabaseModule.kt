@@ -40,6 +40,15 @@ object DatabaseModule {
             // alarms quietly would be its own failure, so say so.
             .fallbackToDestructiveMigrationOnDowngrade()
             .addCallback(object : RoomDatabase.Callback() {
+                override fun onCreate(db: SupportSQLiteDatabase) {
+                    // v1.15.42: Seed standard groups on fresh install. Migrating
+                    // users are handled by MIGRATION_24_25 in AlarmDatabase.
+                    db.execSQL(
+                        "INSERT OR IGNORE INTO alarm_groups (name) " +
+                            "VALUES ('Work'), ('School'), ('Gym'), ('Medication'), ('Personal'), ('Calendar')"
+                    )
+                }
+
                 override fun onDestructiveMigration(db: SupportSQLiteDatabase) {
                     DatabaseDowngradeNotice.post(context)
                 }
