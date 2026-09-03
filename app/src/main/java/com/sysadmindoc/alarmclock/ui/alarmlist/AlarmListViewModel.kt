@@ -206,7 +206,7 @@ class AlarmListViewModel @Inject constructor(
                 val avg = eventRepository.avgSnoozeCountForAlarm(alarm.id) ?: continue
                 if (avg >= 3.0) {
                     val label = alarm.label.ifBlank { "%d:%02d".format(alarm.hour, alarm.minute) }
-                    emitFeedback("\"$label\" averages ${avg.toInt()} snoozes — consider moving it 15 min later")
+                    emitFeedback(context.getString(R.string.alarmlist_snooze_suggestion, label, avg.toInt()))
                     prefs.edit().putString("last_suggest_day", today).apply()
                     break
                 }
@@ -236,7 +236,7 @@ class AlarmListViewModel @Inject constructor(
         _sortOrder.value = AlarmSortOrder.MANUAL
         viewModelScope.launch {
             repository.updateSortOrders(reorderedIds)
-            emitFeedback("Manual alarm order saved")
+            emitFeedback(context.getString(R.string.alarmlist_manual_order_saved))
         }
     }
 
@@ -290,11 +290,7 @@ class AlarmListViewModel @Inject constructor(
             clearSelection()
             if (ids.isNotEmpty()) {
                 emitFeedback(
-                    if (ids.size == 1) {
-                        "1 alarm deleted"
-                    } else {
-                        "${ids.size} alarms deleted"
-                    }
+                    context.resources.getQuantityString(R.plurals.feedback_multialarm_deleted, ids.size, ids.size)
                 )
             }
         }
@@ -315,11 +311,7 @@ class AlarmListViewModel @Inject constructor(
             clearSelection()
             if (enabledCount > 0) {
                 emitFeedback(
-                    if (enabledCount == 1) {
-                        "1 alarm enabled"
-                    } else {
-                        "$enabledCount alarms enabled"
-                    }
+                    context.resources.getQuantityString(R.plurals.feedback_multialarm_enabled, enabledCount, enabledCount)
                 )
             }
         }
@@ -363,7 +355,7 @@ class AlarmListViewModel @Inject constructor(
                 if (lockMinutes > 0 && alarm.nextTriggerTime > 0) {
                     val minutesUntilFire = (alarm.nextTriggerTime - System.currentTimeMillis()) / 60_000
                     if (minutesUntilFire in 0..lockMinutes) {
-                        emitFeedback("Locked — fires in $minutesUntilFire min. Long-press toggle to override.")
+                        emitFeedback(context.getString(R.string.alarmlist_cancellation_locked, minutesUntilFire.toInt()))
                         return@launch
                     }
                 }
@@ -439,9 +431,9 @@ class AlarmListViewModel @Inject constructor(
             scheduler.schedule(saved.copy(nextTriggerTime = nextTrigger))
             emitFeedback(
                 if (duplicate.label.isBlank()) {
-                    "Alarm duplicated"
+                    context.getString(R.string.alarmlist_duplicated)
                 } else {
-                    "\"${duplicate.label}\" duplicated"
+                    context.getString(R.string.alarmlist_label_duplicated, duplicate.label)
                 }
             )
         }
@@ -473,7 +465,7 @@ class AlarmListViewModel @Inject constructor(
 
             val id = repository.save(alarm)
             scheduler.scheduleAt(alarm.copy(id = id), triggerTime)
-            emitFeedback("Quick alarm set for ${formatFeedbackTime(triggerTime)}")
+            emitFeedback(context.getString(R.string.alarmlist_quick_alarm_set, formatFeedbackTime(triggerTime)))
         }
     }
 
@@ -577,16 +569,18 @@ class AlarmListViewModel @Inject constructor(
             repository.updateNextTrigger(alarm.id, afterSkip)
             scheduler.scheduleAt(updated, afterSkip)
 
-            val skippedDate = Instant.ofEpochMilli(afterSkip)
+            val locale = context.resources.configuration.locales[0]
+            val is24h = preferencesManager.getCachedSettings().is24HourFormat
+            val datePattern = context.getString(R.string.alarmlist_date_pattern)
+            val format = context.getString(R.string.alarmlist_next_occurrence_format)
+
+            val dateFormatted = Instant.ofEpochMilli(afterSkip)
                 .atZone(ZoneId.systemDefault())
-                .format(
-                    DateTimeFormatter.ofPattern(
-                        "EEE, MMM d 'at' " + AlarmTimeFormatter.pattern(
-                            preferencesManager.getCachedSettings().is24HourFormat
-                        )
-                    )
-                )
-            emitFeedback("Next occurrence skipped — resuming $skippedDate")
+                .format(DateTimeFormatter.ofPattern(datePattern, locale))
+            val timeFormatted = AlarmTimeFormatter.format(afterSkip, is24h, locale = locale)
+
+            val skippedDate = format.format(dateFormatted, timeFormatted)
+            emitFeedback(context.getString(R.string.alarmlist_skip_next_feedback, skippedDate))
         }
     }
 

@@ -1259,6 +1259,25 @@
     <string name="alarm_list_resume_alarms">Resume alarms</string>
     <string name="alarm_list_group_all">All</string>
     <string name="alarm_list_quick_alarms">Quick alarms</string>
+    <string name="alarm_list_quick_10min">10 min</string>
+    <string name="alarm_list_quick_30min">30 min</string>
+    <string name="alarm_list_quick_1h">1 hour</string>
+    <string name="alarm_list_quick_2h">2 hours</string>
+    <string name="alarmlist_manual_order_saved">Manual alarm order saved</string>
+    <string name="alarmlist_snooze_suggestion">“%1$s” averages %2$d snoozes — consider moving it 15 min later</string>
+    <plurals name="feedback_multialarm_deleted">
+        <item quantity="one">1 alarm deleted</item>
+        <item quantity="other">%1$d alarms deleted</item>
+    </plurals>
+    <plurals name="feedback_multialarm_enabled">
+        <item quantity="one">1 alarm enabled</item>
+        <item quantity="other">%1$d alarms enabled</item>
+    </plurals>
+    <string name="alarmlist_cancellation_locked">Locked — fires in %1$d min. Long-press toggle to override.</string>
+    <string name="alarmlist_duplicated">Alarm duplicated</string>
+    <string name="alarmlist_label_duplicated">“%1$s” duplicated</string>
+    <string name="alarmlist_quick_alarm_set">Quick alarm set for %1$s</string>
+    <string name="alarmlist_skip_next_feedback">Next occurrence skipped — resuming %1$s</string>
     <string name="alarm_list_power_nap">Power nap</string>
     <string name="alarm_list_edit">Edit</string>
     <string name="alarm_list_skip_next">Skip next</string>
@@ -2182,6 +2201,8 @@
     <string name="alarm_list_all_alarms_paused_until">All alarms paused until %1$s</string>
     <string name="alarm_list_paused_until_reenabled">Paused until you re-enable this alarm</string>
     <string name="alarm_list_next_occurrence">Next occurrence: %1$s</string>
+    <string name="alarmlist_next_occurrence_format">%1$s • %2$s</string>
+    <string name="alarmlist_date_pattern">EEE, MMM d</string>
     <string name="bedtime_delayed_until">Delayed until %1$s</string>
     <string name="bedtime_sonar_last_session">Last session: %1$dm, %2$dm movement, %3$dm restless, %4$dm still</string>
     <string name="bedtime_sonar_loud_bursts">; %1$d loud bursts, peak %2$d dB est.</string>
