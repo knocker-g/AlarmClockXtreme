@@ -7,7 +7,13 @@ import androidx.annotation.StringRes
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
@@ -513,78 +519,102 @@ fun AlarmEditScreen(
             viewModel.computeForecast()
         }
         CompositionLocalProvider(LocalAlarmEditorPage provides editorPage) {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                state = editorScrollState,
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-            when (editorPage) {
-                AlarmEditorPage.OVERVIEW -> alarmEditOverviewSections(
-                    editorPage = editorPage,
-                    state = state,
-                    viewModel = viewModel,
-                    onEditTime = {
-                        // v1.13.15: sticky numpad mode opens prefilled with the
-                        // current time instead of empty digits + disabled Save.
-                        timeNumpadDigits = if (useTimeNumpad) {
-                            formatAlarmNumpadDigits(state.hour, state.minute, state.is24HourFormat)
-                        } else {
-                            ""
-                        }
-                        timeNumpadIsPm = state.hour >= 12
-                        showTimePicker = true
-                    },
-                    onSelectPage = { page -> editorPageName = page.name }
-                )
-                AlarmEditorPage.SOUND -> alarmEditSoundSections(
-                    editorPage = editorPage,
-                    state = state,
-                    viewModel = viewModel,
-                    onOpenRingtonePicker = { showRingtonePicker = true }
-                )
-                AlarmEditorPage.DISMISS -> alarmEditDismissSections(
-                    editorPage = editorPage,
-                    state = state,
-                    viewModel = viewModel,
-                    context = context,
-                    onCaptureReferencePhoto = captureReferencePhoto,
-                    photoReferenceStatus = photoReferenceStatus,
-                    requestLocationDismissTarget = requestLocationDismissTarget,
-                    locationDismissStatus = locationDismissStatus,
-                    onOpenChainPicker = { showChainPicker = true }
-                )
-                AlarmEditorPage.SCHEDULE -> alarmEditScheduleSections(
-                    editorPage = editorPage,
-                    state = state,
-                    viewModel = viewModel
-                )
-                AlarmEditorPage.WAKE -> alarmEditWakeSections(
-                    editorPage = editorPage,
-                    state = state,
-                    viewModel = viewModel,
-                    onChooseBackground = {
-                        firingBackgroundImageLauncher.launch(arrayOf("image/*"))
-                    },
-                    firingBackgroundStatus = firingBackgroundStatus
-                )
-                AlarmEditorPage.INTEGRATIONS -> alarmEditIntegrationSections(
-                    editorPage = editorPage,
-                    state = state,
-                    viewModel = viewModel,
-                    context = context
-                )
-                AlarmEditorPage.ADVANCED -> alarmEditAdvancedSection(
-                    editorPage = editorPage,
-                    state = state,
-                    viewModel = viewModel
-                )
-            }
+            AnimatedContent(
+                targetState = editorPage,
+                transitionSpec = {
+                    if (targetState != AlarmEditorPage.OVERVIEW) {
+                        // Forward: sub-page enters from right
+                        (slideInHorizontally { it / 2 } + fadeIn()).togetherWith(
+                            slideOutHorizontally { -it / 4 } + fadeOut(targetAlpha = 0.72f)
+                        )
+                    } else {
+                        // Backward: overview enters from left
+                        (slideInHorizontally { -it / 4 } + fadeIn()).togetherWith(
+                            slideOutHorizontally { it / 2 } + fadeOut(targetAlpha = 0.72f)
+                        ).apply { targetContentZIndex = -1f }
+                    }
+                },
+                label = "alarm-edit-page-transition"
+            ) { targetPage ->
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding),
+                    state = editorScrollState,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    when (targetPage) {
+                        AlarmEditorPage.OVERVIEW -> alarmEditOverviewSections(
+                            editorPage = targetPage,
+                            state = state,
+                            viewModel = viewModel,
+                            onEditTime = {
+                                // v1.13.15: sticky numpad mode opens prefilled with the
+                                // current time instead of empty digits + disabled Save.
+                                timeNumpadDigits = if (useTimeNumpad) {
+                                    formatAlarmNumpadDigits(state.hour, state.minute, state.is24HourFormat)
+                                } else {
+                                    ""
+                                }
+                                timeNumpadIsPm = state.hour >= 12
+                                showTimePicker = true
+                            },
+                            onSelectPage = { page -> editorPageName = page.name }
+                        )
 
-            item(key = "bottom-spacer") {
-                Spacer(modifier = Modifier.height(28.dp))
-            }
+                        AlarmEditorPage.SOUND -> alarmEditSoundSections(
+                            editorPage = targetPage,
+                            state = state,
+                            viewModel = viewModel,
+                            onOpenRingtonePicker = { showRingtonePicker = true }
+                        )
+
+                        AlarmEditorPage.DISMISS -> alarmEditDismissSections(
+                            editorPage = targetPage,
+                            state = state,
+                            viewModel = viewModel,
+                            context = context,
+                            onCaptureReferencePhoto = captureReferencePhoto,
+                            photoReferenceStatus = photoReferenceStatus,
+                            requestLocationDismissTarget = requestLocationDismissTarget,
+                            locationDismissStatus = locationDismissStatus,
+                            onOpenChainPicker = { showChainPicker = true }
+                        )
+
+                        AlarmEditorPage.SCHEDULE -> alarmEditScheduleSections(
+                            editorPage = targetPage,
+                            state = state,
+                            viewModel = viewModel
+                        )
+
+                        AlarmEditorPage.WAKE -> alarmEditWakeSections(
+                            editorPage = targetPage,
+                            state = state,
+                            viewModel = viewModel,
+                            onChooseBackground = {
+                                firingBackgroundImageLauncher.launch(arrayOf("image/*"))
+                            },
+                            firingBackgroundStatus = firingBackgroundStatus
+                        )
+
+                        AlarmEditorPage.INTEGRATIONS -> alarmEditIntegrationSections(
+                            editorPage = targetPage,
+                            state = state,
+                            viewModel = viewModel,
+                            context = context
+                        )
+
+                        AlarmEditorPage.ADVANCED -> alarmEditAdvancedSection(
+                            editorPage = targetPage,
+                            state = state,
+                            viewModel = viewModel
+                        )
+                    }
+
+                    item(key = "bottom-spacer") {
+                        Spacer(modifier = Modifier.height(28.dp))
+                    }
+                }
             }
         }
     }
