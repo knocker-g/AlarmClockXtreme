@@ -621,7 +621,7 @@
     <string name="alarm_edit_checklist_hint">停止後、モーニングブリーフィングにチェックリストを表示します。</string>
     <string name="alarm_edit_profile">プロファイル</string>
     <string name="alarm_edit_profile_placeholder">例: 仕事、旅行</string>
-    <string name="alarm_edit_specific_date">特定の日付 (YYYY-MM-DD、繰り返しの場合空白)</string>
+    <string name="alarm_edit_specific_date">特定の日付</string>
     <string name="alarm_edit_time_zone">タイムゾーン</string>
     <string name="alarm_edit_fixed_zone">固定ゾーン</string>
     <string name="alarm_edit_follow_device">デバイスに従う</string>
