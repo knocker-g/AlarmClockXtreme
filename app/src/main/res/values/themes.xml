@@ -10,6 +10,13 @@
         <item name="android:colorBackground">#070B11</item>
     </style>
 
+    <!-- Android 12+ Splash Screen Theme -->
+    <style name="Theme.AlarmClockXtreme.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">#070B11</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.AlarmClockXtreme</item>
+    </style>
+
     <style name="Theme.AlarmClockXtreme.IntentProxy" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowIsTranslucent">true</item>
         <item name="android:windowBackground">@android:color/transparent</item>
