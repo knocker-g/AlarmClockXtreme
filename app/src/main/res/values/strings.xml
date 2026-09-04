@@ -652,7 +652,7 @@
     <!-- Alarm editor advanced behavior -->
     <string name="alarm_edit_profile">Alarm profile</string>
     <string name="alarm_edit_profile_placeholder">For example: Work, Travel, Weekend</string>
-    <string name="alarm_edit_specific_date">Specific date (YYYY-MM-DD, leave blank for repeat days)</string>
+    <string name="alarm_edit_specific_date">Specific date</string>
     <string name="alarm_edit_time_zone">Time zone</string>
     <string name="alarm_edit_fixed_zone">Fixed zone</string>
     <string name="alarm_edit_follow_device">Follow device</string>

@@ -36,6 +36,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
@@ -74,6 +75,11 @@ import com.sysadmindoc.alarmclock.worker.GuardianEscalationPolicy
 import com.sysadmindoc.alarmclock.worker.GuardianReadiness
 import com.sysadmindoc.alarmclock.worker.GuardianSmsPath
 import java.time.DayOfWeek
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -95,15 +101,79 @@ internal fun LazyListScope.alarmEditAdvancedSection(
                 singleLine = true
             )
         }
-        OutlinedTextField(
-            value = state.specificDate,
-            onValueChange = viewModel::updateSpecificDate,
-            label = { Text(stringResource(R.string.alarm_edit_specific_date), color = TextMuted) },
-            colors = appOutlinedTextFieldColors(),
-            shape = AppInputShape,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-            singleLine = true
-        )
+        var showDatePicker by remember { mutableStateOf(false) }
+        val noneLabel = stringResource(R.string.alarm_edit_none)
+        val localizedDate = remember(state.specificDate) {
+            runCatching {
+                LocalDate.parse(state.specificDate)
+                    .format(DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM))
+            }.getOrDefault(noneLabel)
+        }
+
+        SettingsRow(label = stringResource(R.string.alarm_edit_specific_date)) {
+            SettingsValueButton(
+                label = localizedDate,
+                onClick = { showDatePicker = true }
+            )
+        }
+
+        if (showDatePicker) {
+            val datePickerState = rememberDatePickerState(
+                initialSelectedDateMillis = runCatching {
+                    LocalDate.parse(state.specificDate)
+                        .atStartOfDay(ZoneId.of("UTC"))
+                        .toInstant()
+                        .toEpochMilli()
+                }.getOrNull() ?: (LocalDate.now().atStartOfDay(ZoneId.of("UTC")).toInstant().toEpochMilli())
+            )
+            val datePickerColors = DatePickerDefaults.colors(
+                containerColor = SurfaceDark,
+                titleContentColor = TextPrimary,
+                headlineContentColor = TextPrimary,
+                weekdayContentColor = TextSecondary,
+                dayContentColor = TextPrimary,
+                selectedDayContainerColor = MaterialTheme.colorScheme.primary,
+                selectedDayContentColor = Color.White,
+                todayContentColor = MaterialTheme.colorScheme.primary,
+                todayDateBorderColor = MaterialTheme.colorScheme.primary
+            )
+            DatePickerDialog(
+                onDismissRequest = { showDatePicker = false },
+                confirmButton = {
+                    TextButton(onClick = {
+                        datePickerState.selectedDateMillis?.let { millis ->
+                            val date = Instant.ofEpochMilli(millis)
+                                .atZone(ZoneId.of("UTC"))
+                                .toLocalDate()
+                                .toString()
+                            viewModel.updateSpecificDate(date)
+                        }
+                        showDatePicker = false
+                    }) {
+                        Text(stringResource(R.string.save), color = MaterialTheme.colorScheme.primary)
+                    }
+                },
+                dismissButton = {
+                    Row {
+                        TextButton(onClick = {
+                            viewModel.updateSpecificDate("")
+                            showDatePicker = false
+                        }) {
+                            Text(stringResource(R.string.alarm_edit_clear_short), color = AccentRed)
+                        }
+                        TextButton(onClick = { showDatePicker = false }) {
+                            Text(stringResource(R.string.cancel), color = TextSecondary)
+                        }
+                    }
+                },
+                colors = datePickerColors
+            ) {
+                DatePicker(
+                    state = datePickerState,
+                    colors = datePickerColors
+                )
+            }
+        }
         var showTimezonePolicyMenu by remember { mutableStateOf(false) }
         SettingsRow(label = stringResource(R.string.alarm_edit_time_zone)) {
             Box {
