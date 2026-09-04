@@ -383,6 +383,11 @@
     <string name="alarm_edit_profile_calendar_auto">カレンダー自動アラーム</string>
     <string name="alarm_edit_group_custom">カスタム…</string>
     <string name="alarm_edit_group_custom_name">カスタムグループ名</string>
+    <string name="alarm_group_delete_confirm_title">「%1$s」\n削除しますか？</string>
+    <plurals name="alarm_group_delete_confirm_message">
+        <item quantity="other">%1$d件のアラームで使用中です。\n削除すると設定も解除されます。</item>
+    </plurals>
+    <string name="alarm_group_add_error_duplicate">このグループは既に存在します。</string>
     <string name="alarm_edit_partner_mode">バイブレーションモード</string>
     <string name="alarm_edit_partner_mode_hint">バイブレーションのみで作動します。音とフェードはオフ、穏やかな反復振動を使います。</string>
     <string name="alarm_edit_haptic_profile_active">バイブレーションのみのプロファイルが有効</string>

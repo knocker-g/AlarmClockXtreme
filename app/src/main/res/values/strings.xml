@@ -409,6 +409,12 @@
     <string name="alarm_edit_profile_calendar_auto">Calendar auto-alarm</string>
     <string name="alarm_edit_group_custom">Custom…</string>
     <string name="alarm_edit_group_custom_name">Custom group name</string>
+    <string name="alarm_group_delete_confirm_title">Delete group “%1$s”?</string>
+    <plurals name="alarm_group_delete_confirm_message">
+        <item quantity="one">Used by %1$d alarm. Deleting it will also clear its group setting.</item>
+        <item quantity="other">Used by %1$d alarms. Deleting it will also clear its group setting.</item>
+    </plurals>
+    <string name="alarm_group_add_error_duplicate">This group already exists.</string>
     <string name="alarm_edit_partner_mode">Don’t wake partner</string>
     <string name="alarm_edit_partner_mode_hint">Sets this alarm to haptic-only: alarm audio is muted, fade-in is off, and a gentle repeating vibration stays active.</string>
     <string name="alarm_edit_haptic_profile_active">Haptic-only profile active</string>

@@ -52,6 +52,12 @@ interface AlarmDao {
     @Query("UPDATE alarms SET nextTriggerTime = :nextTrigger WHERE id = :id")
     suspend fun updateNextTrigger(id: Long, nextTrigger: Long)
 
+    @Query("SELECT COUNT(*) FROM alarms WHERE `group` = :groupName AND id != :excludedId")
+    suspend fun countAlarmsByGroup(groupName: String, excludedId: Long): Int
+
+    @Query("UPDATE alarms SET `group` = '' WHERE `group` = :groupName")
+    suspend fun clearGroupFromAlarms(groupName: String)
+
     @Query("SELECT COALESCE(MAX(sortOrder), 0) FROM alarms")
     suspend fun maxSortOrder(): Int
 

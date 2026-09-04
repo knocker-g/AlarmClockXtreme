@@ -217,73 +217,28 @@ internal fun LazyListScope.alarmEditOverviewSections(
             singleLine = true
         )
     }
-
     // Group
     SettingsSection(editorPage, AlarmEditorSection.GROUP) {
-        var showGroupMenu by remember { mutableStateOf(false) }
-        val defaultGroups = listOf("" to stringResource(R.string.alarm_edit_group_none)) +
-            state.allGroups.map { it to it }
-        val defaultGroupValues = state.allGroups.toSet()
-        val isCustomGroup = state.group.isNotEmpty() && state.group !in defaultGroupValues
+        var showGroupPicker by remember { mutableStateOf(false) }
+        val localizedGroupName = AlarmPublicText.getLocalizedName(state.group, LocalContext.current)
+            .ifBlank { stringResource(R.string.alarm_edit_group_none) }
+
         SettingsRow(label = stringResource(R.string.alarm_edit_alarm_group)) {
-            Box {
-                SettingsValueButton(
-                    label = if (isCustomGroup) {
-                        state.group
-                    } else {
-                        AlarmPublicText.getLocalizedName(state.group, LocalContext.current).ifBlank {
-                            stringResource(R.string.alarm_edit_group_none)
-                        }
-                    },
-                    onClick = { showGroupMenu = true }
-                )
-                DropdownMenu(
-                    expanded = showGroupMenu,
-                    onDismissRequest = { showGroupMenu = false }
-                ) {
-                    defaultGroups.forEach { (group, groupLabel) ->
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    AlarmPublicText.getLocalizedName(group, LocalContext.current).ifBlank { groupLabel },
-                                    color = if (group == state.group) MaterialTheme.colorScheme.primary else TextPrimary
-                                )
-                            },
-                            onClick = {
-                                viewModel.updateGroup(group)
-                                showGroupMenu = false
-                            }
-                        )
-                    }
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                stringResource(R.string.alarm_edit_group_custom),
-                                color = if (isCustomGroup) MaterialTheme.colorScheme.primary else TextMuted
-                            )
-                        },
-                        onClick = {
-                            // Clear to blank so the field focuses cleanly,
-                            // unless there's already a custom value to edit.
-                            if (!isCustomGroup) viewModel.updateGroup(" ")
-                            showGroupMenu = false
-                        }
-                    )
-                }
-            }
+            SettingsValueButton(
+                label = localizedGroupName,
+                onClick = { showGroupPicker = true }
+            )
         }
-        // Show custom text field only when a non-preset group is set.
-        if (isCustomGroup || (state.group.isNotEmpty() && state.group == " ")) {
-            OutlinedTextField(
-                value = state.group.trim(),
-                onValueChange = viewModel::updateGroup,
-                label = { Text(stringResource(R.string.alarm_edit_group_custom_name), color = TextMuted) },
-                colors = appOutlinedTextFieldColors(),
-                shape = AppInputShape,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                singleLine = true
+
+        if (showGroupPicker) {
+            AlarmGroupPickerSheet(
+                currentGroup = state.group,
+                groups = state.allGroups,
+                onSelect = viewModel::updateGroup,
+                onAdd = viewModel::addGroup,
+                onDelete = viewModel::deleteGroup,
+                countAlarms = { name -> viewModel.countAlarmsInGroup(name) },
+                onDismiss = { showGroupPicker = false }
             )
         }
     }

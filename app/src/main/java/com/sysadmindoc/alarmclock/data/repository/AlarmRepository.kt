@@ -1,6 +1,8 @@
 package com.sysadmindoc.alarmclock.data.repository
 
+import androidx.room.withTransaction
 import com.sysadmindoc.alarmclock.data.local.AlarmDao
+import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 import com.sysadmindoc.alarmclock.data.local.AlarmGroupDao
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmGroup
 import com.sysadmindoc.alarmclock.data.model.Alarm
@@ -11,6 +13,7 @@ import javax.inject.Singleton
 
 @Singleton
 class AlarmRepository @Inject constructor(
+    private val database: AlarmDatabase,
     private val dao: AlarmDao,
     private val groupDao: AlarmGroupDao
 ) {
@@ -41,6 +44,22 @@ class AlarmRepository @Inject constructor(
 
     suspend fun getAllGroups(): List<String> =
         groupDao.getAll().map { it.name }
+
+    suspend fun addGroup(name: String) {
+        if (name.isNotBlank()) {
+            groupDao.insert(AlarmGroup(name))
+        }
+    }
+
+    suspend fun countAlarmsByGroup(groupName: String, excludedId: Long): Int =
+        dao.countAlarmsByGroup(groupName, excludedId)
+
+    suspend fun deleteGroupWithAlarms(groupName: String) {
+        database.withTransaction {
+            dao.clearGroupFromAlarms(groupName)
+            groupDao.delete(AlarmGroup(groupName))
+        }
+    }
 
     suspend fun importDisabledAtomically(alarms: List<Alarm>): List<Long> =
         dao.insertAllWithStableOrder(

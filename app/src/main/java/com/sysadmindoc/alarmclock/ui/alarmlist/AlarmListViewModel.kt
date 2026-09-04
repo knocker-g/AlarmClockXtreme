@@ -1,5 +1,6 @@
 package com.sysadmindoc.alarmclock.ui.alarmlist
 
+import android.content.Context
 import com.sysadmindoc.alarmclock.R
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -15,9 +16,12 @@ import com.sysadmindoc.alarmclock.domain.VacationAlarmPolicy
 import com.sysadmindoc.alarmclock.ui.templates.AlarmTemplate
 import com.sysadmindoc.alarmclock.util.AlarmTimeFormatter
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
@@ -103,7 +107,7 @@ data class AlarmListUiState(
 
 @HiltViewModel
 class AlarmListViewModel @Inject constructor(
-    @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context,
+    @ApplicationContext private val context: Context,
     private val repository: AlarmRepository,
     private val scheduler: AlarmScheduler,
     private val calculator: NextAlarmCalculator,
@@ -127,7 +131,7 @@ class AlarmListViewModel @Inject constructor(
     private val ticker = flow {
         while (true) {
             emit(Unit)
-            kotlinx.coroutines.delay(30_000L)
+            delay(30_000L)
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), Unit)
 
@@ -141,14 +145,6 @@ class AlarmListViewModel @Inject constructor(
         }
     ) { alarms, nextAlarm, settings, sort, snap ->
         var filtered = alarms
-        if (!snap.selectedGroup.isNullOrBlank()) {
-            filtered = filtered.filter { it.group == snap.selectedGroup }
-        }
-        if (!snap.selectedProfile.isNullOrBlank()) {
-            filtered = filtered.filter { it.profileName == snap.selectedProfile }
-        }
-
-        val sorted = sortAlarmsForList(filtered, sort)
 
         // Extract unique groups from all alarms (not filtered), hiding the
         // empty/default group so the chip row never gets a blank filter.
@@ -156,6 +152,17 @@ class AlarmListViewModel @Inject constructor(
             .filter { it.isNotBlank() }
             .distinct()
             .sorted()
+
+        if (!snap.selectedGroup.isNullOrBlank()) {
+            filtered = filtered.filter { it.group == snap.selectedGroup }
+        }
+
+        if (!snap.selectedProfile.isNullOrBlank()) {
+            filtered = filtered.filter { it.profileName == snap.selectedProfile }
+        }
+
+        val sorted = sortAlarmsForList(filtered, sort)
+
         val profiles = alarms.map { it.profileName.trim() }
             .filter { it.isNotBlank() }
             .distinct()
@@ -195,11 +202,23 @@ class AlarmListViewModel @Inject constructor(
     )
 
     init {
+        // v1.15.42 (ALA-7): Auto-clear group filter if the group no longer exists.
+        // This ensures the internal state cleans up side-effect-free, and
+        // prevents a ghost filter from reviving if a same-named group is re-added.
+        repository.observeGroups()
+            .onEach { groups ->
+                val current = _selectedGroup.value
+                if (current != null && current !in groups) {
+                    _selectedGroup.value = null
+                }
+            }
+            .launchIn(viewModelScope)
+
         viewModelScope.launch {
-            kotlinx.coroutines.delay(3000)
-            val prefs = context.getSharedPreferences("snooze_suggest", android.content.Context.MODE_PRIVATE)
+            delay(3000)
+            val prefs = context.getSharedPreferences("snooze_suggest", Context.MODE_PRIVATE)
             val lastSuggestDay = prefs.getString("last_suggest_day", "")
-            val today = java.time.LocalDate.now().toString()
+            val today = LocalDate.now().toString()
             if (lastSuggestDay == today) return@launch
             val alarms = repository.getAll()
             for (alarm in alarms.filter { it.isEnabled }) {
@@ -555,15 +574,15 @@ class AlarmListViewModel @Inject constructor(
                     firedAt = System.currentTimeMillis(),
                     action = AlarmEvent.ACTION_SKIPPED,
                     actionAt = System.currentTimeMillis(),
-                    dayOfWeek = java.time.Instant.ofEpochMilli(alarm.nextTriggerTime)
-                        .atZone(java.time.ZoneId.systemDefault()).dayOfWeek.value
+                    dayOfWeek = Instant.ofEpochMilli(alarm.nextTriggerTime)
+                        .atZone(ZoneId.systemDefault()).dayOfWeek.value
                 )
             )
 
             // Cancel current and schedule for the one after next
             scheduler.cancel(alarm.id)
-            val afterSkipTime = java.time.Instant.ofEpochMilli(alarm.nextTriggerTime + 60_000)
-                .atZone(java.time.ZoneId.systemDefault())
+            val afterSkipTime = Instant.ofEpochMilli(alarm.nextTriggerTime + 60_000)
+                .atZone(ZoneId.systemDefault())
             val afterSkip = calculator.calculate(alarm, afterSkipTime)
             val updated = alarm.copy(nextTriggerTime = afterSkip)
             repository.updateNextTrigger(alarm.id, afterSkip)
