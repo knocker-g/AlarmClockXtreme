@@ -2,44 +2,58 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
-    android:viewportWidth="512"
-    android:viewportHeight="512">
+    android:viewportWidth="108"
+    android:viewportHeight="108">
 
-    <!-- Silhouette of the clock -->
-    <path
-        android:fillColor="#000000"
-        android:pathData="M176,368a8,8 0,0 1,8 -8h24a8,8 0,0 1,8 8v16a8,8 0,0 1,-8 8h-24a8,8 0,0 1,-8 -8zM296,368a8,8 0,0 1,8 -8h24a8,8 0,0 1,8 8v16a8,8 0,0 1,-8 8h-24a8,8 0,0 1,-8 -8zM226,123a13,13 0,0 1,13 -13h34a13,13 0,0 1,13 13v0a13,13 0,0 1,-13 13h-34a13,13 0,0 1,-13 -13zM256,256m-170,0a170,170 0,1 0,340 0a170,170 0,1 0,-340 0" />
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:scaleX="0.9"
+        android:scaleY="0.9">
 
-    <!-- Alarm lines (solid for silhouette) -->
-    <path
-        android:strokeColor="#000000"
-        android:strokeWidth="12"
-        android:strokeLineCap="round"
-        android:pathData="M140,170L110,145" />
-    <path
-        android:strokeColor="#000000"
-        android:strokeWidth="10"
-        android:strokeLineCap="round"
-        android:pathData="M150,145L120,115" />
-    <path
-        android:strokeColor="#000000"
-        android:strokeWidth="10"
-        android:strokeLineCap="round"
-        android:pathData="M165,200L135,185" />
-    <path
-        android:strokeColor="#000000"
-        android:strokeWidth="12"
-        android:strokeLineCap="round"
-        android:pathData="M372,170L402,145" />
-    <path
-        android:strokeColor="#000000"
-        android:strokeWidth="10"
-        android:strokeLineCap="round"
-        android:pathData="M362,145L392,115" />
-    <path
-        android:strokeColor="#000000"
-        android:strokeWidth="10"
-        android:strokeLineCap="round"
-        android:pathData="M347,200L377,185" />
+        <!-- Silhouette of the final alarm clock design for Themed Icons -->
+        <path
+            android:fillColor="#000000"
+            android:pathData="M25.9,33.9C24.2,29.2 26.1,24.8 30.5,22.3C35.1,19.7 40.3,20.8 43.5,24.9C44.4,26.0 44.0,27.5 42.8,28.1C37.9,30.4 33.3,33.0 29.2,36.0C27.9,37.0 26.4,35.5 25.9,33.9ZM82.1,33.9C83.8,29.2 81.9,24.8 77.5,22.3C72.9,19.7 67.7,20.8 64.5,24.9C63.6,26.0 64.0,27.5 65.2,28.1C70.1,30.4 74.7,33.0 78.8,36.0C80.1,37.0 81.6,35.5 82.1,33.9Z" />
+
+        <path
+            android:strokeColor="#000000"
+            android:strokeWidth="3.6"
+            android:strokeLineCap="round"
+            android:pathData="M54,27.0V24.2 M51.8,23.2H56.2" />
+
+        <path
+            android:strokeColor="#000000"
+            android:strokeWidth="5.2"
+            android:pathData="M54,31.5a25.5,25.5 0,1 1 0,51a25.5,25.5 0,1 1 0,-51" />
+
+        <path
+            android:strokeColor="#000000"
+            android:strokeWidth="4.6"
+            android:strokeLineCap="round"
+            android:pathData="M37.0,76.0L30.5,84.3 M71.0,76.0L77.5,84.3" />
+
+        <path
+            android:strokeColor="#000000"
+            android:strokeWidth="3.4"
+            android:strokeLineCap="round"
+            android:pathData="M54,37.5V41M73.5,57H70M54,76.5V73M34.5,57H38" />
+
+        <path
+            android:strokeColor="#000000"
+            android:strokeWidth="5.1"
+            android:strokeLineCap="round"
+            android:pathData="M54,57L46.1,49.8 M54,57L66.8,46.3" />
+
+        <path
+            android:strokeColor="#000000"
+            android:strokeWidth="3.2"
+            android:strokeLineCap="round"
+            android:pathData="M54,57L43.1,68.7" />
+
+        <path
+            android:fillColor="#000000"
+            android:pathData="M54,53.6a3.4,3.4 0,1 1 0,6.8a3.4,3.4 0,1 1 0,-6.8" />
+    </group>
 
 </vector>
