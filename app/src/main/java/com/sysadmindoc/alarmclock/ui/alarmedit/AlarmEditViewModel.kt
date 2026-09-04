@@ -352,6 +352,33 @@ class AlarmEditViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(group = group)
     }
 
+    fun addGroup(name: String) {
+        if (name.isBlank()) return
+        viewModelScope.launch {
+            repository.addGroup(name)
+            updateGroup(name)
+        }
+    }
+
+    suspend fun countAlarmsInGroup(name: String): Int {
+        return repository.countAlarmsByGroup(name, alarmId)
+    }
+
+    fun deleteGroup(name: String) {
+        viewModelScope.launch {
+            repository.deleteGroupWithAlarms(name)
+            
+            // If the deleted group was selected for this alarm, clear it locally.
+            if (_uiState.value.group == name) {
+                updateGroup("")
+            }
+            // Sync loadedDraft ONLY if it matches the deleted group.
+            if (loadedDraft?.group == name) {
+                loadedDraft = loadedDraft?.copy(group = "")
+            }
+        }
+    }
+
     fun updateFlashWake(enabled: Boolean) {
         _uiState.value = _uiState.value.copy(flashWake = enabled)
     }
