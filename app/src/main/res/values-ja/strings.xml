@@ -2179,6 +2179,7 @@
     <string name="health_exact_alarms_revoked">正確なアラームの権限が取り消されたため、アラームが時間通りに作動しません。</string>
     <string name="calendar_event_fallback_title">カレンダーイベント</string>
     <string name="guardian_default_alarm_label">アラーム</string>
+    <string name="guardian_alert_message">AlarmClockXtreme ガーディアン通知: %1$s が解除されませんでした。ユーザーの状況を確認してください。</string>
     <string name="notif_hue_sunrise_title">サンライズ進行中</string>
     <string name="notif_hue_sunrise_text">アラームの前にHueライトが明るくなっています</string>
     <string name="notif_hue_sunrise_subtext">Hueサンライズ</string>

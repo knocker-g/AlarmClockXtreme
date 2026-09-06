@@ -2279,6 +2279,7 @@
     <string name="health_exact_alarms_revoked">Exact alarm permission was revoked, so alarms cannot fire on time.</string>
     <string name="calendar_event_fallback_title">Calendar Event</string>
     <string name="guardian_default_alarm_label">Alarm</string>
+    <string name="guardian_alert_message">AlarmClockXtreme Guardian Alert: %1$s was not dismissed. Please check on the user.</string>
     <string name="notif_hue_sunrise_title">Sunrise in progress</string>
     <string name="notif_hue_sunrise_text">Hue lights are brightening before your alarm</string>
     <string name="notif_hue_sunrise_subtext">Hue sunrise</string>

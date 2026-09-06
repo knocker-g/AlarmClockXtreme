@@ -98,12 +98,4 @@ class GuardianEscalationPolicyTest {
         assertNull(GuardianEscalationPolicy.sanitisePhone("call me"))
         assertNull(GuardianEscalationPolicy.sanitisePhone("12"))
     }
-
-    @Test
-    fun buildMessageIncludesLabel() {
-        val message = GuardianEscalationPolicy.buildMessage("Work alarm")
-
-        assertTrue(message.contains("Work alarm"))
-        assertTrue(message.contains("was not dismissed"))
-    }
 }
