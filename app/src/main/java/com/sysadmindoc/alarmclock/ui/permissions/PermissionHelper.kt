@@ -141,9 +141,9 @@ fun PermissionRequestCard(
         AppSectionTitle(
             title = if (includeNotifications) stringResource(R.string.permissions_recommended_permissions) else stringResource(R.string.permissions_context_permissions),
             description = if (includeNotifications) {
-                "A few optional permissions unlock weather, calendar, and clearer alarm alerts."
+                stringResource(R.string.permissions_onboarding_description)
             } else {
-                "Optional context that makes the Today tab and morning briefing more useful."
+                stringResource(R.string.permissions_context_description)
             },
             action = {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -195,9 +195,9 @@ fun PermissionRequestCard(
         ) {
             Text(
                 if (missingCount == 1) {
-                    "Enable final permission"
+                    stringResource(R.string.permissions_enable_final)
                 } else {
-                    "Enable $missingCount permissions"
+                    stringResource(R.string.permissions_enable_multiple, missingCount)
                 }
             )
         }

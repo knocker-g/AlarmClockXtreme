@@ -2,6 +2,7 @@ package com.sysadmindoc.alarmclock.ui.stats
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.sysadmindoc.alarmclock.R
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -73,8 +74,9 @@ class StatsFiltersTest {
             )
         )
 
-        assertEquals("Unknown", dayLabel(99))
-        assertTrue(filterAlarmEvents(events, StatsHistoryFilter(query = "unknown"), resources).isNotEmpty())
+        val unknown = resources.getString(R.string.settings_unknown)
+        assertEquals(unknown, dayLabel(99, resources))
+        assertTrue(filterAlarmEvents(events, StatsHistoryFilter(query = unknown), resources).isNotEmpty())
     }
 
     private fun event(

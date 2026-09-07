@@ -826,9 +826,9 @@ class AlarmFiringViewModel @Inject constructor(
             locationDismissReady = result.outsideFence,
             locationDismissDistanceMeters = result.distanceMeters,
             locationDismissStatus = if (result.outsideFence) {
-                "Location confirmed: ${distance} m from the saved place. Dismiss is unlocked."
+                appContext.getString(R.string.location_dismiss_status_confirmed, distance)
             } else {
-                "Still inside the saved area: ${distance} m away. Move about ${remaining} m farther to unlock dismiss."
+                appContext.getString(R.string.location_dismiss_status_inside, distance, remaining)
             }
         )
     }
