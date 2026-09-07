@@ -1,5 +1,6 @@
 package com.sysadmindoc.alarmclock.worker
 
+import com.sysadmindoc.alarmclock.R
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -83,6 +84,58 @@ class GuardianEscalationPolicyTest {
         assertFalse(readiness.hasEnabledAlarms)
         assertFalse(readiness.needsCallPermission)
         assertFalse(readiness.needsUserAction)
+    }
+
+    @Test
+    fun readinessFailsWhenFdroidMissingSmsPermission() {
+        val readiness = GuardianEscalationPolicy.readiness(
+            flavor = GuardianEscalationPolicy.FDROID_FLAVOR,
+            enabledAlarmCount = 1,
+            hasSendSmsPermission = false,
+            hasCallPhonePermission = true
+        )
+        assertTrue(readiness.needsSmsPermission)
+        assertTrue(readiness.needsUserAction)
+    }
+
+    @Test
+    fun readinessPassesWhenFdroidHasSmsPermission() {
+        val readiness = GuardianEscalationPolicy.readiness(
+            flavor = GuardianEscalationPolicy.FDROID_FLAVOR,
+            enabledAlarmCount = 1,
+            hasSendSmsPermission = true,
+            hasCallPhonePermission = true
+        )
+        assertFalse(readiness.needsSmsPermission)
+        assertFalse(readiness.needsUserAction)
+    }
+
+    @Test
+    fun readinessIgnoreSmsPermissionOnPlayFlavor() {
+        val readiness = GuardianEscalationPolicy.readiness(
+            flavor = "play",
+            enabledAlarmCount = 1,
+            hasSendSmsPermission = false,
+            hasCallPhonePermission = true
+        )
+        assertFalse(readiness.needsSmsPermission)
+        assertFalse(readiness.needsUserAction)
+    }
+
+    @Test
+    fun picksCorrectMessageResource() {
+        assertEquals(
+            R.string.guardian_alert_message_with_label,
+            GuardianEscalationPolicy.messageResFor("Work")
+        )
+        assertEquals(
+            R.string.guardian_alert_message_without_label,
+            GuardianEscalationPolicy.messageResFor("")
+        )
+        assertEquals(
+            R.string.guardian_alert_message_without_label,
+            GuardianEscalationPolicy.messageResFor("   ")
+        )
     }
 
     @Test

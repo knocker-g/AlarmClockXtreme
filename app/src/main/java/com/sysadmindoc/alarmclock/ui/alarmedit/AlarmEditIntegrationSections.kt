@@ -82,7 +82,9 @@ internal fun LazyListScope.alarmEditIntegrationSections(
     editorPage: AlarmEditorPage,
     state: AlarmEditUiState,
     viewModel: AlarmEditViewModel,
-    context: Context
+    context: Context,
+    hasSmsPermission: Boolean,
+    onRequestGuardianSmsPermission: () -> Unit
 ) {
     // Spotify Ringtone
     SettingsSection(editorPage, AlarmEditorSection.SPOTIFY) {
@@ -311,10 +313,7 @@ internal fun LazyListScope.alarmEditIntegrationSections(
             val guardianReadiness = GuardianEscalationPolicy.readiness(
                 flavor = BuildConfig.FLAVOR,
                 enabledAlarmCount = 1,
-                hasSendSmsPermission = ContextCompat.checkSelfPermission(
-                    context,
-                    Manifest.permission.SEND_SMS
-                ) == PackageManager.PERMISSION_GRANTED,
+                hasSendSmsPermission = hasSmsPermission,
                 hasCallPhonePermission = ContextCompat.checkSelfPermission(
                     context,
                     Manifest.permission.CALL_PHONE
@@ -324,6 +323,18 @@ internal fun LazyListScope.alarmEditIntegrationSections(
                 guardianEditHint(guardianReadiness),
                 tone = if (guardianReadiness.needsUserAction) HintTone.Warning else HintTone.Danger
             )
+            if (guardianReadiness.needsSmsPermission && BuildConfig.FLAVOR == GuardianEscalationPolicy.FDROID_FLAVOR) {
+                Button(
+                    onClick = onRequestGuardianSmsPermission,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Icon(Icons.Default.Security, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(stringResource(R.string.alarm_edit_guardian_grant_sms))
+                }
+            }
         }
     }
 }

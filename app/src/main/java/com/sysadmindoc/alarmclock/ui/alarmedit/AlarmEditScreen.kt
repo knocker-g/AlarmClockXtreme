@@ -352,6 +352,16 @@ fun AlarmEditScreen(
             locationDismissPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
         }
     }
+    var hasSmsPermission by remember(context) {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val guardianSmsPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasSmsPermission = granted
+    }
 
     // Handle invalid alarm ID
     if (state.notFound) {
@@ -601,7 +611,11 @@ fun AlarmEditScreen(
                             editorPage = targetPage,
                             state = state,
                             viewModel = viewModel,
-                            context = context
+                            context = context,
+                            hasSmsPermission = hasSmsPermission,
+                            onRequestGuardianSmsPermission = {
+                                guardianSmsPermissionLauncher.launch(Manifest.permission.SEND_SMS)
+                            }
                         )
 
                         AlarmEditorPage.ADVANCED -> alarmEditAdvancedSection(

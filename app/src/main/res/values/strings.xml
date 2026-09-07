@@ -642,6 +642,7 @@
     <string name="alarm_edit_guardian_call_granted">Direct call permission is granted.</string>
     <string name="alarm_edit_guardian_call_dialer">Call fallback opens the dialer because CALL_PHONE is not granted.</string>
     <string name="alarm_edit_guardian_inactive">Guardian Angel is off for this alarm.</string>
+    <string name="alarm_edit_guardian_grant_sms">Grant SMS permission</string>
     <string name="alarm_edit_guardian_direct_sms">Sends an emergency SMS automatically, then opens the call path if the alarm is not dismissed. %1$s</string>
     <string name="alarm_edit_guardian_needs_sms">F-Droid can send automatic SMS after SEND_SMS is allowed. Until then, it opens a prefilled SMS composer. %1$s</string>
     <string name="alarm_edit_guardian_composer">Opens a prefilled emergency SMS composer if the alarm is not dismissed, then falls back to call or dialer. %1$s</string>
@@ -2279,7 +2280,8 @@
     <string name="health_exact_alarms_revoked">Exact alarm permission was revoked, so alarms cannot fire on time.</string>
     <string name="calendar_event_fallback_title">Calendar Event</string>
     <string name="guardian_default_alarm_label">Alarm</string>
-    <string name="guardian_alert_message">AlarmClockXtreme Guardian Alert: %1$s was not dismissed. Please check on the user.</string>
+    <string name="guardian_alert_message_with_label">AlarmClockXtreme Guardian Alert: %1$s was not dismissed. Please check on the user.</string>
+    <string name="guardian_alert_message_without_label">AlarmClockXtreme Guardian Alert: The alarm was not dismissed. Please check on the user.</string>
     <string name="notif_hue_sunrise_title">Sunrise in progress</string>
     <string name="notif_hue_sunrise_text">Hue lights are brightening before your alarm</string>
     <string name="notif_hue_sunrise_subtext">Hue sunrise</string>

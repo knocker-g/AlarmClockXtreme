@@ -1,5 +1,7 @@
 package com.sysadmindoc.alarmclock.worker
 
+import com.sysadmindoc.alarmclock.R
+
 enum class GuardianSmsPath {
     INACTIVE,
     DIRECT_SMS,
@@ -52,6 +54,16 @@ internal object GuardianEscalationPolicy {
             hasCallPhonePermission = hasCallPhonePermission
         )
     }
+
+    /**
+     * @return the resource ID for the alert message based on whether [label] is blank.
+     */
+    fun messageResFor(label: String): Int =
+        if (label.isBlank()) {
+            R.string.guardian_alert_message_without_label
+        } else {
+            R.string.guardian_alert_message_with_label
+        }
 
     /**
      * Keep only characters that are safe in tel:/smsto: targets. Returns null
