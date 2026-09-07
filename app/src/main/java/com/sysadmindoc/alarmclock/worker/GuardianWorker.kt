@@ -41,9 +41,13 @@ class GuardianWorker @AssistedInject constructor(
         val rawPhone = inputData.getString("guardian_phone")?.trim().orEmpty()
         if (rawPhone.isBlank()) return Result.success()
         val phone = GuardianEscalationPolicy.sanitisePhone(rawPhone) ?: return Result.success()
-        val label = inputData.getString("alarm_label")
-            ?: applicationContext.getString(R.string.guardian_default_alarm_label)
-        val message = applicationContext.getString(R.string.guardian_alert_message, label)
+        val label = inputData.getString("alarm_label").orEmpty()
+        val messageRes = GuardianEscalationPolicy.messageResFor(label)
+        val message = if (messageRes == R.string.guardian_alert_message_with_label) {
+            applicationContext.getString(messageRes, label)
+        } else {
+            applicationContext.getString(messageRes)
+        }
         val canSendDirectSms = GuardianEscalationPolicy.canSendDirectSms(
             flavor = BuildConfig.FLAVOR,
             hasSendSmsPermission = hasPermission(Manifest.permission.SEND_SMS)

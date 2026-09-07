@@ -613,6 +613,7 @@
     <string name="alarm_edit_guardian_call_granted">直接通話の権限が付与されています。</string>
     <string name="alarm_edit_guardian_call_dialer">CALL_PHONE権限が付与されていないため、通話フォールバックはダイヤラーを開きます。</string>
     <string name="alarm_edit_guardian_inactive">ガーディアンエンジェルはオフです。</string>
+    <string name="alarm_edit_guardian_grant_sms">SMS権限を許可</string>
     <string name="alarm_edit_guardian_direct_sms">緊急SMSを自動的に送信し、アラームが停止されない場合通話パスを開きます。%1$s</string>
     <string name="alarm_edit_guardian_needs_sms">SEND_SMSが許可されると、F-Droidは自動的にSMSを送信できます。それまでは、事前入力されたSMSコンポーザーを開きます。%1$s</string>
     <string name="alarm_edit_guardian_composer">アラームが停止されない場合は、事前入力された緊急SMSコンポーザーを開き、その後通話またはダイヤラーにフォールバックします。%1$s</string>
@@ -2179,7 +2180,8 @@
     <string name="health_exact_alarms_revoked">正確なアラームの権限が取り消されたため、アラームが時間通りに作動しません。</string>
     <string name="calendar_event_fallback_title">カレンダーイベント</string>
     <string name="guardian_default_alarm_label">アラーム</string>
-    <string name="guardian_alert_message">AlarmClockXtreme ガーディアン通知: %1$s が解除されませんでした。ユーザーの状況を確認してください。</string>
+    <string name="guardian_alert_message_with_label">AlarmClockXtreme ガーディアン通知: %1$s が解除されませんでした。ユーザーの状況を確認してください。</string>
+    <string name="guardian_alert_message_without_label">AlarmClockXtreme ガーディアン通知: アラームが解除されませんでした。ユーザーの状況を確認してください。</string>
     <string name="notif_hue_sunrise_title">サンライズ進行中</string>
     <string name="notif_hue_sunrise_text">アラームの前にHueライトが明るくなっています</string>
     <string name="notif_hue_sunrise_subtext">Hueサンライズ</string>
