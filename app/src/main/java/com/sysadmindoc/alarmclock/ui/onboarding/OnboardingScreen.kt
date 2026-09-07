@@ -430,17 +430,18 @@ fun OnboardingScreen(
                 }
 
                 if (isLastPage) {
+                    val finishDescription = if (readiness.notificationsReady) {
+                        stringResource(R.string.onboarding_finish_without_changes)
+                    } else {
+                        stringResource(R.string.onboarding_finish_without_alerts)
+                    }
                     TextButton(
                         onClick = onComplete,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(48.dp)
                             .semantics {
-                                contentDescription = if (readiness.notificationsReady) {
-                                    "Finish setup without more changes"
-                                } else {
-                                    "Finish setup without enabling alarm alerts"
-                                }
+                                contentDescription = finishDescription
                                 role = Role.Button
                             }
                     ) {
@@ -592,7 +593,7 @@ private fun ReadinessMiniRow(
     icon: ImageVector,
     title: String,
     ready: Boolean,
-    actionLabel: String = "Review",
+    actionLabel: String = stringResource(R.string.onboarding_review),
     onAction: () -> Unit
 ) {
     Row(

@@ -4,6 +4,7 @@ import android.content.res.Resources
 import com.sysadmindoc.alarmclock.R
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmEvent
 import java.time.DayOfWeek
+import java.time.format.TextStyle
 import java.util.Locale
 
 data class StatsHistoryFilter(
@@ -26,7 +27,7 @@ fun filterAlarmEvents(
         val matchesQuery = normalizedQuery.isBlank() ||
             event.alarmLabel.lowercase(Locale.US).contains(normalizedQuery) ||
             event.challengeType.lowercase(Locale.US).replace("_", " ").contains(normalizedQuery) ||
-            dayLabel(event.dayOfWeek).lowercase(Locale.US).startsWith(normalizedQuery) ||
+            dayLabel(event.dayOfWeek, resources).lowercase(Locale.US).startsWith(normalizedQuery) ||
             actionLabel(resources, event.action).lowercase(Locale.US).startsWith(normalizedQuery)
 
         val matchesAction = filter.action == null || event.action == filter.action
@@ -36,10 +37,16 @@ fun filterAlarmEvents(
     }
 }
 
-fun dayLabel(dayOfWeek: Int): String {
+fun dayLabel(dayOfWeek: Int, resources: Resources): String {
     return runCatching {
-        DayOfWeek.of(dayOfWeek).name.lowercase(Locale.US).replaceFirstChar { it.uppercase(Locale.US) }
-    }.getOrDefault("Unknown")
+        val locale = resources.configuration.locales[0]
+        DayOfWeek.of(dayOfWeek).getDisplayName(TextStyle.FULL, locale)
+    }.getOrDefault(resources.getString(R.string.settings_unknown))
+}
+
+internal fun dayShortLabel(dayOfWeek: DayOfWeek, resources: Resources): String {
+    val locale = resources.configuration.locales[0]
+    return dayOfWeek.getDisplayName(TextStyle.SHORT, locale)
 }
 
 private fun actionLabel(resources: Resources, action: String): String {

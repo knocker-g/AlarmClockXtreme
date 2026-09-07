@@ -5,9 +5,15 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyRow
@@ -29,6 +35,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.sysadmindoc.alarmclock.domain.SleepNoisePreset
@@ -43,19 +50,19 @@ import androidx.compose.ui.res.stringResource
 import com.sysadmindoc.alarmclock.R
 
 private data class SleepSound(
-    val label: String,
+    val labelRes: Int,
     val icon: ImageVector,
     val preset: SleepNoisePreset
 )
 
 private val SLEEP_SOUNDS = listOf(
-    SleepSound("White Noise", Icons.Default.Waves, SleepNoisePreset.WHITE),
-    SleepSound("Rain", Icons.Default.WaterDrop, SleepNoisePreset.RAIN),
-    SleepSound("Brown Noise", Icons.Default.GraphicEq, SleepNoisePreset.BROWN),
-    SleepSound("Ocean", Icons.Default.Sailing, SleepNoisePreset.OCEAN),
-    SleepSound("Fan", Icons.Default.Air, SleepNoisePreset.FAN),
-    SleepSound("Pink Noise", Icons.Default.GraphicEq, SleepNoisePreset.PINK),
-    SleepSound("Violet Noise", Icons.Default.Waves, SleepNoisePreset.VIOLET),
+    SleepSound(R.string.sleep_sound_white_noise, Icons.Default.Waves, SleepNoisePreset.WHITE),
+    SleepSound(R.string.sleep_sound_rain, Icons.Default.WaterDrop, SleepNoisePreset.RAIN),
+    SleepSound(R.string.sleep_sound_brown_noise, Icons.Default.GraphicEq, SleepNoisePreset.BROWN),
+    SleepSound(R.string.sleep_sound_ocean, Icons.Default.Sailing, SleepNoisePreset.OCEAN),
+    SleepSound(R.string.sleep_sound_fan, Icons.Default.Air, SleepNoisePreset.FAN),
+    SleepSound(R.string.sleep_sound_pink_noise, Icons.Default.GraphicEq, SleepNoisePreset.PINK),
+    SleepSound(R.string.sleep_sound_violet_noise, Icons.Default.Waves, SleepNoisePreset.VIOLET),
 )
 
 @Composable
@@ -76,7 +83,8 @@ internal fun SleepSoundsSection(
 
                 Card(
                     modifier = Modifier
-                        .size(width = 112.dp, height = 108.dp)
+                        .width(112.dp)
+                        .height(132.dp)
                         .clickable(role = Role.Button) {
                             if (isActive) viewModel.stopSound()
                             else viewModel.playSound(sound.preset)
@@ -94,22 +102,29 @@ internal fun SleepSoundsSection(
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(14.dp),
-                        verticalArrangement = Arrangement.SpaceBetween
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        val label = stringResource(sound.labelRes)
                         Icon(
                             imageVector = sound.icon,
-                            contentDescription = sound.label,
+                            contentDescription = label,
                             tint = if (isActive) MaterialTheme.colorScheme.primary else TextSecondary,
                             modifier = Modifier.size(24.dp)
                         )
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Column(
+                            modifier = Modifier.fillMaxHeight(),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
                             Text(
-                                text = sound.label,
+                                text = label,
                                 color = TextPrimary,
-                                style = MaterialTheme.typography.titleSmall
+                                style = MaterialTheme.typography.titleSmall,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.heightIn(min = 40.dp)
                             )
                             Text(
-                                text = if (isActive) stringResource(R.string.bedtime_playing) else stringResource(R.string.bedtime_tap_to_preview),
+                                text = if (isActive) stringResource(R.string.bedtime_playing) else stringResource(R.string.sleep_sound_tap_to_preview),
                                 color = if (isActive) MaterialTheme.colorScheme.primary else TextMuted,
                                 style = MaterialTheme.typography.bodySmall
                             )

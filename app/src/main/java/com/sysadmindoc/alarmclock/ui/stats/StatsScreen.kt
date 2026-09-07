@@ -315,10 +315,10 @@ fun StatsScreen(
                             title = stringResource(R.string.stats_outcome_mix),
                             description = stringResource(R.string.stats_how_alarms_usually_resolve)
                         )
-                        BreakdownRow("Dismissed", stats.totalDismissed, DismissGreen)
-                        BreakdownRow("Snoozed", stats.totalSnoozed, SnoozeYellow)
-                        BreakdownRow("Skipped", stats.totalSkipped, MaterialTheme.colorScheme.primary)
-                        BreakdownRow("Missed", stats.totalMissed, AccentRed)
+                        BreakdownRow(stringResource(R.string.stats_action_dismissed), stats.totalDismissed, DismissGreen)
+                        BreakdownRow(stringResource(R.string.stats_action_snoozed), stats.totalSnoozed, SnoozeYellow)
+                        BreakdownRow(stringResource(R.string.stats_action_skipped), stats.totalSkipped, MaterialTheme.colorScheme.primary)
+                        BreakdownRow(stringResource(R.string.stats_action_missed), stats.totalMissed, AccentRed)
                     }
 
                     AppSurfaceCard(modifier = Modifier.fillMaxWidth()) {
@@ -327,8 +327,9 @@ fun StatsScreen(
                             description = stringResource(R.string.stats_where_alarms_cluster_most_often)
                         )
                         val busiest = stats.dayOfWeekCounts.maxByOrNull { it.value }
+                        val resourcesForBusiest = LocalResources.current
                         Text(
-                            text = busiest?.key?.name?.lowercase()?.replaceFirstChar { it.uppercase() } ?: stringResource(R.string.stats_no_data),
+                            text = busiest?.key?.let { dayLabel(it.value, resourcesForBusiest) } ?: stringResource(R.string.stats_no_data),
                             color = TextPrimary,
                             style = MaterialTheme.typography.headlineSmall
                         )
@@ -347,10 +348,12 @@ fun StatsScreen(
                         val calmest = stats.dayOfWeekAvgResponseSec
                             .filterValues { it > 0 }
                             .minByOrNull { it.value }
+                        val statsResources = LocalResources.current
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = calmest?.let {
-                                "Fastest responses: ${it.key.name.lowercase().replaceFirstChar { c -> c.uppercase() }} • ${it.value}s"
+                            text = calmest?.let { entry ->
+                                val fastestDay = dayLabel(entry.key.value, statsResources)
+                                stringResource(R.string.stats_fastest_responses, fastestDay, "${entry.value}s")
                             } ?: stringResource(R.string.stats_need_more_dismiss_history_for_day),
                             color = TextMuted,
                             style = MaterialTheme.typography.bodySmall
@@ -379,51 +382,52 @@ fun StatsScreen(
             }
 
             item {
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(horizontal = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    AppSectionTitle(
-                        title = stringResource(R.string.stats_recent_history),
-                        description = stringResource(R.string.stats_last_few_alarm_outcomes_useful)
-                    )
-                    if (state.recentEvents.isNotEmpty()) {
-                        OutlinedButton(
-                            onClick = { showClearDialog = true },
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = AccentRed)
-                        ) {
-                            Icon(Icons.Default.DeleteSweep, null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(stringResource(R.string.settings_clear_history))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        AppSectionTitle(
+                            title = stringResource(R.string.stats_recent_history),
+                            description = stringResource(R.string.stats_last_few_alarm_outcomes_useful)
+                        )
+                        if (state.recentEvents.isNotEmpty()) {
+                            OutlinedButton(
+                                onClick = { showClearDialog = true },
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = AccentRed)
+                            ) {
+                                Icon(Icons.Default.DeleteSweep, null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(stringResource(R.string.settings_clear_history))
+                            }
                         }
                     }
-                }
-            }
 
-            if (state.recentEvents.isNotEmpty()) {
-                item {
-                    StatsFilterCard(
-                        query = searchQuery,
-                        onQueryChange = { searchQuery = it },
-                        selectedAction = selectedAction,
-                        onActionChange = { selectedAction = it },
-                        selectedDay = selectedDay,
-                        onDayChange = { selectedDay = it },
-                        resultCount = filteredEvents.size,
-                        totalCount = state.recentEvents.size,
-                        onClearFilters = {
-                            searchQuery = ""
-                            selectedAction = null
-                            selectedDay = null
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 4.dp)
-                    )
+                    if (state.recentEvents.isNotEmpty()) {
+                        StatsFilterCard(
+                            query = searchQuery,
+                            onQueryChange = { searchQuery = it },
+                            selectedAction = selectedAction,
+                            onActionChange = { selectedAction = it },
+                            selectedDay = selectedDay,
+                            onDayChange = { selectedDay = it },
+                            resultCount = filteredEvents.size,
+                            totalCount = state.recentEvents.size,
+                            onClearFilters = {
+                                searchQuery = ""
+                                selectedAction = null
+                                selectedDay = null
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
             }
 
@@ -546,23 +550,24 @@ private fun StatsFilterCard(
         AppSectionTitle(
             title = stringResource(R.string.stats_find_patterns),
             description = if (isFiltered) {
-                "$resultCount of $totalCount recent events match"
+                pluralStringResource(R.plurals.stats_recent_events_match, resultCount, resultCount, totalCount)
             } else {
-                "Filter by alarm label, challenge, action, or weekday."
+                stringResource(R.string.stats_filters_description)
             },
-            action = {
-                if (isFiltered) {
+            modifier = Modifier.fillMaxWidth(),
+            action = if (isFiltered) {
+                {
                     TextButton(onClick = onClearFilters) {
                         Text(stringResource(R.string.alarm_edit_clear_short), color = MaterialTheme.colorScheme.primary)
                     }
                 }
-            }
+            } else null
         )
 
         OutlinedTextField(
             value = query,
             onValueChange = onQueryChange,
-            placeholder = { Text(stringResource(R.string.stats_search_label_challenge_action_day)) },
+            placeholder = { Text(stringResource(R.string.stats_search_hint)) },
             leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted) },
             trailingIcon = {
                 if (query.isNotBlank()) {
@@ -577,14 +582,15 @@ private fun StatsFilterCard(
             modifier = Modifier.fillMaxWidth()
         )
 
+        val resources = LocalResources.current
         FilterChipRow(
             label = stringResource(R.string.stats_outcome),
             chips = listOf(
-                null to "All",
-                AlarmEvent.ACTION_DISMISSED to "Dismissed",
-                AlarmEvent.ACTION_SNOOZED to "Snoozed",
-                AlarmEvent.ACTION_SKIPPED to "Skipped",
-                AlarmEvent.ACTION_MISSED to "Missed"
+                null to stringResource(R.string.stats_filters_all),
+                AlarmEvent.ACTION_DISMISSED to stringResource(R.string.stats_action_dismissed),
+                AlarmEvent.ACTION_SNOOZED to stringResource(R.string.stats_action_snoozed),
+                AlarmEvent.ACTION_SKIPPED to stringResource(R.string.stats_action_skipped),
+                AlarmEvent.ACTION_MISSED to stringResource(R.string.stats_action_missed)
             ),
             selected = selectedAction,
             onSelect = onActionChange
@@ -592,7 +598,7 @@ private fun StatsFilterCard(
 
         FilterChipRow(
             label = stringResource(R.string.stats_day),
-            chips = listOf(null to "All days") + DayOfWeek.entries.map { it to it.name.take(3) },
+            chips = listOf(null to stringResource(R.string.stats_filters_all_days)) + DayOfWeek.entries.map { it to dayShortLabel(it, resources) },
             selected = selectedDay,
             onSelect = onDayChange
         )
@@ -967,9 +973,9 @@ private fun SleepWakeAnalyticsCard(
 
         analytics.responseDeltaAfterShortSleepSec?.let { delta ->
             val label = if (delta >= 0) {
-                "${formatSignedSeconds(delta)} slower after short sleep"
+                stringResource(R.string.stats_analytics_slower_after_short_sleep, formatSignedSeconds(delta))
             } else {
-                "${formatSeconds(-delta)} faster after short sleep"
+                stringResource(R.string.stats_analytics_faster_after_short_sleep, formatSeconds(-delta))
             }
             Text(
                 text = label,
@@ -994,8 +1000,8 @@ private fun SleepWakeTrendChart(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            ChartLegend("Sleep", MaterialTheme.colorScheme.primary)
-            ChartLegend("Dismiss", DismissGreen)
+            ChartLegend(stringResource(R.string.stats_legend_sleep), MaterialTheme.colorScheme.primary)
+            ChartLegend(stringResource(R.string.stats_legend_dismiss), DismissGreen)
         }
         Row(
             modifier = modifier.horizontalScroll(rememberScrollState()),
@@ -1056,8 +1062,8 @@ private fun SleepWakeFrictionChart(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            ChartLegend("Snooze", SnoozeYellow)
-            ChartLegend("Retry", AccentRed)
+            ChartLegend(stringResource(R.string.stats_legend_snooze), SnoozeYellow)
+            ChartLegend(stringResource(R.string.stats_legend_retry), AccentRed)
         }
         Row(
             modifier = modifier.horizontalScroll(rememberScrollState()),
@@ -1159,11 +1165,11 @@ private fun ActigraphyBucketsCard(
         AppSectionTitle(
             title = stringResource(R.string.stats_sleep_motion_buckets),
             description = if (latest == null) {
-                "Smart alarm and Sonar sessions will save compact local movement buckets here."
+                stringResource(R.string.stats_sleep_motion_buckets_description)
             } else if (latestIsSonar) {
-                "Experimental Sonar buckets come from microphone reflection analysis. No raw audio is retained."
+                stringResource(R.string.stats_sonar_buckets_description)
             } else {
-                "Experimental phone-motion buckets from smart alarm monitoring. They are not medical sleep stages."
+                stringResource(R.string.stats_motion_buckets_description)
             }
         )
 
@@ -1207,7 +1213,7 @@ private fun ActigraphyBucketsCard(
                 label = if (latestIsSonar) {
                     smartWakeDecisionLabel(latest.decisionReason)
                 } else {
-                    "Decision ${smartWakeDecisionLabel(latest.decisionReason)}"
+                    stringResource(R.string.stats_decision_label, smartWakeDecisionLabel(latest.decisionReason))
                 },
                 icon = Icons.Default.Search,
                 color = if (latest.firedEarly || latestIsSonar) DismissGreen else TextMuted
@@ -1381,24 +1387,33 @@ private fun DayOfWeekChart(counts: Map<DayOfWeek, Int>, modifier: Modifier = Mod
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Bottom
             ) {
+                val resources = LocalResources.current
                 Text(
                     text = count.toString(),
                     color = TextMuted,
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(modifier = Modifier.height(6.dp))
+                // Bar area with fixed height so the ratio doesn't push the labels out.
                 Box(
                     modifier = Modifier
-                        .width(24.dp)
-                        .fillMaxHeight(heightRatio)
-                        .background(
-                            color = if (count > 0) MaterialTheme.colorScheme.primary else SurfaceCard,
-                            shape = RoundedCornerShape(topStart = 10.dp, topEnd = 10.dp)
-                        )
-                )
+                        .width(20.dp)
+                        .height(72.dp),
+                    contentAlignment = Alignment.BottomCenter
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .fillMaxHeight(heightRatio)
+                            .background(
+                                color = if (count > 0) MaterialTheme.colorScheme.primary else SurfaceCard,
+                                shape = RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp)
+                            )
+                    )
+                }
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = day.name.take(3),
+                    text = dayShortLabel(day, resources),
                     color = TextSecondary,
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -1416,13 +1431,14 @@ private fun EventRow(event: AlarmEvent, is24Hour: Boolean) {
             .format(DateTimeFormatter.ofPattern(pattern))
     }
 
-    val (actionIcon, actionColor, actionLabel) = when (event.action) {
-        AlarmEvent.ACTION_DISMISSED -> Triple(Icons.Default.CheckCircle, DismissGreen, "Dismissed")
-        AlarmEvent.ACTION_SNOOZED -> Triple(Icons.Default.Snooze, SnoozeYellow, "Snoozed")
-        AlarmEvent.ACTION_SKIPPED -> Triple(Icons.Default.SkipNext, MaterialTheme.colorScheme.primary, "Skipped")
-        AlarmEvent.ACTION_MISSED -> Triple(Icons.Default.ErrorOutline, AccentRed, "Missed")
-        else -> Triple(Icons.Default.BarChart, TextMuted, "Alarm event")
+    val (actionIcon, actionColor, actionLabelRes) = when (event.action) {
+        AlarmEvent.ACTION_DISMISSED -> Triple(Icons.Default.CheckCircle, DismissGreen, R.string.stats_action_dismissed)
+        AlarmEvent.ACTION_SNOOZED -> Triple(Icons.Default.Snooze, SnoozeYellow, R.string.stats_action_snoozed)
+        AlarmEvent.ACTION_SKIPPED -> Triple(Icons.Default.SkipNext, MaterialTheme.colorScheme.primary, R.string.stats_action_skipped)
+        AlarmEvent.ACTION_MISSED -> Triple(Icons.Default.ErrorOutline, AccentRed, R.string.stats_action_missed)
+        else -> Triple(Icons.Default.BarChart, TextMuted, R.string.stats_alarm_event_label)
     }
+    val actionLabel = stringResource(actionLabelRes)
 
     Row(
         modifier = Modifier
@@ -1444,7 +1460,7 @@ private fun EventRow(event: AlarmEvent, is24Hour: Boolean) {
         }
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = event.alarmLabel.ifBlank { stringResource(R.string.stats_default_alarm_label) },
+                text = event.alarmLabel.ifBlank { stringResource(R.string.default_alarm_label) },
                 color = TextPrimary,
                 style = MaterialTheme.typography.titleSmall
             )
@@ -1488,9 +1504,9 @@ private fun EventRow(event: AlarmEvent, is24Hour: Boolean) {
 @Composable
 private fun wakeStreakBadgeLabel(stats: AlarmStats): String {
     return if (stats.currentStreak > 0) {
-        "${dayCountLabel(stats.currentStreak)} streak"
+        stringResource(R.string.stats_streak_badge_label, dayCountLabel(stats.currentStreak))
     } else {
-        "Start streak"
+        stringResource(R.string.stats_start_streak_label)
     }
 }
 

@@ -308,12 +308,10 @@ fun AppSectionTitle(
             }
         }
         if (action != null) {
-            // Weighted, so a wide action (two buttons, a pair of chips) cannot
-            // measure first and squeeze the heading down to nothing. It gets at
-            // most half the row and scrolls inside that.
+            // Take only the width needed for the action. horizontalScroll handles
+            // overflow if the action content is exceptionally wide.
             Row(
                 modifier = Modifier
-                    .weight(1f, fill = false)
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,

@@ -100,8 +100,8 @@ private fun PreSleepCorrelationChart(items: List<PreSleepCorrelationItem>) {
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            ChartLegend("More restless", SnoozeYellow)
-            ChartLegend("Calmer", DismissGreen)
+            ChartLegend(stringResource(R.string.stats_legend_restless), SnoozeYellow)
+            ChartLegend(stringResource(R.string.stats_legend_calmer), DismissGreen)
         }
         items.forEach { item ->
             val delta = item.deltaMinutes

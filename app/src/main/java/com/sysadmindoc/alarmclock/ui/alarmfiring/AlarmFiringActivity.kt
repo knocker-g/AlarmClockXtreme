@@ -23,6 +23,7 @@ import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.sysadmindoc.alarmclock.R
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
@@ -129,7 +130,7 @@ class AlarmFiringActivity : ComponentActivity() {
         if (granted) {
             startLocationDismissMonitoring()
         } else {
-            viewModel.onLocationDismissUnavailable("Location permission is required before dismiss can unlock.")
+            viewModel.onLocationDismissUnavailable(getString(R.string.location_dismiss_permission_required))
         }
     }
 
@@ -552,7 +553,7 @@ class AlarmFiringActivity : ComponentActivity() {
 
         val locationManager = getSystemService(LocationManager::class.java)
         if (locationManager == null) {
-            viewModel.onLocationDismissUnavailable("This device does not expose a location service.")
+            viewModel.onLocationDismissUnavailable(getString(R.string.location_dismiss_service_unavailable))
             return
         }
 
@@ -580,17 +581,17 @@ class AlarmFiringActivity : ComponentActivity() {
             }
         } catch (_: SecurityException) {
             stopLocationDismissMonitoring()
-            viewModel.onLocationDismissUnavailable("Android blocked location access during alarm firing.")
+            viewModel.onLocationDismissUnavailable(getString(R.string.location_dismiss_blocked_by_android))
             return
         } catch (_: IllegalArgumentException) {
             stopLocationDismissMonitoring()
-            viewModel.onLocationDismissUnavailable("No usable location provider is available.")
+            viewModel.onLocationDismissUnavailable(getString(R.string.location_dismiss_no_provider))
             return
         }
 
         if (!requestedProvider) {
             stopLocationDismissMonitoring()
-            viewModel.onLocationDismissUnavailable("Turn on device Location to unlock dismissal after leaving the saved place.")
+            viewModel.onLocationDismissUnavailable(getString(R.string.location_dismiss_turn_on_location))
         }
     }
 
