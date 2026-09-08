@@ -517,7 +517,7 @@ private fun OnboardingPageContent(
                     text = stringResource(page.descriptionRes),
                     style = MaterialTheme.typography.bodyLarge,
                     color = TextSecondary,
-                    textAlign = TextAlign.Center
+                    textAlign = TextAlign.Start
                 )
             }
 
