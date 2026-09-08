@@ -171,7 +171,7 @@ fun BedtimeScreen(
 
     val summaryLine = when {
         state.wakeTimeFormatted.isNotBlank() -> {
-            "Plan around your ${state.wakeTimeFormatted} alarm and protect ${state.sleepDurationFormatted} of sleep."
+            stringResource(R.string.bedtime_suggestion_summary, state.wakeTimeFormatted, state.sleepDurationFormatted)
         }
         state.isEnabled -> stringResource(R.string.bedtime_your_wind_down_reminder_is_set)
         else -> stringResource(R.string.bedtime_build_a_calmer_night_routine_with)
@@ -244,9 +244,9 @@ fun BedtimeScreen(
                             )
                             Text(
                                 text = if (state.isEnabled) {
-                                    "Remind me ${state.reminderMinutesBefore} minutes before ${state.bedtimeFormatted}."
+                                    stringResource(R.string.bedtime_remind_me_before, state.reminderMinutesBefore, state.bedtimeFormatted)
                                 } else {
-                                    "Get a nudge before your target bedtime so nights feel less rushed."
+                                    stringResource(R.string.bedtime_get_a_nudge_before_target)
                                 },
                                 color = TextSecondary,
                                 style = MaterialTheme.typography.bodyMedium
@@ -540,7 +540,7 @@ fun BedtimeScreen(
                             icon = Icons.Default.NightsStay,
                             accent = BlueLight,
                             modifier = Modifier.width(152.dp),
-                            helper = "Tap to edit",
+                            helper = stringResource(R.string.bedtime_jetlag_helper_tap_to_edit),
                             onClick = { showTimePicker = true }
                         )
                     }

@@ -1,5 +1,6 @@
 package com.sysadmindoc.alarmclock.ui.alarmfiring.challenges
 
+import android.content.Context
 import com.google.android.gms.tasks.Task
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.common.model.RemoteModelManager
@@ -8,6 +9,8 @@ import com.google.mlkit.vision.digitalink.recognition.DigitalInkRecognitionModel
 import com.google.mlkit.vision.digitalink.recognition.DigitalInkRecognitionModelIdentifier
 import com.google.mlkit.vision.digitalink.recognition.DigitalInkRecognizerOptions
 import com.google.mlkit.vision.digitalink.recognition.Ink
+import com.sysadmindoc.alarmclock.R
+import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
@@ -17,7 +20,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.suspendCancellableCoroutine
 
 @Singleton
-class PlayDigitalInkChallengeRecognizer @Inject constructor() : DigitalInkChallengeRecognizer {
+class PlayDigitalInkChallengeRecognizer @Inject constructor(
+    @ApplicationContext private val context: Context
+) : DigitalInkChallengeRecognizer {
     override suspend fun recognize(
         request: DigitalInkRecognitionRequest
     ): DigitalInkRecognitionResult = withContext(Dispatchers.IO) {
@@ -44,7 +49,7 @@ class PlayDigitalInkChallengeRecognizer @Inject constructor() : DigitalInkChalle
             DigitalInkRecognitionResult(
                 candidates = emptyList(),
                 unavailableReason = error.message
-                    ?: "Handwriting recognition could not start. Type the word instead."
+                    ?: context.getString(R.string.alarmfiring_handwriting_recognition_is_unavailable_type_the)
             )
         }
     }

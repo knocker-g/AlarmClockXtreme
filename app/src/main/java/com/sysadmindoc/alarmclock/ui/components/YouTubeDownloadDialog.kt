@@ -875,15 +875,13 @@ internal fun youTubeDialogErrorMessage(
  */
 @Composable
 private fun DownloadingHint() {
-    val phases = remember {
-        listOf(
-            "Resolving audio stream...",
-            "Connecting to YouTube...",
-            "Downloading audio...",
-            "Almost there...",
-            "Saving to your alarms..."
-        )
-    }
+    val phases = listOf(
+        stringResource(R.string.youtube_download_resolving),
+        stringResource(R.string.youtube_download_connecting),
+        stringResource(R.string.youtube_download_downloading),
+        stringResource(R.string.youtube_download_almost_there),
+        stringResource(R.string.youtube_download_saving)
+    )
     var progress by remember { mutableStateOf(0f) }
     var phaseIndex by remember { mutableStateOf(0) }
 

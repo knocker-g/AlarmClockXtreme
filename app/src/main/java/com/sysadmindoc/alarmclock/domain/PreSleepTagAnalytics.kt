@@ -1,5 +1,7 @@
 package com.sysadmindoc.alarmclock.domain
 
+import androidx.annotation.StringRes
+import com.sysadmindoc.alarmclock.R
 import com.sysadmindoc.alarmclock.data.local.entity.ActigraphySession
 import com.sysadmindoc.alarmclock.data.local.entity.PreSleepTagEntry
 import java.time.Instant
@@ -9,13 +11,13 @@ import kotlin.math.roundToInt
 
 data class PreSleepTagDefinition(
     val key: String,
-    val label: String,
-    val helper: String
+    @StringRes val labelRes: Int,
+    @StringRes val helperRes: Int
 )
 
 data class PreSleepTagCorrelation(
     val key: String,
-    val label: String,
+    @StringRes val labelRes: Int,
     val loggedNights: Int,
     val nightsWithSessions: Int,
     val averageRestlessMinutes: Int?,
@@ -30,13 +32,11 @@ object PreSleepTags {
     const val STRESS = "stress"
 
     val all = listOf(
-        PreSleepTagDefinition(CAFFEINE, "Caffeine", "Coffee, tea, energy drinks"),
-        PreSleepTagDefinition(EXERCISE, "Exercise", "Late workout or training"),
-        PreSleepTagDefinition(ALCOHOL, "Alcohol", "Any evening alcohol"),
-        PreSleepTagDefinition(STRESS, "Stress", "High-stress evening")
+        PreSleepTagDefinition(CAFFEINE, R.string.bedtime_tag_caffeine, R.string.bedtime_tag_caffeine_helper),
+        PreSleepTagDefinition(EXERCISE, R.string.bedtime_tag_exercise, R.string.bedtime_tag_exercise_helper),
+        PreSleepTagDefinition(ALCOHOL, R.string.bedtime_tag_alcohol, R.string.bedtime_tag_alcohol_helper),
+        PreSleepTagDefinition(STRESS, R.string.bedtime_tag_stress, R.string.bedtime_tag_stress_helper)
     )
-
-    fun labelFor(key: String): String = all.firstOrNull { it.key == key }?.label ?: key
 }
 
 object PreSleepTagAnalytics {
@@ -73,7 +73,7 @@ object PreSleepTagAnalytics {
             val averageRestless = restless.takeIf { it.isNotEmpty() }?.average()?.roundToInt()
             PreSleepTagCorrelation(
                 key = definition.key,
-                label = definition.label,
+                labelRes = definition.labelRes,
                 loggedNights = tagDates.size,
                 nightsWithSessions = restless.size,
                 averageRestlessMinutes = averageRestless,

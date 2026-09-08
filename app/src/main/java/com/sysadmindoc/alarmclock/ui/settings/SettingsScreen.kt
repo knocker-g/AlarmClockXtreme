@@ -168,6 +168,7 @@ import com.sysadmindoc.alarmclock.ui.theme.TextMuted
 import com.sysadmindoc.alarmclock.ui.theme.TextPrimary
 import com.sysadmindoc.alarmclock.ui.theme.TextSecondary
 import com.sysadmindoc.alarmclock.util.AlarmTimeFormatter
+import com.sysadmindoc.alarmclock.util.TimeFormatter
 import com.sysadmindoc.alarmclock.worker.GuardianReadiness
 import com.sysadmindoc.alarmclock.worker.GuardianSmsPath
 import com.sysadmindoc.alarmclock.util.AppLanguageManager
@@ -1779,13 +1780,4 @@ internal fun DateField(
 }
 
 @Composable
-internal fun formatSeconds(totalSeconds: Int): String {
-    if (totalSeconds == 0) return stringResource(R.string.settings_off)
-    val m = totalSeconds / 60
-    val s = totalSeconds % 60
-    return when {
-        m == 0 -> stringResource(R.string.settings_seconds_short, s)
-        s == 0 -> stringResource(R.string.settings_minutes_compact, m)
-        else -> stringResource(R.string.settings_minutes_seconds_compact, m, s)
-    }
-}
+internal fun formatSeconds(totalSeconds: Int): String = TimeFormatter.formatSeconds(totalSeconds)

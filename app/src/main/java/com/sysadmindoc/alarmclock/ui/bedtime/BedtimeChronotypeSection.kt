@@ -42,9 +42,9 @@ internal fun ChronotypeSection(
         AppSectionTitle(
             title = stringResource(R.string.chronotype_chronotype_estimate),
             description = if (state.chronotypeComplete) {
-                "Your natural timing preference is folded into the sleep target."
+                stringResource(R.string.chronotype_complete_description)
             } else {
-                "Estimate your morning/evening tilt for a calmer target window."
+                stringResource(R.string.chronotype_estimate_description)
             }
         )
 
@@ -63,7 +63,7 @@ internal fun ChronotypeSection(
                 color = if (state.chronotypeComplete) DismissGreen else SnoozeYellow
             )
             AppStatusChip(
-                label = "${state.chronotypeAnsweredCount}/${ChronotypeEstimator.QUESTION_COUNT}",
+                label = stringResource(R.string.chronotype_answered_count, state.chronotypeAnsweredCount, ChronotypeEstimator.QUESTION_COUNT),
                 icon = Icons.Default.CheckCircle,
                 color = if (state.chronotypeComplete) DismissGreen else TextMuted
             )
@@ -81,7 +81,7 @@ internal fun ChronotypeSection(
             }
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = question.prompt,
+                    text = stringResource(question.promptRes),
                     color = TextPrimary,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold
@@ -90,9 +90,9 @@ internal fun ChronotypeSection(
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    question.options.forEachIndexed { answerIndex, label ->
+                    question.optionsRes.forEachIndexed { answerIndex, labelRes ->
                         AppFilterChip(
-                            label = label,
+                            label = stringResource(labelRes),
                             selected = state.chronotypeAnswers.getOrNull(questionIndex) == answerIndex,
                             onClick = { onAnswer(questionIndex, answerIndex) },
                             selectionSemantics = true

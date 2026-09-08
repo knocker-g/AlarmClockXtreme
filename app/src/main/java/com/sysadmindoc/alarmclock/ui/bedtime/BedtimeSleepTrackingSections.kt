@@ -69,12 +69,13 @@ internal fun PreSleepTagSection(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             state.preSleepTags.forEach { tag ->
+                val label = stringResource(tag.labelRes)
                 AppFilterChip(
-                    label = tag.label,
+                    label = label,
                     selected = tag.selected,
                     onClick = { onToggle(tag.key) },
                     leadingIcon = if (tag.selected) Icons.Default.CheckCircle else Icons.Default.Add,
-                    accessibilityLabel = "${tag.label}: ${tag.helper}"
+                    accessibilityLabel = "$label: ${stringResource(tag.helperRes)}"
                 )
             }
         }
@@ -118,13 +119,13 @@ private fun PreSleepCorrelationChart(items: List<PreSleepCorrelationItem>) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = item.label,
+                        text = stringResource(item.labelRes),
                         color = TextPrimary,
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold
                     )
                     Text(
-                        text = item.averageRestlessMinutes?.let { "${it}m avg" } ?: stringResource(R.string.bedtime_no_sleep_data),
+                        text = item.averageRestlessMinutes?.let { stringResource(R.string.bedtime_m_avg, it) } ?: stringResource(R.string.bedtime_no_sleep_data),
                         color = TextMuted,
                         style = MaterialTheme.typography.bodySmall
                     )
@@ -188,9 +189,9 @@ internal fun SonarSleepTrackingSection(
         AppSectionTitle(
             title = stringResource(R.string.bedtime_tracking_sonar_sleep_tracking),
             description = if (state.sonarTrackingActive) {
-                "Experimental overnight movement monitoring is running locally."
+                stringResource(R.string.bedtime_sonar_monitoring_local)
             } else {
-                "Start a local ultrasonic movement session from Bedtime when you want extra context."
+                stringResource(R.string.bedtime_sonar_start_local_ultrasonic)
             }
         )
 
@@ -246,9 +247,9 @@ internal fun SonarSleepTrackingSection(
                 onClick = onToggle,
                 selectionSemantics = false,
                 accessibilityLabel = if (state.sonarTrackingActive) {
-                    "Stop sleep-motion tracking"
+                    stringResource(R.string.bedtime_sonar_stop_tracking)
                 } else {
-                    "Start sleep-motion tracking"
+                    stringResource(R.string.bedtime_sonar_start_tracking)
                 }
             )
         }
@@ -343,10 +344,10 @@ internal fun HealthConnectSleepSection(
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                SleepStageChip("Light", summary.lightStageMinutes)
-                SleepStageChip("Deep", summary.deepStageMinutes)
-                SleepStageChip("REM", summary.remStageMinutes)
-                SleepStageChip("Awake", summary.awakeStageMinutes)
+                SleepStageChip(stringResource(R.string.bedtime_light), summary.lightStageMinutes)
+                SleepStageChip(stringResource(R.string.bedtime_deep), summary.deepStageMinutes)
+                SleepStageChip(stringResource(R.string.bedtime_rem), summary.remStageMinutes)
+                SleepStageChip(stringResource(R.string.bedtime_awake), summary.awakeStageMinutes)
             }
         }
         summary.errorMessage?.let { error ->

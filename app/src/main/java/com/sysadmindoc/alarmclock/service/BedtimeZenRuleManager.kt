@@ -9,6 +9,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import android.service.notification.Condition
 import android.service.notification.ZenPolicy
 import com.sysadmindoc.alarmclock.MainActivity
@@ -141,13 +142,14 @@ object BedtimeZenRuleManager {
                 ruleId = ruleId
             )
         }.getOrElse { error ->
+            Log.e("BedtimeZenRuleManager", "Rule sync failed", error)
             BedtimeZenRuleStatus(
                 enabled = true,
                 accessGranted = true,
                 active = false,
                 summary = appContext.getString(R.string.bedtime_dnd_status_sync_failed),
                 ruleId = storedRuleId(appContext).orEmpty(),
-                error = error.message ?: error::class.java.simpleName
+                error = appContext.getString(R.string.bedtime_dnd_policy_error)
             )
         }
     }
