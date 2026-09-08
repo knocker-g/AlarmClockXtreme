@@ -321,18 +321,18 @@ private fun WeatherSection(
                         ) {
                             Text(
                                 text = if (hasLocation) {
-                                    state.weatherError
+                                    state.weatherError ?: ""
                                 } else {
-                                    "Set your location"
+                                    stringResource(R.string.dashboard_weather_set_location)
                                 },
                                 color = TextPrimary,
                                 style = MaterialTheme.typography.titleMedium
                             )
                             Text(
                                 text = if (hasLocation) {
-                                    "Check your connection and try again."
+                                    stringResource(R.string.dashboard_weather_check_connection)
                                 } else {
-                                    "Get local conditions and forecasts."
+                                    stringResource(R.string.dashboard_weather_get_local)
                                 },
                                 color = TextSecondary,
                                 style = MaterialTheme.typography.bodySmall

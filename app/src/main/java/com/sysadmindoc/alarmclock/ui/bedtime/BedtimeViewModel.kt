@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import androidx.annotation.StringRes
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -33,6 +34,7 @@ import com.sysadmindoc.alarmclock.service.SonarSleepSnapshot
 import com.sysadmindoc.alarmclock.service.SonarSleepService
 import com.sysadmindoc.alarmclock.service.SleepSoundPlayer
 import com.sysadmindoc.alarmclock.util.AlarmTimeFormatter
+import com.sysadmindoc.alarmclock.util.TimeFormatter
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
@@ -86,13 +88,13 @@ data class BedtimeUiState(
     val stayUpLateLabel: String = "",
     val batteryPercent: Int = -1,
     val batteryLow: Boolean = false,
-    val noiseBaselineLabel: String = "No baseline",
-    val noiseBaselineHelper: String = "Checks at reminder",
+    val noiseBaselineLabel: String = "",
+    val noiseBaselineHelper: String = "",
     val chronotypeAnswers: List<Int?> = List(ChronotypeEstimator.QUESTION_COUNT) { null },
     val chronotypeAnsweredCount: Int = 0,
-    val chronotypeCategoryLabel: String = "Not set",
-    val chronotypeTimingLabel: String = "Answer 5 prompts",
-    val chronotypeHelper: String = "Private estimate",
+    val chronotypeCategoryLabel: String = "",
+    val chronotypeTimingLabel: String = "",
+    val chronotypeHelper: String = "",
     val chronotypeComplete: Boolean = false,
     val jetLagTargetWakeMinutes: Int = 8 * 60,
     val jetLagAdjustmentDays: Int = 4,
@@ -112,8 +114,8 @@ data class BedtimeUiState(
     val preSleepTags: List<PreSleepTagTile> = PreSleepTags.all.map {
         PreSleepTagTile(
             key = it.key,
-            label = it.label,
-            helper = it.helper,
+            labelRes = it.labelRes,
+            helperRes = it.helperRes,
             selected = false
         )
     },
@@ -122,14 +124,14 @@ data class BedtimeUiState(
 
 data class PreSleepTagTile(
     val key: String,
-    val label: String,
-    val helper: String,
+    @StringRes val labelRes: Int,
+    @StringRes val helperRes: Int,
     val selected: Boolean
 )
 
 data class PreSleepCorrelationItem(
     val key: String,
-    val label: String,
+    @StringRes val labelRes: Int,
     val nightsLabel: String,
     val deltaLabel: String,
     val deltaMinutes: Int?,
@@ -197,7 +199,7 @@ class BedtimeViewModel @Inject constructor(
                 sleepGoalMinutes = settings.sleepGoalMinutes,
                 reminderMinutesBefore = settings.bedtimeReminderMinutes,
                 bedtimeFormatted = formatTime(settings.bedtimeHour, settings.bedtimeMinute, settings.is24HourFormat),
-                sleepDurationFormatted = "${settings.sleepGoalHours}h ${settings.sleepGoalMinutes}m",
+                sleepDurationFormatted = TimeFormatter.formatHoursMinutes(context, settings.sleepGoalHours, settings.sleepGoalMinutes),
                 is24HourFormat = settings.is24HourFormat,
                 sleepSoundFadeMinutes = if (settings.sleepSoundTimerMinutes > 0) settings.sleepSoundTimerMinutes else 30,
                 sleepSoundFadeSeconds = settings.sleepSoundFadeSeconds.coerceIn(5, 600),
@@ -253,7 +255,7 @@ class BedtimeViewModel @Inject constructor(
 
             _uiState.update {
                 it.copy(
-                    nextAlarmTime = "Next alarm: $wakeFormatted",
+                    nextAlarmTime = context.getString(R.string.bedtime_next_alarm, wakeFormatted),
                     wakeTimeFormatted = wakeFormatted,
                     suggestedBedtime = suggestedFormatted,
                     sleepCycleOptions = cycles
@@ -262,7 +264,7 @@ class BedtimeViewModel @Inject constructor(
         } else {
             _uiState.update {
                 it.copy(
-                    nextAlarmTime = "No alarm set",
+                    nextAlarmTime = context.getString(R.string.bedtime_no_alarm_set),
                     wakeTimeFormatted = "",
                     suggestedBedtime = "",
                     sleepCycleOptions = emptyList()
@@ -310,7 +312,7 @@ class BedtimeViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(
             sleepGoalHours = hours,
             sleepGoalMinutes = minutes,
-            sleepDurationFormatted = "${hours}h ${minutes}m"
+            sleepDurationFormatted = TimeFormatter.formatHoursMinutes(context, hours, minutes)
         ).withJetLagPlan(linkedWake)
         refreshChronotypeRecommendation()
         viewModelScope.launch {
@@ -689,8 +691,8 @@ class BedtimeViewModel @Inject constructor(
                         preSleepTags = PreSleepTags.all.map { tag ->
                             PreSleepTagTile(
                                 key = tag.key,
-                                label = tag.label,
-                                helper = tag.helper,
+                                labelRes = tag.labelRes,
+                                helperRes = tag.helperRes,
                                 selected = tag.key in selected
                             )
                         }
@@ -868,10 +870,7 @@ class BedtimeViewModel @Inject constructor(
 
     private fun formatDurationMillis(durationMillis: Long): String {
         val seconds = ((durationMillis + 999L) / 1_000L).coerceAtLeast(1L)
-        if (seconds < 60L) return "${seconds}s"
-        val minutes = seconds / 60L
-        val remainder = seconds % 60L
-        return if (remainder == 0L) "${minutes}m" else "${minutes}m ${remainder}s"
+        return TimeFormatter.formatSeconds(context, seconds.toInt())
     }
 
     private suspend fun refreshPreSleepCorrelations(today: LocalDate) {
@@ -896,7 +895,7 @@ class BedtimeViewModel @Inject constructor(
         }
         return PreSleepCorrelationItem(
             key = correlation.key,
-            label = correlation.label,
+            labelRes = correlation.labelRes,
             nightsLabel = nightsLabel,
             deltaLabel = deltaLabel,
             deltaMinutes = delta,
@@ -978,11 +977,11 @@ class BedtimeViewModel @Inject constructor(
                 "${formatMinuteOfDay(estimate.idealBedtimeMinutes, is24h)} - " +
                     "${formatMinuteOfDay(estimate.idealWakeMinutes, is24h)}"
             } else {
-                "${estimate.answeredCount}/${ChronotypeEstimator.QUESTION_COUNT} answered"
+                context.getString(R.string.chronotype_answered_count, estimate.answeredCount, ChronotypeEstimator.QUESTION_COUNT)
             },
             helper = when (category) {
                 null -> context.getString(R.string.bedtime_local_estimate)
-                else -> context.getString(R.string.bedtime_fits_sleep_target, formatSleepGoal(sleepGoalHours, sleepGoalMinutes))
+                else -> context.getString(R.string.bedtime_fits_sleep_target, TimeFormatter.formatHoursMinutes(context, sleepGoalHours, sleepGoalMinutes))
             },
             complete = estimate.isComplete
         )
@@ -1004,13 +1003,6 @@ class BedtimeViewModel @Inject constructor(
             minute = normalized % 60,
             is24h = is24h
         )
-    }
-
-    private fun formatSleepGoal(hours: Int, minutes: Int): String {
-        return when {
-            minutes == 0 -> "${hours}h"
-            else -> "${hours}h ${minutes}m"
-        }
     }
 
     private suspend fun syncBedtimeDndRule(nextAlarmTriggerMillis: Long? = null) {

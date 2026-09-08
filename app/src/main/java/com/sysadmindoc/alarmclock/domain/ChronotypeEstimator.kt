@@ -4,8 +4,8 @@ import androidx.annotation.StringRes
 import com.sysadmindoc.alarmclock.R
 
 data class ChronotypeQuestion(
-    val prompt: String,
-    val options: List<String>
+    @StringRes val promptRes: Int,
+    val optionsRes: List<Int>
 )
 
 enum class ChronotypeCategory {
@@ -34,24 +34,54 @@ object ChronotypeEstimator {
 
     val questions: List<ChronotypeQuestion> = listOf(
         ChronotypeQuestion(
-            prompt = "On a free day, when do you naturally wake after enough sleep?",
-            options = listOf("Before 6:30", "6:30-7:30", "7:30-8:30", "8:30-10:00", "After 10:00")
+            promptRes = R.string.chronotype_prompt_wake,
+            optionsRes = listOf(
+                R.string.chronotype_option_wake_1,
+                R.string.chronotype_option_wake_2,
+                R.string.chronotype_option_wake_3,
+                R.string.chronotype_option_wake_4,
+                R.string.chronotype_option_wake_5
+            )
         ),
         ChronotypeQuestion(
-            prompt = "When does focused work feel easiest?",
-            options = listOf("Early morning", "Mid-morning", "Noon", "Late afternoon", "Evening")
+            promptRes = R.string.chronotype_prompt_focus,
+            optionsRes = listOf(
+                R.string.chronotype_option_focus_1,
+                R.string.chronotype_option_focus_2,
+                R.string.chronotype_option_focus_3,
+                R.string.chronotype_option_focus_4,
+                R.string.chronotype_option_focus_5
+            )
         ),
         ChronotypeQuestion(
-            prompt = "If tomorrow has no obligations, when would you choose bedtime?",
-            options = listOf("Before 9:30", "9:30-10:30", "10:30-11:30", "11:30-12:30", "After 12:30")
+            promptRes = R.string.chronotype_prompt_bedtime,
+            optionsRes = listOf(
+                R.string.chronotype_option_bedtime_1,
+                R.string.chronotype_option_bedtime_2,
+                R.string.chronotype_option_bedtime_3,
+                R.string.chronotype_option_bedtime_4,
+                R.string.chronotype_option_bedtime_5
+            )
         ),
         ChronotypeQuestion(
-            prompt = "How do early alarms usually feel?",
-            options = listOf("Easy", "Slightly slow", "Manageable", "Hard", "Very hard")
+            promptRes = R.string.chronotype_prompt_alarms,
+            optionsRes = listOf(
+                R.string.chronotype_option_alarms_1,
+                R.string.chronotype_option_alarms_2,
+                R.string.chronotype_option_alarms_3,
+                R.string.chronotype_option_alarms_4,
+                R.string.chronotype_option_alarms_5
+            )
         ),
         ChronotypeQuestion(
-            prompt = "When does your energy usually peak?",
-            options = listOf("Sunrise", "Morning", "Midday", "Afternoon", "Late evening")
+            promptRes = R.string.chronotype_prompt_energy,
+            optionsRes = listOf(
+                R.string.chronotype_option_energy_1,
+                R.string.chronotype_option_energy_2,
+                R.string.chronotype_option_energy_3,
+                R.string.chronotype_option_energy_4,
+                R.string.chronotype_option_energy_5
+            )
         )
     )
 

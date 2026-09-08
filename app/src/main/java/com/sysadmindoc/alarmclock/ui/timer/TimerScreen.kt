@@ -68,6 +68,8 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -94,6 +96,9 @@ import com.sysadmindoc.alarmclock.ui.theme.LocalMotionEnabled
 import com.sysadmindoc.alarmclock.ui.theme.TextSecondary
 import com.sysadmindoc.alarmclock.R
 import androidx.compose.ui.res.stringResource
+import com.sysadmindoc.alarmclock.util.TimeFormatter
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 
 @Composable
 fun TimerScreen(
@@ -158,7 +163,7 @@ fun TimerScreen(
             subtitle = if (state.activeTimers.isEmpty()) {
                 ""
             } else {
-                "${state.activeTimers.size} timer${if (state.activeTimers.size == 1) "" else "s"} active"
+                pluralStringResource(R.plurals.timer_active_count, state.activeTimers.size, state.activeTimers.size)
             },
             actions = {
                 TextButton(onClick = onOpenStopwatch) {
@@ -296,7 +301,7 @@ private fun ActiveTimerCard(
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     IconButton(onClick = onStop) {
-                        Icon(Icons.Default.Stop, "Stop timer", tint = AccentRed)
+                        Icon(Icons.Default.Stop, stringResource(R.string.timer_stop_description), tint = AccentRed)
                     }
                     IconButton(onClick = { if (timer.state == TimerState.RUNNING) onPause() else onResume() }) {
                         Icon(
@@ -393,9 +398,10 @@ private fun TimerInputView(state: TimerUiState, viewModel: TimerViewModel, modif
                 .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            val context = LocalContext.current
             defaultPresets.forEach { preset ->
                 AppFilterChip(
-                    label = preset.label,
+                    label = TimeFormatter.formatSeconds(context, preset.seconds.toInt()),
                     selected = false,
                     onClick = { viewModel.selectPreset(preset) },
                 )

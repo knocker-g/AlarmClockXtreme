@@ -97,6 +97,7 @@ import com.sysadmindoc.alarmclock.R
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import com.sysadmindoc.alarmclock.util.AlarmTimeFormatter
+import com.sysadmindoc.alarmclock.util.TimeFormatter
 
 @Composable
 fun StatsScreen(
@@ -285,10 +286,8 @@ fun StatsScreen(
                         description = stringResource(R.string.stats_how_long_usually_takes_dismiss)
                     )
                     Row(verticalAlignment = Alignment.Bottom) {
-                        val mins = stats.averageDismissTimeSec / 60
-                        val secs = stats.averageDismissTimeSec % 60
                         Text(
-                            text = if (mins > 0) "${mins}m ${secs}s" else "${secs}s",
+                            text = TimeFormatter.formatSeconds(stats.averageDismissTimeSec),
                             color = TextPrimary,
                             style = MaterialTheme.typography.headlineLarge
                         )
@@ -353,7 +352,8 @@ fun StatsScreen(
                         Text(
                             text = calmest?.let { entry ->
                                 val fastestDay = dayLabel(entry.key.value, statsResources)
-                                stringResource(R.string.stats_fastest_responses, fastestDay, "${entry.value}s")
+                                val responseTime = TimeFormatter.formatSeconds(entry.value)
+                                stringResource(R.string.stats_fastest_responses, fastestDay, responseTime)
                             } ?: stringResource(R.string.stats_need_more_dismiss_history_for_day),
                             color = TextMuted,
                             style = MaterialTheme.typography.bodySmall
@@ -730,7 +730,7 @@ private fun WakeStreakBadge(stats: AlarmStats, modifier: Modifier = Modifier) {
                     style = MaterialTheme.typography.labelLarge
                 )
                 Text(
-                    text = "$current / $goal days",
+                    text = stringResource(R.string.stats_streak_progress, current, goal),
                     color = TextMuted,
                     style = MaterialTheme.typography.labelLarge
                 )
@@ -940,7 +940,7 @@ private fun SleepWakeAnalyticsCard(
             AppStatusChip(
                 label = stringResource(
                     R.string.stats_response_avg,
-                    analytics.averageResponseSec?.let(::formatSeconds) ?: "0s"
+                    analytics.averageResponseSec?.let { TimeFormatter.formatSeconds(it) } ?: "0s"
                 ),
                 icon = Icons.Default.CheckCircle,
                 color = if (analytics.averageResponseSec != null) DismissGreen else TextMuted
@@ -1486,7 +1486,7 @@ private fun EventRow(event: AlarmEvent, is24Hour: Boolean) {
             ) {
                 if (event.responseTimeMs > 0) {
                     AppStatusChip(
-                        label = "${event.responseTimeMs / 1000}s",
+                        label = TimeFormatter.formatSeconds(event.responseTimeMs.toInt() / 1000),
                         color = TextMuted
                     )
                 }
@@ -1523,7 +1523,8 @@ private fun wakeStreakStatus(stats: AlarmStats): String {
 private fun dayCountLabel(days: Int): String =
     pluralStringResource(R.plurals.stats_day_count, days, days)
 
-private fun compactDays(days: Int): String = "${days}d"
+@Composable
+private fun compactDays(days: Int): String = stringResource(R.string.stats_day_count_compact, days)
 
 @Composable
 private fun sleepWakeAnalyticsDescription(
@@ -1549,13 +1550,11 @@ private fun sleepWakeAnalyticsDescription(
     }
 }
 
-private fun formatSeconds(seconds: Int): String {
-    val mins = seconds / 60
-    val secs = seconds % 60
-    return if (mins > 0) "${mins}m ${secs}s" else "${secs}s"
-}
+@Composable
+private fun formatSeconds(seconds: Int): String = TimeFormatter.formatSeconds(seconds)
 
-private fun formatSignedSeconds(seconds: Int): String = "+${formatSeconds(seconds)}"
+@Composable
+private fun formatSignedSeconds(seconds: Int): String = "+${TimeFormatter.formatSeconds(seconds)}"
 
 private fun sleepScoreColor(score: Int): Color = when {
     score >= 85 -> DismissGreen
@@ -1563,15 +1562,13 @@ private fun sleepScoreColor(score: Int): Color = when {
     else -> AccentRed
 }
 
+@Composable
 private fun formatSleepMinutes(minutes: Long?): String {
-    val value = minutes ?: return "0m"
-    val hours = value / 60
-    val mins = value % 60
-    return when {
-        hours > 0 && mins > 0 -> "${hours}h ${mins}m"
-        hours > 0 -> "${hours}h"
-        else -> "${mins}m"
-    }
+    val value = minutes ?: return TimeFormatter.formatHoursMinutes(0, 0)
+    return TimeFormatter.formatHoursMinutes(
+        (value / 60).toInt(),
+        (value % 60).toInt()
+    )
 }
 
 private val CHART_DAY_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("E")

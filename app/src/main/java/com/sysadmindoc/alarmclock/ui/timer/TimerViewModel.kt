@@ -8,6 +8,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.Locale
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import com.sysadmindoc.alarmclock.util.TimeFormatter
 import javax.inject.Inject
 
 enum class TimerState { IDLE, RUNNING, PAUSED, FINISHED }
@@ -381,13 +382,8 @@ class TimerViewModel @Inject constructor(
         }
     }
 
-    private fun formatTimerLabel(h: Int, m: Int, s: Int): String {
-        return buildString {
-            if (h > 0) append("${h}h ")
-            if (m > 0) append("${m}m ")
-            if (s > 0) append("${s}s")
-        }.trim()
-    }
+    private fun formatTimerLabel(h: Int, m: Int, s: Int): String =
+        TimeFormatter.formatTimeLabel(appContext, h, m, s)
 
     override fun onCleared() {
         countdownJobs.values.forEach { it.cancel() }

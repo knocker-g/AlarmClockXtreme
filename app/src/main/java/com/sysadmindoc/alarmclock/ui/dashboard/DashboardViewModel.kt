@@ -290,14 +290,14 @@ class DashboardViewModel @Inject constructor(
                         weatherStale = false,
                         weatherStaleMessage = null,
                         airQuality = null,
-                        weatherError = "Tap the location icon to set your city"
+                        weatherError = appContext.getString(R.string.dashboard_weather_set_location)
                     ) }
                     return@launch
                 }
                 if (location != null) {
                     lat = location.latitude
                     lon = location.longitude
-                    locName = "Current Location"
+                    locName = appContext.getString(R.string.dashboard_weather_current_location)
                 } else {
                     lat = settings.lastKnownLatitude
                     lon = settings.lastKnownLongitude
@@ -337,7 +337,7 @@ class DashboardViewModel @Inject constructor(
                         tempUnit = tempUnitLabel,
                         windUnit = windUnitLabel,
                         temperature = current?.temperature?.let { "${it.toInt()}" } ?: "--",
-                        feelsLike = current?.feelsLike?.let { "Feels like ${it.toInt()}" } ?: "",
+                        feelsLike = current?.feelsLike?.let { appContext.getString(R.string.weather_feels_like, it.toInt().toString()) } ?: "",
                         humidity = current?.humidity?.let { "${it}%" } ?: "",
                         windSpeed = current?.windSpeed?.let { "${it.toInt()} $windUnitLabel" } ?: "",
                         weatherDescription = current?.weatherCode
@@ -359,7 +359,7 @@ class DashboardViewModel @Inject constructor(
                         weatherLastUpdatedMillis = snapshot.fetchedAtMillis,
                         weatherStale = snapshot.isStale,
                         weatherStaleMessage = if (snapshot.isStale) {
-                            "Refresh failed; showing the last saved forecast."
+                            appContext.getString(R.string.dashboard_weather_refresh_failed)
                         } else {
                             null
                         },
@@ -414,7 +414,7 @@ class DashboardViewModel @Inject constructor(
                         weatherStale = false,
                         weatherStaleMessage = null,
                         airQuality = null,
-                        weatherError = "Weather unavailable"
+                        weatherError = appContext.getString(R.string.dashboard_weather_unavailable)
                     ) }
                 }
         }
@@ -620,11 +620,11 @@ class DashboardViewModel @Inject constructor(
         if (uv == null) return ""
         val rounded = uv.roundToInt()
         val band = when {
-            rounded < 3 -> "low"
-            rounded < 6 -> "moderate"
-            rounded < 8 -> "high"
+            rounded < 3 -> appContext.getString(R.string.dashboard_uv_low)
+            rounded < 6 -> appContext.getString(R.string.dashboard_uv_moderate)
+            rounded < 8 -> appContext.getString(R.string.dashboard_uv_high)
             rounded < 11 -> appContext.getString(R.string.dashboard_very_high)
-            else -> "extreme"
+            else -> appContext.getString(R.string.dashboard_uv_extreme)
         }
         return "$rounded · $band"
     }
@@ -633,9 +633,9 @@ class DashboardViewModel @Inject constructor(
         val current = response.current ?: return null
         val units = response.currentUnits
         val pollutantMetrics = listOfNotNull(
-            current.pm25?.let { AirQualityMetric("PM2.5", formatAirMeasure(it, units?.pm25)) },
-            current.pm10?.let { AirQualityMetric("PM10", formatAirMeasure(it, units?.pm10)) },
-            current.ozone?.let { AirQualityMetric("Ozone", formatAirMeasure(it, units?.ozone)) }
+            current.pm25?.let { AirQualityMetric(appContext.getString(R.string.dashboard_pollutant_pm25), formatAirMeasure(it, units?.pm25)) },
+            current.pm10?.let { AirQualityMetric(appContext.getString(R.string.dashboard_pollutant_pm10), formatAirMeasure(it, units?.pm10)) },
+            current.ozone?.let { AirQualityMetric(appContext.getString(R.string.dashboard_pollutant_ozone), formatAirMeasure(it, units?.ozone)) }
         )
         val pollenRows = buildPollenRows(current, response)
         if (current.usAqi == null && pollutantMetrics.isEmpty() && pollenRows.none { it.level != PollenLevel.UNAVAILABLE }) {
@@ -660,11 +660,11 @@ class DashboardViewModel @Inject constructor(
         val weed = maxNullable(current.mugwortPollen, current.ragweedPollen)
         val unit = response.currentUnits?.grassPollen
             ?: response.currentUnits?.birchPollen
-            ?: "grains/m³"
+            ?: appContext.getString(R.string.dashboard_air_quality_grains_m3)
         return listOf(
-            pollenMetric("Tree", tree, unit),
-            pollenMetric("Grass", grass, unit),
-            pollenMetric("Weed", weed, unit)
+            pollenMetric(appContext.getString(R.string.dashboard_pollen_tree), tree, unit),
+            pollenMetric(appContext.getString(R.string.dashboard_pollen_grass), grass, unit),
+            pollenMetric(appContext.getString(R.string.dashboard_pollen_weed), weed, unit)
         )
     }
 
@@ -701,13 +701,13 @@ class DashboardViewModel @Inject constructor(
     }
 
     private fun describeUsAqi(aqi: Int?): Pair<String, String> = when {
-        aqi == null -> appContext.getString(R.string.dashboard_aqi_unavailable) to "Pollutant details are shown when the provider reports them."
-        aqi <= 50 -> appContext.getString(R.string.dashboard_good) to "Air quality is comfortable for most people."
-        aqi <= 100 -> appContext.getString(R.string.dashboard_moderate) to "Acceptable air quality; sensitive people may notice it."
-        aqi <= 150 -> appContext.getString(R.string.dashboard_sensitive_groups) to "People sensitive to air pollution should consider lighter outdoor activity."
-        aqi <= 200 -> appContext.getString(R.string.dashboard_unhealthy) to "Limit strenuous outdoor activity until conditions improve."
-        aqi <= 300 -> appContext.getString(R.string.dashboard_very_unhealthy) to "Avoid outdoor exertion and keep alerts in mind."
-        else -> appContext.getString(R.string.dashboard_hazardous) to "Stay indoors where possible and follow local health guidance."
+        aqi == null -> appContext.getString(R.string.dashboard_aqi_unavailable) to appContext.getString(R.string.dashboard_aqi_unavailable_detail)
+        aqi <= 50 -> appContext.getString(R.string.dashboard_good) to appContext.getString(R.string.dashboard_aqi_good_detail)
+        aqi <= 100 -> appContext.getString(R.string.dashboard_moderate) to appContext.getString(R.string.dashboard_aqi_moderate_detail)
+        aqi <= 150 -> appContext.getString(R.string.dashboard_sensitive_groups) to appContext.getString(R.string.dashboard_aqi_sensitive_detail)
+        aqi <= 200 -> appContext.getString(R.string.dashboard_unhealthy) to appContext.getString(R.string.dashboard_aqi_unhealthy_detail)
+        aqi <= 300 -> appContext.getString(R.string.dashboard_very_unhealthy) to appContext.getString(R.string.dashboard_aqi_very_unhealthy_detail)
+        else -> appContext.getString(R.string.dashboard_hazardous) to appContext.getString(R.string.dashboard_aqi_hazardous_detail)
     }
 
     private fun aqiLevel(aqi: Int?): AirQualityLevel = when {
