@@ -1609,6 +1609,7 @@
     <string name="stats_response_avg">平均応答 %1$s</string>
     <string name="world_add_city_action">%1$s, %2$s, %3$s を追加</string>
     <string name="firing_challenge_reference_missing">照合用の保存済みタグ、コード、写真、ネットワークがありません。代わりに計算問題を表示します。アラームを編集して設定してください。</string>
+    <string name="firing_challenge_technical_failure">チャレンジで技術的な問題が発生しました。代わりに計算問題を解いてください。</string>
     <string name="settings_hue_ip_not_local">192.168.1.42 や philips-hue.local など、ブリッジのローカルアドレスを入力してください。証明書を確認できないため、パブリックホスト名は拒否されます。</string>
     <string name="world_remove_city_action">%1$s を削除</string>
     <string name="challenge_rps_cpu">%1$d CPU</string>
