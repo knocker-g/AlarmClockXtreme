@@ -800,6 +800,17 @@
     <string name="settings_show_world_description">Track time zones for cities you care about.</string>
     <string name="settings_show_news_tab">Show News tab</string>
     <string name="settings_show_news_description">Public RSS feeds: Google News, BBC, NPR and Hacker News.</string>
+    <string name="settings_news_sources">News sources</string>
+    <string name="settings_manage">Manage</string>
+    <string name="news_manage_sources">Manage news sources</string>
+    <string name="news_add_source">Add news source</string>
+    <string name="news_edit_source">Edit news source</string>
+    <string name="news_delete_source">Delete news source</string>
+    <string name="news_source_name">Source name</string>
+    <string name="news_feed_url_label">RSS Feed URL</string>
+    <string name="news_no_sources">No news sources</string>
+    <string name="news_delete_confirm">Delete this news source?</string>
+    <string name="news_custom_feed">Custom</string>
     <string name="settings_radar_tab">Live radar on Weather tab</string>
     <string name="settings_radar_description">Embed Windy.com’s animated precipitation radar below the conditions card.</string>
     <string name="settings_utilities">Utilities</string>
@@ -1721,7 +1732,6 @@
         <item quantity="one">%1$d day wake streak</item>
         <item quantity="other">%1$d days wake streak</item>
     </plurals>
-    <string name="news_custom_feed">Custom feed</string>
     <string name="news_pick_a_different_source_or_try">Pick a different source, or try again.</string>
     <string name="permissions_recommended_permissions">Recommended permissions</string>
     <string name="permissions_context_permissions">Context permissions</string>
@@ -2092,18 +2102,6 @@
         <item quantity="one">%1$d day</item>
         <item quantity="other">%1$d days</item>
     </plurals>
-    <string name="news_feed_google_top">Google News: Top</string>
-    <string name="news_feed_google_top_short">Top</string>
-    <string name="news_feed_google_world">Google News: World</string>
-    <string name="news_feed_google_world_short">World</string>
-    <string name="news_feed_google_tech">Google News: Tech</string>
-    <string name="news_feed_google_tech_short">Tech</string>
-    <string name="news_feed_bbc">BBC: Top stories</string>
-    <string name="news_feed_bbc_short">Top stories</string>
-    <string name="news_feed_npr">NPR: News</string>
-    <string name="news_feed_npr_short">News</string>
-    <string name="news_feed_hn">Hacker News: Front page</string>
-    <string name="news_feed_hn_short">Front page</string>
     <string name="chess_puzzle_back_rank_net_title">Back-rank net</string>
     <string name="chess_puzzle_back_rank_net_explanation">The queen removes the guard and the rook seals the back rank.</string>
     <string name="chess_puzzle_corner_squeeze_title">Corner squeeze</string>

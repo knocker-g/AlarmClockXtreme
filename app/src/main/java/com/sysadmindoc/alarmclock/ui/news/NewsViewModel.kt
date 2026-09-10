@@ -7,13 +7,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sysadmindoc.alarmclock.data.news.NewsItem
 import com.sysadmindoc.alarmclock.data.news.NewsRepository
+import com.sysadmindoc.alarmclock.data.news.NewsSourceRepository
+import com.sysadmindoc.alarmclock.data.local.entity.NewsSource
 import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.io.IOException
 import java.net.SocketTimeoutException
@@ -21,63 +20,10 @@ import java.net.UnknownHostException
 import javax.net.ssl.SSLException
 import javax.inject.Inject
 
-/**
- * Predefined feeds. The user can paste their own URL via Settings, but we
- * curate a short list of RSS-friendly publishers as quick-pick chips so the
- * tab is useful out of the box. All confirmed working with no auth in our
- * research pass — Reddit and X were excluded (auth-walled now).
- */
-data class NewsFeedSource(
-    val key: String,
-    @StringRes val labelRes: Int,
-    /** Tab caption. Its own field so no separator has to survive translation. */
-    @StringRes val shortLabelRes: Int,
-    val url: String,
-)
-
-val DEFAULT_NEWS_FEEDS = listOf(
-    NewsFeedSource(
-        key = "google_top",
-        labelRes = R.string.news_feed_google_top,
-        shortLabelRes = R.string.news_feed_google_top_short,
-        url = "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en"
-    ),
-    NewsFeedSource(
-        key = "google_world",
-        labelRes = R.string.news_feed_google_world,
-        shortLabelRes = R.string.news_feed_google_world_short,
-        url = "https://news.google.com/rss/headlines/section/topic/WORLD?hl=en-US&gl=US&ceid=US:en"
-    ),
-    NewsFeedSource(
-        key = "google_tech",
-        labelRes = R.string.news_feed_google_tech,
-        shortLabelRes = R.string.news_feed_google_tech_short,
-        url = "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-US&gl=US&ceid=US:en"
-    ),
-    NewsFeedSource(
-        key = "bbc",
-        labelRes = R.string.news_feed_bbc,
-        shortLabelRes = R.string.news_feed_bbc_short,
-        url = "https://feeds.bbci.co.uk/news/rss.xml"
-    ),
-    NewsFeedSource(
-        key = "npr",
-        labelRes = R.string.news_feed_npr,
-        shortLabelRes = R.string.news_feed_npr_short,
-        url = "https://feeds.npr.org/1001/rss.xml"
-    ),
-    NewsFeedSource(
-        key = "hn",
-        labelRes = R.string.news_feed_hn,
-        shortLabelRes = R.string.news_feed_hn_short,
-        url = "https://hnrss.org/frontpage"
-    ),
-)
-
 data class NewsUiState(
-    val feeds: List<NewsFeedSource> = DEFAULT_NEWS_FEEDS,
-    val activeFeedKey: String = DEFAULT_NEWS_FEEDS.first().key,
-    val activeFeedUrl: String = DEFAULT_NEWS_FEEDS.first().url,
+    val sources: List<NewsSource> = emptyList(),
+    val activeSourceId: Long? = null,
+    val activeFeedUrl: String = "",
     val items: List<NewsItem> = emptyList(),
     val loading: Boolean = false,
     val refreshing: Boolean = false,
@@ -92,6 +38,7 @@ class NewsViewModel @Inject constructor(
     @dagger.hilt.android.qualifiers.ApplicationContext
     private val appContext: android.content.Context,
     private val repository: NewsRepository,
+    private val sourceRepository: NewsSourceRepository,
     private val preferencesManager: PreferencesManager,
 ) : ViewModel() {
 
@@ -101,47 +48,56 @@ class NewsViewModel @Inject constructor(
     private var loadJob: Job? = null
 
     init {
+        // v1.11.2 (ALA-5): Seed defaults if this is the first time the news
+        // feature is used. This runs exactly once per install/locale.
         viewModelScope.launch {
-            // Pull a one-shot snapshot so the user's saved override (if any)
-            // wins. We don't need to subscribe to settings — the news URL
-            // doesn't change often enough to warrant live recomposition.
-            val saved = preferencesManager.settings.firstOrNull()?.newsFeedUrl
-            val matching = saved?.let { url ->
-                DEFAULT_NEWS_FEEDS.firstOrNull { it.url == url }
-            }
-            if (matching != null) {
-                _uiState.value = _uiState.value.copy(
-                    activeFeedKey = matching.key,
-                    activeFeedUrl = matching.url
-                )
-            } else if (!saved.isNullOrBlank()) {
-                _uiState.value = _uiState.value.copy(
-                    activeFeedKey = "custom",
-                    activeFeedUrl = saved
-                )
-            }
-            refresh()
+            sourceRepository.seedIfNeeded()
+        }
+
+        viewModelScope.launch {
+            combine(
+                sourceRepository.observeAll(),
+                preferencesManager.settings.map { it.newsActiveSourceId to it.newsSourcesSeeded }.distinctUntilChanged()
+            ) { sources, (activeId, seeded) ->
+                if (!seeded) return@combine
+                
+                val activeSource = sources.firstOrNull { it.id == activeId }
+                    ?: sources.firstOrNull()
+                
+                val effectiveUrl = activeSource?.feedUrl.orEmpty()
+
+                if (effectiveUrl != _uiState.value.activeFeedUrl || 
+                    activeSource?.id != _uiState.value.activeSourceId ||
+                    sources != _uiState.value.sources) {
+                    
+                    val urlChanged = effectiveUrl != _uiState.value.activeFeedUrl && effectiveUrl.isNotBlank()
+
+                    _uiState.value = _uiState.value.copy(
+                        sources = sources,
+                        activeSourceId = activeSource?.id,
+                        activeFeedUrl = effectiveUrl
+                    )
+                    
+                    if (urlChanged) {
+                        refresh()
+                    }
+                }
+            }.collect()
         }
     }
 
-    fun selectFeed(key: String) {
-        val feed = DEFAULT_NEWS_FEEDS.firstOrNull { it.key == key } ?: return
-        if (feed.key == _uiState.value.activeFeedKey) return
-        _uiState.value = _uiState.value.copy(
-            activeFeedKey = feed.key,
-            activeFeedUrl = feed.url,
-            items = emptyList(),
-            errorMessage = null,
-            isStale = false,
-            staleMessage = null,
-        )
+    fun selectSource(id: Long) {
+        if (id == _uiState.value.activeSourceId) return
         viewModelScope.launch {
-            preferencesManager.update { it.copy(newsFeedUrl = feed.url) }
+            preferencesManager.update { it.copy(newsActiveSourceId = id) }
         }
-        refresh()
     }
 
     fun refresh() {
+        val url = _uiState.value.activeFeedUrl
+        val sourceId = _uiState.value.activeSourceId
+        if (url.isBlank() || sourceId == null) return
+
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
             val isFirstLoad = _uiState.value.items.isEmpty()
@@ -150,8 +106,7 @@ class NewsViewModel @Inject constructor(
                 refreshing = !isFirstLoad,
                 errorMessage = null
             )
-            val url = _uiState.value.activeFeedUrl
-            repository.fetchFeed(url)
+            repository.fetchFeed(sourceId, url)
                 .onSuccess { snapshot ->
                     _uiState.value = _uiState.value.copy(
                         loading = false,

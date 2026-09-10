@@ -48,14 +48,14 @@ class NewsRepository @Inject constructor(
     moshi: Moshi
 ) {
     private val cacheAdapter = moshi.adapter(NewsCacheEnvelope::class.java).indent("  ")
-    private val cacheFile: File
-        get() = File(context.filesDir, CACHE_FILE_NAME)
+    private fun getCacheFile(sourceId: Long): File =
+        File(context.filesDir, "news_cache_${sourceId}.json")
 
-    suspend fun fetchFeed(url: String): Result<NewsFeedSnapshot> = withContext(Dispatchers.IO) {
+    suspend fun fetchFeed(sourceId: Long, url: String): Result<NewsFeedSnapshot> = withContext(Dispatchers.IO) {
         try {
             val items = fetchNetworkFeed(url)
             val fetchedAt = System.currentTimeMillis()
-            writeCache(NewsCacheEnvelope(url, fetchedAt, items))
+            writeCache(sourceId, NewsCacheEnvelope(url, fetchedAt, items))
             Result.success(
                 NewsFeedSnapshot(
                     items = items,
@@ -65,7 +65,7 @@ class NewsRepository @Inject constructor(
             )
         } catch (error: Throwable) {
             if (error is CancellationException) throw error
-            val cached = readCache(url)
+            val cached = readCache(sourceId, url)
             if (cached != null) {
                 Result.success(
                     NewsFeedSnapshot(
@@ -104,16 +104,17 @@ class NewsRepository @Inject constructor(
         }
     }
 
-    private fun writeCache(envelope: NewsCacheEnvelope) {
+    private fun writeCache(sourceId: Long, envelope: NewsCacheEnvelope) {
         runCatching {
-            cacheFile.writeText(cacheAdapter.toJson(envelope))
+            getCacheFile(sourceId).writeText(cacheAdapter.toJson(envelope))
         }
     }
 
-    private fun readCache(url: String): NewsCacheEnvelope? {
+    private fun readCache(sourceId: Long, url: String): NewsCacheEnvelope? {
         return runCatching {
-            if (!cacheFile.exists()) return null
-            val envelope = cacheAdapter.fromJson(cacheFile.readText()) ?: return null
+            val file = getCacheFile(sourceId)
+            if (!file.exists()) return null
+            val envelope = cacheAdapter.fromJson(file.readText()) ?: return null
             val ageMs = System.currentTimeMillis() - envelope.fetchedAtMillis
             if (ageMs < 0 || ageMs > MAX_STALE_CACHE_MS || envelope.url != url) {
                 return null
@@ -122,8 +123,11 @@ class NewsRepository @Inject constructor(
         }.getOrNull()
     }
 
+    fun deleteCache(sourceId: Long) {
+        runCatching { getCacheFile(sourceId).delete() }
+    }
+
     companion object {
-        private const val CACHE_FILE_NAME = "news_last_good_v1.json"
         private const val MAX_STALE_CACHE_MS = 48L * 60 * 60 * 1000
     }
 }

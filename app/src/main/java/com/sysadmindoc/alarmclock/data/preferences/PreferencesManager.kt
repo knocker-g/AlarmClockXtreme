@@ -146,7 +146,11 @@ data class AppSettings(
     // v1.8.0: News feed source URL. Defaults to Google News top stories,
     // but power users can paste any RSS/Atom URL — Rome handles all three
     // major feed flavors.
+    // v1.11.2 (ALA-5): Now specifically the *custom* feed URL override for migration.
+    // Use [newsActiveSourceId] and the news_sources table for current state.
     val newsFeedUrl: String = DEFAULT_NEWS_FEED_URL,
+    val newsActiveSourceId: Long? = null,
+    val newsSourcesSeeded: Boolean = false,
     // v1.11.6 (roadmap N6): "Pause all alarms" single-tap suspend. Distinct
     // from vacation mode — vacation requires a start+end date and only
     // touches repeating alarms; this hard-suspends every alarm (one-shots
@@ -364,6 +368,8 @@ class PreferencesManager @Inject constructor(
         val SHOW_NEWS_TAB = booleanPreferencesKey("show_news_tab")
         val SHOW_RADAR_EMBED = booleanPreferencesKey("show_radar_embed")
         val NEWS_FEED_URL = stringPreferencesKey("news_feed_url")
+        val NEWS_ACTIVE_SOURCE_ID = longPreferencesKey("news_active_source_id")
+        val NEWS_SOURCES_SEEDED = booleanPreferencesKey("news_sources_seeded")
         val PAUSE_UNTIL = longPreferencesKey("pause_until_millis")
         val BEDTIME_STAY_UP_LATE_UNTIL = longPreferencesKey("bedtime_stay_up_late_until_millis")
         val HEALTH_CONNECT_ENABLED = booleanPreferencesKey("health_connect_enabled")
@@ -432,10 +438,6 @@ class PreferencesManager @Inject constructor(
         }
     }
 
-    /** Decode a Preferences snapshot into an AppSettings using the same defaults
-     *  applied by the data class. Centralised so [settings] and [update] can't
-     *  drift from each other (a previous source of bugs where new fields would
-     *  reset to default during update because only [settings] knew about them). */
     private fun Preferences.toSettings(): AppSettings = AppSettings(
         is24HourFormat = this[Keys.IS_24_HOUR] ?: false,
         defaultSnoozeDuration = this[Keys.DEFAULT_SNOOZE] ?: 10,
@@ -507,6 +509,8 @@ class PreferencesManager @Inject constructor(
         showNewsTab = this[Keys.SHOW_NEWS_TAB] ?: true,
         showRadarEmbed = this[Keys.SHOW_RADAR_EMBED] ?: true,
         newsFeedUrl = this[Keys.NEWS_FEED_URL] ?: DEFAULT_NEWS_FEED_URL,
+        newsActiveSourceId = this[Keys.NEWS_ACTIVE_SOURCE_ID],
+        newsSourcesSeeded = this[Keys.NEWS_SOURCES_SEEDED] ?: false,
         pauseUntilMillis = this[Keys.PAUSE_UNTIL] ?: 0L,
         healthConnectEnabled = this[Keys.HEALTH_CONNECT_ENABLED] ?: false,
         cancellationLockMinutes = this[Keys.CANCELLATION_LOCK_MINUTES] ?: 0,
@@ -595,6 +599,12 @@ class PreferencesManager @Inject constructor(
         this[Keys.SHOW_NEWS_TAB] = s.showNewsTab
         this[Keys.SHOW_RADAR_EMBED] = s.showRadarEmbed
         this[Keys.NEWS_FEED_URL] = s.newsFeedUrl
+        if (s.newsActiveSourceId != null) {
+            this[Keys.NEWS_ACTIVE_SOURCE_ID] = s.newsActiveSourceId
+        } else {
+            remove(Keys.NEWS_ACTIVE_SOURCE_ID)
+        }
+        this[Keys.NEWS_SOURCES_SEEDED] = s.newsSourcesSeeded
         this[Keys.PAUSE_UNTIL] = s.pauseUntilMillis
         this[Keys.HEALTH_CONNECT_ENABLED] = s.healthConnectEnabled
         this[Keys.CANCELLATION_LOCK_MINUTES] = s.cancellationLockMinutes

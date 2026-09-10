@@ -30,6 +30,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
@@ -40,6 +41,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -66,13 +68,13 @@ import com.sysadmindoc.alarmclock.R
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NewsScreen(
-    viewModel: NewsViewModel = hiltViewModel()
+    viewModel: NewsViewModel = hiltViewModel(),
+    onManageSources: () -> Unit = {}
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val uriHandler = LocalUriHandler.current
-    val activeFeedLabel = state.feeds.firstOrNull { it.key == state.activeFeedKey }
-        ?.let { stringResource(it.labelRes) }
-        ?: stringResource(R.string.news_custom_feed)
+    val activeSource = state.sources.firstOrNull { it.id == state.activeSourceId }
+    val activeFeedLabel = activeSource?.name ?: stringResource(R.string.news_no_sources)
 
     Box(
         modifier = Modifier
@@ -111,44 +113,43 @@ fun NewsScreen(
                     )
                 }
 
-                item {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        state.feeds.forEach { feed ->
-                            val selected = feed.key == state.activeFeedKey
-                            Column(
-                                modifier = Modifier
-                                    // The active feed was signalled only by
-                                    // colour and an underline, so a screen
-                                    // reader could not tell which tab was on.
-                                    .selectable(
-                                        selected = selected,
-                                        role = Role.Tab,
-                                        onClick = { viewModel.selectFeed(feed.key) }
-                                    )
-                                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(7.dp)
-                            ) {
-                                Text(
-                                    text = stringResource(feed.shortLabelRes),
-                                    color = if (selected) MaterialTheme.colorScheme.primary else TextSecondary,
-                                    style = MaterialTheme.typography.labelLarge
-                                )
-                                Box(
+                if (state.sources.isNotEmpty()) {
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            state.sources.forEach { source ->
+                                val selected = source.id == state.activeSourceId
+                                Column(
                                     modifier = Modifier
-                                        .width(30.dp)
-                                        .height(3.dp)
-                                        .background(
-                                            if (selected) MaterialTheme.colorScheme.primary
-                                            else androidx.compose.ui.graphics.Color.Transparent
+                                        .selectable(
+                                            selected = selected,
+                                            role = Role.Tab,
+                                            onClick = { viewModel.selectSource(source.id) }
                                         )
-                                )
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(7.dp)
+                                ) {
+                                    Text(
+                                        text = source.name,
+                                        color = if (selected) MaterialTheme.colorScheme.primary else TextSecondary,
+                                        style = MaterialTheme.typography.labelLarge
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .width(30.dp)
+                                            .height(3.dp)
+                                            .background(
+                                                if (selected) MaterialTheme.colorScheme.primary
+                                                else Color.Transparent
+                                            )
+                                    )
+                                }
                             }
                         }
                     }
@@ -225,8 +226,23 @@ fun NewsScreen(
                                 AppSurfaceCard {
                                     AppEmptyState(
                                         icon = Icons.Default.RssFeed,
-                                        title = stringResource(R.string.news_no_headlines_yet),
-                                        description = stringResource(R.string.news_pick_feed_chips_above),
+                                        title = if (state.sources.isEmpty()) {
+                                            stringResource(R.string.news_no_sources)
+                                        } else {
+                                            stringResource(R.string.news_no_headlines_yet)
+                                        },
+                                        description = if (state.sources.isEmpty()) {
+                                            stringResource(R.string.news_manage_sources)
+                                        } else {
+                                            stringResource(R.string.news_pick_feed_chips_above)
+                                        },
+                                        footer = if (state.sources.isEmpty()) {
+                                            {
+                                                Button(onClick = onManageSources) {
+                                                    Text(stringResource(R.string.settings_manage))
+                                                }
+                                            }
+                                        } else null
                                     )
                                 }
                             }
