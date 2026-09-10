@@ -11,6 +11,7 @@ import com.sysadmindoc.alarmclock.data.local.AlarmEventDao
 import com.sysadmindoc.alarmclock.data.local.AlarmGroupDao
 import com.sysadmindoc.alarmclock.data.local.AlarmIncidentEventDao
 import com.sysadmindoc.alarmclock.data.local.DatabaseDowngradeNotice
+import com.sysadmindoc.alarmclock.data.local.NewsSourceDao
 import com.sysadmindoc.alarmclock.data.local.PreSleepTagDao
 import com.sysadmindoc.alarmclock.data.local.SnoreEventDao
 import dagger.Module
@@ -96,5 +97,11 @@ object DatabaseModule {
     @Singleton
     fun provideAlarmGroupDao(database: AlarmDatabase): AlarmGroupDao {
         return database.alarmGroupDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideNewsSourceDao(database: AlarmDatabase): NewsSourceDao {
+        return database.newsSourceDao()
     }
 }

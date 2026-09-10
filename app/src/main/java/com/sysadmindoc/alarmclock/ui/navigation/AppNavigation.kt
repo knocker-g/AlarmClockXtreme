@@ -51,6 +51,8 @@ import com.sysadmindoc.alarmclock.ui.worldclock.WorldClockScreen
 import com.sysadmindoc.alarmclock.ui.news.NewsScreen
 import com.sysadmindoc.alarmclock.util.ReliabilityDoctor
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.sysadmindoc.alarmclock.ui.settings.NewsSourceSettingsScreen
+import com.sysadmindoc.alarmclock.ui.settings.SettingsViewModel
 
 sealed class Screen(val route: String) {
     data object Dashboard : Screen("dashboard")
@@ -68,6 +70,7 @@ sealed class Screen(val route: String) {
     data object SharedAlarmImport : Screen("shared_alarm_import")
     // v1.8.0
     data object News : Screen("news")
+    data object NewsSources : Screen("news_sources")
 }
 
 data class BottomNavItem(
@@ -516,7 +519,17 @@ private fun AppNavHost(
         }
 
         composable(Screen.News.route) {
-            NewsScreen()
+            NewsScreen(
+                onManageSources = { navController.navigate(Screen.NewsSources.route) }
+            )
+        }
+
+        composable(Screen.NewsSources.route) {
+            val settingsViewModel: SettingsViewModel = hiltViewModel()
+            NewsSourceSettingsScreen(
+                viewModel = settingsViewModel,
+                onNavigateBack = { navController.popBackStack() }
+            )
         }
 
         composable(Screen.Settings.route) {
@@ -529,6 +542,9 @@ private fun AppNavHost(
                 },
                 onNavigateToBedtime = {
                     navController.navigate(Screen.Bedtime.route)
+                },
+                onNavigateToNewsSources = {
+                    navController.navigate(Screen.NewsSources.route)
                 },
                 onOpenOnboardingChecklist = {
                     navController.navigate(Screen.Onboarding.route) {

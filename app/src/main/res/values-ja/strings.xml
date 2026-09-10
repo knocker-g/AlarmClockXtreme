@@ -769,6 +769,17 @@
     <string name="settings_show_world_description">気になる都市のタイムゾーンを追跡します。</string>
     <string name="settings_show_news_tab">「ニュース」タブを表示</string>
     <string name="settings_show_news_description">公開RSSフィード: Google ニュース、BBC、NPR、Hacker News。</string>
+    <string name="settings_news_sources">ニュースソースの管理</string>
+    <string name="settings_manage">管理</string>
+    <string name="news_manage_sources">ニュースソースの管理</string>
+    <string name="news_add_source">ニュースソースを追加</string>
+    <string name="news_edit_source">ニュースソースを編集</string>
+    <string name="news_delete_source">ニュースソースを削除</string>
+    <string name="news_source_name">ソース名</string>
+    <string name="news_feed_url_label">RSSフィードURL</string>
+    <string name="news_no_sources">ニュースソースがありません</string>
+    <string name="news_delete_confirm">このニュースソースを削除しますか？</string>
+    <string name="news_custom_feed">カスタム</string>
     <string name="settings_radar_tab">「天気」タブにライブレーダーを表示</string>
     <string name="settings_radar_description">Windy.comのアニメーション降水レーダーを天気カードの下に埋め込みます。</string>
     <string name="settings_utilities">ユーティリティ</string>
@@ -1631,7 +1642,6 @@
     <plurals name="stats_wake_streak_days">
         <item quantity="other">%1$d 日間の起床ストリーク</item>
     </plurals>
-    <string name="news_custom_feed">カスタムフィード</string>
     <string name="news_pick_a_different_source_or_try">別のソースを選択するか、再試行してください。</string>
     <string name="permissions_recommended_permissions">推奨される権限</string>
     <string name="permissions_context_permissions">コンテキスト権限</string>
@@ -1997,18 +2007,6 @@
     <plurals name="template_repeat_days">
         <item quantity="other">%1$d 日間</item>
     </plurals>
-    <string name="news_feed_google_top">Google ニュース: トップ</string>
-    <string name="news_feed_google_top_short">トップ</string>
-    <string name="news_feed_google_world">Google ニュース: 国際</string>
-    <string name="news_feed_google_world_short">国際</string>
-    <string name="news_feed_google_tech">Google ニュース: テクノロジー</string>
-    <string name="news_feed_google_tech_short">テクノロジー</string>
-    <string name="news_feed_bbc">BBC: トップ記事</string>
-    <string name="news_feed_bbc_short">トップ記事</string>
-    <string name="news_feed_npr">NPR: ニュース</string>
-    <string name="news_feed_npr_short">ニュース</string>
-    <string name="news_feed_hn">Hacker News: フロントページ</string>
-    <string name="news_feed_hn_short">フロントページ</string>
     <string name="chess_puzzle_back_rank_net_title">バックランクネット</string>
     <string name="chess_puzzle_back_rank_net_explanation">クイーンがガードを排除し、ルークがバックランクを封鎖します。</string>
     <string name="chess_puzzle_corner_squeeze_title">コーナースクイーズ</string>

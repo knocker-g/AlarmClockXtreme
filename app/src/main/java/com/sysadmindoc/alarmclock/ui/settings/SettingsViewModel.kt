@@ -27,12 +27,15 @@ import com.sysadmindoc.alarmclock.data.health.HealthConnectSleepRepository
 import com.sysadmindoc.alarmclock.data.health.HealthConnectSleepSummary
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.data.local.CommuteHistoryStore
+import com.sysadmindoc.alarmclock.data.local.entity.NewsSource
 import com.sysadmindoc.alarmclock.data.preferences.AppSettings
 import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import com.sysadmindoc.alarmclock.data.readiness.TestAlarmProof
 import com.sysadmindoc.alarmclock.data.readiness.TestAlarmProofStore
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository
+import com.sysadmindoc.alarmclock.data.news.NewsSourceRepository
+import com.sysadmindoc.alarmclock.data.news.NewsRepository
 import com.sysadmindoc.alarmclock.data.support.SupportExportFile
 import com.sysadmindoc.alarmclock.data.support.SupportExportManager
 import com.sysadmindoc.alarmclock.domain.AlarmMuteRiskPolicy
@@ -165,7 +168,9 @@ class SettingsViewModel @Inject constructor(
     private val hueBridgeClient: HueBridgeClient,
     private val hueTrustStore: HueTrustStore,
     private val commuteHistoryStore: CommuteHistoryStore,
-    private val fossifyImportManager: FossifyImportManager
+    private val fossifyImportManager: FossifyImportManager,
+    private val newsSourceRepository: NewsSourceRepository,
+    private val newsRepository: NewsRepository
 ) : AndroidViewModel(application) {
     /** For strings that end up in UI state built here rather than on screen. */
     private val appContext: android.content.Context get() = getApplication()
@@ -321,6 +326,38 @@ class SettingsViewModel @Inject constructor(
     // v1.8.0
     fun toggleShowNewsTab(enabled: Boolean) =
         updateSettings { it.copy(showNewsTab = enabled) }
+    
+    fun observeNewsSources(): Flow<List<NewsSource>> = newsSourceRepository.observeAll()
+
+    fun addNewsSource(name: String, url: String) {
+        viewModelScope.launch {
+            val id = newsSourceRepository.insert(NewsSource(name = name, feedUrl = url, sortOrder = 0))
+            // If it's the very first source, make it active
+            val settings = preferencesManager.getCurrentSettings()
+            if (settings.newsActiveSourceId == null) {
+                preferencesManager.update { it.copy(newsActiveSourceId = id) }
+            }
+        }
+    }
+
+    fun updateNewsSource(source: NewsSource) {
+        viewModelScope.launch {
+            val old = newsSourceRepository.getById(source.id)
+            if (old != null && old.feedUrl != source.feedUrl) {
+                // URL changed; invalidate cache
+                newsRepository.deleteCache(source.id)
+            }
+            newsSourceRepository.update(source)
+        }
+    }
+
+    fun deleteNewsSource(source: NewsSource) {
+        viewModelScope.launch {
+            newsRepository.deleteCache(source.id)
+            newsSourceRepository.delete(source)
+        }
+    }
+
     fun toggleShowRadarEmbed(enabled: Boolean) =
         updateSettings { it.copy(showRadarEmbed = enabled) }
 

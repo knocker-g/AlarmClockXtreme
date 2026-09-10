@@ -246,6 +246,7 @@ fun SettingsScreen(
     onNavigateToStats: () -> Unit = {},
     onNavigateToStopwatch: () -> Unit = {},
     onNavigateToBedtime: () -> Unit = {},
+    onNavigateToNewsSources: () -> Unit = {},
     onOpenOnboardingChecklist: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
@@ -812,6 +813,13 @@ fun SettingsScreen(
                     supportingText = stringResource(R.string.settings_show_news_description),
                     onToggle = viewModel::toggleShowNewsTab
                 )
+                if (state.settings.showNewsTab) {
+                    SettingsActionRow(
+                        label = stringResource(R.string.settings_news_sources),
+                        value = stringResource(R.string.settings_manage),
+                        onClick = onNavigateToNewsSources
+                    )
+                }
                 SettingsToggle(
                     label = stringResource(R.string.settings_radar_tab),
                     checked = state.settings.showRadarEmbed,
