@@ -2,6 +2,7 @@ package com.sysadmindoc.alarmclock.ui.news
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.sysadmindoc.alarmclock.data.news.NewsItem
 import com.sysadmindoc.alarmclock.data.news.NewsRepository
 import com.sysadmindoc.alarmclock.data.news.NewsSourceRepository
 import com.sysadmindoc.alarmclock.data.local.entity.NewsSource
@@ -77,5 +78,39 @@ class NewsViewModelTest {
         val state = viewModel.uiState.value
         assertEquals(1L, state.activeSourceId)
         assertEquals("url1", state.activeFeedUrl)
+    }
+
+    @Test
+    fun `items are cleared when last source is deleted`() = runTest(dispatcher) {
+        val viewModel = NewsViewModel(context, repository, sourceRepository, preferencesManager)
+        advanceUntilIdle()
+        
+        // Simulate items loaded
+        viewModel.refresh()
+        advanceUntilIdle()
+        
+        // Delete last source
+        every { sourceRepository.observeAll() } returns flowOf(emptyList())
+        settingsFlow.value = AppSettings(newsActiveSourceId = null)
+        advanceUntilIdle()
+        
+        val state = viewModel.uiState.value
+        assertEquals(emptyList<NewsSource>(), state.sources)
+        assertEquals(null, state.activeSourceId)
+        assertEquals(emptyList<NewsItem>(), state.items)
+    }
+
+    @Test
+    fun `items are cleared when switching to a different source`() = runTest(dispatcher) {
+        val viewModel = NewsViewModel(context, repository, sourceRepository, preferencesManager)
+        advanceUntilIdle()
+        
+        // Switch from source 1 to 2
+        settingsFlow.value = AppSettings(newsActiveSourceId = 2L, newsSourcesSeeded = true)
+        advanceUntilIdle()
+        
+        val state = viewModel.uiState.value
+        assertEquals(2L, state.activeSourceId)
+        assertEquals(emptyList<NewsItem>(), state.items)
     }
 }

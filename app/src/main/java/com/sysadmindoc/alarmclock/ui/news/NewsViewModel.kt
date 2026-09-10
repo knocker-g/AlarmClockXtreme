@@ -70,16 +70,36 @@ class NewsViewModel @Inject constructor(
                     activeSource?.id != _uiState.value.activeSourceId ||
                     sources != _uiState.value.sources) {
                     
+                    val idChanged = activeSource?.id != _uiState.value.activeSourceId
                     val urlChanged = effectiveUrl != _uiState.value.activeFeedUrl && effectiveUrl.isNotBlank()
 
-                    _uiState.value = _uiState.value.copy(
-                        sources = sources,
-                        activeSourceId = activeSource?.id,
-                        activeFeedUrl = effectiveUrl
-                    )
-                    
-                    if (urlChanged) {
-                        refresh()
+                    if (activeSource == null) {
+                        loadJob?.cancel()
+                        _uiState.value = _uiState.value.copy(
+                            sources = sources,
+                            activeSourceId = null,
+                            activeFeedUrl = "",
+                            items = emptyList(),
+                            loading = false,
+                            refreshing = false,
+                            errorMessage = null,
+                            lastUpdatedMillis = null,
+                            isStale = false,
+                            staleMessage = null
+                        )
+                    } else {
+                        _uiState.value = _uiState.value.copy(
+                            sources = sources,
+                            activeSourceId = activeSource.id,
+                            activeFeedUrl = effectiveUrl,
+                            // v1.11.3 (ALA-5): Clear headlines when switching to a
+                            // different source to prevent stale flicker.
+                            items = if (idChanged) emptyList() else _uiState.value.items
+                        )
+                        
+                        if (urlChanged || idChanged) {
+                            refresh()
+                        }
                     }
                 }
             }.collect()
@@ -108,6 +128,10 @@ class NewsViewModel @Inject constructor(
             )
             repository.fetchFeed(sourceId, url)
                 .onSuccess { snapshot ->
+                    // v1.11.3 (ALA-5): Race guard. If the active source changed
+                    // while we were on the wire, drop this result.
+                    if (sourceId != _uiState.value.activeSourceId) return@onSuccess
+
                     _uiState.value = _uiState.value.copy(
                         loading = false,
                         refreshing = false,
@@ -123,6 +147,8 @@ class NewsViewModel @Inject constructor(
                     )
                 }
                 .onFailure { error ->
+                    if (sourceId != _uiState.value.activeSourceId) return@onFailure
+
                     _uiState.value = _uiState.value.copy(
                         loading = false,
                         refreshing = false,
