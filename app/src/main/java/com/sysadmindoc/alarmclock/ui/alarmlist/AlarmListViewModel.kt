@@ -84,6 +84,7 @@ data class AlarmListUiState(
     val selectedIds: Set<Long> = emptySet(),
     val isSelectionMode: Boolean = false,
     val napDefaultMinutes: Int = 20,
+    val latestEvents: Map<Long, AlarmEvent> = emptyMap(),
     // v1.5.2: Current vacation window bounds surfaced so the list card can
     // flag individual alarms whose next trigger falls inside it — before
     // this, the scheduler silently suppressed them while the UI still said
@@ -127,6 +128,13 @@ class AlarmListViewModel @Inject constructor(
     private val _isSelectionMode = MutableStateFlow(false)
     private var lastSortCycleMillis = 0L
 
+    private val alarmsWithLatestEvents = combine(
+        repository.observeAll(),
+        eventRepository.observeLatestEventsPerAlarm()
+    ) { alarms, events ->
+        alarms to events.associateBy { it.alarmId }
+    }
+
     // Ticker emits every 30s so the remaining-time countdown stays fresh
     private val ticker = flow {
         while (true) {
@@ -136,14 +144,14 @@ class AlarmListViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), Unit)
 
     val uiState: StateFlow<AlarmListUiState> = combine(
-        repository.observeAll(),
+        alarmsWithLatestEvents,
         repository.observeNextAlarm(),
         preferencesManager.settings,
         _sortOrder,
         combine(ticker, _selectedIds, _isSelectionMode, _undoAlarm, combine(_selectedGroup, _selectedProfile) { g, p -> g to p }) { _, sel, mode, undo, gp ->
             SelectionSnapshot(sel, mode, undo, gp.first, gp.second)
         }
-    ) { alarms, nextAlarm, settings, sort, snap ->
+    ) { (alarms, latestEventsMap), nextAlarm, settings, sort, snap ->
         var filtered = alarms
 
         // Extract unique groups from all alarms (not filtered), hiding the
@@ -186,6 +194,7 @@ class AlarmListViewModel @Inject constructor(
             selectedIds = snap.selectedIds,
             isSelectionMode = snap.isSelectionMode,
             napDefaultMinutes = settings.napDefaultMinutes,
+            latestEvents = latestEventsMap,
             vacationStartMillis = if (VacationAlarmPolicy.hasConfiguredWindow(settings)) {
                 settings.vacationStartMillis
             } else 0L,
