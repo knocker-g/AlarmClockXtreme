@@ -2211,7 +2211,7 @@
     <string name="youtube_engine_current">ダウンローダーエンジンは最新です (%1$s)。</string>
     <string name="youtube_engine_already_current">ダウンローダーエンジンはすでに最新です。</string>
     <string name="alarm_list_alarm_details">アラームの詳細</string>
-    <string name="alarm_repeat_once">1回</string>
+    <string name="alarm_repeat_once">1回のみ</string>
     <string name="alarm_repeat_every_day">毎日</string>
     <string name="alarm_repeat_weekdays">平日</string>
     <string name="alarm_repeat_weekend">週末</string>
@@ -2473,4 +2473,13 @@
     <string name="bedtime_dnd_policy_error">同期できませんでした。一度オフにしてから再度オンにしてください。</string>
     <string name="bedtime_next_alarm">次回のアラーム: %1$s</string>
     <string name="bedtime_no_alarm_set">アラーム設定なし</string>
+
+    <string name="alarmlist_last_result">前回: %1$s</string>
+    <string name="alarmlist_last_result_format">%1$s %2$s · %3$s</string>
+    <string name="alarmlist_action_dismissed">停止</string>
+    <string name="alarmlist_action_snoozed">スヌーズ</string>
+    <string name="alarmlist_action_missed">自動消音</string>
+    <string name="alarmlist_action_skipped">スキップ</string>
+    <string name="alarmlist_today">今日</string>
+    <string name="alarmlist_yesterday">昨日</string>
 </resources>

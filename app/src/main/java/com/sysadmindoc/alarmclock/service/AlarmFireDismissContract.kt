@@ -32,6 +32,7 @@ object AlarmFireDismissContract {
         alarmId: Long,
         scheduledAt: Long,
         fireId: String = fireId(alarmId, scheduledAt),
+        firedAt: Long = 0L,
         customMinutes: Int? = null,
         snoozeAtMillis: Long? = null
     ): Intent = Intent(context, AlarmService::class.java).apply {
@@ -39,6 +40,9 @@ object AlarmFireDismissContract {
         putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
         putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, scheduledAt)
         putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, fireId)
+        if (firedAt > 0L) {
+            putExtra(AlarmService.EXTRA_FIRED_AT, firedAt)
+        }
         if (customMinutes != null) {
             putExtra(AlarmService.EXTRA_CUSTOM_SNOOZE_MINUTES, customMinutes)
         }
@@ -52,6 +56,7 @@ object AlarmFireDismissContract {
         alarmId: Long,
         scheduledAt: Long,
         fireId: String = fireId(alarmId, scheduledAt),
+        firedAt: Long = 0L,
         challengeRetryCount: Int = 0,
         challengeSolveTimeMs: Long = 0L
     ): Intent = Intent(context, AlarmService::class.java).apply {
@@ -59,6 +64,9 @@ object AlarmFireDismissContract {
         putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
         putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, scheduledAt)
         putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, fireId)
+        if (firedAt > 0L) {
+            putExtra(AlarmService.EXTRA_FIRED_AT, firedAt)
+        }
         putExtra(AlarmService.EXTRA_CHALLENGE_RETRY_COUNT, challengeRetryCount.coerceAtLeast(0))
         putExtra(AlarmService.EXTRA_CHALLENGE_SOLVE_TIME_MS, challengeSolveTimeMs.coerceAtLeast(0L))
     }
@@ -67,7 +75,8 @@ object AlarmFireDismissContract {
         context: Context,
         alarmId: Long,
         scheduledAt: Long,
-        fireId: String = fireId(alarmId, scheduledAt)
+        fireId: String = fireId(alarmId, scheduledAt),
+        firedAt: Long = 0L
     ): Intent = Intent(context, AlarmFiringActivity::class.java).apply {
         addFlags(
             Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -77,6 +86,9 @@ object AlarmFireDismissContract {
         putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
         putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, scheduledAt)
         putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, fireId)
+        if (firedAt > 0L) {
+            putExtra(AlarmService.EXTRA_FIRED_AT, firedAt)
+        }
     }
 
     fun alarmEvent(

@@ -74,6 +74,9 @@ interface AlarmEventDao {
     )
     suspend fun trimToLatest(maxRows: Int)
 
+    @Query("SELECT * FROM alarm_events WHERE id IN (SELECT MAX(id) FROM alarm_events GROUP BY alarmId)")
+    fun observeLatestEventsPerAlarm(): Flow<List<AlarmEvent>>
+
     @Query("DELETE FROM alarm_events")
     suspend fun deleteAll()
 }

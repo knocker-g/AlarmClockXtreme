@@ -28,6 +28,7 @@ import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.service.AlarmFireDismissContract
+import com.sysadmindoc.alarmclock.service.AlarmService
 import com.sysadmindoc.alarmclock.ui.alarmfiring.challenges.Challenge
 import com.sysadmindoc.alarmclock.ui.theme.AlarmClockXtremeTheme
 import com.sysadmindoc.alarmclock.util.FlipDetector
@@ -72,6 +73,7 @@ class AlarmFiringActivity : ComponentActivity() {
     private var alarmId: Long = -1
     private var scheduledAt: Long = 0L
     private var fireId: String = ""
+    private var firedAt: Long = 0L
     private var wifiPollingJob: kotlinx.coroutines.Job? = null
     private var walkPermissionRequestInFlight = false
     private var wifiPermissionRequestInFlight = false
@@ -141,6 +143,7 @@ class AlarmFiringActivity : ComponentActivity() {
         alarmId = intent?.getLongExtra(AlarmScheduler.EXTRA_ALARM_ID, -1) ?: -1
         scheduledAt = intent?.getLongExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 0L) ?: 0L
         fireId = intent?.getStringExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID).orEmpty()
+        firedAt = intent?.getLongExtra(AlarmService.EXTRA_FIRED_AT, 0L) ?: 0L
         // Defensive: if launched without a valid alarm id (rare — only really
         // possible from a stale full-screen-intent or a third party), get out
         // immediately rather than rendering broken state. The user will see
@@ -703,6 +706,7 @@ class AlarmFiringActivity : ComponentActivity() {
             alarmId = alarmId,
             scheduledAt = scheduledAt,
             fireId = fireId,
+            firedAt = firedAt,
             customMinutes = customMinutes,
             snoozeAtMillis = snoozeAtMillis
         )
@@ -739,6 +743,7 @@ class AlarmFiringActivity : ComponentActivity() {
             alarmId = alarmId,
             scheduledAt = scheduledAt,
             fireId = fireId,
+            firedAt = firedAt,
             challengeRetryCount = state.totalWrongAttempts,
             challengeSolveTimeMs = challengeSolveTimeMs
         )

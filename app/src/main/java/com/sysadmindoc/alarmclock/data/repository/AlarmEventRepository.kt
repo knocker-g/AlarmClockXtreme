@@ -82,6 +82,8 @@ class AlarmEventRepository @Inject constructor(
 ) {
     fun observeRecent(limit: Int = 50): Flow<List<AlarmEvent>> = dao.observeRecent(limit)
 
+    fun observeLatestEventsPerAlarm(): Flow<List<AlarmEvent>> = dao.observeLatestEventsPerAlarm()
+
     suspend fun record(event: AlarmEvent): Long {
         val id = dao.insert(event)
         prune()

@@ -121,6 +121,7 @@ import androidx.compose.ui.zIndex
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sysadmindoc.alarmclock.R
+import com.sysadmindoc.alarmclock.data.local.entity.AlarmEvent
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.model.ShiftPattern
 import com.sysadmindoc.alarmclock.data.share.AlarmShareCodec
@@ -155,8 +156,10 @@ import com.sysadmindoc.alarmclock.ui.theme.TextSecondary
 import com.sysadmindoc.alarmclock.util.AlarmPublicText
 import com.sysadmindoc.alarmclock.util.AlarmTimeFormatter
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -662,6 +665,7 @@ fun AlarmListScreen(
                                         }
                                         Box(modifier = Modifier.weight(1f)) {
                                             val isSelected = alarm.id in state.selectedIds
+                                            val latestEvent = state.latestEvents[alarm.id]
                                             if (state.isSelectionMode) {
                                                 SelectableAlarmCard(
                                                     alarm = alarm,
@@ -680,6 +684,7 @@ fun AlarmListScreen(
                                                             state.vacationStartMillis..state.vacationEndMillis
                                                     AlarmCard(
                                                         alarm = alarm,
+                                                        latestEvent = latestEvent,
                                                         is24Hour = state.is24HourFormat,
                                                         suppressedByVacation = suppressedByVacation,
                                                         pausedUntilMillis = state.pausedUntilMillis,
@@ -772,6 +777,7 @@ fun AlarmListScreen(
                         )
                         AlarmDetailPane(
                             alarm = selectedAlarm,
+                            latestEvent = selectedAlarm?.let { state.latestEvents[it.id] },
                             is24Hour = state.is24HourFormat,
                             suppressedByVacation = selectedAlarm?.let { alarm ->
                                 alarm.isEnabled &&
@@ -870,6 +876,7 @@ private fun AlarmListEmptyActions(
 @Composable
 private fun AlarmDetailPane(
     alarm: Alarm?,
+    latestEvent: AlarmEvent? = null,
     is24Hour: Boolean,
     suppressedByVacation: Boolean,
     pausedUntilMillis: Long = 0L,
@@ -929,6 +936,14 @@ private fun AlarmDetailPane(
                     )
                 }
             )
+
+            latestEvent?.let { event ->
+                Text(
+                    text = lastResultLabel(event, is24Hour),
+                    color = TextSecondary,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
 
             Text(
                 text = formatAlarmTime(alarm, is24Hour),
@@ -1323,6 +1338,7 @@ private fun QuickAlarmRow(
 @Composable
 private fun AlarmCard(
     alarm: Alarm,
+    latestEvent: AlarmEvent? = null,
     is24Hour: Boolean,
     suppressedByVacation: Boolean = false,
     pausedUntilMillis: Long = 0L,
@@ -1472,6 +1488,16 @@ private fun AlarmCard(
                 color = if (suppressedByVacation) SnoozeYellow else TextMuted,
                 style = MaterialTheme.typography.bodySmall
             )
+
+            latestEvent?.let { event ->
+                Text(
+                    text = lastResultLabel(event, is24Hour),
+                    color = TextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
 
             val silentLabel = stringResource(R.string.alarm_edit_silent)
             val chainLabel = alarm.challengeChainLabel()
@@ -1776,6 +1802,29 @@ private fun nextOccurrenceLabel(
 
     val formatted = format.format(dateFormatted, timeFormatted)
     return stringResource(R.string.alarm_list_next_occurrence, formatted)
+}
+
+@Composable
+private fun lastResultLabel(event: AlarmEvent, is24Hour: Boolean): String {
+    val now = LocalDate.now()
+    val eventDate = Instant.ofEpochMilli(event.firedAt).atZone(ZoneId.systemDefault()).toLocalDate()
+    val timeText = AlarmTimeFormatter.format(event.firedAt, is24Hour)
+
+    val dateText = when {
+        eventDate == now -> stringResource(R.string.alarmlist_today)
+        eventDate == now.minusDays(1) -> stringResource(R.string.alarmlist_yesterday)
+        else -> eventDate.format(DateTimeFormatter.ofLocalizedDate(FormatStyle.SHORT))
+    }
+
+    val actionText = when (event.action) {
+        AlarmEvent.ACTION_DISMISSED -> stringResource(R.string.alarmlist_action_dismissed)
+        AlarmEvent.ACTION_SNOOZED -> stringResource(R.string.alarmlist_action_snoozed)
+        AlarmEvent.ACTION_MISSED -> stringResource(R.string.alarmlist_action_missed)
+        AlarmEvent.ACTION_SKIPPED -> stringResource(R.string.alarmlist_action_skipped)
+        else -> event.action
+    }
+
+    return stringResource(R.string.alarmlist_last_result_format, dateText, timeText, actionText)
 }
 
 @Composable

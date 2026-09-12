@@ -2562,5 +2562,14 @@
     <string name="bedtime_dnd_policy_error">Could not sync. Please try toggling Bedtime Mode off and on.</string>
     <string name="bedtime_next_alarm">Next alarm: %1$s</string>
     <string name="bedtime_no_alarm_set">No alarm set</string>
+
+    <string name="alarmlist_last_result">Last: %1$s</string>
+    <string name="alarmlist_last_result_format">%1$s %2$s · %3$s</string>
+    <string name="alarmlist_action_dismissed">Dismissed</string>
+    <string name="alarmlist_action_snoozed">Snoozed</string>
+    <string name="alarmlist_action_missed">Auto-silenced</string>
+    <string name="alarmlist_action_skipped">Skipped</string>
+    <string name="alarmlist_today">Today</string>
+    <string name="alarmlist_yesterday">Yesterday</string>
 </resources>
 
