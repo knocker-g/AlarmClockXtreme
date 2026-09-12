@@ -132,7 +132,7 @@ class AlarmListViewModel @Inject constructor(
         repository.observeAll(),
         eventRepository.observeLatestEventsPerAlarm()
     ) { alarms, events ->
-        alarms to events.associateBy { it.alarmId }
+        alarms to events.filter { it.firedAt > 0 }.associateBy { it.alarmId }
     }
 
     // Ticker emits every 30s so the remaining-time countdown stays fresh

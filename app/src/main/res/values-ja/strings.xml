@@ -2211,7 +2211,7 @@
     <string name="youtube_engine_current">ダウンローダーエンジンは最新です (%1$s)。</string>
     <string name="youtube_engine_already_current">ダウンローダーエンジンはすでに最新です。</string>
     <string name="alarm_list_alarm_details">アラームの詳細</string>
-    <string name="alarm_repeat_once">1回</string>
+    <string name="alarm_repeat_once">1回のみ</string>
     <string name="alarm_repeat_every_day">毎日</string>
     <string name="alarm_repeat_weekdays">平日</string>
     <string name="alarm_repeat_weekend">週末</string>

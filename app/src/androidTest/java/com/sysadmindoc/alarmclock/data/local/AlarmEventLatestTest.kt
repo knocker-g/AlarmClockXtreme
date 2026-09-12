@@ -54,4 +54,22 @@ class AlarmEventLatestTest {
         assertEquals(150L, latest2?.scheduledTime)
         assertEquals("MISSED", latest2?.action)
     }
+
+    @Test
+    fun maxIdQueryIncludesZeroFiredAtRecords() = runBlocking {
+        // The DAO query itself should be honest about what's in the DB.
+        // MAX(id) is the only criteria.
+        val alarmId = 3L
+        val events = listOf(
+            AlarmEvent(alarmId = alarmId, scheduledTime = 100, firedAt = 100, action = "DISMISSED"),
+            AlarmEvent(alarmId = alarmId, scheduledTime = 200, firedAt = 0, action = "MISSED") // Latest by ID
+        )
+        events.forEach { dao.insert(it) }
+
+        val latest = dao.observeLatestEventsPerAlarm().first()
+        val latest3 = latest.find { it.alarmId == alarmId }
+
+        assertEquals(0L, latest3?.firedAt)
+        assertEquals("MISSED", latest3?.action)
+    }
 }

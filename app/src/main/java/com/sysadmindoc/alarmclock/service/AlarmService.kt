@@ -93,6 +93,7 @@ class AlarmService : Service() {
         const val EXTRA_WAKE_CONFIRM_REFIRE_COUNT = "wake_confirm_refire_count"
         const val EXTRA_CHALLENGE_DUCKING_ACTIVE = "challenge_ducking_active"
         const val EXTRA_CHALLENGE_DUCK_PERCENT = "challenge_duck_percent"
+        const val EXTRA_FIRED_AT = "fired_at"
         private const val MIN_CUSTOM_SNOOZE_MINUTES = 1
         private const val MAX_CUSTOM_SNOOZE_MINUTES = 120
 
@@ -114,7 +115,8 @@ class AlarmService : Service() {
         data class ActiveAlarmSnapshot(
             val alarmId: Long,
             val scheduledAt: Long,
-            val fireId: String
+            val fireId: String,
+            val firedAt: Long
         )
 
         /**
@@ -311,12 +313,12 @@ class AlarmService : Service() {
                     currentAlarmId = alarmId
                     currentScheduledAt = scheduledAt
                     currentFireId = fireId
-                    activeAlarm.set(ActiveAlarmSnapshot(alarmId, scheduledAt, fireId))
+                    alarmFiredAt = System.currentTimeMillis()
+                    activeAlarm.set(ActiveAlarmSnapshot(alarmId, scheduledAt, fireId, alarmFiredAt))
                     currentSnoozeCount = readPersistedSnoozeCount(alarmId)
                     currentWakeConfirmRefireCount = intent.getIntExtra(
                         EXTRA_WAKE_CONFIRM_REFIRE_COUNT, 0
                     )
-                    alarmFiredAt = System.currentTimeMillis()
                     recordIncidentAsync(
                         type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
                         status = AlarmIncidentEvent.STATUS_RECEIVED,
@@ -346,6 +348,10 @@ class AlarmService : Service() {
                     ?.coerceIn(MIN_CUSTOM_SNOOZE_MINUTES, MAX_CUSTOM_SNOOZE_MINUTES)
                 val snoozeAtMillis = intent.getLongExtra(EXTRA_SNOOZE_UNTIL_MILLIS, -1L)
                     .takeIf { it > System.currentTimeMillis() }
+                
+                val intentFiredAt = intent.getLongExtra(EXTRA_FIRED_AT, 0L)
+                if (intentFiredAt > 0) alarmFiredAt = intentFiredAt
+
                 // v1.5.1: If the service was killed+restarted between fire and
                 // snooze, currentSnoozeCount is 0 (fresh instance). Re-read the
                 // persisted count so the progressive-snooze ladder doesn't reset.
@@ -354,6 +360,9 @@ class AlarmService : Service() {
                     currentScheduledAt = scheduledAt
                     currentFireId = fireId
                     currentSnoozeCount = readPersistedSnoozeCount(alarmId)
+                    if (alarmFiredAt == 0L) {
+                        alarmFiredAt = activeAlarm.get()?.takeIf { it.alarmId == alarmId }?.firedAt ?: 0L
+                    }
                 }
                 serviceScope.launch { snoozeAlarm(alarmId, customMinutes, snoozeAtMillis) }
             }
@@ -382,12 +391,19 @@ class AlarmService : Service() {
                 val challengeSolveTimeMs = intent
                     .getLongExtra(EXTRA_CHALLENGE_SOLVE_TIME_MS, 0L)
                     .coerceAtLeast(0L)
+
+                val intentFiredAt = intent.getLongExtra(EXTRA_FIRED_AT, 0L)
+                if (intentFiredAt > 0) alarmFiredAt = intentFiredAt
+
                 // v1.5.1: Same service-restart protection as ACTION_SNOOZE.
                 if (currentAlarmId == -1L && alarmId > 0L) {
                     currentAlarmId = alarmId
                     currentScheduledAt = scheduledAt
                     currentFireId = fireId
                     currentSnoozeCount = readPersistedSnoozeCount(alarmId)
+                    if (alarmFiredAt == 0L) {
+                        alarmFiredAt = activeAlarm.get()?.takeIf { it.alarmId == alarmId }?.firedAt ?: 0L
+                    }
                 }
                 serviceScope.launch {
                     dismissAlarm(
@@ -459,7 +475,8 @@ class AlarmService : Service() {
             context = this,
             alarmId = alarmId,
             scheduledAt = currentScheduledAt,
-            fireId = currentFireId
+            fireId = currentFireId,
+            firedAt = alarmFiredAt
         )
         try {
             startActivity(firingIntent)
@@ -678,7 +695,8 @@ class AlarmService : Service() {
             context = this,
             alarmId = alarm.id,
             scheduledAt = currentScheduledAt,
-            fireId = currentFireId
+            fireId = currentFireId,
+            firedAt = alarmFiredAt
         )
         val fullScreenPi = PendingIntent.getActivity(
             this, alarm.id.toInt(), fullScreenIntent,
@@ -689,6 +707,7 @@ class AlarmService : Service() {
             putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarm.id)
             putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, currentScheduledAt)
             putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, currentFireId)
+            putExtra(EXTRA_FIRED_AT, alarmFiredAt)
         }
         val snoozePi = PendingIntent.getBroadcast(
             this, alarm.id.toInt() + 10000, snoozeIntent,
@@ -699,6 +718,7 @@ class AlarmService : Service() {
             putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarm.id)
             putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, currentScheduledAt)
             putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, currentFireId)
+            putExtra(EXTRA_FIRED_AT, alarmFiredAt)
         }
         val dismissPi = PendingIntent.getBroadcast(
             this, alarm.id.toInt() + 20000, dismissIntent,
