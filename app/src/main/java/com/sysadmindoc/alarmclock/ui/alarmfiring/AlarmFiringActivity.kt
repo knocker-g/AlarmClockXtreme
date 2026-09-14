@@ -74,6 +74,8 @@ class AlarmFiringActivity : ComponentActivity() {
     private var scheduledAt: Long = 0L
     private var fireId: String = ""
     private var firedAt: Long = 0L
+    private var alarmState: String = "FIRING"
+    private var refireAt: Long = 0L
     private var wifiPollingJob: kotlinx.coroutines.Job? = null
     private var walkPermissionRequestInFlight = false
     private var wifiPermissionRequestInFlight = false
@@ -144,6 +146,8 @@ class AlarmFiringActivity : ComponentActivity() {
         scheduledAt = intent?.getLongExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 0L) ?: 0L
         fireId = intent?.getStringExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID).orEmpty()
         firedAt = intent?.getLongExtra(AlarmService.EXTRA_FIRED_AT, 0L) ?: 0L
+        alarmState = intent?.getStringExtra(AlarmService.EXTRA_ALARM_STATE) ?: "FIRING"
+        refireAt = intent?.getLongExtra(AlarmService.EXTRA_REFIRE_AT, 0L) ?: 0L
         // Defensive: if launched without a valid alarm id (rare — only really
         // possible from a stale full-screen-intent or a third party), get out
         // immediately rather than rendering broken state. The user will see

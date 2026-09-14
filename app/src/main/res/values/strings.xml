@@ -2571,5 +2571,6 @@
     <string name="alarmlist_action_skipped">Skipped</string>
     <string name="alarmlist_today">Today</string>
     <string name="alarmlist_yesterday">Yesterday</string>
+    <string name="alarmlist_cannot_modify_active_alarm">Cannot modify an active or snoozed alarm.</string>
 </resources>
 

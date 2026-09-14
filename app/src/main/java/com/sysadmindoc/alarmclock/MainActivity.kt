@@ -14,12 +14,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.preferences.AppSettings
 import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
+import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.data.share.AlarmShareCodec
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.service.AlarmService
+import com.sysadmindoc.alarmclock.service.AlarmService.Companion.ActiveAlarmSnapshot
 import com.sysadmindoc.alarmclock.ui.alarmfiring.AlarmFiringActivity
 import com.sysadmindoc.alarmclock.ui.alarmlist.AlarmListViewModel
 import com.sysadmindoc.alarmclock.ui.components.WhatsNewDialog
@@ -27,6 +30,7 @@ import com.sysadmindoc.alarmclock.ui.navigation.AppNavigation
 import com.sysadmindoc.alarmclock.ui.theme.AlarmClockXtremeTheme
 import com.sysadmindoc.alarmclock.util.WhatsNewTracker
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -34,6 +38,9 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var preferencesManager: PreferencesManager
+
+    @Inject
+    lateinit var repository: AlarmRepository
 
     private val alarmListViewModel: AlarmListViewModel by viewModels()
 
@@ -106,12 +113,63 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        val snapshot = AlarmService.activeAlarm.get() ?: return
+
+        // 1. Prioritize memory state (fastest)
+        val memorySnapshot = AlarmService.activeAlarm.get()
+        if (memorySnapshot != null) {
+            launchFiringActivity(memorySnapshot)
+            return
+        }
+
+        // 2. Recovery path (async)
+        val settings = preferencesManager.getCachedSettings()
+        val savedId = settings.activeAlarmId
+        if (savedId != null && savedId > 0L) {
+            // v1.11.3 (ALA-88): Robust persistent session recovery.
+            lifecycleScope.launch {
+                val alarm = repository.getById(savedId)
+                val state = settings.activeAlarmState
+                val scheduledAt = settings.activeAlarmScheduledAt
+                val refireAt = settings.activeAlarmRefireAt
+
+                // Session is valid if alarm exists, is enabled, and nextTrigger
+                // is consistent with the persisted session state.
+                val triggerMatches = when (state) {
+                    "SNOOZED" -> alarm?.nextTriggerTime == refireAt
+                    "FIRING" -> alarm?.nextTriggerTime == scheduledAt
+                    else -> false
+                }
+
+                if (alarm != null && alarm.isEnabled && triggerMatches) {
+                    val restored = ActiveAlarmSnapshot(
+                        alarmId = savedId,
+                        scheduledAt = scheduledAt,
+                        fireId = settings.activeAlarmFireId,
+                        firedAt = settings.activeAlarmFiredAt,
+                        state = state,
+                        refireAt = refireAt
+                    )
+                    // compareAndSet prevents multiple restores if onResume fires again
+                    if (AlarmService.activeAlarm.compareAndSet(null, restored)) {
+                        launchFiringActivity(restored)
+                    }
+                } else {
+                    // Stale or invalid session: clear persistence
+                    preferencesManager.update { it.copy(activeAlarmId = null) }
+                }
+            }
+        }
+    }
+
+    private fun launchFiringActivity(snapshot: ActiveAlarmSnapshot) {
         val intent = Intent(this, AlarmFiringActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             putExtra(AlarmScheduler.EXTRA_ALARM_ID, snapshot.alarmId)
             putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, snapshot.scheduledAt)
             putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, snapshot.fireId)
+            putExtra(AlarmService.EXTRA_FIRED_AT, snapshot.firedAt)
+            putExtra(AlarmService.EXTRA_ALARM_STATE, snapshot.state)
+            putExtra(AlarmService.EXTRA_REFIRE_AT, snapshot.refireAt)
         }
         startActivity(intent)
     }

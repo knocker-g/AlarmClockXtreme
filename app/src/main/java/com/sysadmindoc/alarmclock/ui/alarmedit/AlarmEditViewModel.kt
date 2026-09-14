@@ -629,6 +629,17 @@ class AlarmEditViewModel @Inject constructor(
         // create two alarm rows. The state flag still updates, but races against
         // recomposition; this synchronous check is reliable.
         if (_uiState.value.isSaving) return
+
+        // v1.11.3 (ALA-88): Block saving an alarm that is currently ringing or snoozed.
+        // A save would re-calculate the next trigger and overwrite the active session.
+        if (alarmId != -1L && preferencesManager.getCachedSettings().activeAlarmId == alarmId) {
+            _uiState.value = _uiState.value.copy(
+                isSaving = false,
+                saveError = context.getString(R.string.alarmlist_cannot_modify_active_alarm)
+            )
+            return
+        }
+
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isSaving = true, saveError = null)
             val s = _uiState.value

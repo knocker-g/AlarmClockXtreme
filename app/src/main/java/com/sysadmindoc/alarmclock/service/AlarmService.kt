@@ -94,6 +94,8 @@ class AlarmService : Service() {
         const val EXTRA_CHALLENGE_DUCKING_ACTIVE = "challenge_ducking_active"
         const val EXTRA_CHALLENGE_DUCK_PERCENT = "challenge_duck_percent"
         const val EXTRA_FIRED_AT = "fired_at"
+        const val EXTRA_ALARM_STATE = "alarm_state"
+        const val EXTRA_REFIRE_AT = "refire_at"
         private const val MIN_CUSTOM_SNOOZE_MINUTES = 1
         private const val MAX_CUSTOM_SNOOZE_MINUTES = 120
 
@@ -116,7 +118,9 @@ class AlarmService : Service() {
             val alarmId: Long,
             val scheduledAt: Long,
             val fireId: String,
-            val firedAt: Long
+            val firedAt: Long,
+            val state: String = "FIRING",
+            val refireAt: Long = 0L
         )
 
         /**
@@ -221,6 +225,10 @@ class AlarmService : Service() {
     // otherwise leak orphaned playback instances.
     private val audioStarting = AtomicBoolean(false)
 
+    // v1.11.3 (ALA-88): Execution guard for ACTION_SNOOZE to prevent race-induced
+    // duplicate scheduling and state corruption.
+    private val snoozeActionInFlight = AtomicBoolean(false)
+
     // v1.11.2 (roadmap N2): Telephony-aware muting. When a call is OFFHOOK or
     // RINGING during alarm playback the player is muted (vibration and
     // the firing screen are intentionally kept so the user still has wake
@@ -314,7 +322,13 @@ class AlarmService : Service() {
                     currentScheduledAt = scheduledAt
                     currentFireId = fireId
                     alarmFiredAt = System.currentTimeMillis()
-                    activeAlarm.set(ActiveAlarmSnapshot(alarmId, scheduledAt, fireId, alarmFiredAt))
+                    updateActiveAlarm(ActiveAlarmSnapshot(
+                        alarmId = alarmId,
+                        scheduledAt = scheduledAt,
+                        fireId = fireId,
+                        firedAt = alarmFiredAt,
+                        state = "FIRING"
+                    ))
                     currentSnoozeCount = readPersistedSnoozeCount(alarmId)
                     currentWakeConfirmRefireCount = intent.getIntExtra(
                         EXTRA_WAKE_CONFIRM_REFIRE_COUNT, 0
@@ -364,7 +378,18 @@ class AlarmService : Service() {
                         alarmFiredAt = activeAlarm.get()?.takeIf { it.alarmId == alarmId }?.firedAt ?: 0L
                     }
                 }
-                serviceScope.launch { snoozeAlarm(alarmId, customMinutes, snoozeAtMillis) }
+
+                if (snoozeActionInFlight.compareAndSet(false, true)) {
+                    serviceScope.launch {
+                        try {
+                            snoozeAlarm(alarmId, customMinutes, snoozeAtMillis)
+                        } finally {
+                            snoozeActionInFlight.set(false)
+                        }
+                    }
+                } else {
+                    Log.i(TAG, "Rejecting duplicate ACTION_SNOOZE for alarm $alarmId (already in flight)")
+                }
             }
             ACTION_SET_CHALLENGE_DUCKING -> {
                 val alarmId = intent.getLongExtra(AlarmScheduler.EXTRA_ALARM_ID, -1L)
@@ -431,7 +456,7 @@ class AlarmService : Service() {
                 source = "AlarmService"
             )
             clearAlarmRuntimeState(alarmId)
-            activeAlarm.set(null)
+            updateActiveAlarm(null)
             releaseAlarmMediaSession()
             stopSelf()
             return
@@ -578,7 +603,7 @@ class AlarmService : Service() {
                 clearAlarmRuntimeState(alarmId)
                 currentSnoozeCount = 0
                 currentAlarmId = -1
-                activeAlarm.set(null)
+                updateActiveAlarm(null)
                 alarmScheduler.handleAlarmFired(alarmId, currentScheduledAt)
                 stopAlarmPlayback()
                 if (isForeground.compareAndSet(true, false)) {
@@ -831,6 +856,22 @@ class AlarmService : Service() {
             Log.w(TAG, "MediaSession release failed", e)
         } finally {
             mediaSession = null
+        }
+    }
+
+    private fun updateActiveAlarm(snapshot: ActiveAlarmSnapshot?) {
+        activeAlarm.set(snapshot)
+        serviceScope.launch {
+            preferencesManager.update {
+                it.copy(
+                    activeAlarmId = snapshot?.alarmId,
+                    activeAlarmScheduledAt = snapshot?.scheduledAt ?: 0L,
+                    activeAlarmFireId = snapshot?.fireId ?: "",
+                    activeAlarmFiredAt = snapshot?.firedAt ?: 0L,
+                    activeAlarmState = snapshot?.state ?: "",
+                    activeAlarmRefireAt = snapshot?.refireAt ?: 0L
+                )
+            }
         }
     }
 
@@ -1704,6 +1745,14 @@ class AlarmService : Service() {
         customMinutes: Int? = null,
         snoozeAtMillis: Long? = null
     ) {
+        // v1.11.3 (ALA-88): Block re-snooze if the session is already SNOOZED.
+        // Prevents redundant scheduling and potential races or cap-exhaustion bugs.
+        val snapshot = activeAlarm.get()
+        if (snapshot?.alarmId == alarmId && snapshot.state == "SNOOZED") {
+            Log.i(TAG, "Rejecting redundant snooze for alarm $alarmId (already SNOOZED)")
+            return
+        }
+
         // A challenge-protected alarm must not be talked out of its challenge
         // by tapping Snooze past the cap, so check before anything is torn
         // down: the alarm has to keep ringing exactly as it was.
@@ -1770,7 +1819,7 @@ class AlarmService : Service() {
                 clearAlarmRuntimeState(alarmId)
                 currentSnoozeCount = 0
                 currentAlarmId = -1
-                activeAlarm.set(null)
+                updateActiveAlarm(null)
                 alarmScheduler.handleAlarmFired(alarmId, currentScheduledAt)
                 webhookEvent = WebhookEvent.AlarmDismissed
             } else {
@@ -1791,6 +1840,14 @@ class AlarmService : Service() {
                         startAtMillis = snoozeStartedAt,
                         endAtMillis = snoozeEndAt
                     )
+                    updateActiveAlarm(ActiveAlarmSnapshot(
+                        alarmId = alarm.id,
+                        scheduledAt = currentScheduledAt,
+                        fireId = currentFireId,
+                        firedAt = alarmFiredAt,
+                        state = "SNOOZED",
+                        refireAt = snoozeEndAt
+                    ))
                 }
                 recordEvent(alarm, AlarmEvent.ACTION_SNOOZED)
                 recordIncident(
@@ -1827,7 +1884,7 @@ class AlarmService : Service() {
             clearAlarmRuntimeState(alarmId)
             currentSnoozeCount = 0
             currentAlarmId = -1
-            activeAlarm.set(null)
+            updateActiveAlarm(null)
         }
         if (isForeground.compareAndSet(true, false)) {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -1868,7 +1925,7 @@ class AlarmService : Service() {
             clearAlarmRuntimeState(alarmId)
             currentSnoozeCount = 0
             currentAlarmId = -1
-            activeAlarm.set(null)
+            updateActiveAlarm(null)
 
             // F8: Webhook on dismiss (fire-and-forget on its own scope)
             webhookService.fireAsync(
@@ -1918,7 +1975,7 @@ class AlarmService : Service() {
             clearAlarmRuntimeState(alarmId)
             currentSnoozeCount = 0
             currentAlarmId = -1
-            activeAlarm.set(null)
+            updateActiveAlarm(null)
         }
         alarmScheduler.handleAlarmFired(alarmId, currentScheduledAt)
         wearNextAlarmBridge.publishAlarmIdle(alarmId)
