@@ -682,9 +682,11 @@ fun AlarmListScreen(
                                                         state.vacationEndMillis > state.vacationStartMillis &&
                                                         alarm.nextTriggerTime in
                                                             state.vacationStartMillis..state.vacationEndMillis
+                                                    val isActiveSession = alarm.id == state.activeAlarmId
                                                     AlarmCard(
                                                         alarm = alarm,
                                                         latestEvent = latestEvent,
+                                                        isActiveSession = isActiveSession,
                                                         is24Hour = state.is24HourFormat,
                                                         suppressedByVacation = suppressedByVacation,
                                                         pausedUntilMillis = state.pausedUntilMillis,
@@ -778,6 +780,7 @@ fun AlarmListScreen(
                         AlarmDetailPane(
                             alarm = selectedAlarm,
                             latestEvent = selectedAlarm?.let { state.latestEvents[it.id] },
+                            isActiveSession = selectedAlarm?.id == state.activeAlarmId,
                             is24Hour = state.is24HourFormat,
                             suppressedByVacation = selectedAlarm?.let { alarm ->
                                 alarm.isEnabled &&
@@ -877,6 +880,7 @@ private fun AlarmListEmptyActions(
 private fun AlarmDetailPane(
     alarm: Alarm?,
     latestEvent: AlarmEvent? = null,
+    isActiveSession: Boolean = false,
     is24Hour: Boolean,
     suppressedByVacation: Boolean,
     pausedUntilMillis: Long = 0L,
@@ -1009,6 +1013,7 @@ private fun AlarmDetailPane(
                     .fillMaxWidth()
                     .heightIn(min = 64.dp)
                     .combinedClickable(
+                        enabled = !isActiveSession,
                         onClick = { onToggle(alarm) },
                         onLongClick = { if (alarm.isEnabled) onForceToggle(alarm) }
                     )
@@ -1032,12 +1037,14 @@ private fun AlarmDetailPane(
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(stringResource(R.string.alarm_list_alarm_state), color = TextPrimary, style = MaterialTheme.typography.titleSmall)
                         Text(
-                            if (alarm.isEnabled) stringResource(R.string.alarmlist_tap_to_pause_long_press_to) else stringResource(R.string.alarmlist_tap_to_enable_this_alarm),
+                            if (isActiveSession) stringResource(R.string.alarmlist_cannot_modify_active_alarm)
+                            else if (alarm.isEnabled) stringResource(R.string.alarmlist_tap_to_pause_long_press_to) else stringResource(R.string.alarmlist_tap_to_enable_this_alarm),
                             color = TextSecondary,
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
                     Switch(
+                        enabled = !isActiveSession,
                         checked = alarm.isEnabled,
                         onCheckedChange = null,
                         colors = appSwitchColors(),
@@ -1048,6 +1055,7 @@ private fun AlarmDetailPane(
 
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(
+                    enabled = !isActiveSession,
                     onClick = { onEdit(alarm) },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
@@ -1088,10 +1096,11 @@ private fun AlarmDetailPane(
                         Text(stringResource(R.string.alarm_list_history))
                     }
                     OutlinedButton(
+                        enabled = !isActiveSession,
                         onClick = { onDelete(alarm) },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = AccentRed)
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = if (isActiveSession) TextMuted else AccentRed)
                     ) {
                         Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
@@ -1100,6 +1109,7 @@ private fun AlarmDetailPane(
                 }
                 if (alarm.isEnabled && alarm.isRecurringSchedule) {
                     OutlinedButton(
+                        enabled = !isActiveSession,
                         onClick = { onSkipNext(alarm) },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp)
@@ -1339,6 +1349,7 @@ private fun QuickAlarmRow(
 private fun AlarmCard(
     alarm: Alarm,
     latestEvent: AlarmEvent? = null,
+    isActiveSession: Boolean = false,
     is24Hour: Boolean,
     suppressedByVacation: Boolean = false,
     pausedUntilMillis: Long = 0L,
@@ -1361,7 +1372,11 @@ private fun AlarmCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .combinedClickable(
+                enabled = !isActiveSession,
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
             .semantics {
                 if (isActivePaneSelection) {
                     selected = true
@@ -1372,6 +1387,7 @@ private fun AlarmCard(
         colors = CardDefaults.cardColors(
             containerColor = when {
                 isActivePaneSelection -> MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                isActiveSession -> SurfaceCard.copy(alpha = 0.8f) // Subtle difference
                 alarm.isEnabled -> SurfaceCard
                 else -> SurfaceCard.copy(alpha = 0.55f)
             }
@@ -1417,6 +1433,7 @@ private fun AlarmCard(
                     Box(
                         modifier = Modifier
                             .combinedClickable(
+                                enabled = !isActiveSession,
                                 onClick = { onToggle() },
                                 onLongClick = { if (alarm.isEnabled) onForceToggle() }
                             )
@@ -1427,6 +1444,7 @@ private fun AlarmCard(
                             }
                     ) {
                         Switch(
+                            enabled = !isActiveSession,
                             checked = alarm.isEnabled,
                             onCheckedChange = null,
                             colors = appSwitchColors(),
@@ -1442,6 +1460,7 @@ private fun AlarmCard(
                             onDismissRequest = { showMenu = false }
                         ) {
                             DropdownMenuItem(
+                                enabled = !isActiveSession,
                                 text = { Text(stringResource(R.string.alarm_list_edit)) },
                                 leadingIcon = { Icon(Icons.Default.Edit, null, modifier = Modifier.size(18.dp)) },
                                 onClick = { showMenu = false; onClick() }
@@ -1458,6 +1477,7 @@ private fun AlarmCard(
                             )
                             if (alarm.isEnabled && alarm.isRecurringSchedule) {
                                 DropdownMenuItem(
+                                    enabled = !isActiveSession,
                                     text = { Text(stringResource(R.string.alarm_list_skip_next)) },
                                     leadingIcon = { Icon(Icons.Default.SkipNext, null, modifier = Modifier.size(18.dp)) },
                                     onClick = { showMenu = false; onSkipNext() }
@@ -1469,8 +1489,9 @@ private fun AlarmCard(
                                 onClick = { showMenu = false; onShowHistory() }
                             )
                             DropdownMenuItem(
-                                text = { Text(stringResource(R.string.alarm_list_delete), color = AccentRed) },
-                                leadingIcon = { Icon(Icons.Default.Delete, null, tint = AccentRed, modifier = Modifier.size(18.dp)) },
+                                enabled = !isActiveSession,
+                                text = { Text(stringResource(R.string.alarm_list_delete), color = if (isActiveSession) TextMuted else AccentRed) },
+                                leadingIcon = { Icon(Icons.Default.Delete, null, tint = if (isActiveSession) TextMuted else AccentRed, modifier = Modifier.size(18.dp)) },
                                 onClick = { showMenu = false; onDelete() }
                             )
                         }

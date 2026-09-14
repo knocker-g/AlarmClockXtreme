@@ -88,7 +88,8 @@ class NextAlarmNotifier @Inject constructor(
                         .map {
                             NextAlarmNotificationSettings(
                                 is24HourFormat = it.is24HourFormat,
-                                hideAlarmLabelsOnPublicSurfaces = it.hideAlarmLabelsOnPublicSurfaces
+                                hideAlarmLabelsOnPublicSurfaces = it.hideAlarmLabelsOnPublicSurfaces,
+                                activeAlarmId = it.activeAlarmId
                             )
                         }
                         .distinctUntilChanged()
@@ -96,7 +97,8 @@ class NextAlarmNotifier @Inject constructor(
                     alarm to settings
                 }
                 .collectLatest { (alarm, settings) ->
-                    if (alarm != null && alarm.nextTriggerTime > System.currentTimeMillis()) {
+                    val isSessionActive = alarm != null && alarm.id == settings.activeAlarmId
+                    if (alarm != null && alarm.nextTriggerTime > System.currentTimeMillis() && !isSessionActive) {
                         refreshNotificationUntilInvalid(alarm, settings)
                     } else {
                         dismiss()
@@ -120,9 +122,9 @@ class NextAlarmNotifier @Inject constructor(
         var alarm = initialAlarm
         while (true) {
             val now = System.currentTimeMillis()
-            if (!alarm.isEnabled || alarm.nextTriggerTime <= now) {
+            if (!alarm.isEnabled || alarm.nextTriggerTime <= now || alarm.id == settings.activeAlarmId) {
                 val nextAlarm = repository.getNextAlarm()
-                if (nextAlarm != null && nextAlarm.nextTriggerTime > now) {
+                if (nextAlarm != null && nextAlarm.nextTriggerTime > now && nextAlarm.id != settings.activeAlarmId) {
                     alarm = nextAlarm
                     continue
                 } else {
@@ -297,5 +299,6 @@ class NextAlarmNotifier @Inject constructor(
 
 private data class NextAlarmNotificationSettings(
     val is24HourFormat: Boolean,
-    val hideAlarmLabelsOnPublicSurfaces: Boolean
+    val hideAlarmLabelsOnPublicSurfaces: Boolean,
+    val activeAlarmId: Long?
 )

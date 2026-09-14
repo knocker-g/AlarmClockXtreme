@@ -147,6 +147,7 @@ import com.sysadmindoc.alarmclock.ui.theme.TextMuted
 import com.sysadmindoc.alarmclock.ui.theme.TextPrimary
 import com.sysadmindoc.alarmclock.ui.theme.LocalMotionEnabled
 import com.sysadmindoc.alarmclock.ui.theme.TextSecondary
+import com.sysadmindoc.alarmclock.util.AlarmTimeFormatter
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -278,7 +279,13 @@ fun AlarmFiringScreen(
     } else {
         ""
     }
+    val isSnoozed = state.activeState == "SNOOZED"
+    val snoozeUntilText = if (isSnoozed && state.refireAt > 0) {
+        stringResource(R.string.notif_snooze_countdown_text, AlarmTimeFormatter.format(state.refireAt, is24Hour))
+    } else ""
+
     val statusLine = when {
+        isSnoozed -> snoozeUntilText
         state.canDismiss && holdToDismissEnabled ->
             stringResource(R.string.firing_status_hold_or_snooze, holdDurationSeconds)
         state.canDismiss -> stringResource(R.string.firing_status_swipe_or_snooze)
@@ -435,6 +442,7 @@ fun AlarmFiringScreen(
                     }
                     AppStatusChip(
                         label = when {
+                            isSnoozed -> stringResource(R.string.alarmlist_action_snoozed)
                             state.canDismiss && holdToDismissEnabled -> stringResource(R.string.firing_hold_required)
                             state.canDismiss -> stringResource(R.string.firing_dismiss_ready)
                             locationDismissActive && state.wakeChallengeReady ->
@@ -442,11 +450,12 @@ fun AlarmFiringScreen(
                             else -> stringResource(R.string.firing_dismiss_locked)
                         },
                         icon = when {
+                            isSnoozed -> Icons.Default.Snooze
                             state.canDismiss -> Icons.Default.CheckCircle
                             locationDismissActive && state.wakeChallengeReady -> Icons.Default.LocationOn
                             else -> Icons.Default.WarningAmber
                         },
-                        color = if (state.canDismiss) DismissGreen else SnoozeYellow
+                        color = if (isSnoozed) SnoozeYellow else if (state.canDismiss) DismissGreen else SnoozeYellow
                     )
                     if (state.challengeBypassRemainingSeconds > 0 && !state.canDismiss) {
                         AppStatusChip(

@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import com.sysadmindoc.alarmclock.R
+import com.sysadmindoc.alarmclock.service.AlarmService
 
 data class FiringUiState(
     val alarm: Alarm? = null,
@@ -126,6 +127,8 @@ data class FiringUiState(
     val snoozesUsed: Int = 0,
     val snoozesRemaining: Int? = null,
     val snoozeAllowed: Boolean = true,
+    val activeState: String = "FIRING",
+    val refireAt: Long = 0L,
     /** Set when a challenge was swapped out, so the screen can say why. */
     val challengeNotice: String = ""
 ) {
@@ -221,8 +224,10 @@ class AlarmFiringViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val alarmId: Long = savedStateHandle.get<Long>(AlarmScheduler.EXTRA_ALARM_ID) ?: -1
+    private val initialActiveState: String = savedStateHandle.get<String>(AlarmService.EXTRA_ALARM_STATE) ?: "FIRING"
+    private val initialRefireAt: Long = savedStateHandle.get<Long>(AlarmService.EXTRA_REFIRE_AT) ?: 0L
 
-    private val _uiState = MutableStateFlow(FiringUiState())
+    private val _uiState = MutableStateFlow(FiringUiState(activeState = initialActiveState, refireAt = initialRefireAt))
     val uiState: StateFlow<FiringUiState> = _uiState.asStateFlow()
 
     /**
@@ -381,12 +386,17 @@ class AlarmFiringViewModel @Inject constructor(
         }
 
         val snoozesUsed = AlarmRuntimeState.snoozeCount(appContext, alarm.id)
+        val canSnoozeByPolicy = SnoozeCapPolicy.canSnooze(alarm, snoozesUsed)
+        val isSnoozedState = _uiState.value.activeState == "SNOOZED"
+
         _uiState.value = FiringUiState(
             alarm = alarm,
             alarmLoaded = true,
             snoozesUsed = snoozesUsed,
             snoozesRemaining = SnoozeCapPolicy.snoozesRemaining(alarm, snoozesUsed),
-            snoozeAllowed = SnoozeCapPolicy.canSnooze(alarm, snoozesUsed),
+            snoozeAllowed = canSnoozeByPolicy && !isSnoozedState,
+            activeState = _uiState.value.activeState,
+            refireAt = _uiState.value.refireAt,
             challengeNotice = firstChallengeNotice,
             challenge = firstChallenge,
             challengeSolved = adaptedChain.isEmpty(),

@@ -85,6 +85,7 @@ data class AlarmListUiState(
     val isSelectionMode: Boolean = false,
     val napDefaultMinutes: Int = 20,
     val latestEvents: Map<Long, AlarmEvent> = emptyMap(),
+    val activeAlarmId: Long? = null,
     // v1.5.2: Current vacation window bounds surfaced so the list card can
     // flag individual alarms whose next trigger falls inside it — before
     // this, the scheduler silently suppressed them while the UI still said
@@ -195,6 +196,7 @@ class AlarmListViewModel @Inject constructor(
             isSelectionMode = snap.isSelectionMode,
             napDefaultMinutes = settings.napDefaultMinutes,
             latestEvents = latestEventsMap,
+            activeAlarmId = settings.activeAlarmId,
             vacationStartMillis = if (VacationAlarmPolicy.hasConfiguredWindow(settings)) {
                 settings.vacationStartMillis
             } else 0L,
@@ -309,7 +311,8 @@ class AlarmListViewModel @Inject constructor(
 
     fun deleteSelected() {
         viewModelScope.launch {
-            val ids = _selectedIds.value.toList()
+            val activeId = preferencesManager.getCachedSettings().activeAlarmId
+            val ids = _selectedIds.value.toList().filter { it != activeId }
             ids.forEach { id ->
                 scheduler.cancel(id)
                 repository.getById(id)?.let { repository.delete(it) }
@@ -326,8 +329,10 @@ class AlarmListViewModel @Inject constructor(
 
     fun enableSelected() {
         viewModelScope.launch {
+            val activeId = preferencesManager.getCachedSettings().activeAlarmId
             var enabledCount = 0
             _selectedIds.value.forEach { id ->
+                if (id == activeId) return@forEach
                 val alarm = repository.getById(id) ?: return@forEach
                 if (!alarm.isEnabled) {
                     val nextTrigger = calculator.calculate(alarm)
@@ -347,8 +352,9 @@ class AlarmListViewModel @Inject constructor(
 
     fun disableSelected() {
         viewModelScope.launch {
-            val ids = _selectedIds.value.toList()
-            _selectedIds.value.forEach { id ->
+            val activeId = preferencesManager.getCachedSettings().activeAlarmId
+            val ids = _selectedIds.value.toList().filter { it != activeId }
+            ids.forEach { id ->
                 repository.setEnabled(id, enabled = false, nextTrigger = 0)
                 scheduler.cancel(id)
             }
@@ -371,6 +377,10 @@ class AlarmListViewModel @Inject constructor(
     }
 
     fun toggleAlarm(alarm: Alarm) {
+        if (preferencesManager.getCachedSettings().activeAlarmId == alarm.id) {
+            emitFeedback(context.getString(R.string.alarmlist_cannot_modify_active_alarm))
+            return
+        }
         viewModelScope.launch {
             val newEnabled = !alarm.isEnabled
             if (newEnabled) {
@@ -407,6 +417,10 @@ class AlarmListViewModel @Inject constructor(
     }
 
     fun deleteAlarm(alarm: Alarm) {
+        if (preferencesManager.getCachedSettings().activeAlarmId == alarm.id) {
+            emitFeedback(context.getString(R.string.alarmlist_cannot_modify_active_alarm))
+            return
+        }
         viewModelScope.launch {
             scheduler.cancel(alarm.id)
             repository.delete(alarm)
@@ -573,6 +587,10 @@ class AlarmListViewModel @Inject constructor(
     fun skipNextOccurrence(alarm: Alarm) {
         if (!alarm.isRecurringSchedule) return
         if (alarm.nextTriggerTime <= 0L) return // No scheduled occurrence to skip
+        if (preferencesManager.getCachedSettings().activeAlarmId == alarm.id) {
+            emitFeedback(context.getString(R.string.alarmlist_cannot_modify_active_alarm))
+            return
+        }
         viewModelScope.launch {
             // Record skip event
             eventRepository.record(

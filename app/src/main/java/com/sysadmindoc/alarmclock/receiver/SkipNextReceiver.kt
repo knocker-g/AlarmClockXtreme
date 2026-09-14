@@ -55,8 +55,17 @@ class SkipNextReceiver : BroadcastReceiver() {
                     val scheduler = ep.alarmScheduler()
                     val eventRepo = ep.alarmEventRepository()
                     val webhookService = ep.webhookService()
+                    val preferencesManager = ep.preferencesManager()
 
                     val alarm = repo.getById(alarmId) ?: return@withTimeout
+
+                    // v1.11.3 (ALA-88): Reject skipping an alarm that is currently ringing or snoozed.
+                    // The "Next Alarm" notification should have hidden the Skip button, but
+                    // a stale PendingIntent could still fire.
+                    if (alarm.id == preferencesManager.getCachedSettings().activeAlarmId) {
+                        Log.i("SkipNextReceiver", "Rejecting skip for active/snoozed alarm $alarmId")
+                        return@withTimeout
+                    }
 
                     runCatching {
                         eventRepo.record(

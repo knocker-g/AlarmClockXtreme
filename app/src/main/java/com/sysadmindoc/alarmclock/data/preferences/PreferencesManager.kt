@@ -151,6 +151,13 @@ data class AppSettings(
     val newsFeedUrl: String = DEFAULT_NEWS_FEED_URL,
     val newsActiveSourceId: Long? = null,
     val newsSourcesSeeded: Boolean = false,
+    // v1.11.3 (ALA-88): Active session persistence for process death recovery.
+    val activeAlarmId: Long? = null,
+    val activeAlarmScheduledAt: Long = 0L,
+    val activeAlarmFireId: String = "",
+    val activeAlarmFiredAt: Long = 0L,
+    val activeAlarmState: String = "", // "FIRING" or "SNOOZED"
+    val activeAlarmRefireAt: Long = 0L,
     // v1.11.6 (roadmap N6): "Pause all alarms" single-tap suspend. Distinct
     // from vacation mode — vacation requires a start+end date and only
     // touches repeating alarms; this hard-suspends every alarm (one-shots
@@ -370,6 +377,12 @@ class PreferencesManager @Inject constructor(
         val NEWS_FEED_URL = stringPreferencesKey("news_feed_url")
         val NEWS_ACTIVE_SOURCE_ID = longPreferencesKey("news_active_source_id")
         val NEWS_SOURCES_SEEDED = booleanPreferencesKey("news_sources_seeded")
+        val ACTIVE_ALARM_ID = longPreferencesKey("active_alarm_id")
+        val ACTIVE_ALARM_SCHEDULED_AT = longPreferencesKey("active_alarm_scheduled_at")
+        val ACTIVE_ALARM_FIRE_ID = stringPreferencesKey("active_alarm_fire_id")
+        val ACTIVE_ALARM_FIRED_AT = longPreferencesKey("active_alarm_fired_at")
+        val ACTIVE_ALARM_STATE = stringPreferencesKey("active_alarm_state")
+        val ACTIVE_ALARM_REFIRE_AT = longPreferencesKey("active_alarm_refire_at")
         val PAUSE_UNTIL = longPreferencesKey("pause_until_millis")
         val BEDTIME_STAY_UP_LATE_UNTIL = longPreferencesKey("bedtime_stay_up_late_until_millis")
         val HEALTH_CONNECT_ENABLED = booleanPreferencesKey("health_connect_enabled")
@@ -511,6 +524,12 @@ class PreferencesManager @Inject constructor(
         newsFeedUrl = this[Keys.NEWS_FEED_URL] ?: DEFAULT_NEWS_FEED_URL,
         newsActiveSourceId = this[Keys.NEWS_ACTIVE_SOURCE_ID],
         newsSourcesSeeded = this[Keys.NEWS_SOURCES_SEEDED] ?: false,
+        activeAlarmId = this[Keys.ACTIVE_ALARM_ID],
+        activeAlarmScheduledAt = this[Keys.ACTIVE_ALARM_SCHEDULED_AT] ?: 0L,
+        activeAlarmFireId = this[Keys.ACTIVE_ALARM_FIRE_ID] ?: "",
+        activeAlarmFiredAt = this[Keys.ACTIVE_ALARM_FIRED_AT] ?: 0L,
+        activeAlarmState = this[Keys.ACTIVE_ALARM_STATE] ?: "",
+        activeAlarmRefireAt = this[Keys.ACTIVE_ALARM_REFIRE_AT] ?: 0L,
         pauseUntilMillis = this[Keys.PAUSE_UNTIL] ?: 0L,
         healthConnectEnabled = this[Keys.HEALTH_CONNECT_ENABLED] ?: false,
         cancellationLockMinutes = this[Keys.CANCELLATION_LOCK_MINUTES] ?: 0,
@@ -605,6 +624,21 @@ class PreferencesManager @Inject constructor(
             remove(Keys.NEWS_ACTIVE_SOURCE_ID)
         }
         this[Keys.NEWS_SOURCES_SEEDED] = s.newsSourcesSeeded
+        if (s.activeAlarmId != null) {
+            this[Keys.ACTIVE_ALARM_ID] = s.activeAlarmId
+            this[Keys.ACTIVE_ALARM_SCHEDULED_AT] = s.activeAlarmScheduledAt
+            this[Keys.ACTIVE_ALARM_FIRE_ID] = s.activeAlarmFireId
+            this[Keys.ACTIVE_ALARM_FIRED_AT] = s.activeAlarmFiredAt
+            this[Keys.ACTIVE_ALARM_STATE] = s.activeAlarmState
+            this[Keys.ACTIVE_ALARM_REFIRE_AT] = s.activeAlarmRefireAt
+        } else {
+            remove(Keys.ACTIVE_ALARM_ID)
+            remove(Keys.ACTIVE_ALARM_SCHEDULED_AT)
+            remove(Keys.ACTIVE_ALARM_FIRE_ID)
+            remove(Keys.ACTIVE_ALARM_FIRED_AT)
+            remove(Keys.ACTIVE_ALARM_STATE)
+            remove(Keys.ACTIVE_ALARM_REFIRE_AT)
+        }
         this[Keys.PAUSE_UNTIL] = s.pauseUntilMillis
         this[Keys.HEALTH_CONNECT_ENABLED] = s.healthConnectEnabled
         this[Keys.CANCELLATION_LOCK_MINUTES] = s.cancellationLockMinutes
