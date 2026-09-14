@@ -7,6 +7,16 @@
 [![Downloads](https://img.shields.io/github/downloads/SysAdminDoc/AlarmClockXtreme/total?color=8EA8C9)](https://github.com/SysAdminDoc/AlarmClockXtreme/releases)
 
 <p align="center">
+  <a href="https://ko-fi.com/X8K126YVER">
+    <img height="42" src="https://storage.ko-fi.com/cdn/kofi2.png?v=3" alt="Buy me a coffee on Ko-fi" />
+  </a>
+</p>
+
+<p align="center">
+  <sub><em>If AlarmClockXtreme helps you wake up on time, a coffee helps me keep its alarms tested and reliable.</em></sub>
+</p>
+
+<p align="center">
   <img src="assets/marketing/hero.png" width="100%" alt="AlarmClockXtreme, an Android alarm clock with exact scheduling and wake-up challenges" />
 </p>
 
