@@ -1673,7 +1673,7 @@
     <string name="challenge_wordle_reveal">The word was %1$s. New word coming…</string>
     <string name="challenge_pvt_trial">Trial %1$d of %2$d</string>
     <string name="challenge_pvt_average">Avg: %1$d ms</string>
-    
+
     <string name="stats_streak_next">Next %1$s</string>
     <string name="stats_sleep_last">Last %1$s</string>
     <string name="stats_sleep_deep">Deep %1$s</string>
@@ -2499,6 +2499,9 @@
     <string name="time_unit_h">%1$dh</string>
     <string name="time_unit_m">%1$dm</string>
     <string name="time_unit_s">%1$ds</string>
+    <string name="time_unit_d">%1$dd</string>
+    <string name="time_unit_now">now</string>
+    <string name="time_unit_less_than_1m">&lt;1m</string>
     <string name="time_unit_h_m">%1$dh %2$dm</string>
     <string name="time_unit_m_s">%1$dm %2$ds</string>
     <string name="time_unit_h_m_s">%1$dh %2$dm %3$ds</string>

@@ -2410,6 +2410,9 @@
     <string name="time_unit_h">%1$d時間</string>
     <string name="time_unit_m">%1$d分</string>
     <string name="time_unit_s">%1$d秒</string>
+    <string name="time_unit_d">%1$d日</string>
+    <string name="time_unit_now">今</string>
+    <string name="time_unit_less_than_1m">1分未満</string>
     <string name="time_unit_h_m">%1$d時間 %2$d分</string>
     <string name="time_unit_m_s">%1$d分 %2$d秒</string>
     <string name="time_unit_h_m_s">%1$d時間 %2$d分 %3$d秒</string>

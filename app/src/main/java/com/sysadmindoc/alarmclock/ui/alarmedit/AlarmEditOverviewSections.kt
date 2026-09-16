@@ -153,6 +153,7 @@ internal fun LazyListScope.alarmEditOverviewSections(
         // mental math when picking a time. Sourced from the same forecast
         // the "Upcoming fire dates" section computes.
         val nextFireMillis = state.forecastDates.firstOrNull { !it.skippedByVacation }?.timeMillis
+        val context = LocalContext.current
         if (nextFireMillis != null) {
             val ringCalculator = remember { NextAlarmCalculator() }
             var nowTick by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -163,7 +164,7 @@ internal fun LazyListScope.alarmEditOverviewSections(
                 }
             }
             val remaining = remember(nextFireMillis, nowTick) {
-                ringCalculator.formatRemaining(nextFireMillis)
+                ringCalculator.formatRemaining(context, nextFireMillis)
             }
             Text(
                 text = stringResource(R.string.alarm_edit_rings_in, remaining),
