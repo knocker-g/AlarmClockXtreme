@@ -493,6 +493,9 @@ dependencies {
         "playImplementation"("org.mozilla:rhino-engine:1.8.1") {
             because("Keep Rhino engine aligned with constrained Rhino runtime")
         }
+        "playImplementation"("org.jsoup:jsoup:1.23.2") {
+            because("OSV GHSA-pmhh-3w7g-xqp8 is fixed in jsoup 1.23.1 and later")
+        }
         "playImplementation"("com.google.guava:guava:33.6.0-android") {
             because("OSV reports advisories against the Health Connect transitive 31.1-android")
         }
