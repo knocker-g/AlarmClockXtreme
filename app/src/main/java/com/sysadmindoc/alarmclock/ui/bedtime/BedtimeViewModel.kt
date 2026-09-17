@@ -499,7 +499,7 @@ class BedtimeViewModel @Inject constructor(
     }
 
     fun startSonarTracking() {
-        sonarStartConfirmationJob?.cancel()
+        return // Sonar disabled in personal version
         if (!hasRecordAudioPermission()) {
             _uiState.update {
                 it.copy(
