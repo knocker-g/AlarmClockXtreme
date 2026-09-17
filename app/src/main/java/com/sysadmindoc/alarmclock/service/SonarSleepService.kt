@@ -97,7 +97,7 @@ class SonarSleepService : Service() {
         fun readSnapshot(context: Context): SonarSleepSnapshot {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val storedActive = prefs.getBoolean(KEY_ACTIVE, false)
-            val active = storedActive && isServiceRunning(context)
+            val active = false // Force inactive in personal version
             if (storedActive && !active) {
                 prefs.edit()
                     .putBoolean(KEY_ACTIVE, false)
@@ -154,10 +154,10 @@ class SonarSleepService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> startSonar()
+            ACTION_START -> stopSelf() // Sonar disabled in personal version
             ACTION_STOP -> stopSonarAndSelf()
         }
-        return START_NOT_STICKY  // Experimental sleep session; don't auto-restart on death
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {

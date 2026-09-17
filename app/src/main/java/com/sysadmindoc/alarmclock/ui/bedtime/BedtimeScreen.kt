@@ -659,16 +659,6 @@ fun BedtimeScreen(
         }
 
         item {
-            SonarSleepTrackingSection(
-                state = state,
-                onToggle = toggleSonarTracking,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-            )
-        }
-
-        item {
             BreathingExerciseSection(
                 pattern = breathingPattern,
                 elapsedSeconds = breathingElapsedSeconds,
