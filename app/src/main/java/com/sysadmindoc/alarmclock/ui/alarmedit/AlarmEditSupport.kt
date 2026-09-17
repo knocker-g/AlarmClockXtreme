@@ -908,8 +908,6 @@ internal fun guardianEditHint(readiness: GuardianReadiness): String {
             stringResource(R.string.alarm_edit_guardian_direct_sms, "")
         GuardianSmsPath.NEEDS_SEND_SMS_PERMISSION ->
             stringResource(R.string.alarm_edit_guardian_needs_sms, "")
-        GuardianSmsPath.SMS_COMPOSER ->
-            stringResource(R.string.alarm_edit_guardian_composer, "")
     }
 }
 

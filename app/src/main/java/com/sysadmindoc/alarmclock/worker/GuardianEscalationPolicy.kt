@@ -5,8 +5,7 @@ import com.sysadmindoc.alarmclock.R
 enum class GuardianSmsPath {
     INACTIVE,
     DIRECT_SMS,
-    NEEDS_SEND_SMS_PERMISSION,
-    SMS_COMPOSER
+    NEEDS_SEND_SMS_PERMISSION
 }
 
 data class GuardianReadiness(

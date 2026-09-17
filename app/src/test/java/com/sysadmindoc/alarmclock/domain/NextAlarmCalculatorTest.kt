@@ -1,15 +1,11 @@
 package com.sysadmindoc.alarmclock.domain
 
-import android.content.Context
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.preferences.AppSettings
 import com.sysadmindoc.alarmclock.util.SolarCalculator
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.RuntimeEnvironment
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
@@ -18,11 +14,9 @@ import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
 
-@RunWith(RobolectricTestRunner::class)
 class NextAlarmCalculatorTest {
 
     private lateinit var calculator: NextAlarmCalculator
-    private val context: Context get() = RuntimeEnvironment.getApplication()
 
     @Before
     fun setup() {
@@ -71,7 +65,7 @@ class NextAlarmCalculatorTest {
     @Test
     fun `formatRemaining returns reasonable string`() {
         val in1Hour = System.currentTimeMillis() + 60 * 60 * 1000L
-        val result = calculator.formatRemaining(context, in1Hour)
+        val result = calculator.formatRemaining(in1Hour)
         assertFalse("Should not be empty", result.isEmpty())
         assertTrue("Should contain time units", result.contains("h") || result.contains("m"))
     }
@@ -79,7 +73,7 @@ class NextAlarmCalculatorTest {
     @Test
     fun `formatRemaining for past time returns now`() {
         val pastTime = System.currentTimeMillis() - 60_000
-        val result = calculator.formatRemaining(context, pastTime)
+        val result = calculator.formatRemaining(pastTime)
         assertEquals("now", result)
     }
 
@@ -100,7 +94,7 @@ class NextAlarmCalculatorTest {
         // Inside the same minute, none of d/h/m would be > 0 — historically this
         // produced a misleading "0m" label. We now render "<1m" instead.
         val in10Sec = System.currentTimeMillis() + 10_000L
-        val result = calculator.formatRemaining(context, in10Sec)
+        val result = calculator.formatRemaining(in10Sec)
         assertEquals("<1m", result)
     }
 
@@ -109,7 +103,7 @@ class NextAlarmCalculatorTest {
         // Multi-day diff with zero-hour component should not render "Xd m" with empty hours.
         val twoDaysFiveMin = System.currentTimeMillis() +
                 2 * 24 * 60 * 60 * 1000L + 5 * 60 * 1000L
-        val result = calculator.formatRemaining(context, twoDaysFiveMin)
+        val result = calculator.formatRemaining(twoDaysFiveMin)
         assertTrue("Should contain 2d", result.contains("2d"))
         assertTrue("Should contain 5m", result.contains("5m"))
     }
