@@ -88,10 +88,8 @@ class SupportExportManager @Inject constructor(
         val latestIncident = incidents.firstOrNull()
         val crashLogs = CrashLogger.getLogFiles(context).take(MAX_CRASH_LOGS)
         val guardianReadiness = GuardianEscalationPolicy.readiness(
-            flavor = BuildConfig.FLAVOR,
             enabledAlarmCount = alarms.count { it.enabled && it.guardianEnabled },
-            hasSendSmsPermission = hasPermission(Manifest.permission.SEND_SMS),
-            hasCallPhonePermission = hasPermission(Manifest.permission.CALL_PHONE)
+            hasSendSmsPermission = hasPermission(Manifest.permission.SEND_SMS)
         )
 
         val notificationPermission = hasNotificationPermission()
@@ -124,7 +122,7 @@ class SupportExportManager @Inject constructor(
                     generatedAt = generatedAt,
                     appVersion = BuildConfig.VERSION_NAME,
                     versionCode = BuildConfig.VERSION_CODE,
-                    flavor = BuildConfig.FLAVOR,
+                    flavor = "personal",
                     buildType = BuildConfig.BUILD_TYPE,
                     includedFiles = includedFiles,
                     maxIncidentRows = MAX_INCIDENTS,
@@ -156,7 +154,7 @@ class SupportExportManager @Inject constructor(
                     generatedAt = generatedAt,
                     appVersion = BuildConfig.VERSION_NAME,
                     versionCode = BuildConfig.VERSION_CODE,
-                    flavor = BuildConfig.FLAVOR,
+                    flavor = "personal",
                     buildType = BuildConfig.BUILD_TYPE,
                     packageName = context.packageName,
                     deviceManufacturer = Build.MANUFACTURER,

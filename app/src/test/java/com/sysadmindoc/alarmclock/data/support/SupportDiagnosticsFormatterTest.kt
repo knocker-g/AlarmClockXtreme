@@ -92,15 +92,13 @@ class SupportDiagnosticsFormatterTest {
             guardianReadiness = GuardianReadiness(
                 enabledAlarmCount = 2,
                 smsPath = GuardianSmsPath.NEEDS_SEND_SMS_PERMISSION,
-                hasSendSmsPermission = false,
-                hasCallPhonePermission = true
+                hasSendSmsPermission = false
             )
         )
 
         assertTrue(text.contains("- Guardian Angel alarms: 2"))
         assertTrue(text.contains("- Guardian SMS path: NEEDS_SEND_SMS_PERMISSION"))
         assertTrue(text.contains("- Guardian SEND_SMS granted: false"))
-        assertTrue(text.contains("- Guardian CALL_PHONE granted: true"))
     }
 
     @Test
@@ -166,7 +164,7 @@ class SupportDiagnosticsFormatterTest {
             generatedAt = Instant.EPOCH,
             appVersion = "1.14.0",
             versionCode = 82,
-            flavor = "play",
+            flavor = "personal",
             buildType = "debug",
             includedFiles = listOf("support_manifest.json", "readiness.json", "diagnostics.txt"),
             maxIncidentRows = 25,
@@ -178,7 +176,7 @@ class SupportDiagnosticsFormatterTest {
         assertTrue(manifest.contains("\"redactionPolicyVersion\": ${SupportDiagnosticsFormatter.REDACTION_POLICY_VERSION}"))
         assertTrue(manifest.contains("\"appVersion\": \"1.14.0\""))
         assertTrue(manifest.contains("\"versionCode\": 82"))
-        assertTrue(manifest.contains("\"flavor\": \"play\""))
+        assertTrue(manifest.contains("\"flavor\": \"personal\""))
         assertTrue(manifest.contains("\"maxIncidentRows\": 25"))
         assertTrue(manifest.contains("\"maxCrashLogs\": 10"))
         assertTrue(manifest.contains("\"crashLogsScrubbed\": true"))
@@ -203,8 +201,7 @@ class SupportDiagnosticsFormatterTest {
             guardianReadiness = GuardianReadiness(
                 enabledAlarmCount = 1,
                 smsPath = GuardianSmsPath.DIRECT_SMS,
-                hasSendSmsPermission = true,
-                hasCallPhonePermission = false
+                hasSendSmsPermission = true
             ),
             testAlarmProof = TestAlarmProof(
                 scheduledAt = 1_700_000_000_000L,
@@ -227,7 +224,6 @@ class SupportDiagnosticsFormatterTest {
         assertTrue(json.contains("\"guardianAlarmCount\": 1"))
         assertTrue(json.contains("\"guardianSmsPath\": \"DIRECT_SMS\""))
         assertTrue(json.contains("\"guardianSendSmsGranted\": true"))
-        assertTrue(json.contains("\"guardianCallPhoneGranted\": false"))
         assertTrue(json.contains("\"testAlarmCompleted\": true"))
         assertTrue(json.contains("\"testAlarmScheduledAt\": \""))
         assertTrue(json.contains("\"testAlarmFiredAt\": \""))
@@ -459,8 +455,7 @@ java.lang.NullPointerException: Attempt to invoke virtual method
     private fun defaultGuardianReadiness() = GuardianReadiness(
         enabledAlarmCount = 0,
         smsPath = GuardianSmsPath.INACTIVE,
-        hasSendSmsPermission = false,
-        hasCallPhonePermission = false
+        hasSendSmsPermission = false
     )
 
     @Test
@@ -498,7 +493,7 @@ java.lang.NullPointerException: Attempt to invoke virtual method
         generatedAt = Instant.EPOCH,
         appVersion = "test",
         versionCode = 1,
-        flavor = "fdroid",
+        flavor = "personal",
         buildType = "debug",
         packageName = "com.sysadmindoc.alarmclock",
         deviceManufacturer = "Test",

@@ -53,7 +53,6 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.sysadmindoc.alarmclock.BuildConfig
 import com.sysadmindoc.alarmclock.R
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.model.ShiftPattern
@@ -82,7 +81,6 @@ internal fun LazyListScope.alarmEditIntegrationSections(
     editorPage: AlarmEditorPage,
     state: AlarmEditUiState,
     viewModel: AlarmEditViewModel,
-    context: Context,
     hasSmsPermission: Boolean,
     onRequestGuardianSmsPermission: () -> Unit
 ) {
@@ -311,19 +309,14 @@ internal fun LazyListScope.alarmEditIntegrationSections(
                 }
             }
             val guardianReadiness = GuardianEscalationPolicy.readiness(
-                flavor = BuildConfig.FLAVOR,
                 enabledAlarmCount = 1,
-                hasSendSmsPermission = hasSmsPermission,
-                hasCallPhonePermission = ContextCompat.checkSelfPermission(
-                    context,
-                    Manifest.permission.CALL_PHONE
-                ) == PackageManager.PERMISSION_GRANTED
+                hasSendSmsPermission = hasSmsPermission
             )
             SettingsHint(
                 guardianEditHint(guardianReadiness),
                 tone = if (guardianReadiness.needsUserAction) HintTone.Warning else HintTone.Danger
             )
-            if (guardianReadiness.needsSmsPermission && BuildConfig.FLAVOR == GuardianEscalationPolicy.FDROID_FLAVOR) {
+            if (guardianReadiness.needsSmsPermission) {
                 Button(
                     onClick = onRequestGuardianSmsPermission,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),

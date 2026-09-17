@@ -902,19 +902,14 @@ internal fun shiftPatternDescription(pattern: ShiftPattern): String = stringReso
 
 @Composable
 internal fun guardianEditHint(readiness: GuardianReadiness): String {
-    val callPath = if (readiness.hasCallPhonePermission) {
-        stringResource(R.string.alarm_edit_guardian_call_granted)
-    } else {
-        stringResource(R.string.alarm_edit_guardian_call_dialer)
-    }
     return when (readiness.smsPath) {
         GuardianSmsPath.INACTIVE -> stringResource(R.string.alarm_edit_guardian_inactive)
         GuardianSmsPath.DIRECT_SMS ->
-            stringResource(R.string.alarm_edit_guardian_direct_sms, callPath)
+            stringResource(R.string.alarm_edit_guardian_direct_sms, "")
         GuardianSmsPath.NEEDS_SEND_SMS_PERMISSION ->
-            stringResource(R.string.alarm_edit_guardian_needs_sms, callPath)
+            stringResource(R.string.alarm_edit_guardian_needs_sms, "")
         GuardianSmsPath.SMS_COMPOSER ->
-            stringResource(R.string.alarm_edit_guardian_composer, callPath)
+            stringResource(R.string.alarm_edit_guardian_composer, "")
     }
 }
 

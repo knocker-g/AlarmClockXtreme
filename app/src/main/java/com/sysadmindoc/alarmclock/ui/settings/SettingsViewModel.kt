@@ -90,8 +90,7 @@ data class SettingsUiState(
     val guardianReadiness: GuardianReadiness = GuardianReadiness(
         enabledAlarmCount = 0,
         smsPath = GuardianSmsPath.INACTIVE,
-        hasSendSmsPermission = false,
-        hasCallPhonePermission = false
+        hasSendSmsPermission = false
     ),
     // v1.11.3 (roadmap N3): App Standby bucket awareness. UsageStatsManager
     // returns one of STANDBY_BUCKET_ACTIVE / WORKING_SET / FREQUENT / RARE /
@@ -237,10 +236,8 @@ class SettingsViewModel @Inject constructor(
             hasLocalNetworkPermission = wakeReadiness.hasLocalNetworkPermission,
             alarmMutedByDnd = wakeReadiness.alarmMutedByDnd,
             guardianReadiness = GuardianEscalationPolicy.readiness(
-                flavor = BuildConfig.FLAVOR,
                 enabledAlarmCount = auxiliary.guardianAlarmCount,
-                hasSendSmsPermission = wakeReadiness.hasSendSmsPermission,
-                hasCallPhonePermission = wakeReadiness.hasCallPhonePermission
+                hasSendSmsPermission = wakeReadiness.hasSendSmsPermission
             ),
             appStandbyBucket = wakeReadiness.appStandbyBucket,
             testAlarmProof = wakeReadiness.testAlarmProof,
@@ -893,7 +890,6 @@ class SettingsViewModel @Inject constructor(
         val canUseFullScreenIntent: Boolean?,
         val hasLocalNetworkPermission: Boolean,
         val hasSendSmsPermission: Boolean,
-        val hasCallPhonePermission: Boolean,
         val appStandbyBucket: Int,
         val alarmMutedByDnd: Boolean,
         val testAlarmProof: TestAlarmProof
@@ -926,10 +922,6 @@ class SettingsViewModel @Inject constructor(
                     context,
                     Manifest.permission.SEND_SMS
                 ) == PackageManager.PERMISSION_GRANTED
-                val callPhoneGranted = ContextCompat.checkSelfPermission(
-                    context,
-                    Manifest.permission.CALL_PHONE
-                ) == PackageManager.PERMISSION_GRANTED
                 // UsageStatsManager.getAppStandbyBucket() is API 28+. We never
                 // require PACKAGE_USAGE_STATS for the self-query — the system
                 // returns the calling app's own bucket without it.
@@ -956,7 +948,6 @@ class SettingsViewModel @Inject constructor(
                     canUseFullScreenIntent = fullScreenIntentReady,
                     hasLocalNetworkPermission = localNetworkReady,
                     hasSendSmsPermission = sendSmsGranted,
-                    hasCallPhonePermission = callPhoneGranted,
                     appStandbyBucket = bucket,
                     alarmMutedByDnd = alarmMutedByDnd,
                     testAlarmProof = TestAlarmProofStore.lastProof(context)

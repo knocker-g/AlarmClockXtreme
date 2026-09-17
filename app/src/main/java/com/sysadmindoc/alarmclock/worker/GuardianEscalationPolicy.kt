@@ -12,8 +12,7 @@ enum class GuardianSmsPath {
 data class GuardianReadiness(
     val enabledAlarmCount: Int,
     val smsPath: GuardianSmsPath,
-    val hasSendSmsPermission: Boolean,
-    val hasCallPhonePermission: Boolean
+    val hasSendSmsPermission: Boolean
 ) {
     val hasEnabledAlarms: Boolean
         get() = enabledAlarmCount > 0
@@ -21,37 +20,29 @@ data class GuardianReadiness(
     val needsSmsPermission: Boolean
         get() = smsPath == GuardianSmsPath.NEEDS_SEND_SMS_PERMISSION
 
-    val needsCallPermission: Boolean
-        get() = hasEnabledAlarms && !hasCallPhonePermission
-
     val needsUserAction: Boolean
-        get() = needsSmsPermission || needsCallPermission
+        get() = needsSmsPermission
 }
 
 internal object GuardianEscalationPolicy {
-    const val FDROID_FLAVOR = "fdroid"
 
-    fun canSendDirectSms(flavor: String, hasSendSmsPermission: Boolean): Boolean =
-        flavor == FDROID_FLAVOR && hasSendSmsPermission
+    fun canSendDirectSms(hasSendSmsPermission: Boolean): Boolean =
+        hasSendSmsPermission
 
     fun readiness(
-        flavor: String,
         enabledAlarmCount: Int,
-        hasSendSmsPermission: Boolean,
-        hasCallPhonePermission: Boolean
+        hasSendSmsPermission: Boolean
     ): GuardianReadiness {
         val count = enabledAlarmCount.coerceAtLeast(0)
         val smsPath = when {
             count == 0 -> GuardianSmsPath.INACTIVE
-            canSendDirectSms(flavor, hasSendSmsPermission) -> GuardianSmsPath.DIRECT_SMS
-            flavor == FDROID_FLAVOR -> GuardianSmsPath.NEEDS_SEND_SMS_PERMISSION
-            else -> GuardianSmsPath.SMS_COMPOSER
+            canSendDirectSms(hasSendSmsPermission) -> GuardianSmsPath.DIRECT_SMS
+            else -> GuardianSmsPath.NEEDS_SEND_SMS_PERMISSION
         }
         return GuardianReadiness(
             enabledAlarmCount = count,
             smsPath = smsPath,
-            hasSendSmsPermission = hasSendSmsPermission,
-            hasCallPhonePermission = hasCallPhonePermission
+            hasSendSmsPermission = hasSendSmsPermission
         )
     }
 

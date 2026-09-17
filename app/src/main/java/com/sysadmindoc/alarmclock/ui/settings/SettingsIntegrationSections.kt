@@ -558,7 +558,7 @@ internal fun HealthConnectSection(
     viewModel: SettingsViewModel,
     onRequestPermissions: (() -> Unit)?
 ) {
-    val isPlayFlavor = com.sysadmindoc.alarmclock.BuildConfig.FLAVOR == "play"
+    val isPlayFlavor = false // Personal build adopts F-Droid behavior (HIDE)
     val summary = state.healthConnectSleepSummary
     AppSurfaceCard {
         AppSectionTitle(
