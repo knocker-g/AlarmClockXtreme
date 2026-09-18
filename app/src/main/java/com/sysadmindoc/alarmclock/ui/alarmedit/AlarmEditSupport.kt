@@ -905,9 +905,9 @@ internal fun guardianEditHint(readiness: GuardianReadiness): String {
     return when (readiness.smsPath) {
         GuardianSmsPath.INACTIVE -> stringResource(R.string.alarm_edit_guardian_inactive)
         GuardianSmsPath.DIRECT_SMS ->
-            stringResource(R.string.alarm_edit_guardian_direct_sms, "")
+            stringResource(R.string.alarm_edit_guardian_direct_sms)
         GuardianSmsPath.NEEDS_SEND_SMS_PERMISSION ->
-            stringResource(R.string.alarm_edit_guardian_needs_sms, "")
+            stringResource(R.string.alarm_edit_guardian_needs_sms)
     }
 }
 

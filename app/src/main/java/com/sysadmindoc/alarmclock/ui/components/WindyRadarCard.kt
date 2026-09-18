@@ -159,6 +159,7 @@ fun WindyRadarCard(
                             settings.apply {
                                 javaScriptEnabled = true
                                 domStorageEnabled = true
+                                databaseEnabled = true
                                 useWideViewPort = true
                                 loadWithOverviewMode = true
                                 builtInZoomControls = false

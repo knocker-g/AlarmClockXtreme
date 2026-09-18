@@ -610,13 +610,10 @@
     <string name="alarm_edit_emergency_alert">緊急連絡先アラート</string>
     <string name="alarm_edit_emergency_phone">緊急電話番号</string>
     <string name="alarm_edit_alert_after">アラートまでの時間</string>
-    <string name="alarm_edit_guardian_call_granted">直接通話の権限が付与されています。</string>
-    <string name="alarm_edit_guardian_call_dialer">通話権限がないため、電話アプリを介して発信します。</string>
     <string name="alarm_edit_guardian_inactive">ガーディアンエンジェルはオフです。</string>
     <string name="alarm_edit_guardian_grant_sms">SMS権限を許可</string>
-    <string name="alarm_edit_guardian_direct_sms">メッセージを自動送信し、停止されない場合は電話をかけます。%1$s</string>
-    <string name="alarm_edit_guardian_needs_sms">許可されるとメッセージを自動送信します。未許可の場合は作成画面を開きます。%1$s</string>
-    <string name="alarm_edit_guardian_composer">停止されない場合はメッセージ作成画面を開き、その後電話へ切り替えます。%1$s</string>
+    <string name="alarm_edit_guardian_direct_sms">停止されない場合はメッセージを自動送信します。</string>
+    <string name="alarm_edit_guardian_needs_sms">SMS権限を許可すると、メッセージを自動送信します。</string>
     <string name="alarm_edit_checklist_label">チェックリスト項目 (1行に1つ)</string>
     <string name="alarm_edit_checklist_placeholder">ストレッチ\n水を飲む\n歯を磨く</string>
     <string name="alarm_edit_checklist_hint">停止後、モーニングブリーフィングにチェックリストを表示します。</string>

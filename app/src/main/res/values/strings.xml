@@ -639,13 +639,10 @@
     <string name="alarm_edit_emergency_alert">Emergency contact alert</string>
     <string name="alarm_edit_emergency_phone">Emergency phone number</string>
     <string name="alarm_edit_alert_after">Alert after</string>
-    <string name="alarm_edit_guardian_call_granted">Direct call permission is granted.</string>
-    <string name="alarm_edit_guardian_call_dialer">Call fallback opens the dialer because CALL_PHONE is not granted.</string>
     <string name="alarm_edit_guardian_inactive">Guardian Angel is off for this alarm.</string>
     <string name="alarm_edit_guardian_grant_sms">Grant SMS permission</string>
-    <string name="alarm_edit_guardian_direct_sms">Sends an emergency SMS automatically, then opens the call path if the alarm is not dismissed. %1$s</string>
-    <string name="alarm_edit_guardian_needs_sms">F-Droid can send automatic SMS after SEND_SMS is allowed. Until then, it opens a prefilled SMS composer. %1$s</string>
-    <string name="alarm_edit_guardian_composer">Opens a prefilled emergency SMS composer if the alarm is not dismissed, then falls back to call or dialer. %1$s</string>
+    <string name="alarm_edit_guardian_direct_sms">Sends an emergency SMS automatically if the alarm is not dismissed.</string>
+    <string name="alarm_edit_guardian_needs_sms">Can send an automatic SMS after SEND_SMS is allowed.</string>
     <string name="alarm_edit_checklist_label">Checklist items (one per line)</string>
     <string name="alarm_edit_checklist_placeholder">Stretch\nDrink water\nBrush teeth</string>
     <string name="alarm_edit_checklist_hint">Shown as a checklist after dismissal on the morning briefing screen.</string>
