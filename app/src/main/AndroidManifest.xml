@@ -54,11 +54,6 @@
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
-    <!-- v1.7.0: Required only on API ≤28 to write downloaded YouTube audio
-         into MediaStore.Audio (Alarms folder). API 29+ uses scoped storage,
-         which doesn't need this permission. -->
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="28" />
 
     <!-- Step counter / activity recognition for walk-steps challenge and smart alarm -->
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
@@ -68,12 +63,6 @@
     <!-- v1.2.0: Guardian Angel — SEND_SMS is used for direct emergency SMS. -->
     <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-feature android:name="android.hardware.telephony" android:required="false" />
-
-    <!-- v1.2.0: Wi-Fi dismiss challenge needs to read the connected SSID -->
-    <!-- ACCESS_FINE_LOCATION is required on Android 12+ (API 31+) for
-         WifiManager.connectionInfo to return a real SSID instead of <unknown ssid> -->
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
     <!-- Smart alarm foreground service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
@@ -97,7 +86,6 @@
     <application
         android:name=".AlarmClockApp"
         android:allowBackup="true"
-        android:hardwareAccelerated="true"
         android:enableOnBackInvokedCallback="true"
         android:backupAgent=".RestoreAlarmAgent"
         android:dataExtractionRules="@xml/data_extraction_rules"
