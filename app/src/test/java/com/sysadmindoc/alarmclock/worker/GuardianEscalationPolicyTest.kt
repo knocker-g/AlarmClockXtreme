@@ -9,115 +9,55 @@ import org.junit.Test
 
 class GuardianEscalationPolicyTest {
     @Test
-    fun fdroidWithPermissionCanSendDirectSms() {
+    fun withPermissionCanSendDirectSms() {
         assertTrue(
             GuardianEscalationPolicy.canSendDirectSms(
-                flavor = GuardianEscalationPolicy.FDROID_FLAVOR,
                 hasSendSmsPermission = true
             )
         )
     }
 
     @Test
-    fun playNeverUsesDirectSmsEvenIfPermissionGranted() {
+    fun missingPermissionCannotSendDirectSms() {
         assertFalse(
             GuardianEscalationPolicy.canSendDirectSms(
-                flavor = "play",
-                hasSendSmsPermission = true
-            )
-        )
-    }
-
-    @Test
-    fun missingPermissionUsesComposerPath() {
-        assertFalse(
-            GuardianEscalationPolicy.canSendDirectSms(
-                flavor = GuardianEscalationPolicy.FDROID_FLAVOR,
                 hasSendSmsPermission = false
             )
         )
     }
 
     @Test
-    fun readinessMarksFdroidMissingSmsAsActionable() {
+    fun readinessMarksMissingSmsAsActionable() {
         val readiness = GuardianEscalationPolicy.readiness(
-            flavor = GuardianEscalationPolicy.FDROID_FLAVOR,
             enabledAlarmCount = 2,
-            hasSendSmsPermission = false,
-            hasCallPhonePermission = false
+            hasSendSmsPermission = false
         )
 
         assertEquals(2, readiness.enabledAlarmCount)
         assertEquals(GuardianSmsPath.NEEDS_SEND_SMS_PERMISSION, readiness.smsPath)
         assertTrue(readiness.needsSmsPermission)
-        assertTrue(readiness.needsCallPermission)
         assertTrue(readiness.needsUserAction)
-        assertFalse(readiness.hasCallPhonePermission)
-    }
-
-    @Test
-    fun readinessMarksPlayAsComposerOnly() {
-        val readiness = GuardianEscalationPolicy.readiness(
-            flavor = "play",
-            enabledAlarmCount = 1,
-            hasSendSmsPermission = false,
-            hasCallPhonePermission = true
-        )
-
-        assertEquals(GuardianSmsPath.SMS_COMPOSER, readiness.smsPath)
-        assertFalse(readiness.needsSmsPermission)
-        assertFalse(readiness.needsCallPermission)
-        assertFalse(readiness.needsUserAction)
-        assertTrue(readiness.hasCallPhonePermission)
     }
 
     @Test
     fun readinessIsInactiveWithoutGuardianAlarms() {
         val readiness = GuardianEscalationPolicy.readiness(
-            flavor = GuardianEscalationPolicy.FDROID_FLAVOR,
             enabledAlarmCount = 0,
-            hasSendSmsPermission = true,
-            hasCallPhonePermission = true
+            hasSendSmsPermission = true
         )
 
         assertEquals(GuardianSmsPath.INACTIVE, readiness.smsPath)
         assertFalse(readiness.hasEnabledAlarms)
-        assertFalse(readiness.needsCallPermission)
         assertFalse(readiness.needsUserAction)
     }
 
     @Test
-    fun readinessFailsWhenFdroidMissingSmsPermission() {
+    fun readinessPassesWhenHasSmsPermission() {
         val readiness = GuardianEscalationPolicy.readiness(
-            flavor = GuardianEscalationPolicy.FDROID_FLAVOR,
             enabledAlarmCount = 1,
-            hasSendSmsPermission = false,
-            hasCallPhonePermission = true
+            hasSendSmsPermission = true
         )
-        assertTrue(readiness.needsSmsPermission)
-        assertTrue(readiness.needsUserAction)
-    }
-
-    @Test
-    fun readinessPassesWhenFdroidHasSmsPermission() {
-        val readiness = GuardianEscalationPolicy.readiness(
-            flavor = GuardianEscalationPolicy.FDROID_FLAVOR,
-            enabledAlarmCount = 1,
-            hasSendSmsPermission = true,
-            hasCallPhonePermission = true
-        )
-        assertFalse(readiness.needsSmsPermission)
-        assertFalse(readiness.needsUserAction)
-    }
-
-    @Test
-    fun readinessIgnoreSmsPermissionOnPlayFlavor() {
-        val readiness = GuardianEscalationPolicy.readiness(
-            flavor = "play",
-            enabledAlarmCount = 1,
-            hasSendSmsPermission = false,
-            hasCallPhonePermission = true
-        )
+        assertEquals(GuardianSmsPath.DIRECT_SMS, readiness.smsPath)
         assertFalse(readiness.needsSmsPermission)
         assertFalse(readiness.needsUserAction)
     }

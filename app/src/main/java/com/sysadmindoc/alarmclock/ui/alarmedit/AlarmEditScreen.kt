@@ -611,7 +611,6 @@ fun AlarmEditScreen(
                             editorPage = targetPage,
                             state = state,
                             viewModel = viewModel,
-                            context = context,
                             hasSmsPermission = hasSmsPermission,
                             onRequestGuardianSmsPermission = {
                                 guardianSmsPermissionLauncher.launch(Manifest.permission.SEND_SMS)

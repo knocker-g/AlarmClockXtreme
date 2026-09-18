@@ -213,7 +213,7 @@ fun deviceChallengeCapabilities(context: Context): DeviceChallengeCapabilities {
         hasCamera = pm.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY),
         hasWifi = pm.hasSystemFeature(PackageManager.FEATURE_WIFI),
         speechRecognitionAvailable = SpeechRecognizer.isRecognitionAvailable(context),
-        digitalInkRecognitionAvailable = BuildConfig.FLAVOR == "play",
+        digitalInkRecognitionAvailable = false, // Proprietary ML Kit excluded
         activityRecognitionGranted = activityRecognitionGranted,
         cameraGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED,
