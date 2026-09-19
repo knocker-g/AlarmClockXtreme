@@ -84,7 +84,6 @@ import com.sysadmindoc.alarmclock.ui.components.AppSectionTitle
 import com.sysadmindoc.alarmclock.ui.components.AppStatusChip
 import com.sysadmindoc.alarmclock.ui.components.AppSurfaceCard
 import com.sysadmindoc.alarmclock.ui.components.WeatherSkyBackground
-import com.sysadmindoc.alarmclock.ui.components.WindyRadarCard
 import com.sysadmindoc.alarmclock.ui.components.AppInputShape
 import com.sysadmindoc.alarmclock.ui.components.appOutlinedTextFieldColors
 import com.sysadmindoc.alarmclock.ui.theme.AccentBlue
@@ -154,19 +153,6 @@ fun DashboardScreen(
                         state = state,
                         onChangeLocation = viewModel::showLocationPicker,
                         onRetryWeather = viewModel::loadWeather
-                    )
-                }
-
-                // v1.8.0: Windy radar embed below the static weather card. Hidden
-                // until we actually have a coordinate to center on (otherwise the
-                // iframe shows the default Windy "world" view, which is jarring
-                // when the rest of the screen is local-conditions data).
-                if (state.showWeather && state.showRadar && state.hasLocation &&
-                    state.latitude != null && state.longitude != null) {
-                    WindyRadarCard(
-                        latitude = state.latitude,
-                        longitude = state.longitude,
-                        locationLabel = state.locationName.ifBlank { stringResource(R.string.dashboard_your_area) }
                     )
                 }
 
