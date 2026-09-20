@@ -63,6 +63,7 @@
     <!-- v1.2.0: Guardian Angel — SEND_SMS is used for direct emergency SMS. -->
     <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <uses-feature android:name="android.hardware.screen.portrait" android:required="false" />
 
     <!-- Smart alarm foreground service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
@@ -103,7 +104,9 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:theme="@style/Theme.AlarmClockXtreme.Starting">
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.AlarmClockXtreme.Starting"
+            tools:ignore="LockedOrientationActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -168,7 +171,9 @@
             android:showWhenLocked="true"
             android:turnScreenOn="true"
             android:taskAffinity=""
-            android:theme="@style/Theme.AlarmClockXtreme" />
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.AlarmClockXtreme"
+            tools:ignore="LockedOrientationActivity" />
 
         <activity
             android:name=".ui.onboarding.OnboardingTestAlarmActivity"
@@ -177,7 +182,9 @@
             android:showOnLockScreen="true"
             android:showWhenLocked="true"
             android:turnScreenOn="true"
-            android:theme="@style/Theme.AlarmClockXtreme" />
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.AlarmClockXtreme"
+            tools:ignore="LockedOrientationActivity" />
 
         <!-- Alarm Receiver -->
         <receiver
@@ -337,7 +344,9 @@
             android:showWhenLocked="true"
             android:turnScreenOn="true"
             android:taskAffinity=""
-            android:theme="@style/Theme.AlarmClockXtreme" />
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.AlarmClockXtreme"
+            tools:ignore="LockedOrientationActivity" />
 
         <!-- F5: Wake Confirmation activity (shown on lock screen) -->
         <activity
@@ -345,7 +354,9 @@
             android:exported="false"
             android:showWhenLocked="true"
             android:turnScreenOn="true"
-            android:theme="@style/Theme.AlarmClockXtreme" />
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.AlarmClockXtreme"
+            tools:ignore="LockedOrientationActivity" />
 
         <!-- WorkManager: disable default initializer so HiltWorkerFactory can be used -->
         <provider
@@ -385,7 +396,9 @@
         <activity
             android:name=".ui.nightclock.NightClockActivity"
             android:exported="false"
-            android:theme="@style/Theme.AlarmClockXtreme" />
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.AlarmClockXtreme"
+            tools:ignore="LockedOrientationActivity" />
 
         <!-- v1.4.0: Quick Settings tile — "Skip next alarm" (tap to skip from shade) -->
         <service
