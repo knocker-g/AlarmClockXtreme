@@ -11,6 +11,7 @@ import com.sysadmindoc.alarmclock.data.preferences.isPaused
 import com.sysadmindoc.alarmclock.data.repository.AlarmEventRepository
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
+import com.sysadmindoc.alarmclock.domain.GroupTabPosition
 import com.sysadmindoc.alarmclock.domain.NextAlarmCalculator
 import com.sysadmindoc.alarmclock.domain.VacationAlarmPolicy
 import com.sysadmindoc.alarmclock.ui.templates.AlarmTemplate
@@ -86,6 +87,7 @@ data class AlarmListUiState(
     val napDefaultMinutes: Int = 20,
     val latestEvents: Map<Long, AlarmEvent> = emptyMap(),
     val activeAlarmId: Long? = null,
+    val groupTabPosition: GroupTabPosition = GroupTabPosition.TOP,
     // v1.5.2: Current vacation window bounds surfaced so the list card can
     // flag individual alarms whose next trigger falls inside it — before
     // this, the scheduler silently suppressed them while the UI still said
@@ -204,6 +206,7 @@ class AlarmListViewModel @Inject constructor(
                 settings.vacationEndMillis
             } else 0L,
             pausedUntilMillis = if (settings.isPaused(now)) settings.pauseUntilMillis else 0L,
+            groupTabPosition = GroupTabPosition.fromKey(settings.groupTabPosition),
             isInitialLoading = false
         )
     }.stateIn(

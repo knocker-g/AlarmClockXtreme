@@ -142,6 +142,7 @@ import com.sysadmindoc.alarmclock.data.health.HealthConnectSleepSummary
 import com.sysadmindoc.alarmclock.data.preferences.AppSettings
 import com.sysadmindoc.alarmclock.data.readiness.TestAlarmProof
 import com.sysadmindoc.alarmclock.data.support.SupportExportFile
+import com.sysadmindoc.alarmclock.domain.GroupTabPosition
 import com.sysadmindoc.alarmclock.ui.permissions.PermissionRequestCard
 import com.sysadmindoc.alarmclock.ui.theme.AccentBlue
 import com.sysadmindoc.alarmclock.ui.theme.AccentRed
@@ -188,6 +189,13 @@ internal fun PersonalizationSection(state: SettingsUiState, viewModel: SettingsV
             checked = state.settings.adaptiveDifficultyEnabled,
             supportingText = stringResource(R.string.settings_adaptive_difficulty_description),
             onToggle = viewModel::toggleAdaptiveDifficulty
+        )
+
+        SettingsToggle(
+            label = stringResource(R.string.settings_group_tabs_at_bottom),
+            checked = GroupTabPosition.fromKey(state.settings.groupTabPosition) == GroupTabPosition.BOTTOM,
+            supportingText = stringResource(R.string.settings_group_tabs_at_bottom_description),
+            onToggle = viewModel::toggleGroupTabPosition
         )
 
         // v1.4.0: Material You — respects the user's wallpaper palette on Android 12+.

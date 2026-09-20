@@ -31,6 +31,8 @@
     <string name="temperature_unit">温度単位</string>
     <string name="show_weather">天気を表示</string>
     <string name="show_calendar">カレンダーを表示</string>
+    <string name="settings_group_tabs_at_bottom">タブグループの位置を下にする</string>
+    <string name="settings_group_tabs_at_bottom_description">アラームのタブグループの位置を下にします。</string>
     <string name="about">このアプリについて</string>
     <string name="cancel">キャンセル</string>
     <string name="qs_tile_skip_next_alarm">次のアラームをスキップ</string>

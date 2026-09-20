@@ -49,6 +49,7 @@ import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import com.sysadmindoc.alarmclock.domain.GroupTabPosition
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Sort
@@ -439,13 +440,17 @@ fun AlarmListScreen(
                             )
                         }
 
-                        if (state.groups.any { it.isNotBlank() } || state.alarms.size > 3) {
+                        val showGroupsAtTop = state.groupTabPosition == GroupTabPosition.TOP && state.groups.any { it.isNotBlank() }
+                        val showProfiles = state.profiles.any { it.isNotBlank() }
+                        val showSearch = state.alarms.size > 3
+
+                        if (showGroupsAtTop || showProfiles || showSearch) {
                             item {
                                 Column(
                                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
                                     verticalArrangement = Arrangement.spacedBy(14.dp)
                                 ) {
-                                    if (state.groups.any { it.isNotBlank() }) {
+                                    if (showGroupsAtTop) {
                                         GroupFilterRow(
                                             title = stringResource(R.string.alarm_list_groups),
                                             groups = state.groups.filter { it.isNotBlank() },
@@ -454,7 +459,7 @@ fun AlarmListScreen(
                                         )
                                     }
 
-                                    if (state.profiles.any { it.isNotBlank() }) {
+                                    if (showProfiles) {
                                         GroupFilterRow(
                                             title = stringResource(R.string.alarm_list_profiles),
                                             groups = state.profiles.filter { it.isNotBlank() },
@@ -463,7 +468,7 @@ fun AlarmListScreen(
                                         )
                                     }
 
-                                    if (state.alarms.size > 3) {
+                                    if (showSearch) {
                                         AppSurfaceCard(contentPadding = PaddingValues(14.dp)) {
                                             OutlinedTextField(
                                                 value = searchQuery,
@@ -817,6 +822,10 @@ fun AlarmListScreen(
                         content = alarmListContent
                     )
                 }
+            }
+
+            if (state.groupTabPosition == GroupTabPosition.BOTTOM && !state.isSelectionMode) {
+                AlarmListFilters(state, viewModel)
             }
         }
     }
@@ -1186,6 +1195,27 @@ private fun AlarmHeader(
             else -> null
         }
     )
+}
+
+@Composable
+private fun AlarmListFilters(
+    state: AlarmListUiState,
+    viewModel: AlarmListViewModel,
+    modifier: Modifier = Modifier
+) {
+    if (state.groups.none { it.isNotBlank() }) return
+
+    Column(
+        modifier = modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        GroupFilterRow(
+            title = stringResource(R.string.alarm_list_groups),
+            groups = state.groups.filter { it.isNotBlank() },
+            selectedGroup = state.selectedGroup,
+            onSelectGroup = viewModel::selectGroup
+        )
+    }
 }
 
 @Composable

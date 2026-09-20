@@ -47,6 +47,8 @@
     <string name="temperature_unit">Temperature unit</string>
     <string name="show_weather">Show weather</string>
     <string name="show_calendar">Show calendar</string>
+    <string name="settings_group_tabs_at_bottom">Place group tabs at bottom</string>
+    <string name="settings_group_tabs_at_bottom_description">Places the alarm group tabs at the bottom.</string>
     <string name="about">About</string>
 
     <!-- Bedtime -->

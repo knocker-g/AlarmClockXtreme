@@ -40,6 +40,7 @@ import com.sysadmindoc.alarmclock.data.support.SupportExportFile
 import com.sysadmindoc.alarmclock.data.support.SupportExportManager
 import com.sysadmindoc.alarmclock.domain.AlarmMuteRiskPolicy
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
+import com.sysadmindoc.alarmclock.domain.GroupTabPosition
 import com.sysadmindoc.alarmclock.domain.LongPressThreshold
 import com.sysadmindoc.alarmclock.integration.hue.HueBridgeClient
 import com.sysadmindoc.alarmclock.integration.hue.HueConnectionResult
@@ -357,6 +358,12 @@ class SettingsViewModel @Inject constructor(
 
     fun toggleShowRadarEmbed(enabled: Boolean) =
         updateSettings { it.copy(showRadarEmbed = enabled) }
+
+    fun updateGroupTabPosition(position: GroupTabPosition) =
+        updateSettings { it.copy(groupTabPosition = position.storageKey) }
+
+    fun toggleGroupTabPosition(atBottom: Boolean) =
+        updateGroupTabPosition(if (atBottom) GroupTabPosition.BOTTOM else GroupTabPosition.TOP)
 
     fun toggle24Hour(enabled: Boolean) = updateSettings { it.copy(is24HourFormat = enabled) }
     fun togglePhoneSpeakers(enabled: Boolean) = updateSettings { it.copy(usePhoneSpeakers = enabled) }

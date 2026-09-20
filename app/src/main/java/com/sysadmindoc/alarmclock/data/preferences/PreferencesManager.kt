@@ -15,6 +15,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.sysadmindoc.alarmclock.domain.ChronotypeEstimator
+import com.sysadmindoc.alarmclock.domain.GroupTabPosition
 import com.sysadmindoc.alarmclock.domain.JetLagDirection
 import com.sysadmindoc.alarmclock.domain.LongPressThreshold
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -143,6 +144,8 @@ data class AppSettings(
     val showNewsTab: Boolean = true,
     // v1.8.0: Show the Windy radar embed at the bottom of the Weather tab.
     val showRadarEmbed: Boolean = true,
+    // v1.15.35 (ALA-115): Position of the group-filtering tabs in the alarm list.
+    val groupTabPosition: String = GroupTabPosition.TOP.storageKey,
     // v1.8.0: News feed source URL. Defaults to Google News top stories,
     // but power users can paste any RSS/Atom URL — Rome handles all three
     // major feed flavors.
@@ -250,6 +253,7 @@ private fun AppSettings.sanitized(): AppSettings {
         jetLagTargetWakeMinutes = jetLagTargetWakeMinutes.coerceIn(0, 1_439),
         jetLagAdjustmentDays = jetLagAdjustmentDays.coerceIn(1, 14),
         jetLagDirection = JetLagDirection.fromKey(jetLagDirection).storageKey,
+        groupTabPosition = GroupTabPosition.fromKey(groupTabPosition).storageKey,
         webhookUrl = webhookUrl.trim(),
         webhookSigningSecret = webhookSigningSecret.trim().take(256),
         webhookLastDeliveryStatus = normalizedWebhookStatus,
@@ -374,6 +378,7 @@ class PreferencesManager @Inject constructor(
         val SHOW_WORLD_CLOCK_TAB = booleanPreferencesKey("show_world_clock_tab")
         val SHOW_NEWS_TAB = booleanPreferencesKey("show_news_tab")
         val SHOW_RADAR_EMBED = booleanPreferencesKey("show_radar_embed")
+        val GROUP_TAB_POSITION = stringPreferencesKey("group_tab_position")
         val NEWS_FEED_URL = stringPreferencesKey("news_feed_url")
         val NEWS_ACTIVE_SOURCE_ID = longPreferencesKey("news_active_source_id")
         val NEWS_SOURCES_SEEDED = booleanPreferencesKey("news_sources_seeded")
@@ -521,6 +526,7 @@ class PreferencesManager @Inject constructor(
         showWorldClockTab = this[Keys.SHOW_WORLD_CLOCK_TAB] ?: true,
         showNewsTab = this[Keys.SHOW_NEWS_TAB] ?: true,
         showRadarEmbed = this[Keys.SHOW_RADAR_EMBED] ?: true,
+        groupTabPosition = this[Keys.GROUP_TAB_POSITION] ?: GroupTabPosition.TOP.storageKey,
         newsFeedUrl = this[Keys.NEWS_FEED_URL] ?: DEFAULT_NEWS_FEED_URL,
         newsActiveSourceId = this[Keys.NEWS_ACTIVE_SOURCE_ID],
         newsSourcesSeeded = this[Keys.NEWS_SOURCES_SEEDED] ?: false,
@@ -617,6 +623,7 @@ class PreferencesManager @Inject constructor(
         this[Keys.SHOW_WORLD_CLOCK_TAB] = s.showWorldClockTab
         this[Keys.SHOW_NEWS_TAB] = s.showNewsTab
         this[Keys.SHOW_RADAR_EMBED] = s.showRadarEmbed
+        this[Keys.GROUP_TAB_POSITION] = s.groupTabPosition
         this[Keys.NEWS_FEED_URL] = s.newsFeedUrl
         if (s.newsActiveSourceId != null) {
             this[Keys.NEWS_ACTIVE_SOURCE_ID] = s.newsActiveSourceId
