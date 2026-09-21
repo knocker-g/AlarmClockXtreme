@@ -2,8 +2,10 @@ package com.sysadmindoc.alarmclock.ui.dashboard
 
 import com.sysadmindoc.alarmclock.R
 import android.app.Application
+import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.sysadmindoc.alarmclock.data.preferences.AppSettings
 import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import com.sysadmindoc.alarmclock.data.remote.AirQualityResponse
 import com.sysadmindoc.alarmclock.data.remote.CurrentAirQuality
@@ -16,16 +18,23 @@ import com.sysadmindoc.alarmclock.data.remote.WeatherCodes
 import com.sysadmindoc.alarmclock.data.repository.CalendarEvent
 import com.sysadmindoc.alarmclock.data.repository.CalendarRepository
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
+import com.sysadmindoc.alarmclock.data.repository.WeatherAlertsRepository
 import com.sysadmindoc.alarmclock.data.repository.WeatherRepository
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.ui.alarmlist.repeatLabel
 import com.sysadmindoc.alarmclock.util.AlarmTimeFormatter
 import com.sysadmindoc.alarmclock.util.LocationHelper
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.abs
@@ -49,13 +58,14 @@ data class DashboardUiState(
     // already formatted for display; we keep their parsed `LocalTime` form
     // here for the keyframe interpolator. `currentWeatherCode` drives
     // storm overrides; `tornadoAlertActive` drives the tornado visual.
-    val sunriseLocal: java.time.LocalTime? = null,
-    val sunsetLocal: java.time.LocalTime? = null,
+    val sunriseLocal: LocalTime? = null,
+    val sunsetLocal: LocalTime? = null,
     val currentWeatherCode: Int? = null,
     val tornadoAlertActive: Boolean = false,
     val severeWeatherHeadline: String? = null,
     // Weather
     val weatherLoading: Boolean = false,
+    val refreshing: Boolean = false,
     val temperature: String = "",
     val feelsLike: String = "",
     val humidity: String = "",
@@ -155,7 +165,7 @@ enum class PollenLevel {
 class DashboardViewModel @Inject constructor(
     application: Application,
     private val weatherRepository: WeatherRepository,
-    private val weatherAlertsRepository: com.sysadmindoc.alarmclock.data.repository.WeatherAlertsRepository,
+    private val weatherAlertsRepository: WeatherAlertsRepository,
     private val calendarRepository: CalendarRepository,
     private val alarmRepository: AlarmRepository,
     private val preferencesManager: PreferencesManager,
@@ -163,7 +173,7 @@ class DashboardViewModel @Inject constructor(
     private val geocodingApi: GeocodingApi
 ) : AndroidViewModel(application) {
     /** For strings that end up in UI state built here rather than on screen. */
-    private val appContext: android.content.Context get() = getApplication()
+    private val appContext: Context get() = getApplication()
 
 
     companion object {
@@ -207,8 +217,17 @@ class DashboardViewModel @Inject constructor(
         loadData()
     }
 
-    fun loadData() {
+    /**
+     * Coordinated data fetch for the Today tab.
+     * @param isManualRefresh When true, uses the [refreshing] state for Pull-to-Refresh
+     * coordination and waits for all sub-jobs (Weather, AQI, Schedule) to complete.
+     */
+    fun loadData(isManualRefresh: Boolean = false) {
         viewModelScope.launch {
+            if (isManualRefresh) {
+                _uiState.update { it.copy(refreshing = true) }
+            }
+
             val settings = preferencesManager.getCurrentSettings()
             _uiState.update { it.copy(
                 showWeather = settings.showWeatherOnDashboard,
@@ -217,206 +236,225 @@ class DashboardViewModel @Inject constructor(
                 showRadar = settings.showRadarEmbed
             ) }
 
-            if (settings.showWeatherOnDashboard) {
-                loadWeather()
-            } else {
-                _uiState.update { it.copy(
-                    weatherLoading = false,
-                    weatherError = null,
-                    forecast = emptyList(),
-                    weatherLastUpdatedMillis = null,
-                    weatherStale = false,
-                    weatherStaleMessage = null,
-                    airQuality = null
-                ) }
-            }
-
-            if (settings.showCalendarOnDashboard) {
-                loadCalendar()
-            } else {
-                _uiState.update { it.copy(
-                    calendarEvents = emptyList(),
-                    calendarError = null,
-                    calendarPermissionNeeded = false
-                ) }
-            }
-        }
-    }
-
-    fun loadWeather() {
-        viewModelScope.launch {
-            _uiState.update { it.copy(weatherLoading = true, weatherError = null) }
-
-            val settings = preferencesManager.getCurrentSettings()
-            val isCelsius = settings.temperatureUnit == "celsius"
-            val tempUnitLabel = if (isCelsius) "C" else "F"
-            val windUnitLabel = if (isCelsius) "km/h" else "mph"
-            val apiTempUnit = if (isCelsius) "celsius" else "fahrenheit"
-            val apiWindUnit = if (isCelsius) "kmh" else "mph"
-
-            // Check for manual location first
-            val lat: Double
-            val lon: Double
-            val locName: String
-
-            if (settings.useManualLocation && settings.locationName.isNotBlank()) {
-                lat = settings.lastKnownLatitude
-                lon = settings.lastKnownLongitude
-                locName = settings.locationName
-            } else {
-                // Try GPS
-                val context = getApplication<Application>()
-                val location = LocationHelper.getLastKnownLocation(context)
-
-                if (location == null &&
-                    settings.lastKnownLatitude == 0.0 &&
-                    settings.lastKnownLongitude == 0.0
-                ) {
+            coroutineScope {
+                if (settings.showWeatherOnDashboard) {
+                    launch { performWeatherLoad(isManualRefresh) }
+                } else {
                     _uiState.update { it.copy(
                         weatherLoading = false,
-                        hasLocation = false,
-                        locationName = "",
-                        temperature = "",
-                        feelsLike = "",
-                        humidity = "",
-                        windSpeed = "",
-                        weatherDescription = "",
-                        weatherIcon = "",
-                        highTemp = "",
-                        lowTemp = "",
-                        precipChance = "",
+                        weatherError = null,
                         forecast = emptyList(),
                         weatherLastUpdatedMillis = null,
                         weatherStale = false,
                         weatherStaleMessage = null,
-                        airQuality = null,
-                        weatherError = appContext.getString(R.string.dashboard_weather_set_location)
+                        airQuality = null
                     ) }
-                    return@launch
-                }
-                if (location != null) {
-                    lat = location.latitude
-                    lon = location.longitude
-                    locName = appContext.getString(R.string.dashboard_weather_current_location)
-                } else {
-                    lat = settings.lastKnownLatitude
-                    lon = settings.lastKnownLongitude
-                    locName = settings.locationName.ifBlank {
-                        getApplication<Application>().getString(R.string.dashboard_last_location)
-                    }
                 }
 
-                val shouldRescheduleSolarAlarms = shouldRescheduleSolarAlarms(
-                    previous = settings,
-                    newLatitude = lat,
-                    newLongitude = lon,
-                    newLocationName = "",
-                    useManualLocation = false
-                )
-                preferencesManager.update {
-                    it.copy(lastKnownLatitude = lat, lastKnownLongitude = lon)
-                }
-                if (shouldRescheduleSolarAlarms) {
-                    alarmScheduler.rescheduleAll(forceRecalculate = true)
+                if (settings.showCalendarOnDashboard) {
+                    launch { performCalendarLoad(isManualRefresh) }
+                } else {
+                    _uiState.update { it.copy(
+                        calendarEvents = emptyList(),
+                        calendarError = null,
+                        calendarPermissionNeeded = false
+                    ) }
                 }
             }
 
-            weatherRepository.getWeather(lat, lon, apiTempUnit, apiWindUnit)
-                .onSuccess { snapshot ->
-                    val response = snapshot.response
-                    val current = response.current
-                    val daily = response.daily
-                    val hourly = response.hourly
+            if (isManualRefresh) {
+                _uiState.update { it.copy(refreshing = false) }
+            }
+        }
+    }
 
-                    _uiState.update { it.copy(
+    fun loadWeather(isManualRefresh: Boolean = false) {
+        viewModelScope.launch {
+            performWeatherLoad(isManualRefresh)
+        }
+    }
+
+    private suspend fun performWeatherLoad(isManualRefresh: Boolean) {
+        if (!isManualRefresh) {
+            _uiState.update { it.copy(weatherLoading = true, weatherError = null) }
+        }
+
+        val settings = preferencesManager.getCurrentSettings()
+        val isCelsius = settings.temperatureUnit == "celsius"
+        val tempUnitLabel = if (isCelsius) "C" else "F"
+        val windUnitLabel = if (isCelsius) "km/h" else "mph"
+        val apiTempUnit = if (isCelsius) "celsius" else "fahrenheit"
+        val apiWindUnit = if (isCelsius) "kmh" else "mph"
+
+        // Check for manual location first
+        val lat: Double
+        val lon: Double
+        val locName: String
+
+        if (settings.useManualLocation && settings.locationName.isNotBlank()) {
+            lat = settings.lastKnownLatitude
+            lon = settings.lastKnownLongitude
+            locName = settings.locationName
+        } else {
+            // Try GPS
+            val context = getApplication<Application>()
+            val location = LocationHelper.getLastKnownLocation(context)
+
+            if (location == null &&
+                settings.lastKnownLatitude == 0.0 &&
+                settings.lastKnownLongitude == 0.0
+            ) {
+                val usableData = _uiState.value.temperature.isNotBlank()
+                val preserve = isManualRefresh && usableData
+                _uiState.update { state ->
+                    state.copy(
                         weatherLoading = false,
-                        hasLocation = true,
-                        locationName = locName,
-                        latitude = lat,
-                        longitude = lon,
-                        tempUnit = tempUnitLabel,
-                        windUnit = windUnitLabel,
-                        temperature = current?.temperature?.let { "${it.toInt()}" } ?: "--",
-                        feelsLike = current?.feelsLike?.let { appContext.getString(R.string.weather_feels_like, it.toInt().toString()) } ?: "",
-                        humidity = current?.humidity?.let { "${it}%" } ?: "",
-                        windSpeed = current?.windSpeed?.let { "${it.toInt()} $windUnitLabel" } ?: "",
-                        weatherDescription = current?.weatherCode
-                            ?.let { appContext.getString(WeatherCodes.describeRes(it)) }
-                            ?: "",
-                        weatherIcon = current?.weatherCode?.let { WeatherCodes.icon(it) } ?: "unknown",
-                        currentWeatherCode = current?.weatherCode,
-                        highTemp = daily?.maxTemp?.firstOrNull()?.let { "${it.toInt()}" } ?: "--",
-                        lowTemp = daily?.minTemp?.firstOrNull()?.let { "${it.toInt()}" } ?: "--",
-                        precipChance = daily?.precipChance?.firstOrNull()?.let { "${it}%" } ?: "",
-                        sunrise = formatTimeOfDay(daily?.sunrise?.firstOrNull()),
-                        sunset = formatTimeOfDay(daily?.sunset?.firstOrNull()),
-                        sunriseLocal = parseTimeOfDay(daily?.sunrise?.firstOrNull()),
-                        sunsetLocal = parseTimeOfDay(daily?.sunset?.firstOrNull()),
-                        uvIndex = formatUv(current?.uvIndex ?: daily?.uvIndexMax?.firstOrNull()),
-                        hourly = buildHourly(hourly),
-                        airQuality = null,
-                        forecast = buildForecast(daily),
-                        weatherLastUpdatedMillis = snapshot.fetchedAtMillis,
-                        weatherStale = snapshot.isStale,
-                        weatherStaleMessage = if (snapshot.isStale) {
-                            appContext.getString(R.string.dashboard_weather_refresh_failed)
-                        } else {
-                            null
-                        },
-                        weatherError = null
-                    ) }
+                        hasLocation = if (preserve) state.hasLocation else false,
+                        locationName = if (preserve) state.locationName else "",
+                        temperature = if (preserve) state.temperature else "",
+                        feelsLike = if (preserve) state.feelsLike else "",
+                        humidity = if (preserve) state.humidity else "",
+                        windSpeed = if (preserve) state.windSpeed else "",
+                        weatherDescription = if (preserve) state.weatherDescription else "",
+                        weatherIcon = if (preserve) state.weatherIcon else "",
+                        highTemp = if (preserve) state.highTemp else "",
+                        lowTemp = if (preserve) state.lowTemp else "",
+                        precipChance = if (preserve) state.precipChance else "",
+                        forecast = if (preserve) state.forecast else emptyList(),
+                        weatherLastUpdatedMillis = if (preserve) state.weatherLastUpdatedMillis else null,
+                        weatherStale = preserve,
+                        weatherStaleMessage = if (preserve) appContext.getString(R.string.dashboard_weather_refresh_failed) else null,
+                        airQuality = if (preserve) state.airQuality else null,
+                        weatherError = if (!preserve) appContext.getString(R.string.dashboard_weather_set_location) else null
+                    )
+                }
+                return
+            }
+            if (location != null) {
+                lat = location.latitude
+                lon = location.longitude
+                locName = appContext.getString(R.string.dashboard_weather_current_location)
+            } else {
+                lat = settings.lastKnownLatitude
+                lon = settings.lastKnownLongitude
+                locName = settings.locationName.ifBlank {
+                    getApplication<Application>().getString(R.string.dashboard_last_location)
+                }
+            }
 
-                    // Fire-and-forget NWS alerts fetch. Failure is silent —
-                    // alerts are bonus context, never the critical path.
-                    viewModelScope.launch {
-                        val flags = weatherAlertsRepository.fetch(lat, lon)
-                        if (_uiState.value.latitude == lat && _uiState.value.longitude == lon) {
-                            _uiState.update { it.copy(
-                                tornadoAlertActive = flags.tornadoActive,
-                                severeWeatherHeadline = flags.headline,
-                            ) }
-                        }
+            val shouldRescheduleSolarAlarms = shouldRescheduleSolarAlarms(
+                previous = settings,
+                newLatitude = lat,
+                newLongitude = lon,
+                newLocationName = "",
+                useManualLocation = false
+            )
+            preferencesManager.update {
+                it.copy(lastKnownLatitude = lat, lastKnownLongitude = lon)
+            }
+            if (shouldRescheduleSolarAlarms) {
+                alarmScheduler.rescheduleAll(forceRecalculate = true)
+            }
+        }
+
+        val weatherResult = weatherRepository.getWeather(lat, lon, apiTempUnit, apiWindUnit)
+        if (weatherResult.isSuccess) {
+            val snapshot = weatherResult.getOrThrow()
+            val response = snapshot.response
+            val current = response.current
+            val daily = response.daily
+            val hourly = response.hourly
+
+                _uiState.update { it.copy(
+                    weatherLoading = false,
+                    hasLocation = true,
+                    locationName = locName,
+                    latitude = lat,
+                    longitude = lon,
+                    tempUnit = tempUnitLabel,
+                    windUnit = windUnitLabel,
+                    temperature = current?.temperature?.let { "${it.toInt()}" } ?: "--",
+                    feelsLike = current?.feelsLike?.let { appContext.getString(R.string.weather_feels_like, it.toInt().toString()) } ?: "",
+                    humidity = current?.humidity?.let { "${it}%" } ?: "",
+                    windSpeed = current?.windSpeed?.let { "${it.toInt()} $windUnitLabel" } ?: "",
+                    weatherDescription = current?.weatherCode
+                        ?.let { appContext.getString(WeatherCodes.describeRes(it)) }
+                        ?: "",
+                    weatherIcon = current?.weatherCode?.let { WeatherCodes.icon(it) } ?: "unknown",
+                    currentWeatherCode = current?.weatherCode,
+                    highTemp = daily?.maxTemp?.firstOrNull()?.let { "${it.toInt()}" } ?: "--",
+                    lowTemp = daily?.minTemp?.firstOrNull()?.let { "${it.toInt()}" } ?: "--",
+                    precipChance = daily?.precipChance?.firstOrNull()?.let { "${it}%" } ?: "",
+                    sunrise = formatTimeOfDay(daily?.sunrise?.firstOrNull()),
+                    sunset = formatTimeOfDay(daily?.sunset?.firstOrNull()),
+                    sunriseLocal = parseTimeOfDay(daily?.sunrise?.firstOrNull()),
+                    sunsetLocal = parseTimeOfDay(daily?.sunset?.firstOrNull()),
+                    uvIndex = formatUv(current?.uvIndex ?: daily?.uvIndexMax?.firstOrNull()),
+                    hourly = buildHourly(hourly),
+                    airQuality = it.airQuality,
+                    forecast = buildForecast(daily),
+                    weatherLastUpdatedMillis = snapshot.fetchedAtMillis,
+                    weatherStale = snapshot.isStale,
+                    weatherStaleMessage = if (snapshot.isStale) {
+                        appContext.getString(R.string.dashboard_weather_refresh_failed)
+                    } else {
+                        null
+                    },
+                    weatherError = null
+                ) }
+
+            coroutineScope {
+                // Fetch NWS alerts.
+                launch {
+                    val flags = weatherAlertsRepository.fetch(lat, lon)
+                    if (_uiState.value.latitude == lat && _uiState.value.longitude == lon) {
+                        _uiState.update { it.copy(
+                            tornadoAlertActive = flags.tornadoActive,
+                            severeWeatherHeadline = flags.headline,
+                        ) }
                     }
+                }
 
-                    // Air quality is helpful dashboard context, but weather
-                    // should not wait on a second network call. If it fails or
-                    // the provider has no pollen for the area, the Weather tab
-                    // stays calm and keeps the core forecast visible.
-                    viewModelScope.launch {
-                        val airQuality = weatherRepository.getAirQuality(lat, lon)
-                            .getOrNull()
-                            ?.let(::buildAirQualitySummary)
+                // Air quality companion card for AQI, pollutants, and pollen.
+                launch {
+                    val airQualityResult = weatherRepository.getAirQuality(lat, lon)
+                    if (airQualityResult.isSuccess) {
+                        val airQuality = airQualityResult.getOrNull()?.let(::buildAirQualitySummary)
                         if (_uiState.value.latitude == lat && _uiState.value.longitude == lon) {
                             _uiState.update { it.copy(airQuality = airQuality) }
                         }
                     }
                 }
-                .onFailure { e ->
-                    _uiState.update { it.copy(
-                        weatherLoading = false,
-                        hasLocation = locName.isNotBlank(),
-                        locationName = locName,
-                        temperature = "",
-                        feelsLike = "",
-                        humidity = "",
-                        windSpeed = "",
-                        weatherDescription = "",
-                        weatherIcon = "",
-                        highTemp = "",
-                        lowTemp = "",
-                        precipChance = "",
-                        sunrise = "",
-                        sunset = "",
-                        uvIndex = "",
-                        hourly = emptyList(),
-                        forecast = emptyList(),
-                        weatherLastUpdatedMillis = null,
-                        weatherStale = false,
-                        weatherStaleMessage = null,
-                        airQuality = null,
-                        weatherError = appContext.getString(R.string.dashboard_weather_unavailable)
-                    ) }
-                }
+            }
+        } else {
+            val usableData = _uiState.value.temperature.isNotBlank()
+            val preserve = isManualRefresh && usableData
+            _uiState.update { state ->
+                state.copy(
+                    weatherLoading = false,
+                    hasLocation = if (preserve) state.hasLocation else (locName.isNotBlank()),
+                    locationName = if (preserve) state.locationName else locName,
+                    temperature = if (preserve) state.temperature else "",
+                    feelsLike = if (preserve) state.feelsLike else "",
+                    humidity = if (preserve) state.humidity else "",
+                    windSpeed = if (preserve) state.windSpeed else "",
+                    weatherDescription = if (preserve) state.weatherDescription else "",
+                    weatherIcon = if (preserve) state.weatherIcon else "",
+                    highTemp = if (preserve) state.highTemp else "",
+                    lowTemp = if (preserve) state.lowTemp else "",
+                    precipChance = if (preserve) state.precipChance else "",
+                    sunrise = if (preserve) state.sunrise else "",
+                    sunset = if (preserve) state.sunset else "",
+                    uvIndex = if (preserve) state.uvIndex else "",
+                    hourly = if (preserve) state.hourly else emptyList(),
+                    forecast = if (preserve) state.forecast else emptyList(),
+                    weatherLastUpdatedMillis = if (preserve) state.weatherLastUpdatedMillis else null,
+                    weatherStale = preserve,
+                    weatherStaleMessage = if (preserve) appContext.getString(R.string.dashboard_weather_refresh_failed) else null,
+                    airQuality = if (preserve) state.airQuality else null,
+                    weatherError = if (!preserve) appContext.getString(R.string.dashboard_weather_unavailable) else null
+                )
+            }
         }
     }
 
@@ -428,7 +466,7 @@ class DashboardViewModel @Inject constructor(
         _uiState.update { it.copy(showLocationPicker = false, locationSearchResults = emptyList()) }
     }
 
-    private var searchJob: kotlinx.coroutines.Job? = null
+    private var searchJob: Job? = null
 
     fun searchLocation(query: String) {
         if (query.length < 2) {
@@ -439,7 +477,7 @@ class DashboardViewModel @Inject constructor(
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
             _uiState.update { it.copy(locationSearching = true) }
-            kotlinx.coroutines.delay(300) // Debounce 300ms
+            delay(300) // Debounce 300ms
             try {
                 val response = geocodingApi.search(query)
                 _uiState.update { it.copy(
@@ -503,7 +541,13 @@ class DashboardViewModel @Inject constructor(
     }
 
     fun loadCalendar() {
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        viewModelScope.launch {
+            performCalendarLoad(false)
+        }
+    }
+
+    private suspend fun performCalendarLoad(isManualRefresh: Boolean) {
+        withContext(Dispatchers.IO) {
             val result = calendarRepository.getTodayEvents()
             result.onSuccess { events ->
                 _uiState.update { it.copy(
@@ -512,15 +556,18 @@ class DashboardViewModel @Inject constructor(
                     calendarPermissionNeeded = false
                 ) }
             }.onFailure { e ->
+                val usableData = _uiState.value.calendarEvents.isNotEmpty()
+                val preserve = isManualRefresh && usableData
+
                 if (e is SecurityException) {
                     _uiState.update { it.copy(
-                        calendarEvents = emptyList(),
+                        calendarEvents = if (preserve) it.calendarEvents else emptyList(),
                         calendarPermissionNeeded = true,
                         calendarError = "Calendar permission needed"
                     ) }
                 } else {
                     _uiState.update { it.copy(
-                        calendarEvents = emptyList(),
+                        calendarEvents = if (preserve) it.calendarEvents else emptyList(),
                         calendarError = "Unable to load calendar"
                     ) }
                 }
@@ -606,7 +653,7 @@ class DashboardViewModel @Inject constructor(
      * for the keyframe sky engine. Decoupled so the formatted display string
      * and the engine input stay in sync.
      */
-    private fun parseTimeOfDay(iso: String?): java.time.LocalTime? {
+    private fun parseTimeOfDay(iso: String?): LocalTime? {
         if (iso.isNullOrBlank()) return null
         return runCatching { LocalDateTime.parse(iso).toLocalTime() }.getOrNull()
     }
@@ -742,7 +789,7 @@ class DashboardViewModel @Inject constructor(
     }
 
     private fun shouldRescheduleSolarAlarms(
-        previous: com.sysadmindoc.alarmclock.data.preferences.AppSettings,
+        previous: AppSettings,
         newLatitude: Double,
         newLongitude: Double,
         newLocationName: String,

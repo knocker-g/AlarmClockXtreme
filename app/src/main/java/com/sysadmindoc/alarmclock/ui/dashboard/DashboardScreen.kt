@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -20,6 +21,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -102,6 +106,7 @@ import java.util.concurrent.TimeUnit
 import com.sysadmindoc.alarmclock.R
 import androidx.compose.ui.res.stringResource
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
     onOpenAlarms: () -> Unit = {},
@@ -118,14 +123,10 @@ fun DashboardScreen(
         viewModel.loadData()
     }
 
-    // v1.9.0: dynamic time-of-day + weather sky behind the entire Today
-    // tab. The sky reads as the background; cards bring their own surfaces
-    // so content remains legible against any keyframe.
-    WeatherSkyBackground(
-        sunrise = state.sunriseLocal,
-        sunset = state.sunsetLocal,
-        weatherCode = state.currentWeatherCode,
-        tornadoActive = state.tornadoAlertActive,
+    PullToRefreshBox(
+        isRefreshing = state.refreshing,
+        onRefresh = { viewModel.loadData(isManualRefresh = true) },
+        modifier = Modifier.fillMaxSize(),
     ) {
         Column(
             modifier = Modifier
@@ -191,48 +192,44 @@ private fun NextAlarmSection(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         AppSectionTitle(title = stringResource(R.string.bedtime_jetlag_helper_next_alarm))
-        AppSurfaceCard(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onOpenAlarms),
-            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
+                .clickable(onClick = onOpenAlarms)
+                .padding(vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically
+            Icon(
+                imageVector = Icons.Default.Alarm,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(28.dp)
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Default.Alarm,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(28.dp)
-                )
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    Text(
-                        text = state.nextAlarmTime,
-                        color = TextPrimary,
-                        style = MaterialTheme.typography.titleLarge
-                    )
-                    Text(
-                        text = listOf(
-                            state.nextAlarmLabel,
-                            state.nextAlarmSchedule
-                        ).filter { it.isNotBlank() }.joinToString(" · "),
-                        color = TextSecondary,
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1
-                    )
-                }
                 Text(
-                    text = stringResource(R.string.dashboard_view),
-                    color = MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.labelLarge
+                    text = state.nextAlarmTime,
+                    color = TextPrimary,
+                    style = MaterialTheme.typography.titleLarge
+                )
+                Text(
+                    text = listOf(
+                        state.nextAlarmLabel,
+                        state.nextAlarmSchedule
+                    ).filter { it.isNotBlank() }.joinToString(" · "),
+                    color = TextSecondary,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1
                 )
             }
+            Text(
+                text = stringResource(R.string.dashboard_view),
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.labelLarge
+            )
         }
     }
 }
@@ -252,7 +249,6 @@ private fun DashboardHeader(state: DashboardUiState) {
     // signal is visible immediately, before the user scrolls.
     val hasTornadoChip = state.tornadoAlertActive
     AlarmClockHeroHeader(
-        transparent = true,
         title = stringResource(R.string.dashboard_today),
         subtitle = state.todayDate,
         badge = if (hasTornadoChip) {
@@ -345,178 +341,165 @@ private fun WeatherSection(
                         icon = Icons.Default.CloudOff,
                         color = SnoozeYellow
                     )
-                    OutlinedButton(
-                        onClick = onRetryWeather,
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = MaterialTheme.colorScheme.primary
-                        )
-                    ) {
-                        Icon(Icons.Default.Refresh, null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.size(8.dp))
-                        Text(stringResource(R.string.dashboard_retry_weather))
-                    }
                 }
 
                 // v1.7.4: Centered hero — location chip, big icon, big temp,
                 // condition description, all stacked and centered. ZeusWatch's
                 // CurrentConditionsHeader inspired the layout.
-                AppSurfaceCard {
-                    Box(modifier = Modifier.fillMaxWidth()) {
-                        IconButton(
-                            onClick = onChangeLocation,
-                            modifier = Modifier.align(Alignment.TopEnd)
-                        ) {
-                            Icon(
-                                Icons.Default.Edit,
-                                contentDescription = stringResource(R.string.dashboard_change_weather_location),
-                                tint = TextMuted
-                            )
-                        }
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 8.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.LocationOn,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Text(
-                                    text = state.locationName.ifBlank { stringResource(R.string.dashboard_weather_fallback_title) },
-                                    color = TextSecondary,
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                            }
-                            Icon(
-                                imageVector = weatherIconFor(state.weatherIcon),
-                                contentDescription = state.weatherDescription,
-                                tint = weatherColorFor(state.weatherIcon),
-                                modifier = Modifier.size(64.dp)
-                            )
-                            Row(
-                                verticalAlignment = Alignment.Top,
-                                horizontalArrangement = Arrangement.Center
-                            ) {
-                                Text(
-                                    text = state.temperature,
-                                    style = ClockTimeDisplay,
-                                    color = TextPrimary
-                                )
-                                Text(
-                                    text = "\u00B0${state.tempUnit}",
-                                    fontSize = 22.sp,
-                                    color = TextSecondary,
-                                    modifier = Modifier.padding(top = 10.dp, start = 2.dp)
-                                )
-                            }
-                            Text(
-                                text = state.weatherDescription,
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = TextSecondary,
-                                textAlign = TextAlign.Center
-                            )
-                            if (state.feelsLike.isNotBlank()) {
-                                Text(
-                                    text = state.feelsLike,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = TextMuted,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        }
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    IconButton(
+                        onClick = onChangeLocation,
+                        modifier = Modifier.align(Alignment.TopEnd)
+                    ) {
+                        Icon(
+                            Icons.Default.Edit,
+                            contentDescription = stringResource(R.string.dashboard_change_weather_location),
+                            tint = TextMuted
+                        )
                     }
-
-                    HorizontalDivider(color = TextMuted.copy(alpha = 0.18f))
-
                     Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            WeatherMetric(
-                                label = stringResource(R.string.dashboard_high),
-                                value = "${state.highTemp}\u00B0",
-                                icon = Icons.Default.ArrowUpward,
-                                accent = AccentRed,
-                                modifier = Modifier.weight(1f)
+                            Icon(
+                                imageVector = Icons.Default.LocationOn,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
                             )
-                            WeatherMetric(
-                                label = stringResource(R.string.dashboard_low),
-                                value = "${state.lowTemp}\u00B0",
-                                icon = Icons.Default.ArrowDownward,
-                                accent = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.weight(1f)
-                            )
-                            WeatherMetric(
-                                label = stringResource(R.string.dashboard_rain),
-                                value = if (state.precipChance.isBlank()) "0%" else state.precipChance,
-                                icon = Icons.Default.Umbrella,
-                                modifier = Modifier.weight(1f)
+                            Text(
+                                text = state.locationName.ifBlank { stringResource(R.string.dashboard_weather_fallback_title) },
+                                color = TextSecondary,
+                                style = MaterialTheme.typography.bodyMedium
                             )
                         }
-
+                        Icon(
+                            imageVector = weatherIconFor(state.weatherIcon),
+                            contentDescription = state.weatherDescription,
+                            tint = weatherColorFor(state.weatherIcon),
+                            modifier = Modifier.size(64.dp)
+                        )
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.Center
                         ) {
-                            WeatherMetric(
-                                label = stringResource(R.string.dashboard_humidity),
-                                value = state.humidity,
-                                icon = Icons.Default.WaterDrop,
-                                modifier = Modifier.weight(1f)
+                            Text(
+                                text = state.temperature,
+                                style = ClockTimeDisplay,
+                                color = TextPrimary
                             )
-                            WeatherMetric(
-                                label = stringResource(R.string.dashboard_wind),
-                                value = state.windSpeed,
-                                icon = Icons.Default.Air,
-                                modifier = Modifier.weight(1f)
+                            Text(
+                                text = "\u00B0${state.tempUnit}",
+                                fontSize = 22.sp,
+                                color = TextSecondary,
+                                modifier = Modifier.padding(top = 10.dp, start = 2.dp)
                             )
-                            WeatherMetric(
-                                label = stringResource(R.string.dashboard_uv),
-                                value = state.uvIndex.ifBlank { "—" },
-                                icon = Icons.Default.WbSunny,
-                                accent = SnoozeYellow,
-                                modifier = Modifier.weight(1f)
+                        }
+                        Text(
+                            text = state.weatherDescription,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = TextSecondary,
+                            textAlign = TextAlign.Center
+                        )
+                        if (state.feelsLike.isNotBlank()) {
+                            Text(
+                                text = state.feelsLike,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextMuted,
+                                textAlign = TextAlign.Center
                             )
                         }
                     }
+                }
 
-                    // v1.7.4: Sunrise / sunset row — ported from ZeusWatch's
-                    // GoldenHour card but slimmed to a horizontal pair. Most
-                    // useful field in an alarm clock context: "is the sun up
-                    // by my alarm time?"
-                    if (state.sunrise.isNotBlank() || state.sunset.isNotBlank()) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            WeatherMetric(
-                                label = stringResource(R.string.alarm_edit_solar_sunrise),
-                                value = state.sunrise.ifBlank { "—" },
-                                icon = Icons.Default.WbSunny,
-                                accent = SnoozeYellow,
-                                modifier = Modifier.weight(1f)
-                            )
-                            WeatherMetric(
-                                label = stringResource(R.string.alarm_edit_solar_sunset),
-                                value = state.sunset.ifBlank { "—" },
-                                icon = Icons.Default.NightsStay,
-                                accent = AccentBlue,
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
+                HorizontalDivider(color = TextMuted.copy(alpha = 0.18f))
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        WeatherMetric(
+                            label = stringResource(R.string.dashboard_high),
+                            value = "${state.highTemp}\u00B0",
+                            icon = Icons.Default.ArrowUpward,
+                            accent = AccentRed,
+                            modifier = Modifier.weight(1f)
+                        )
+                        WeatherMetric(
+                            label = stringResource(R.string.dashboard_low),
+                            value = "${state.lowTemp}\u00B0",
+                            icon = Icons.Default.ArrowDownward,
+                            accent = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.weight(1f)
+                        )
+                        WeatherMetric(
+                            label = stringResource(R.string.dashboard_rain),
+                            value = if (state.precipChance.isBlank()) "0%" else state.precipChance,
+                            icon = Icons.Default.Umbrella,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        WeatherMetric(
+                            label = stringResource(R.string.dashboard_humidity),
+                            value = state.humidity,
+                            icon = Icons.Default.WaterDrop,
+                            modifier = Modifier.weight(1f)
+                        )
+                        WeatherMetric(
+                            label = stringResource(R.string.dashboard_wind),
+                            value = state.windSpeed,
+                            icon = Icons.Default.Air,
+                            modifier = Modifier.weight(1f)
+                        )
+                        WeatherMetric(
+                            label = stringResource(R.string.dashboard_uv),
+                            value = state.uvIndex.ifBlank { "—" },
+                            icon = Icons.Default.WbSunny,
+                            accent = SnoozeYellow,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+
+                // v1.7.4: Sunrise / sunset row — ported from ZeusWatch's
+                // GoldenHour card but slimmed to a horizontal pair. Most
+                // useful field in an alarm clock context: "is the sun up
+                // by my alarm time?"
+                if (state.sunrise.isNotBlank() || state.sunset.isNotBlank()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        WeatherMetric(
+                            label = stringResource(R.string.alarm_edit_solar_sunrise),
+                            value = state.sunrise.ifBlank { "—" },
+                            icon = Icons.Default.WbSunny,
+                            accent = SnoozeYellow,
+                            modifier = Modifier.weight(1f)
+                        )
+                        WeatherMetric(
+                            label = stringResource(R.string.alarm_edit_solar_sunset),
+                            value = state.sunset.ifBlank { "—" },
+                            icon = Icons.Default.NightsStay,
+                            accent = AccentBlue,
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                 }
 
@@ -530,7 +513,10 @@ private fun WeatherSection(
                 // 24-hour ZeusWatch one). The 3-day below is the bigger
                 // change: vertical now.
                 if (state.hourly.isNotEmpty()) {
-                    AppSurfaceCard(contentPadding = PaddingValues(14.dp)) {
+                    Column(
+                        modifier = Modifier.padding(top = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
                         Text(stringResource(R.string.dashboard_next_few_hours),
                             color = TextPrimary,
                             style = MaterialTheme.typography.titleMedium,
@@ -550,7 +536,10 @@ private fun WeatherSection(
                     // v1.7.4: vertical 3-day list, replacing the horizontal
                     // LazyRow. One day per line is easier to scan and stops
                     // truncating long descriptions on narrow phones.
-                    AppSurfaceCard(contentPadding = PaddingValues(14.dp)) {
+                    Column(
+                        modifier = Modifier.padding(top = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
                         Text(stringResource(R.string.dashboard_next_3_days),
                             color = TextPrimary,
                             style = MaterialTheme.typography.titleMedium,
@@ -613,7 +602,7 @@ private fun formatRelativeAge(epochMs: Long): String {
 @Composable
 private fun AirQualityCard(summary: AirQualitySummary) {
     val accent = airQualityColorFor(summary.level)
-    AppSurfaceCard(contentPadding = PaddingValues(14.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -889,7 +878,7 @@ private fun CalendarSection(
     // v1.7.5: Title moved INTO the card so the calendar section matches the
     // "Next few hours" / "Next 3 days" weather sub-cards. Previously the
     // section title floated outside the card, looking like a stray label.
-    AppSurfaceCard {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(stringResource(R.string.dashboard_schedule),
             color = TextPrimary,
             style = MaterialTheme.typography.titleMedium,

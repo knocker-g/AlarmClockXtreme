@@ -57,7 +57,6 @@ import com.sysadmindoc.alarmclock.ui.components.AppSkeletonBlock
 import com.sysadmindoc.alarmclock.ui.components.AppStatusChip
 import com.sysadmindoc.alarmclock.ui.components.AppSurfaceCard
 import com.sysadmindoc.alarmclock.ui.theme.SnoozeYellow
-import com.sysadmindoc.alarmclock.ui.theme.SurfaceDark
 import com.sysadmindoc.alarmclock.ui.theme.TextMuted
 import com.sysadmindoc.alarmclock.ui.theme.TextPrimary
 import com.sysadmindoc.alarmclock.ui.theme.TextSecondary
@@ -76,217 +75,172 @@ fun NewsScreen(
     val activeSource = state.sources.firstOrNull { it.id == state.activeSourceId }
     val activeFeedLabel = activeSource?.name ?: stringResource(R.string.news_no_sources)
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(SurfaceDark)
+    // v1.8.1: pull-to-refresh — RSS readers expect this gesture and it
+    // replaces the icon-only refresh button as the primary affordance.
+    PullToRefreshBox(
+        isRefreshing = state.refreshing,
+        onRefresh = viewModel::refresh,
+        modifier = Modifier.fillMaxSize(),
     ) {
-        // v1.8.1: pull-to-refresh — RSS readers expect this gesture and it
-        // replaces the icon-only refresh button as the primary affordance.
-        // The button stays in the hero actions slot for accessibility.
-        PullToRefreshBox(
-            isRefreshing = state.refreshing,
-            onRefresh = viewModel::refresh,
+        LazyColumn(
             modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(0.dp)
         ) {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(0.dp)
-            ) {
+            item {
+                AlarmClockHeroHeader(
+                    title = stringResource(R.string.news_news),
+                    subtitle = buildList {
+                        add(activeFeedLabel)
+                        state.lastUpdatedMillis?.let { add(formatRelativeShort(it)) }
+                    }.joinToString(" · "),
+                )
+            }
+
+            if (state.sources.isNotEmpty()) {
                 item {
-                    AlarmClockHeroHeader(
-                        title = stringResource(R.string.news_news),
-                        subtitle = buildList {
-                            add(activeFeedLabel)
-                            state.lastUpdatedMillis?.let { add(formatRelativeShort(it)) }
-                        }.joinToString(" · "),
-                        actions = {
-                            IconButton(onClick = viewModel::refresh) {
-                                Icon(
-                                    imageVector = Icons.Default.Refresh,
-                                    contentDescription = stringResource(R.string.news_refresh_feed),
-                                    tint = TextPrimary
-                                )
-                            }
-                        }
-                    )
-                }
-
-                if (state.sources.isNotEmpty()) {
-                    item {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState())
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            state.sources.forEach { source ->
-                                val selected = source.id == state.activeSourceId
-                                Column(
-                                    modifier = Modifier
-                                        .selectable(
-                                            selected = selected,
-                                            role = Role.Tab,
-                                            onClick = { viewModel.selectSource(source.id) }
-                                        )
-                                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.spacedBy(7.dp)
-                                ) {
-                                    Text(
-                                        text = source.name,
-                                        color = if (selected) MaterialTheme.colorScheme.primary else TextSecondary,
-                                        style = MaterialTheme.typography.labelLarge
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        state.sources.forEach { source ->
+                            val selected = source.id == state.activeSourceId
+                            Column(
+                                modifier = Modifier
+                                    .selectable(
+                                        selected = selected,
+                                        role = Role.Tab,
+                                        onClick = { viewModel.selectSource(source.id) }
                                     )
-                                    Box(
-                                        modifier = Modifier
-                                            .width(30.dp)
-                                            .height(3.dp)
-                                            .background(
-                                                if (selected) MaterialTheme.colorScheme.primary
-                                                else Color.Transparent
-                                            )
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (state.isStale && !state.staleMessage.isNullOrBlank()) {
-                    item {
-                        Box(
-                            modifier = Modifier.padding(
-                                horizontal = 16.dp,
-                                vertical = 8.dp,
-                            )
-                        ) {
-                            AppInlineNotice(
-                                title = stringResource(R.string.news_showing_saved_headlines),
-                                message = state.staleMessage.orEmpty(),
-                                icon = Icons.Default.Refresh,
-                                color = SnoozeYellow
-                            )
-                        }
-                    }
-                }
-
-                when {
-                    state.loading -> {
-                        items(count = 4, key = { "skeleton-$it" }) {
-                            Box(
-                                modifier = Modifier.padding(
-                                    horizontal = 16.dp,
-                                    vertical = 6.dp,
-                                )
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(7.dp)
                             ) {
-                                NewsCardSkeleton()
-                            }
-                        }
-                    }
-
-                    // A failed refresh used to replace headlines that had loaded
-                    // fine a moment earlier, so going offline emptied the tab.
-                    state.errorMessage != null && state.items.isEmpty() -> {
-                        item {
-                            Box(
-                                modifier = Modifier.padding(
-                                    horizontal = 16.dp,
-                                    vertical = 8.dp,
+                                Text(
+                                    text = source.name,
+                                    color = if (selected) MaterialTheme.colorScheme.primary else TextSecondary,
+                                    style = MaterialTheme.typography.labelLarge
                                 )
-                            ) {
-                                AppSurfaceCard {
-                                    AppEmptyState(
-                                        icon = Icons.Default.RssFeed,
-                                        title = stringResource(R.string.news_couldn_t_load_feed),
-                                        description = state.errorMessage
-                                            ?.takeIf { it.isNotBlank() }
-                                            ?: stringResource(R.string.news_pick_a_different_source_or_try),
-                                        footer = {
-                                            OutlinedButton(onClick = viewModel::refresh) {
-                                                Text(stringResource(R.string.dashboard_retry))
-                                            }
-                                        },
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    state.items.isEmpty() -> {
-                        item {
-                            Box(
-                                modifier = Modifier.padding(
-                                    horizontal = 16.dp,
-                                    vertical = 8.dp,
-                                )
-                            ) {
-                                AppSurfaceCard {
-                                    AppEmptyState(
-                                        icon = Icons.Default.RssFeed,
-                                        title = if (state.sources.isEmpty()) {
-                                            stringResource(R.string.news_no_sources)
-                                        } else {
-                                            stringResource(R.string.news_no_headlines_yet)
-                                        },
-                                        description = if (state.sources.isEmpty()) {
-                                            stringResource(R.string.news_manage_sources)
-                                        } else {
-                                            stringResource(R.string.news_pick_feed_chips_above)
-                                        },
-                                        footer = if (state.sources.isEmpty()) {
-                                            {
-                                                Button(onClick = onManageSources) {
-                                                    Text(stringResource(R.string.settings_manage))
-                                                }
-                                            }
-                                        } else null
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    else -> {
-                        state.errorMessage?.let { message ->
-                            item(key = "news-refresh-failed") {
                                 Box(
-                                    modifier = Modifier.padding(
-                                        horizontal = 16.dp,
-                                        vertical = 8.dp,
-                                    )
-                                ) {
-                                    AppInlineNotice(
-                                        title = stringResource(R.string.news_couldn_t_refresh),
-                                        message = message,
-                                        icon = Icons.Default.RssFeed,
-                                        color = SnoozeYellow,
-                                    )
-                                }
+                                    modifier = Modifier
+                                        .width(30.dp)
+                                        .height(3.dp)
+                                        .background(
+                                            if (selected) MaterialTheme.colorScheme.primary
+                                            else Color.Transparent
+                                        )
+                                )
                             }
                         }
-                        itemsIndexed(state.items, key = { _, item -> item.id }) { index, item ->
-                            Box(
-                                modifier = Modifier.padding(
-                                    horizontal = 16.dp,
-                                    vertical = 0.dp,
-                                )
-                            ) {
-                                Column {
-                                    NewsCard(
-                                        item = item,
-                                        onClick = {
-                                            if (item.hasOpenableLink) {
-                                                runCatching { uriHandler.openUri(item.link) }
-                                            }
-                                        },
-                                    )
-                                    if (index < state.items.lastIndex) {
-                                        HorizontalDivider(color = TextMuted.copy(alpha = 0.18f))
+                    }
+                }
+            }
+
+            if (state.isStale && !state.staleMessage.isNullOrBlank()) {
+                item {
+                    Box(
+                        modifier = Modifier.padding(
+                            horizontal = 16.dp,
+                            vertical = 8.dp,
+                        )
+                    ) {
+                        AppInlineNotice(
+                            title = stringResource(R.string.news_showing_saved_headlines),
+                            message = state.staleMessage.orEmpty(),
+                            icon = Icons.Default.Refresh,
+                            color = SnoozeYellow
+                        )
+                    }
+                }
+            }
+
+            when {
+                state.loading -> {
+                    items(count = 4, key = { "skeleton-$it" }) {
+                        NewsCardSkeleton()
+                    }
+                }
+
+                // A failed refresh used to replace headlines that had loaded
+                // fine a moment earlier, so going offline emptied the tab.
+                state.errorMessage != null && state.items.isEmpty() -> {
+                    item {
+                        AppEmptyState(
+                            icon = Icons.Default.RssFeed,
+                            title = stringResource(R.string.news_couldn_t_load_feed),
+                            description = state.errorMessage
+                                ?.takeIf { it.isNotBlank() }
+                                ?: stringResource(R.string.news_pick_a_different_source_or_try),
+                            footer = {
+                                OutlinedButton(onClick = viewModel::refresh) {
+                                    Text(stringResource(R.string.dashboard_retry))
+                                }
+                            },
+                        )
+                    }
+                }
+
+                state.items.isEmpty() -> {
+                    item {
+                        AppEmptyState(
+                            icon = Icons.Default.RssFeed,
+                            title = if (state.sources.isEmpty()) {
+                                stringResource(R.string.news_no_sources)
+                            } else {
+                                stringResource(R.string.news_no_headlines_yet)
+                            },
+                            description = if (state.sources.isEmpty()) {
+                                stringResource(R.string.news_manage_sources)
+                            } else {
+                                stringResource(R.string.news_pick_feed_chips_above)
+                            },
+                            footer = if (state.sources.isEmpty()) {
+                                {
+                                    Button(onClick = onManageSources) {
+                                        Text(stringResource(R.string.settings_manage))
                                     }
                                 }
+                            } else null
+                        )
+                    }
+                }
+
+                else -> {
+                    state.errorMessage?.let { message ->
+                        item(key = "news-refresh-failed") {
+                            Box(
+                                modifier = Modifier.padding(
+                                    horizontal = 16.dp,
+                                    vertical = 8.dp,
+                                )
+                            ) {
+                                AppInlineNotice(
+                                    title = stringResource(R.string.news_couldn_t_refresh),
+                                    message = message,
+                                    icon = Icons.Default.RssFeed,
+                                    color = SnoozeYellow,
+                                )
+                            }
+                        }
+                    }
+                    itemsIndexed(state.items, key = { _, item -> item.id }) { index, item ->
+                        Column {
+                            NewsCard(
+                                item = item,
+                                onClick = {
+                                    if (item.hasOpenableLink) {
+                                        runCatching { uriHandler.openUri(item.link) }
+                                    }
+                                },
+                            )
+                            if (index < state.items.lastIndex) {
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(horizontal = 16.dp),
+                                    color = TextMuted.copy(alpha = 0.18f)
+                                )
                             }
                         }
                     }
@@ -333,7 +287,7 @@ private fun NewsCard(
         modifier = Modifier
             .fillMaxWidth()
             .then(linkModifier)
-            .padding(horizontal = 8.dp, vertical = 16.dp),
+            .padding(horizontal = 16.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Text(
@@ -382,7 +336,7 @@ private fun NewsCardSkeleton() {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 16.dp),
+            .padding(horizontal = 16.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         AppSkeletonBlock(modifier = Modifier.fillMaxWidth(0.78f), height = 18.dp)
