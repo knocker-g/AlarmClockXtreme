@@ -127,7 +127,6 @@ import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.model.ShiftPattern
 import com.sysadmindoc.alarmclock.data.share.AlarmShareCodec
 import com.sysadmindoc.alarmclock.ui.adaptive.shouldUseTwoPaneLayout
-import com.sysadmindoc.alarmclock.ui.alarmlist.components.SwipeableAlarmCard
 import com.sysadmindoc.alarmclock.ui.components.AlarmClockHeroHeader
 import com.sysadmindoc.alarmclock.ui.components.AppEmptyState
 import com.sysadmindoc.alarmclock.ui.components.AppFilterChip
@@ -679,43 +678,39 @@ fun AlarmListScreen(
                                                     onToggleSelect = { viewModel.toggleSelection(alarm.id) }
                                                 )
                                             } else {
-                                                SwipeableAlarmCard(
-                                                    onDelete = { viewModel.deleteAlarm(alarm) }
-                                                ) {
-                                                    val suppressedByVacation = alarm.isEnabled &&
-                                                        state.vacationStartMillis > 0L &&
-                                                        state.vacationEndMillis > state.vacationStartMillis &&
-                                                        alarm.nextTriggerTime in
-                                                            state.vacationStartMillis..state.vacationEndMillis
-                                                    val isActiveSession = alarm.id == state.activeAlarmId
-                                                    AlarmCard(
-                                                        alarm = alarm,
-                                                        latestEvent = latestEvent,
-                                                        isActiveSession = isActiveSession,
-                                                        is24Hour = state.is24HourFormat,
-                                                        suppressedByVacation = suppressedByVacation,
-                                                        pausedUntilMillis = state.pausedUntilMillis,
-                                                        isActivePaneSelection = useTwoPane && selectedAlarmId == alarm.id,
-                                                        onToggle = { viewModel.toggleAlarm(alarm) },
-                                                        onForceToggle = { viewModel.forceDisableAlarm(alarm) },
-                                                        onClick = {
-                                                            if (useTwoPane) {
-                                                                selectedAlarmId = alarm.id
-                                                            } else {
-                                                                onEditAlarm(alarm.id)
-                                                            }
-                                                        },
-                                                        onDelete = { viewModel.deleteAlarm(alarm) },
-                                                        onSkipNext = { viewModel.skipNextOccurrence(alarm) },
-                                                        onDuplicate = { viewModel.duplicateAlarm(alarm) },
-                                                        onShare = { shareAlarm(context, alarm, state.is24HourFormat) },
-                                                        onShowHistory = {
-                                                            statsAlarmLabel = alarm.label.ifBlank { "%d:%02d".format(alarm.hour, alarm.minute) }
-                                                            viewModel.loadAlarmStats(alarm.id)
-                                                        },
-                                                        onLongClick = { viewModel.toggleSelection(alarm.id) }
-                                                    )
-                                                }
+                                                val suppressedByVacation = alarm.isEnabled &&
+                                                    state.vacationStartMillis > 0L &&
+                                                    state.vacationEndMillis > state.vacationStartMillis &&
+                                                    alarm.nextTriggerTime in
+                                                        state.vacationStartMillis..state.vacationEndMillis
+                                                val isActiveSession = alarm.id == state.activeAlarmId
+                                                AlarmCard(
+                                                    alarm = alarm,
+                                                    latestEvent = latestEvent,
+                                                    isActiveSession = isActiveSession,
+                                                    is24Hour = state.is24HourFormat,
+                                                    suppressedByVacation = suppressedByVacation,
+                                                    pausedUntilMillis = state.pausedUntilMillis,
+                                                    isActivePaneSelection = useTwoPane && selectedAlarmId == alarm.id,
+                                                    onToggle = { viewModel.toggleAlarm(alarm) },
+                                                    onForceToggle = { viewModel.forceDisableAlarm(alarm) },
+                                                    onClick = {
+                                                        if (useTwoPane) {
+                                                            selectedAlarmId = alarm.id
+                                                        } else {
+                                                            onEditAlarm(alarm.id)
+                                                        }
+                                                    },
+                                                    onDelete = { viewModel.deleteAlarm(alarm) },
+                                                    onSkipNext = { viewModel.skipNextOccurrence(alarm) },
+                                                    onDuplicate = { viewModel.duplicateAlarm(alarm) },
+                                                    onShare = { shareAlarm(context, alarm, state.is24HourFormat) },
+                                                    onShowHistory = {
+                                                        statsAlarmLabel = alarm.label.ifBlank { "%d:%02d".format(alarm.hour, alarm.minute) }
+                                                        viewModel.loadAlarmStats(alarm.id)
+                                                    },
+                                                    onLongClick = { viewModel.toggleSelection(alarm.id) }
+                                                )
                                             }
                                         }
                                     }
