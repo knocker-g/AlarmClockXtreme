@@ -5,11 +5,17 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.horizontalDrag
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemGestures
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.filled.*
@@ -20,7 +26,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -359,16 +371,23 @@ fun AppNavigation(
             return@Scaffold
         }
 
-        AppNavHost(
-        navController = navController,
-        startDest = startDest,
-                        is24Hour = settings.is24HourFormat,
-        prefs = prefs,
-        openReadinessChecklist = reliabilityChecklistDue,
-        sharedAlarmDraft = sharedAlarmDraft,
-        onSharedAlarmConsumed = onSharedAlarmConsumed,
-        modifier = Modifier.padding(padding)
-    )
+        SwipeNavigationHandler(
+            visibleTabs = visibleTabs,
+            currentRoute = currentDestination?.route,
+            onTabClick = onTabClick,
+            enabled = !useNavigationRail && showBottomBar
+        ) {
+            AppNavHost(
+                navController = navController,
+                startDest = startDest,
+                is24Hour = settings.is24HourFormat,
+                prefs = prefs,
+                openReadinessChecklist = reliabilityChecklistDue,
+                sharedAlarmDraft = sharedAlarmDraft,
+                onSharedAlarmConsumed = onSharedAlarmConsumed,
+                modifier = Modifier.padding(padding)
+            )
+        }
 }
 }
 
@@ -567,4 +586,105 @@ private fun AppNavHost(
 @dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
 internal interface AppNavigationEntryPoint {
     fun preferencesManager(): com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
+}
+
+/**
+ * v1.15.45 (roadmap ALA-106): Horizontal swipe navigation for top-level tabs.
+ *
+ * Implements intuitive sibling navigation based on [visibleTabs]. Child
+ * horizontal gestures (like horizontal scrollable rows or swipe-to-delete
+ * cards) take precedence. Edge gestures (system back) are protected by an
+ * exclusion zone.
+ */
+@Composable
+private fun SwipeNavigationHandler(
+    visibleTabs: List<BottomNavItem>,
+    currentRoute: String?,
+    onTabClick: (Screen) -> Unit,
+    enabled: Boolean,
+    content: @Composable () -> Unit
+) {
+    if (!enabled) {
+        Box(modifier = Modifier.fillMaxSize()) { content() }
+        return
+    }
+
+    // Only apply if the current screen is a managed top-level tab.
+    val currentIndex = remember(visibleTabs, currentRoute) {
+        visibleTabs.indexOfFirst { it.screen.route == currentRoute }
+    }
+
+    if (currentIndex == -1) {
+        Box(modifier = Modifier.fillMaxSize()) { content() }
+        return
+    }
+
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
+    val layoutDirection = LocalLayoutDirection.current
+
+    // Finding 1: Respect system edge gesture regions.
+    val systemGestures = WindowInsets.systemGestures
+    val leftEdgePx = systemGestures.getLeft(density, layoutDirection).toFloat()
+    val screenWidthPx = with(density) { configuration.screenWidthDp.dp.toPx() }
+    val rightEdgePx = screenWidthPx - systemGestures.getRight(density, layoutDirection).toFloat()
+
+    // Threshold to confirm intent: ~20% of screen width.
+    val swipeThresholdPx = screenWidthPx * 0.20f
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(visibleTabs, currentIndex, leftEdgePx, rightEdgePx) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val startX = down.position.x
+
+                    // Bail if starting inside the system edge gesture region.
+                    if (startX < leftEdgePx || startX > rightEdgePx) {
+                        return@awaitEachGesture
+                    }
+
+                    var totalDelta = 0f
+                    var childConsumed = false
+
+                    // Finding 2: Child horizontal gestures have priority.
+                    // Wait for horizontal intent.
+                    val drag = awaitHorizontalTouchSlopOrCancellation(down.id) { change, overSlop ->
+                        if (change.isConsumed) {
+                            childConsumed = true
+                        } else {
+                            totalDelta = overSlop
+                        }
+                    }
+
+                    if (drag != null && !childConsumed) {
+                        // Intent confirmed for parent. Track the rest of the gesture.
+                        horizontalDrag(down.id) { change ->
+                            if (change.isConsumed) {
+                                // Once a child consumes part of the gesture, the parent
+                                // must permanently surrender ownership of THIS gesture.
+                                childConsumed = true
+                            } else {
+                                totalDelta += change.positionChange().x
+                            }
+                        }
+
+                        // Only navigate if no child ever claimed the gesture
+                        // and we exceeded the threshold.
+                        if (!childConsumed) {
+                            if (totalDelta > swipeThresholdPx && currentIndex > 0) {
+                                // Swipe Right (finger moves L to R) -> Previous
+                                onTabClick(visibleTabs[currentIndex - 1].screen)
+                            } else if (totalDelta < -swipeThresholdPx && currentIndex < visibleTabs.lastIndex) {
+                                // Swipe Left (finger moves R to L) -> Next
+                                onTabClick(visibleTabs[currentIndex + 1].screen)
+                            }
+                        }
+                    }
+                }
+            }
+    ) {
+        content()
+    }
 }
