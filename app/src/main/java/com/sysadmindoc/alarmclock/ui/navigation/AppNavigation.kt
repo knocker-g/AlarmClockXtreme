@@ -422,16 +422,40 @@ private fun AppNavHost(
         startDestination = startDest,
         modifier = modifier,
         enterTransition = {
-            slideInHorizontally(initialOffsetX = { it / 4 }) + fadeIn()
+            val initialRoute = initialState.destination.route
+            val targetRoute = targetState.destination.route
+            if (calculateTabNavigationDirection(initialRoute, targetRoute) == TabNavigationDirection.PREVIOUS) {
+                slideInHorizontally(initialOffsetX = { -it / 4 }) + fadeIn()
+            } else {
+                slideInHorizontally(initialOffsetX = { it / 4 }) + fadeIn()
+            }
         },
         exitTransition = {
-            slideOutHorizontally(targetOffsetX = { -it / 6 }) + fadeOut(targetAlpha = 0.72f)
+            val initialRoute = initialState.destination.route
+            val targetRoute = targetState.destination.route
+            if (calculateTabNavigationDirection(initialRoute, targetRoute) == TabNavigationDirection.PREVIOUS) {
+                slideOutHorizontally(targetOffsetX = { it / 6 }) + fadeOut(targetAlpha = 0.72f)
+            } else {
+                slideOutHorizontally(targetOffsetX = { -it / 6 }) + fadeOut(targetAlpha = 0.72f)
+            }
         },
         popEnterTransition = {
-            slideInHorizontally(initialOffsetX = { -it / 4 }) + fadeIn()
+            val initialRoute = initialState.destination.route
+            val targetRoute = targetState.destination.route
+            if (calculateTabNavigationDirection(initialRoute, targetRoute) == TabNavigationDirection.NEXT) {
+                slideInHorizontally(initialOffsetX = { it / 4 }) + fadeIn()
+            } else {
+                slideInHorizontally(initialOffsetX = { -it / 4 }) + fadeIn()
+            }
         },
         popExitTransition = {
-            slideOutHorizontally(targetOffsetX = { it / 4 }) + fadeOut(targetAlpha = 0.72f)
+            val initialRoute = initialState.destination.route
+            val targetRoute = targetState.destination.route
+            if (calculateTabNavigationDirection(initialRoute, targetRoute) == TabNavigationDirection.NEXT) {
+                slideOutHorizontally(targetOffsetX = { -it / 6 }) + fadeOut(targetAlpha = 0.72f)
+            } else {
+                slideOutHorizontally(targetOffsetX = { it / 4 }) + fadeOut(targetAlpha = 0.72f)
+            }
         }
     ) {
         composable(Screen.Onboarding.route) {
@@ -615,6 +639,36 @@ internal fun calculateSwipeTargetTab(
                 null
             }
         }
+    }
+}
+
+internal enum class TabNavigationDirection { NEXT, PREVIOUS, NEUTRAL }
+
+/**
+ * Determines whether navigation between [initialRoute] and [targetRoute] is a
+ * top-level tab transition and returns [TabNavigationDirection.NEXT],
+ * [TabNavigationDirection.PREVIOUS], or [TabNavigationDirection.NEUTRAL].
+ */
+internal fun calculateTabNavigationDirection(
+    initialRoute: String?,
+    targetRoute: String?,
+    tabItems: List<BottomNavItem> = bottomNavItems
+): TabNavigationDirection {
+    if (initialRoute == null || targetRoute == null || initialRoute == targetRoute) {
+        return TabNavigationDirection.NEUTRAL
+    }
+
+    val initialIndex = tabItems.indexOfFirst { it.screen.route == initialRoute }
+    val targetIndex = tabItems.indexOfFirst { it.screen.route == targetRoute }
+
+    if (initialIndex == -1 || targetIndex == -1) {
+        return TabNavigationDirection.NEUTRAL
+    }
+
+    return if (targetIndex > initialIndex) {
+        TabNavigationDirection.NEXT
+    } else {
+        TabNavigationDirection.PREVIOUS
     }
 }
 
