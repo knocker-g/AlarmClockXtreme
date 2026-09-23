@@ -26,7 +26,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalConfiguration
@@ -266,7 +265,13 @@ fun AppNavigation(
             // Wider windows get a NavigationRail instead — see the Row branch
             // in the content slot below.
             if (showBottomBar && !useNavigationRail) {
-                BottomNavContainer {
+                BottomNavContainer(
+                    modifier = Modifier.bottomNavSwipe(
+                        visibleTabs = visibleTabs,
+                        currentRoute = currentDestination?.route,
+                        onTabClick = onTabClick
+                    )
+                ) {
                     NavigationBar(
                         containerColor = Color.Transparent,
                         contentColor = TextPrimary,
@@ -371,24 +376,17 @@ fun AppNavigation(
             return@Scaffold
         }
 
-        SwipeNavigationHandler(
-            visibleTabs = visibleTabs,
-            currentRoute = currentDestination?.route,
-            onTabClick = onTabClick,
-            enabled = !useNavigationRail && showBottomBar
-        ) {
-            AppNavHost(
-                navController = navController,
-                startDest = startDest,
-                is24Hour = settings.is24HourFormat,
-                prefs = prefs,
-                openReadinessChecklist = reliabilityChecklistDue,
-                sharedAlarmDraft = sharedAlarmDraft,
-                onSharedAlarmConsumed = onSharedAlarmConsumed,
-                modifier = Modifier.padding(padding)
-            )
-        }
-}
+        AppNavHost(
+            navController = navController,
+            startDest = startDest,
+            is24Hour = settings.is24HourFormat,
+            prefs = prefs,
+            openReadinessChecklist = reliabilityChecklistDue,
+            sharedAlarmDraft = sharedAlarmDraft,
+            onSharedAlarmConsumed = onSharedAlarmConsumed,
+            modifier = Modifier.padding(padding)
+        )
+    }
 }
 
 /**
@@ -588,103 +586,93 @@ internal interface AppNavigationEntryPoint {
     fun preferencesManager(): com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 }
 
+internal enum class SwipeDirection { LEFT, RIGHT }
+
 /**
- * v1.15.45 (roadmap ALA-106): Horizontal swipe navigation for top-level tabs.
- *
- * Implements intuitive sibling navigation based on [visibleTabs]. Child
- * horizontal gestures (like horizontal scrollable rows or swipe-to-delete
- * cards) take precedence. Edge gestures (system back) are protected by an
- * exclusion zone.
+ * Pure function computing the target [Screen] when performing a swipe gesture
+ * on the bottom navigation bar across [visibleTabs].
+ */
+internal fun calculateSwipeTargetTab(
+    visibleTabs: List<BottomNavItem>,
+    currentRoute: String?,
+    direction: SwipeDirection
+): Screen? {
+    if (visibleTabs.isEmpty() || currentRoute == null) return null
+    val currentIndex = visibleTabs.indexOfFirst { it.screen.route == currentRoute }
+    if (currentIndex == -1) return null
+
+    return when (direction) {
+        SwipeDirection.LEFT -> {
+            if (currentIndex < visibleTabs.lastIndex) {
+                visibleTabs[currentIndex + 1].screen
+            } else {
+                null
+            }
+        }
+        SwipeDirection.RIGHT -> {
+            if (currentIndex > 0) {
+                visibleTabs[currentIndex - 1].screen
+            } else {
+                null
+            }
+        }
+    }
+}
+
+/**
+ * v1.15.46 (ALA-106 cleanup): Horizontal swipe gesture modifier scoped to
+ * the Bottom Navigation Bar surface.
  */
 @Composable
-private fun SwipeNavigationHandler(
+private fun Modifier.bottomNavSwipe(
     visibleTabs: List<BottomNavItem>,
     currentRoute: String?,
     onTabClick: (Screen) -> Unit,
-    enabled: Boolean,
-    content: @Composable () -> Unit
-) {
-    if (!enabled) {
-        Box(modifier = Modifier.fillMaxSize()) { content() }
-        return
-    }
-
-    // Only apply if the current screen is a managed top-level tab.
-    val currentIndex = remember(visibleTabs, currentRoute) {
-        visibleTabs.indexOfFirst { it.screen.route == currentRoute }
-    }
-
-    if (currentIndex == -1) {
-        Box(modifier = Modifier.fillMaxSize()) { content() }
-        return
-    }
+    enabled: Boolean = true
+): Modifier {
+    if (!enabled) return this
 
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
     val layoutDirection = LocalLayoutDirection.current
 
-    // Finding 1: Respect system edge gesture regions.
     val systemGestures = WindowInsets.systemGestures
     val leftEdgePx = systemGestures.getLeft(density, layoutDirection).toFloat()
     val screenWidthPx = with(density) { configuration.screenWidthDp.dp.toPx() }
     val rightEdgePx = screenWidthPx - systemGestures.getRight(density, layoutDirection).toFloat()
 
-    // Threshold to confirm intent: ~20% of screen width.
-    val swipeThresholdPx = screenWidthPx * 0.20f
+    val swipeThresholdPx = with(density) { 40.dp.toPx() }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .pointerInput(visibleTabs, currentIndex, leftEdgePx, rightEdgePx) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    val startX = down.position.x
+    return this.pointerInput(visibleTabs, currentRoute, leftEdgePx, rightEdgePx) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            val startX = down.position.x
 
-                    // Bail if starting inside the system edge gesture region.
-                    if (startX < leftEdgePx || startX > rightEdgePx) {
-                        return@awaitEachGesture
+            // Bail if starting inside the system edge gesture region.
+            if (startX < leftEdgePx || startX > rightEdgePx) {
+                return@awaitEachGesture
+            }
+
+            var totalDelta = 0f
+            val drag = awaitHorizontalTouchSlopOrCancellation(down.id) { _, overSlop ->
+                totalDelta = overSlop
+            }
+
+            if (drag != null) {
+                horizontalDrag(down.id) { change ->
+                    totalDelta += change.positionChange().x
+                }
+
+                if (totalDelta < -swipeThresholdPx) {
+                    calculateSwipeTargetTab(visibleTabs, currentRoute, SwipeDirection.LEFT)?.let { target ->
+                        onTabClick(target)
                     }
-
-                    var totalDelta = 0f
-                    var childConsumed = false
-
-                    // Finding 2: Child horizontal gestures have priority.
-                    // Wait for horizontal intent.
-                    val drag = awaitHorizontalTouchSlopOrCancellation(down.id) { change, overSlop ->
-                        if (change.isConsumed) {
-                            childConsumed = true
-                        } else {
-                            totalDelta = overSlop
-                        }
-                    }
-
-                    if (drag != null && !childConsumed) {
-                        // Intent confirmed for parent. Track the rest of the gesture.
-                        horizontalDrag(down.id) { change ->
-                            if (change.isConsumed) {
-                                // Once a child consumes part of the gesture, the parent
-                                // must permanently surrender ownership of THIS gesture.
-                                childConsumed = true
-                            } else {
-                                totalDelta += change.positionChange().x
-                            }
-                        }
-
-                        // Only navigate if no child ever claimed the gesture
-                        // and we exceeded the threshold.
-                        if (!childConsumed) {
-                            if (totalDelta > swipeThresholdPx && currentIndex > 0) {
-                                // Swipe Right (finger moves L to R) -> Previous
-                                onTabClick(visibleTabs[currentIndex - 1].screen)
-                            } else if (totalDelta < -swipeThresholdPx && currentIndex < visibleTabs.lastIndex) {
-                                // Swipe Left (finger moves R to L) -> Next
-                                onTabClick(visibleTabs[currentIndex + 1].screen)
-                            }
-                        }
+                } else if (totalDelta > swipeThresholdPx) {
+                    calculateSwipeTargetTab(visibleTabs, currentRoute, SwipeDirection.RIGHT)?.let { target ->
+                        onTabClick(target)
                     }
                 }
             }
-    ) {
-        content()
+        }
     }
 }
