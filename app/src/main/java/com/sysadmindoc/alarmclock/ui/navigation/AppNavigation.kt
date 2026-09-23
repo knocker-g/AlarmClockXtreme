@@ -5,10 +5,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
-import androidx.compose.foundation.gestures.horizontalDrag
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
@@ -26,8 +22,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import kotlin.math.abs
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -622,6 +621,10 @@ internal fun calculateSwipeTargetTab(
 /**
  * v1.15.46 (ALA-106 cleanup): Horizontal swipe gesture modifier scoped to
  * the Bottom Navigation Bar surface.
+ *
+ * Uses [PointerEventPass.Initial] so parent navigation container can inspect
+ * and claim horizontal drag gestures before child [NavigationBarItem] nodes
+ * consume them during [PointerEventPass.Main].
  */
 @Composable
 private fun Modifier.bottomNavSwipe(
@@ -644,32 +647,50 @@ private fun Modifier.bottomNavSwipe(
     val swipeThresholdPx = with(density) { 40.dp.toPx() }
 
     return this.pointerInput(visibleTabs, currentRoute, leftEdgePx, rightEdgePx) {
-        awaitEachGesture {
-            val down = awaitFirstDown(requireUnconsumed = false)
-            val startX = down.position.x
+        awaitPointerEventScope {
+            while (true) {
+                // Listen during Initial pass (ancestor before descendant)
+                val downEvent = awaitPointerEvent(PointerEventPass.Initial)
+                val down = downEvent.changes.firstOrNull { it.changedToDown() } ?: continue
+                val pointerId = down.id
+                val startX = down.position.x
 
-            // Bail if starting inside the system edge gesture region.
-            if (startX < leftEdgePx || startX > rightEdgePx) {
-                return@awaitEachGesture
-            }
-
-            var totalDelta = 0f
-            val drag = awaitHorizontalTouchSlopOrCancellation(down.id) { _, overSlop ->
-                totalDelta = overSlop
-            }
-
-            if (drag != null) {
-                horizontalDrag(down.id) { change ->
-                    totalDelta += change.positionChange().x
+                // Bail if starting inside the system edge gesture region.
+                if (startX < leftEdgePx || startX > rightEdgePx) {
+                    continue
                 }
 
-                if (totalDelta < -swipeThresholdPx) {
-                    calculateSwipeTargetTab(visibleTabs, currentRoute, SwipeDirection.LEFT)?.let { target ->
-                        onTabClick(target)
+                var totalDelta = 0f
+                var isSwipeConsumed = false
+
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+
+                    if (!change.pressed) {
+                        break
                     }
-                } else if (totalDelta > swipeThresholdPx) {
-                    calculateSwipeTargetTab(visibleTabs, currentRoute, SwipeDirection.RIGHT)?.let { target ->
-                        onTabClick(target)
+
+                    val deltaX = change.positionChange().x
+                    totalDelta += deltaX
+
+                    // If movement exceeds threshold, claim ownership in Initial pass so child
+                    // NavigationBarItem in Main pass sees consumed event and cancels click.
+                    if (abs(totalDelta) > swipeThresholdPx) {
+                        isSwipeConsumed = true
+                        change.consume()
+                    }
+                }
+
+                if (isSwipeConsumed) {
+                    if (totalDelta < -swipeThresholdPx) {
+                        calculateSwipeTargetTab(visibleTabs, currentRoute, SwipeDirection.LEFT)?.let { target ->
+                            onTabClick(target)
+                        }
+                    } else if (totalDelta > swipeThresholdPx) {
+                        calculateSwipeTargetTab(visibleTabs, currentRoute, SwipeDirection.RIGHT)?.let { target ->
+                            onTabClick(target)
+                        }
                     }
                 }
             }
