@@ -424,37 +424,61 @@ private fun AppNavHost(
         enterTransition = {
             val initialRoute = initialState.destination.route
             val targetRoute = targetState.destination.route
-            if (calculateTabNavigationDirection(initialRoute, targetRoute) == TabNavigationDirection.PREVIOUS) {
-                slideInHorizontally(initialOffsetX = { -it / 4 }) + fadeIn()
-            } else {
-                slideInHorizontally(initialOffsetX = { it / 4 }) + fadeIn()
+            when (calculateTabNavigationDirection(initialRoute, targetRoute)) {
+                TabNavigationDirection.PREVIOUS -> {
+                    slideInHorizontally(initialOffsetX = { -it }) + fadeIn()
+                }
+                TabNavigationDirection.NEXT -> {
+                    slideInHorizontally(initialOffsetX = { it }) + fadeIn()
+                }
+                TabNavigationDirection.NEUTRAL -> {
+                    slideInHorizontally(initialOffsetX = { it / 4 }) + fadeIn()
+                }
             }
         },
         exitTransition = {
             val initialRoute = initialState.destination.route
             val targetRoute = targetState.destination.route
-            if (calculateTabNavigationDirection(initialRoute, targetRoute) == TabNavigationDirection.PREVIOUS) {
-                slideOutHorizontally(targetOffsetX = { it / 6 }) + fadeOut(targetAlpha = 0.72f)
-            } else {
-                slideOutHorizontally(targetOffsetX = { -it / 6 }) + fadeOut(targetAlpha = 0.72f)
+            when (calculateTabNavigationDirection(initialRoute, targetRoute)) {
+                TabNavigationDirection.PREVIOUS -> {
+                    slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
+                }
+                TabNavigationDirection.NEXT -> {
+                    slideOutHorizontally(targetOffsetX = { -it }) + fadeOut()
+                }
+                TabNavigationDirection.NEUTRAL -> {
+                    slideOutHorizontally(targetOffsetX = { -it / 6 }) + fadeOut(targetAlpha = 0.72f)
+                }
             }
         },
         popEnterTransition = {
             val initialRoute = initialState.destination.route
             val targetRoute = targetState.destination.route
-            if (calculateTabNavigationDirection(initialRoute, targetRoute) == TabNavigationDirection.NEXT) {
-                slideInHorizontally(initialOffsetX = { it / 4 }) + fadeIn()
-            } else {
-                slideInHorizontally(initialOffsetX = { -it / 4 }) + fadeIn()
+            when (calculateTabNavigationDirection(initialRoute, targetRoute)) {
+                TabNavigationDirection.PREVIOUS -> {
+                    slideInHorizontally(initialOffsetX = { -it }) + fadeIn()
+                }
+                TabNavigationDirection.NEXT -> {
+                    slideInHorizontally(initialOffsetX = { it }) + fadeIn()
+                }
+                TabNavigationDirection.NEUTRAL -> {
+                    slideInHorizontally(initialOffsetX = { -it / 4 }) + fadeIn()
+                }
             }
         },
         popExitTransition = {
             val initialRoute = initialState.destination.route
             val targetRoute = targetState.destination.route
-            if (calculateTabNavigationDirection(initialRoute, targetRoute) == TabNavigationDirection.NEXT) {
-                slideOutHorizontally(targetOffsetX = { -it / 6 }) + fadeOut(targetAlpha = 0.72f)
-            } else {
-                slideOutHorizontally(targetOffsetX = { it / 4 }) + fadeOut(targetAlpha = 0.72f)
+            when (calculateTabNavigationDirection(initialRoute, targetRoute)) {
+                TabNavigationDirection.PREVIOUS -> {
+                    slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
+                }
+                TabNavigationDirection.NEXT -> {
+                    slideOutHorizontally(targetOffsetX = { -it }) + fadeOut()
+                }
+                TabNavigationDirection.NEUTRAL -> {
+                    slideOutHorizontally(targetOffsetX = { it / 4 }) + fadeOut(targetAlpha = 0.72f)
+                }
             }
         }
     ) {
