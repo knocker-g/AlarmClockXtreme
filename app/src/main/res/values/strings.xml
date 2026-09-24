@@ -2574,5 +2574,13 @@
     <string name="alarmlist_today">Today</string>
     <string name="alarmlist_yesterday">Yesterday</string>
     <string name="alarmlist_cannot_modify_active_alarm">Cannot modify an active or snoozed alarm.</string>
+
+    <!-- Schedule App Integration (ALA-107) -->
+    <string name="settings_schedule_app">Schedule App</string>
+    <string name="settings_schedule_app_description">Select default calendar or schedule app to open when tapping Schedule on Dashboard.</string>
+    <string name="schedule_app_system_default">System Default</string>
+    <string name="schedule_app_fallback_toast">Could not open selected app. Opened default calendar.</string>
+    <string name="schedule_app_launch_failed">Unable to open calendar app.</string>
+    <string name="schedule_app_select_dialog_title">Select Schedule App</string>
 </resources>
 

@@ -1,6 +1,7 @@
 package com.sysadmindoc.alarmclock.ui.dashboard
 
 import android.Manifest
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -105,6 +106,9 @@ import java.time.LocalTime
 import java.util.concurrent.TimeUnit
 import com.sysadmindoc.alarmclock.R
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.LocalContext
+import com.sysadmindoc.alarmclock.util.ScheduleAppLauncher
+import com.sysadmindoc.alarmclock.util.ScheduleLaunchResult
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -112,6 +116,7 @@ fun DashboardScreen(
     onOpenAlarms: () -> Unit = {},
     viewModel: DashboardViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val calendarPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -158,9 +163,27 @@ fun DashboardScreen(
                 }
 
                 if (state.showCalendar) {
-                    CalendarSection(state) {
-                        calendarPermissionLauncher.launch(Manifest.permission.READ_CALENDAR)
-                    }
+                    CalendarSection(
+                        state = state,
+                        onRequestCalendarPermission = {
+                            calendarPermissionLauncher.launch(Manifest.permission.READ_CALENDAR)
+                        },
+                        onOpenScheduleApp = {
+                            val result = ScheduleAppLauncher.launchScheduleApp(
+                                context,
+                                state.scheduleAppPackage
+                            )
+                            when (result) {
+                                is ScheduleLaunchResult.FallbackSuccess -> {
+                                    Toast.makeText(context, R.string.schedule_app_fallback_toast, Toast.LENGTH_SHORT).show()
+                                }
+                                is ScheduleLaunchResult.Failure -> {
+                                    Toast.makeText(context, R.string.schedule_app_launch_failed, Toast.LENGTH_SHORT).show()
+                                }
+                                is ScheduleLaunchResult.Success -> {}
+                            }
+                        }
+                    )
                 }
 
                 if (state.nextAlarmTime.isNotBlank()) {
@@ -873,7 +896,8 @@ private fun HourlyCell(hour: HourlyForecast) {
 @Composable
 private fun CalendarSection(
     state: DashboardUiState,
-    onRequestCalendarPermission: () -> Unit
+    onRequestCalendarPermission: () -> Unit,
+    onOpenScheduleApp: () -> Unit
 ) {
     // v1.7.5: Title moved INTO the card so the calendar section matches the
     // "Next few hours" / "Next 3 days" weather sub-cards. Previously the
@@ -884,33 +908,40 @@ private fun CalendarSection(
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold
         )
-        when {
-            state.calendarPermissionNeeded -> {
-                // The row used to say "allow calendar access" and do nothing
-                // when tapped, with no other place in the app to grant it.
-                CompactDashboardRow(
-                    icon = Icons.Default.CalendarMonth,
-                    title = stringResource(R.string.dashboard_calendar_access),
-                    description = stringResource(R.string.dashboard_tap_allow_calendar_access_see),
-                    accent = SnoozeYellow,
-                    onClick = onRequestCalendarPermission
-                )
-            }
-
-            state.calendarEvents.isEmpty() -> {
-                CompactDashboardRow(
-                    icon = Icons.Default.EventAvailable,
-                    title = stringResource(R.string.dashboard_nothing_scheduled_today),
-                    description = stringResource(R.string.dashboard_day_clear),
-                    accent = DismissGreen
-                )
-            }
-
-            else -> {
-                state.calendarEvents.forEachIndexed { index, event ->
-                    EventRow(event, state.is24HourFormat)
-                    if (index != state.calendarEvents.lastIndex) {
-                        HorizontalDivider(color = TextMuted.copy(alpha = 0.16f))
+        if (state.calendarPermissionNeeded) {
+            // The row used to say "allow calendar access" and do nothing
+            // when tapped, with no other place in the app to grant it.
+            CompactDashboardRow(
+                icon = Icons.Default.CalendarMonth,
+                title = stringResource(R.string.dashboard_calendar_access),
+                description = stringResource(R.string.dashboard_tap_allow_calendar_access_see),
+                accent = SnoozeYellow,
+                onClick = onRequestCalendarPermission
+            )
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(
+                        role = Role.Button,
+                        onClickLabel = stringResource(R.string.settings_schedule_app),
+                        onClick = onOpenScheduleApp
+                    ),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (state.calendarEvents.isEmpty()) {
+                    CompactDashboardRow(
+                        icon = Icons.Default.EventAvailable,
+                        title = stringResource(R.string.dashboard_nothing_scheduled_today),
+                        description = stringResource(R.string.dashboard_day_clear),
+                        accent = DismissGreen
+                    )
+                } else {
+                    state.calendarEvents.forEachIndexed { index, event ->
+                        EventRow(event, state.is24HourFormat)
+                        if (index != state.calendarEvents.lastIndex) {
+                            HorizontalDivider(color = TextMuted.copy(alpha = 0.16f))
+                        }
                     }
                 }
             }

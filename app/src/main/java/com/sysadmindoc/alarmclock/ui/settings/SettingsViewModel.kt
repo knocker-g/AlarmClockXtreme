@@ -375,6 +375,7 @@ class SettingsViewModel @Inject constructor(
     fun updateDefaultGradualVolume(seconds: Int) = updateSettings { it.copy(defaultGradualVolume = seconds) }
     fun toggleShowWeather(enabled: Boolean) = updateSettings { it.copy(showWeatherOnDashboard = enabled) }
     fun toggleShowCalendar(enabled: Boolean) = updateSettings { it.copy(showCalendarOnDashboard = enabled) }
+    fun updateScheduleAppPackage(packageName: String) = updateSettings { it.copy(scheduleAppPackage = packageName) }
     fun togglePostDismissSummary(enabled: Boolean) =
         updateSettings { it.copy(postDismissSummaryEnabled = enabled) }
     fun toggleCalendarAutoAlarm(enabled: Boolean) = updateCalendarAutoAlarmSettings {

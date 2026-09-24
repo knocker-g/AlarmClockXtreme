@@ -2485,4 +2485,12 @@
     <string name="alarmlist_today">今日</string>
     <string name="alarmlist_yesterday">昨日</string>
     <string name="alarmlist_cannot_modify_active_alarm">作動中またはスヌーズ中のアラームは変更できません。</string>
+
+    <!-- Schedule App Integration (ALA-107) -->
+    <string name="settings_schedule_app">スケジュールアプリ</string>
+    <string name="settings_schedule_app_description">ダッシュボードのスケジュールタップ時に起動するアプリを設定します</string>
+    <string name="schedule_app_system_default">システムデフォルト</string>
+    <string name="schedule_app_fallback_toast">登録されたアプリを開けなかったため、別のカレンダーを開きました</string>
+    <string name="schedule_app_launch_failed">カレンダーアプリを開けませんでした</string>
+    <string name="schedule_app_select_dialog_title">スケジュールアプリの選択</string>
 </resources>

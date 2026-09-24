@@ -174,6 +174,7 @@ import com.sysadmindoc.alarmclock.worker.GuardianSmsPath
 import com.sysadmindoc.alarmclock.util.AppLanguageManager
 import com.sysadmindoc.alarmclock.util.AppLanguageOption
 import com.sysadmindoc.alarmclock.util.LocalNetworkPermission
+import com.sysadmindoc.alarmclock.util.ScheduleAppLauncher
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalTime
@@ -275,6 +276,7 @@ fun SettingsScreen(
     var showAutoSilenceMenu by remember { mutableStateOf(false) }
     var showTemperatureMenu by remember { mutableStateOf(false) }
     var showCalendarLeadMenu by remember { mutableStateOf(false) }
+    var showScheduleAppDialog by remember { mutableStateOf(false) }
     var showCommuteBaselineMenu by remember { mutableStateOf(false) }
     var showCommuteWeatherMenu by remember { mutableStateOf(false) }
     var showClearCommuteHistoryDialog by remember { mutableStateOf(false) }
@@ -590,6 +592,57 @@ fun SettingsScreen(
                     supportingText = stringResource(R.string.settings_show_calendar_description),
                     onToggle = viewModel::toggleShowCalendar
                 )
+                SettingsActionRow(
+                    label = stringResource(R.string.settings_schedule_app),
+                    value = ScheduleAppLauncher.getScheduleAppLabel(context, state.settings.scheduleAppPackage),
+                    supportingText = stringResource(R.string.settings_schedule_app_description),
+                    onClick = { showScheduleAppDialog = true }
+                )
+                if (showScheduleAppDialog) {
+                    val installedApps = remember(context) {
+                        ScheduleAppLauncher.getInstalledScheduleApps(context)
+                    }
+                    AlertDialog(
+                        onDismissRequest = { showScheduleAppDialog = false },
+                        title = { Text(stringResource(R.string.schedule_app_select_dialog_title)) },
+                        text = {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                installedApps.forEach { appInfo ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                viewModel.updateScheduleAppPackage(appInfo.packageName)
+                                                showScheduleAppDialog = false
+                                            }
+                                            .padding(vertical = 12.dp, horizontal = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        RadioButton(
+                                            selected = (appInfo.packageName == state.settings.scheduleAppPackage),
+                                            onClick = null
+                                        )
+                                        Text(
+                                            text = appInfo.label,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = TextPrimary
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { showScheduleAppDialog = false }) {
+                                Text(stringResource(R.string.app_dismiss))
+                            }
+                        }
+                    )
+                }
                 SettingsToggle(
                     label = stringResource(R.string.settings_post_dismiss_summary),
                     checked = state.settings.postDismissSummaryEnabled,

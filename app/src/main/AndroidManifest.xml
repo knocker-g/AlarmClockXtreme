@@ -82,6 +82,11 @@
              on Android 11+ (without this, the Spotify ringtone path silently
              falls through to the default ringtone even when Spotify is installed). -->
         <package android:name="com.spotify.music" />
+        <!-- ALA-107: Calendar app discovery and package visibility -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.APP_CALENDAR" />
+        </intent>
     </queries>
 
     <application
