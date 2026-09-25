@@ -899,18 +899,14 @@ private fun CalendarSection(
     onRequestCalendarPermission: () -> Unit,
     onOpenScheduleApp: () -> Unit
 ) {
-    // v1.7.5: Title moved INTO the card so the calendar section matches the
-    // "Next few hours" / "Next 3 days" weather sub-cards. Previously the
-    // section title floated outside the card, looking like a stray label.
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(stringResource(R.string.dashboard_schedule),
-            color = TextPrimary,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold
-        )
-        if (state.calendarPermissionNeeded) {
-            // The row used to say "allow calendar access" and do nothing
-            // when tapped, with no other place in the app to grant it.
+    if (state.calendarPermissionNeeded) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                text = stringResource(R.string.dashboard_schedule),
+                color = TextPrimary,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
             CompactDashboardRow(
                 icon = Icons.Default.CalendarMonth,
                 title = stringResource(R.string.dashboard_calendar_access),
@@ -918,30 +914,36 @@ private fun CalendarSection(
                 accent = SnoozeYellow,
                 onClick = onRequestCalendarPermission
             )
-        } else {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(
-                        role = Role.Button,
-                        onClickLabel = stringResource(R.string.settings_schedule_app),
-                        onClick = onOpenScheduleApp
-                    ),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                if (state.calendarEvents.isEmpty()) {
-                    CompactDashboardRow(
-                        icon = Icons.Default.EventAvailable,
-                        title = stringResource(R.string.dashboard_nothing_scheduled_today),
-                        description = stringResource(R.string.dashboard_day_clear),
-                        accent = DismissGreen
-                    )
-                } else {
-                    state.calendarEvents.forEachIndexed { index, event ->
-                        EventRow(event, state.is24HourFormat)
-                        if (index != state.calendarEvents.lastIndex) {
-                            HorizontalDivider(color = TextMuted.copy(alpha = 0.16f))
-                        }
+        }
+    } else {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(
+                    role = Role.Button,
+                    onClickLabel = stringResource(R.string.settings_schedule_app),
+                    onClick = onOpenScheduleApp
+                ),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = stringResource(R.string.dashboard_schedule),
+                color = TextPrimary,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            if (state.calendarEvents.isEmpty()) {
+                CompactDashboardRow(
+                    icon = Icons.Default.EventAvailable,
+                    title = stringResource(R.string.dashboard_nothing_scheduled_today),
+                    description = stringResource(R.string.dashboard_day_clear),
+                    accent = DismissGreen
+                )
+            } else {
+                state.calendarEvents.forEachIndexed { index, event ->
+                    EventRow(event, state.is24HourFormat)
+                    if (index != state.calendarEvents.lastIndex) {
+                        HorizontalDivider(color = TextMuted.copy(alpha = 0.16f))
                     }
                 }
             }

@@ -2582,5 +2582,6 @@
     <string name="schedule_app_fallback_toast">Could not open selected app. Opened default calendar.</string>
     <string name="schedule_app_launch_failed">Unable to open calendar app.</string>
     <string name="schedule_app_select_dialog_title">Select Schedule App</string>
+    <string name="schedule_app_unavailable">Selected app unavailable</string>
 </resources>
 

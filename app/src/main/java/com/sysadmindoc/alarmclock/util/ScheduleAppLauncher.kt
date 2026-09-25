@@ -45,66 +45,66 @@ object ScheduleAppLauncher {
     /**
      * Returns the human-readable label for a given [packageName].
      * Returns [R.string.schedule_app_system_default] if [packageName] is blank ("").
+     * Returns [R.string.schedule_app_unavailable] if the package is stale or uninstalled.
      */
-    fun getScheduleAppLabel(context: Context, packageName: String): String {
+    fun getScheduleAppLabel(
+        context: Context,
+        packageName: String,
+        appInfoResolver: (String) -> String? = { pkg ->
+            runCatching {
+                val appInfo = context.packageManager.getApplicationInfo(pkg, 0)
+                context.packageManager.getApplicationLabel(appInfo).toString()
+            }.getOrNull()
+        }
+    ): String {
         if (packageName.isBlank()) {
             return context.getString(R.string.schedule_app_system_default)
         }
 
-        val pm = context.packageManager
-        return runCatching {
-            val appInfo = pm.getApplicationInfo(packageName, 0)
-            pm.getApplicationLabel(appInfo).toString()
-        }.getOrDefault(packageName)
+        val resolvedLabel = appInfoResolver(packageName)
+        return if (!resolvedLabel.isNullOrBlank()) {
+            resolvedLabel
+        } else {
+            context.getString(R.string.schedule_app_unavailable)
+        }
     }
 
     /**
      * Launches the schedule app for [targetPackage].
-     * If [targetPackage] is specified and fails, falls back to generic Calendar intent.
+     * If [targetPackage] is specified and fails, falls back to generic Calendar semantic intent.
      * Never throws unhandled exceptions.
      */
-    fun launchScheduleApp(context: Context, targetPackage: String): ScheduleLaunchResult {
-        val pm = context.packageManager
-
+    fun launchScheduleApp(
+        context: Context,
+        targetPackage: String,
+        intentResolver: (Intent) -> Boolean = { intent -> canResolveIntent(context.packageManager, intent) },
+        intentLauncher: (Intent) -> Boolean = { intent ->
+            runCatching {
+                context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }.isSuccess
+        }
+    ): ScheduleLaunchResult {
         if (targetPackage.isNotBlank()) {
             val primaryIntent = createCalendarIntent(targetPackage)
-            if (canResolveIntent(pm, primaryIntent)) {
-                val launched = runCatching {
-                    context.startActivity(primaryIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                }.isSuccess
-                if (launched) return ScheduleLaunchResult.Success
+            if (intentResolver(primaryIntent) && intentLauncher(primaryIntent)) {
+                return ScheduleLaunchResult.Success
             }
 
-            val launchIntent = runCatching { pm.getLaunchIntentForPackage(targetPackage) }.getOrNull()
-            if (launchIntent != null) {
-                val launched = runCatching {
-                    context.startActivity(launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                }.isSuccess
-                if (launched) return ScheduleLaunchResult.Success
-            }
-
-            // Fallback to generic Calendar intent
+            // Fallback to generic Calendar semantic intent
             val fallbackIntent = createCalendarIntent("")
-            if (canResolveIntent(pm, fallbackIntent)) {
-                val launched = runCatching {
-                    context.startActivity(fallbackIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                }.isSuccess
-                if (launched) return ScheduleLaunchResult.FallbackSuccess
+            if (intentResolver(fallbackIntent) && intentLauncher(fallbackIntent)) {
+                return ScheduleLaunchResult.FallbackSuccess
             }
 
             return ScheduleLaunchResult.Failure(R.string.schedule_app_launch_failed)
         }
 
         val defaultIntent = createCalendarIntent("")
-        val launched = runCatching {
-            context.startActivity(defaultIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        }.isSuccess
-
-        return if (launched) {
-            ScheduleLaunchResult.Success
-        } else {
-            ScheduleLaunchResult.Failure(R.string.schedule_app_launch_failed)
+        if (intentResolver(defaultIntent) && intentLauncher(defaultIntent)) {
+            return ScheduleLaunchResult.Success
         }
+
+        return ScheduleLaunchResult.Failure(R.string.schedule_app_launch_failed)
     }
 
     internal fun createCalendarIntent(targetPackage: String): Intent {

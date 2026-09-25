@@ -2493,4 +2493,5 @@
     <string name="schedule_app_fallback_toast">登録されたアプリを開けなかったため、別のカレンダーを開きました</string>
     <string name="schedule_app_launch_failed">カレンダーアプリを開けませんでした</string>
     <string name="schedule_app_select_dialog_title">スケジュールアプリの選択</string>
+    <string name="schedule_app_unavailable">選択したアプリは利用できません</string>
 </resources>
