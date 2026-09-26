@@ -28,7 +28,13 @@ object ScheduleAppLauncher {
         }
     ): ScheduleLaunchResult {
         val calendarIntent = createCalendarIntent()
-        if (intentResolver(calendarIntent) && intentLauncher(calendarIntent)) {
+        val isResolved = runCatching { intentResolver(calendarIntent) }.getOrDefault(false)
+        if (!isResolved) {
+            return ScheduleLaunchResult.Failure(R.string.schedule_app_launch_failed)
+        }
+
+        val isLaunched = runCatching { intentLauncher(calendarIntent) }.getOrDefault(false)
+        if (isLaunched) {
             return ScheduleLaunchResult.Success
         }
 

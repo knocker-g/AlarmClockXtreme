@@ -63,6 +63,21 @@ class ScheduleAppLauncherTest {
     }
 
     @Test
+    fun `launchScheduleApp returns Failure without crashing when intentResolver throws exception`() {
+        val result = ScheduleAppLauncher.launchScheduleApp(
+            context = context,
+            intentResolver = { throw RuntimeException("Resolver failed") },
+            intentLauncher = { true }
+        )
+
+        assertTrue(result is ScheduleLaunchResult.Failure)
+        assertEquals(
+            R.string.schedule_app_launch_failed,
+            (result as ScheduleLaunchResult.Failure).errorMessageRes
+        )
+    }
+
+    @Test
     fun `launchScheduleApp returns Failure without crashing when launch throws exception`() {
         val result = ScheduleAppLauncher.launchScheduleApp(
             context = context,
