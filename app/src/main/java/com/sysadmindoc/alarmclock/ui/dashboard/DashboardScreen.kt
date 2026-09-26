@@ -169,18 +169,9 @@ fun DashboardScreen(
                             calendarPermissionLauncher.launch(Manifest.permission.READ_CALENDAR)
                         },
                         onOpenScheduleApp = {
-                            val result = ScheduleAppLauncher.launchScheduleApp(
-                                context,
-                                state.scheduleAppPackage
-                            )
-                            when (result) {
-                                is ScheduleLaunchResult.FallbackSuccess -> {
-                                    Toast.makeText(context, R.string.schedule_app_fallback_toast, Toast.LENGTH_SHORT).show()
-                                }
-                                is ScheduleLaunchResult.Failure -> {
-                                    Toast.makeText(context, R.string.schedule_app_launch_failed, Toast.LENGTH_SHORT).show()
-                                }
-                                is ScheduleLaunchResult.Success -> {}
+                            val result = ScheduleAppLauncher.launchScheduleApp(context)
+                            if (result is ScheduleLaunchResult.Failure) {
+                                Toast.makeText(context, R.string.schedule_app_launch_failed, Toast.LENGTH_SHORT).show()
                             }
                         }
                     )
@@ -921,7 +912,7 @@ private fun CalendarSection(
                 .fillMaxWidth()
                 .clickable(
                     role = Role.Button,
-                    onClickLabel = stringResource(R.string.settings_schedule_app),
+                    onClickLabel = stringResource(R.string.dashboard_schedule),
                     onClick = onOpenScheduleApp
                 ),
             verticalArrangement = Arrangement.spacedBy(10.dp)

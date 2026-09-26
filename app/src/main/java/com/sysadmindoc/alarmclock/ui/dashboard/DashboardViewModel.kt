@@ -99,9 +99,7 @@ data class DashboardUiState(
     // Location search
     val showLocationPicker: Boolean = false,
     val locationSearchResults: List<GeocodingResult> = emptyList(),
-    val locationSearching: Boolean = false,
-    // ALA-107: Preferred schedule app package
-    val scheduleAppPackage: String = ""
+    val locationSearching: Boolean = false
 )
 
 data class ForecastDay(
@@ -235,8 +233,7 @@ class DashboardViewModel @Inject constructor(
                 showWeather = settings.showWeatherOnDashboard,
                 showCalendar = settings.showCalendarOnDashboard,
                 is24HourFormat = settings.is24HourFormat,
-                showRadar = settings.showRadarEmbed,
-                scheduleAppPackage = settings.scheduleAppPackage
+                showRadar = settings.showRadarEmbed
             ) }
 
             coroutineScope {
