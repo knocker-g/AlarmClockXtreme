@@ -79,7 +79,7 @@ class AlarmClockIntentHandlerTest {
         val ringing = Alarm(id = 7L, hour = 6, minute = 0, isEnabled = true)
         val later = Alarm(id = 8L, hour = 7, minute = 0, isEnabled = true)
         AlarmService.activeAlarm.set(
-            AlarmService.Companion.ActiveAlarmSnapshot(7L, 1_000L, "fire-1")
+            AlarmService.Companion.ActiveAlarmSnapshot(7L, 1_000L, "fire-1", 1_000L)
         )
         coEvery { repository.getEnabled() } returns listOf(ringing, later)
         coEvery { repository.getById(7L) } returns ringing
@@ -122,7 +122,7 @@ class AlarmClockIntentHandlerTest {
         // This is the case the platform contract exists for.
         val ringing = Alarm(id = 7L, hour = 6, minute = 0, isEnabled = true)
         AlarmService.activeAlarm.set(
-            AlarmService.Companion.ActiveAlarmSnapshot(7L, 1_000L, "fire-1")
+            AlarmService.Companion.ActiveAlarmSnapshot(7L, 1_000L, "fire-1", 1_000L)
         )
         coEvery { repository.getEnabled() } returns listOf(ringing)
         coEvery { repository.getById(7L) } returns ringing
@@ -228,7 +228,7 @@ class AlarmClockIntentHandlerTest {
 
     @Test
     fun snoozeTargetsCurrentlyRingingAlarmWithRequestedDuration() = runTest {
-        AlarmService.activeAlarm.set(AlarmService.Companion.ActiveAlarmSnapshot(77L, 1_000L, "fire-77"))
+        AlarmService.activeAlarm.set(AlarmService.Companion.ActiveAlarmSnapshot(77L, 1_000L, "fire-77", 1_000L))
 
         val result = handler.handle(
             Intent(AlarmClock.ACTION_SNOOZE_ALARM)
@@ -245,7 +245,7 @@ class AlarmClockIntentHandlerTest {
     @Test
     fun dismissTargetsCurrentlyRingingAlarmBeforeOtherEnabledAlarms() = runTest {
         val active = Alarm(id = 77L, hour = 7, minute = 0, nextTriggerTime = 1_000L)
-        AlarmService.activeAlarm.set(AlarmService.Companion.ActiveAlarmSnapshot(77L, 1_000L, "fire-77"))
+        AlarmService.activeAlarm.set(AlarmService.Companion.ActiveAlarmSnapshot(77L, 1_000L, "fire-77", 1_000L))
         coEvery { repository.getEnabled() } returns listOf(active, Alarm(id = 88L))
         coEvery { repository.getById(77L) } returns active
 

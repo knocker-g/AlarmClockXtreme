@@ -1,6 +1,8 @@
 package com.sysadmindoc.alarmclock.data.repository
 
 import com.sysadmindoc.alarmclock.data.local.AlarmDao
+import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
+import com.sysadmindoc.alarmclock.data.local.AlarmGroupDao
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -18,7 +20,7 @@ class AlarmRepositoryImportTest {
         val dao = mockk<AlarmDao>()
         val captured = slot<List<Alarm>>()
         coEvery { dao.insertAllWithStableOrder(capture(captured)) } returns listOf(11L, 12L)
-        val repository = AlarmRepository(dao)
+        val repository = AlarmRepository(mockk<AlarmDatabase>(), dao, mockk<AlarmGroupDao>(relaxed = true))
 
         val ids = repository.importDisabledAtomically(
             listOf(
@@ -42,7 +44,7 @@ class AlarmRepositoryImportTest {
     fun `transaction failure is surfaced without falling back to partial row inserts`() = runTest {
         val dao = mockk<AlarmDao>()
         coEvery { dao.insertAllWithStableOrder(any()) } throws IllegalStateException("write failed")
-        val repository = AlarmRepository(dao)
+        val repository = AlarmRepository(mockk<AlarmDatabase>(), dao, mockk<AlarmGroupDao>(relaxed = true))
 
         var failed = false
         try {

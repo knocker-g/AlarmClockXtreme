@@ -76,7 +76,7 @@ class AlarmFireToDismissSmokeTest {
         assertEquals(AlarmService::class.java.name, startIntent.component?.className)
         assertAlarmExtras(startIntent, alarm.id, scheduledAt, fireId)
 
-        AlarmService.activeAlarm.set(AlarmService.Companion.ActiveAlarmSnapshot(alarm.id, scheduledAt, fireId))
+        AlarmService.activeAlarm.set(AlarmService.Companion.ActiveAlarmSnapshot(alarm.id, scheduledAt, fireId, firedAt))
         incidentRepository.record(
             alarmId = alarm.id,
             fireId = fireId,
