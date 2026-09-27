@@ -24,18 +24,17 @@ class ScheduleAppLauncherTest {
         assertNull("Generic calendar intent must not specify package", intent.`package`)
         assertNull("Generic calendar intent must not specify component", intent.component)
         assertTrue(
-            "Generic calendar intent must include APP_CALENDAR category",
-            intent.categories?.contains(Intent.CATEGORY_APP_CALENDAR) == true
+            "Generic calendar intent selector must include APP_CALENDAR category",
+            intent.selector?.hasCategory(Intent.CATEGORY_APP_CALENDAR) == true
         )
     }
 
     @Test
-    fun `launchScheduleApp returns Success when generic intent resolves and launches`() {
+    fun `launchScheduleApp returns Success when direct launch succeeds`() {
         var launchedIntent: Intent? = null
 
         val result = ScheduleAppLauncher.launchScheduleApp(
             context = context,
-            intentResolver = { true },
             intentLauncher = { intent ->
                 launchedIntent = intent
                 true
@@ -45,13 +44,13 @@ class ScheduleAppLauncherTest {
         assertEquals(ScheduleLaunchResult.Success, result)
         assertEquals(Intent.ACTION_MAIN, launchedIntent?.action)
         assertNull("Launched intent must remain unconstrained by package", launchedIntent?.`package`)
+        assertNull("Launched intent must remain unconstrained by component", launchedIntent?.component)
     }
 
     @Test
-    fun `launchScheduleApp returns Failure without crashing when generic intent resolution fails`() {
+    fun `launchScheduleApp returns Failure when direct launch returns false`() {
         val result = ScheduleAppLauncher.launchScheduleApp(
             context = context,
-            intentResolver = { false },
             intentLauncher = { false }
         )
 
@@ -63,25 +62,9 @@ class ScheduleAppLauncherTest {
     }
 
     @Test
-    fun `launchScheduleApp returns Failure without crashing when intentResolver throws exception`() {
+    fun `launchScheduleApp returns Failure without crashing when direct launch throws exception`() {
         val result = ScheduleAppLauncher.launchScheduleApp(
             context = context,
-            intentResolver = { throw RuntimeException("Resolver failed") },
-            intentLauncher = { true }
-        )
-
-        assertTrue(result is ScheduleLaunchResult.Failure)
-        assertEquals(
-            R.string.schedule_app_launch_failed,
-            (result as ScheduleLaunchResult.Failure).errorMessageRes
-        )
-    }
-
-    @Test
-    fun `launchScheduleApp returns Failure without crashing when launch throws exception`() {
-        val result = ScheduleAppLauncher.launchScheduleApp(
-            context = context,
-            intentResolver = { true },
             intentLauncher = { throw RuntimeException("Launch failed") }
         )
 
