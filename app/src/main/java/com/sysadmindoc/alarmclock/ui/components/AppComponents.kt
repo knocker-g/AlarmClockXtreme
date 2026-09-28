@@ -666,6 +666,7 @@ fun AppFilterChip(
     // at all, so a screen reader could not tell a filter chip from a button.
     selectionSemantics: Boolean = true,
     accessibilityLabel: String? = null,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 13.dp, vertical = 8.dp),
 ) {
     val isSelected = selected
     val shapeTokens = LocalAppShapeTokens.current
@@ -700,8 +701,8 @@ fun AppFilterChip(
         Row(
             modifier = Modifier
                 .defaultMinSize(minHeight = 44.dp)
-                .padding(horizontal = 13.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                .padding(contentPadding),
+            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (leadingIcon != null) {

@@ -15,6 +15,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.PaddingValues
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -393,10 +394,8 @@ private fun TimerInputView(state: TimerUiState, viewModel: TimerViewModel, modif
         }
 
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             val context = LocalContext.current
             defaultPresets.forEach { preset ->
@@ -404,6 +403,8 @@ private fun TimerInputView(state: TimerUiState, viewModel: TimerViewModel, modif
                     label = TimeFormatter.formatSeconds(context, preset.seconds.toInt()),
                     selected = false,
                     onClick = { viewModel.selectPreset(preset) },
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 8.dp),
                 )
             }
         }
