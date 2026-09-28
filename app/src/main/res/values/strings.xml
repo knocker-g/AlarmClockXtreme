@@ -2574,5 +2574,8 @@
     <string name="alarmlist_today">Today</string>
     <string name="alarmlist_yesterday">Yesterday</string>
     <string name="alarmlist_cannot_modify_active_alarm">Cannot modify an active or snoozed alarm.</string>
+
+    <!-- Schedule App Integration (ALA-107) -->
+    <string name="schedule_app_launch_failed">Unable to open calendar app.</string>
 </resources>
 

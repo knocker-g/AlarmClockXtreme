@@ -174,6 +174,7 @@ import com.sysadmindoc.alarmclock.worker.GuardianSmsPath
 import com.sysadmindoc.alarmclock.util.AppLanguageManager
 import com.sysadmindoc.alarmclock.util.AppLanguageOption
 import com.sysadmindoc.alarmclock.util.LocalNetworkPermission
+import com.sysadmindoc.alarmclock.util.ScheduleAppLauncher
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalTime

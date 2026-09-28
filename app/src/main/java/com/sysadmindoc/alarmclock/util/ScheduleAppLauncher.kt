@@ -1,0 +1,40 @@
+package com.sysadmindoc.alarmclock.util
+
+import android.content.Context
+import android.content.Intent
+import com.sysadmindoc.alarmclock.R
+
+sealed interface ScheduleLaunchResult {
+    data object Success : ScheduleLaunchResult
+    data class Failure(val errorMessageRes: Int) : ScheduleLaunchResult
+}
+
+object ScheduleAppLauncher {
+
+    /**
+     * Launches the default calendar/schedule app using a generic Calendar semantic intent
+     * (ACTION_MAIN + CATEGORY_APP_CALENDAR) unconstrained by package or activity class name.
+     * Directly invokes startActivity, delegating intent resolution and handler selection completely to Android OS.
+     * Never throws unhandled exceptions.
+     */
+    fun launchScheduleApp(
+        context: Context,
+        intentLauncher: (Intent) -> Boolean = { intent ->
+            runCatching {
+                context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }.isSuccess
+        }
+    ): ScheduleLaunchResult {
+        val calendarIntent = createCalendarIntent()
+        val isLaunched = runCatching { intentLauncher(calendarIntent) }.getOrDefault(false)
+        return if (isLaunched) {
+            ScheduleLaunchResult.Success
+        } else {
+            ScheduleLaunchResult.Failure(R.string.schedule_app_launch_failed)
+        }
+    }
+
+    internal fun createCalendarIntent(): Intent {
+        return Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_CALENDAR)
+    }
+}

@@ -38,7 +38,7 @@ class NewsRepositoryTest {
             moshi = moshi
         )
 
-        val fresh = writer.fetchFeed(feedUrl).getOrThrow()
+        val fresh = writer.fetchFeed(1L, feedUrl).getOrThrow()
 
         assertFalse(fresh.isStale)
         assertEquals("Fresh headline", fresh.items.single().title)
@@ -47,7 +47,7 @@ class NewsRepositoryTest {
             context = context,
             httpClient = failingClient(),
             moshi = moshi
-        ).fetchFeed(feedUrl).getOrThrow()
+        ).fetchFeed(1L, feedUrl).getOrThrow()
 
         assertTrue(offline.isStale)
         assertEquals("Fresh headline", offline.items.single().title)
@@ -60,13 +60,13 @@ class NewsRepositoryTest {
             context = context,
             httpClient = rssClient(sampleRss(title = "Cached headline")),
             moshi = moshi
-        ).fetchFeed(feedUrl).getOrThrow()
+        ).fetchFeed(1L, feedUrl).getOrThrow()
 
         val result = NewsRepository(
             context = context,
             httpClient = failingClient(),
             moshi = moshi
-        ).fetchFeed("https://feeds.example/other.xml")
+        ).fetchFeed(1L, "https://feeds.example/other.xml")
 
         assertTrue(result.isFailure)
     }
