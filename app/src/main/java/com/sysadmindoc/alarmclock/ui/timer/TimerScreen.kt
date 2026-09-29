@@ -405,6 +405,7 @@ private fun TimerInputView(state: TimerUiState, viewModel: TimerViewModel, modif
                     onClick = { viewModel.selectPreset(preset) },
                     modifier = Modifier.weight(1f),
                     contentPadding = PaddingValues(horizontal = 2.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
                 )
             }
         }

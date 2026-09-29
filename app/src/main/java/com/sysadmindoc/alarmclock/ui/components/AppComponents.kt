@@ -667,6 +667,7 @@ fun AppFilterChip(
     selectionSemantics: Boolean = true,
     accessibilityLabel: String? = null,
     contentPadding: PaddingValues = PaddingValues(horizontal = 13.dp, vertical = 8.dp),
+    horizontalArrangement: Arrangement.Horizontal = Arrangement.spacedBy(6.dp),
 ) {
     val isSelected = selected
     val shapeTokens = LocalAppShapeTokens.current
@@ -702,7 +703,7 @@ fun AppFilterChip(
             modifier = Modifier
                 .defaultMinSize(minHeight = 44.dp)
                 .padding(contentPadding),
-            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+            horizontalArrangement = horizontalArrangement,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (leadingIcon != null) {
