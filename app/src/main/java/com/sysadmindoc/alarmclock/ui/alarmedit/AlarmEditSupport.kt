@@ -67,6 +67,7 @@ import com.sysadmindoc.alarmclock.ui.ringtone.RingtonePickerSheet
 import com.sysadmindoc.alarmclock.ui.theme.*
 import com.sysadmindoc.alarmclock.util.LocationHelper
 import com.sysadmindoc.alarmclock.util.PhotoMatcher
+import com.sysadmindoc.alarmclock.util.WeekUtils
 import com.sysadmindoc.alarmclock.worker.GuardianEscalationPolicy
 import com.sysadmindoc.alarmclock.worker.GuardianReadiness
 import com.sysadmindoc.alarmclock.worker.GuardianSmsPath
@@ -184,7 +185,7 @@ internal fun DaySelector(
     selectedDays: Set<DayOfWeek>,
     onToggleDay: (DayOfWeek) -> Unit
 ) {
-    val days = listOf(
+    val dayLabels = mapOf(
         DayOfWeek.MONDAY to stringResource(R.string.alarm_edit_day_monday_short),
         DayOfWeek.TUESDAY to stringResource(R.string.alarm_edit_day_tuesday_short),
         DayOfWeek.WEDNESDAY to stringResource(R.string.alarm_edit_day_wednesday_short),
@@ -193,6 +194,9 @@ internal fun DaySelector(
         DayOfWeek.SATURDAY to stringResource(R.string.alarm_edit_day_saturday_short),
         DayOfWeek.SUNDAY to stringResource(R.string.alarm_edit_day_sunday_short)
     )
+    val days = WeekUtils.getOrderedDaysOfWeek().mapNotNull { day ->
+        dayLabels[day]?.let { label -> day to label }
+    }
 
     Row(
         modifier = Modifier
@@ -759,22 +763,19 @@ internal fun ChallengeChainPickerSheet(
 
 @Composable
 internal fun Set<DayOfWeek>.toAlarmRepeatSummary(): String {
-    val orderedDays = listOf(
+    val orderedDays = WeekUtils.getOrderedDaysOfWeek()
+    val weekdaySet = setOf(
         DayOfWeek.MONDAY,
         DayOfWeek.TUESDAY,
         DayOfWeek.WEDNESDAY,
         DayOfWeek.THURSDAY,
-        DayOfWeek.FRIDAY,
-        DayOfWeek.SATURDAY,
-        DayOfWeek.SUNDAY
+        DayOfWeek.FRIDAY
     )
-
-    val weekdaySet = orderedDays.take(5).toSet()
-    val weekendSet = orderedDays.takeLast(2).toSet()
+    val weekendSet = setOf(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY)
 
     return when {
         isEmpty() -> stringResource(R.string.alarm_edit_repeat_once)
-        size == orderedDays.size -> stringResource(R.string.alarm_edit_repeat_daily)
+        size == 7 -> stringResource(R.string.alarm_edit_repeat_daily)
         this == weekdaySet -> stringResource(R.string.alarm_edit_repeat_weekdays)
         this == weekendSet -> stringResource(R.string.alarm_edit_repeat_weekends)
         else -> orderedDays

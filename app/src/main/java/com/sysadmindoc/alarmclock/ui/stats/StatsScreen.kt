@@ -98,6 +98,7 @@ import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import com.sysadmindoc.alarmclock.util.AlarmTimeFormatter
 import com.sysadmindoc.alarmclock.util.TimeFormatter
+import com.sysadmindoc.alarmclock.util.WeekUtils
 
 @Composable
 fun StatsScreen(
@@ -598,7 +599,7 @@ private fun StatsFilterCard(
 
         FilterChipRow(
             label = stringResource(R.string.stats_day),
-            chips = listOf(null to stringResource(R.string.stats_filters_all_days)) + DayOfWeek.entries.map { it to dayShortLabel(it, resources) },
+            chips = listOf(null to stringResource(R.string.stats_filters_all_days)) + WeekUtils.getOrderedDaysOfWeek().map { it to dayShortLabel(it, resources) },
             selected = selectedDay,
             onSelect = onDayChange
         )
@@ -1378,7 +1379,7 @@ private fun DayOfWeekChart(counts: Map<DayOfWeek, Int>, modifier: Modifier = Mod
     val maxCount = counts.values.maxOrNull()?.coerceAtLeast(1) ?: 1
 
     Row(modifier = modifier, verticalAlignment = Alignment.Bottom) {
-        DayOfWeek.entries.forEach { day ->
+        WeekUtils.getOrderedDaysOfWeek().forEach { day ->
             val count = counts[day] ?: 0
             val heightRatio = if (count == 0) 0.08f else count.toFloat() / maxCount
 
