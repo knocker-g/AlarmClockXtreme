@@ -196,6 +196,43 @@ class AlarmSchedulerExactPermissionTest {
         coVerify { repository.updateNextTrigger(75L, triggerTime) }
     }
 
+    @Test
+    fun `when setAlarmClock throws SecurityException it fails closed without inexact fallback`() =
+        runTest {
+            ShadowAlarmManager.setCanScheduleExactAlarms(true)
+            val triggerTime = System.currentTimeMillis() + 15 * 60_000L
+            every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
+
+            val mockAlarmManager = mockk<AlarmManager>(relaxed = true)
+            every { mockAlarmManager.setAlarmClock(any(), any()) } throws SecurityException("OEM-style SecurityException")
+
+            val customPreferencesManager: PreferencesManager = mockk()
+            every { customPreferencesManager.getCachedSettings() } returns AppSettings(showAlarmClockIcon = true)
+            coEvery { customPreferencesManager.getCurrentSettings() } returns AppSettings(showAlarmClockIcon = true)
+
+            val customHolidayRepository: HolidayRepository = mockk()
+            coEvery { customHolidayRepository.isHoliday(any()) } returns false
+
+            val customWeatherRepository: WeatherRepository = mockk(relaxed = true)
+            every { customWeatherRepository.getCachedWeather() } returns null
+
+            val testScheduler = AlarmScheduler(
+                context = context,
+                repository = repository,
+                calculator = calculator,
+                preferencesManager = customPreferencesManager,
+                holidayRepository = customHolidayRepository,
+                alarmIncidentRepository = incidentRepository,
+                weatherRepository = customWeatherRepository,
+                alarmManager = mockAlarmManager
+            )
+
+            testScheduler.schedule(enabledAlarm(id = 76L), requestWidgetUpdate = false)
+
+            assertTrue(scheduledAlarms().isEmpty())
+            coVerify { repository.updateNextTrigger(76L, 0) }
+        }
+
     private fun scheduledAlarms() =
         shadowOf(context.getSystemService(AlarmManager::class.java)).scheduledAlarms
 
