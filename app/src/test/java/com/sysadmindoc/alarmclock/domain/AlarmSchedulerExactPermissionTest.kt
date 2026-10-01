@@ -3,6 +3,7 @@ package com.sysadmindoc.alarmclock.domain
 import android.app.AlarmManager
 import android.app.Application
 import android.content.Context
+import android.content.ContextWrapper
 import androidx.test.core.app.ApplicationProvider
 import androidx.work.Operation
 import androidx.work.WorkManager
@@ -195,6 +196,67 @@ class AlarmSchedulerExactPermissionTest {
         assertEquals(1, scheduledAlarms().size)
         coVerify { repository.updateNextTrigger(75L, triggerTime) }
     }
+
+    @Test
+    fun `when setAlarmClock throws SecurityException it fails closed without inexact fallback`() =
+        runTest {
+            ShadowAlarmManager.setCanScheduleExactAlarms(true)
+            val triggerTime = System.currentTimeMillis() + 15 * 60_000L
+            every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
+
+            val mockAlarmManager = mockk<AlarmManager>(relaxed = true)
+            every { mockAlarmManager.canScheduleExactAlarms() } returns true
+            every { mockAlarmManager.setAlarmClock(any(), any()) } throws SecurityException("OEM-style SecurityException")
+            every { mockAlarmManager.setExactAndAllowWhileIdle(any(), any(), any()) } throws SecurityException("OEM-style SecurityException")
+
+            val wrappedContext = object : ContextWrapper(context) {
+                override fun getSystemService(name: String): Any? {
+                    if (ALARM_SERVICE == name) {
+                        return mockAlarmManager
+                    }
+                    return super.getSystemService(name)
+                }
+            }
+
+            val customPreferencesManager: PreferencesManager = mockk()
+            every { customPreferencesManager.getCachedSettings() } returns AppSettings(showAlarmClockIcon = true)
+            coEvery { customPreferencesManager.getCurrentSettings() } returns AppSettings(showAlarmClockIcon = true)
+
+            val customHolidayRepository: HolidayRepository = mockk()
+            coEvery { customHolidayRepository.isHoliday(any()) } returns false
+
+            val customWeatherRepository: WeatherRepository = mockk(relaxed = true)
+            every { customWeatherRepository.getCachedWeather() } returns null
+
+            val testScheduler = AlarmScheduler(
+                context = wrappedContext,
+                repository = repository,
+                calculator = calculator,
+                preferencesManager = customPreferencesManager,
+                holidayRepository = customHolidayRepository,
+                alarmIncidentRepository = incidentRepository,
+                weatherRepository = customWeatherRepository
+            )
+
+            testScheduler.schedule(enabledAlarm(id = 76L), requestWidgetUpdate = false)
+
+            assertTrue(scheduledAlarms().isEmpty())
+            coVerify { repository.updateNextTrigger(76L, 0) }
+            verify(timeout = 1000) {
+                incidentRepository.recordAsync(
+                    alarmId = 76L,
+                    fireId = any(),
+                    scheduledAt = any(),
+                    eventAt = any(),
+                    type = AlarmIncidentEvent.TYPE_SCHEDULE,
+                    status = AlarmIncidentEvent.STATUS_FAILED,
+                    reasonCode = any(),
+                    source = "AlarmScheduler",
+                    algorithmVersion = any()
+                )
+            }
+            verify(exactly = 0) { mockAlarmManager.setAndAllowWhileIdle(any(), any(), any()) }
+        }
 
     private fun scheduledAlarms() =
         shadowOf(context.getSystemService(AlarmManager::class.java)).scheduledAlarms
