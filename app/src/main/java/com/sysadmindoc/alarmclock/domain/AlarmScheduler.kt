@@ -5,6 +5,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.util.Log
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
@@ -212,7 +213,14 @@ class AlarmScheduler @Inject constructor(
         }
 
         repository.updateNextTrigger(sanitizedAlarm.id, triggerTime)
-        scheduleAlarmClock(sanitizedAlarm.id, triggerTime)
+        val success = scheduleAlarmClock(sanitizedAlarm.id, triggerTime)
+        if (!success) {
+            cancelScheduledEntries(sanitizedAlarm.id)
+            repository.updateNextTrigger(sanitizedAlarm.id, 0)
+            requestWidgetUpdateIfNeeded(requestWidgetUpdate)
+            syncBedtimeDndRule()
+            return
+        }
         DirectBootAlarmCache.saveIfEarlier(context, sanitizedAlarm, triggerTime)
         scheduleSupportingWork(sanitizedAlarm, triggerTime)
         requestWidgetUpdateIfNeeded(requestWidgetUpdate)
@@ -340,7 +348,14 @@ class AlarmScheduler @Inject constructor(
         }
 
         repository.updateNextTrigger(sanitizedAlarm.id, triggerTime)
-        scheduleAlarmClock(sanitizedAlarm.id, triggerTime)
+        val success = scheduleAlarmClock(sanitizedAlarm.id, triggerTime)
+        if (!success) {
+            cancelScheduledEntries(sanitizedAlarm.id)
+            repository.updateNextTrigger(sanitizedAlarm.id, 0)
+            requestWidgetUpdateIfNeeded(requestWidgetUpdate)
+            syncBedtimeDndRule()
+            return false
+        }
         DirectBootAlarmCache.saveIfEarlier(context, sanitizedAlarm, triggerTime)
         scheduleSupportingWork(sanitizedAlarm, triggerTime)
         requestWidgetUpdateIfNeeded(requestWidgetUpdate)
@@ -539,7 +554,7 @@ class AlarmScheduler @Inject constructor(
         }
     }
 
-    private fun scheduleAlarmClock(alarmId: Long, triggerTime: Long) {
+    private fun scheduleAlarmClock(alarmId: Long, triggerTime: Long): Boolean {
         DirectBootAlarmCache.cancelScheduledFallback(context, alarmId)
         val fireId = AlarmIncidentEvent.fireIdFor(alarmId, triggerTime)
         val showAlarmClockIcon = preferencesManager.getCachedSettings().showAlarmClockIcon
@@ -551,14 +566,6 @@ class AlarmScheduler @Inject constructor(
             reasonCode = if (showAlarmClockIcon) "SET_ALARM_CLOCK" else "SET_EXACT_ALLOW_WHILE_IDLE"
         )
         val pendingIntent = createPendingIntent(alarmId, triggerTime, fireId)
-        // v1.6.3: `canScheduleExactAlarms()` is checked upstream, but the
-        // permission can be revoked between the check and this call (rare but
-        // possible — Settings → "Alarms & reminders" toggle is async). Some
-        // OEMs also throw SecurityException from `setAlarmClock()` even when
-        // the permission appears granted (notably Samsung One UI 6 in
-        // background-restricted state). Fall back to inexact-allow-while-idle
-        // so the alarm still fires within the 1-2 minute Doze window instead
-        // of vanishing silently.
         try {
             if (showAlarmClockIcon) {
                 alarmManager.setAlarmClock(
@@ -579,43 +586,22 @@ class AlarmScheduler @Inject constructor(
                 status = AlarmIncidentEvent.STATUS_SUCCEEDED,
                 reasonCode = if (showAlarmClockIcon) "SET_ALARM_CLOCK" else "SET_EXACT_ALLOW_WHILE_IDLE"
             )
+            return true
         } catch (e: SecurityException) {
-            android.util.Log.w(
+            Log.e(
                 "AlarmScheduler",
-                "Preferred alarm registration denied for alarm $alarmId — falling back to inexact",
+                "Exact alarm registration denied (SecurityException) for alarm $alarmId",
                 e
             )
-            try {
-                alarmManager.setAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    triggerTime,
-                    pendingIntent
-                )
-                recordScheduleIncident(
-                    alarmId = alarmId,
-                    fireId = fireId,
-                    triggerTime = triggerTime,
-                    status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                    reasonCode = "SET_AND_ALLOW_WHILE_IDLE_AFTER_SECURITY_EXCEPTION"
-                )
-            } catch (e2: Exception) {
-                android.util.Log.e(
-                    "AlarmScheduler",
-                    "Inexact fallback also failed for alarm $alarmId",
-                    e2
-                )
-                recordScheduleIncident(
-                    alarmId = alarmId,
-                    fireId = fireId,
-                    triggerTime = triggerTime,
-                    status = AlarmIncidentEvent.STATUS_FAILED,
-                    reasonCode = "SET_AND_ALLOW_WHILE_IDLE_FAILED_${e2.javaClass.simpleName}"
-                )
-            }
+            recordScheduleIncident(
+                alarmId = alarmId,
+                fireId = fireId,
+                triggerTime = triggerTime,
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "SET_ALARM_CLOCK_SECURITY_EXCEPTION_${e.javaClass.simpleName}"
+            )
+            return false
         } catch (e: Exception) {
-            // Defensive: AlarmManager has been seen to throw RuntimeException on
-            // device-admin policy clamps. Log so users with crash-log access can
-            // diagnose; the WidgetUpdater will still show "no scheduled alarm".
             android.util.Log.e(
                 "AlarmScheduler",
                 "Unexpected error scheduling alarm $alarmId",
@@ -628,6 +614,7 @@ class AlarmScheduler @Inject constructor(
                 status = AlarmIncidentEvent.STATUS_FAILED,
                 reasonCode = "SET_ALARM_CLOCK_FAILED_${e.javaClass.simpleName}"
             )
+            return false
         }
     }
 
