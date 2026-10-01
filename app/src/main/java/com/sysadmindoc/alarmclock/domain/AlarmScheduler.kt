@@ -13,11 +13,9 @@ import androidx.work.WorkManager
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.preferences.isPaused
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
-import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.data.repository.HolidayRepository
-import com.sysadmindoc.alarmclock.data.repository.WeatherRepository
 import com.sysadmindoc.alarmclock.directboot.DirectBootAlarmCache
 import com.sysadmindoc.alarmclock.receiver.AlarmReceiver
 import com.sysadmindoc.alarmclock.service.BedtimeZenRuleManager
@@ -46,20 +44,8 @@ class AlarmScheduler @Inject constructor(
     private val alarmIncidentRepository: AlarmIncidentRepository,
     private val weatherRepository: com.sysadmindoc.alarmclock.data.repository.WeatherRepository
 ) {
-    private var alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-
-    constructor(
-        context: Context,
-        repository: AlarmRepository,
-        calculator: NextAlarmCalculator,
-        preferencesManager: PreferencesManager,
-        holidayRepository: HolidayRepository,
-        alarmIncidentRepository: AlarmIncidentRepository,
-        weatherRepository: WeatherRepository,
-        alarmManager: AlarmManager
-    ) : this(context, repository, calculator, preferencesManager, holidayRepository, alarmIncidentRepository, weatherRepository) {
-        this.alarmManager = alarmManager
-    }
+    private val alarmManager: AlarmManager
+        get() = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
     companion object {
         const val EXTRA_ALARM_ID = "alarm_id"
