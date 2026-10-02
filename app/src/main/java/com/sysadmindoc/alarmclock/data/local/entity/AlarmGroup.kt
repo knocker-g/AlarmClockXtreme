@@ -2,11 +2,13 @@ package com.sysadmindoc.alarmclock.data.local.entity
 
 import androidx.room.Entity
 import androidx.room.PrimaryKey
+import com.squareup.moshi.JsonClass
 
 /**
  * Persists group names even when not currently assigned to any alarm,
  * enabling reusability and future management features.
  */
+@JsonClass(generateAdapter = true)
 @Entity(tableName = "alarm_groups")
 data class AlarmGroup(
     @PrimaryKey

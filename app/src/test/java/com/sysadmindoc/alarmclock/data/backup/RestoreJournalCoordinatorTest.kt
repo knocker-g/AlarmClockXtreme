@@ -4,7 +4,10 @@ import android.app.Application
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import com.squareup.moshi.Moshi
 import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
+import com.sysadmindoc.alarmclock.data.local.entity.AlarmGroup
+import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.preferences.AppSettings
 import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
@@ -50,7 +53,8 @@ class RestoreJournalCoordinatorTest {
             context = context,
             database = database,
             preferencesManager = preferencesManager,
-            alarmScheduler = alarmScheduler
+            alarmScheduler = alarmScheduler,
+            moshi = Moshi.Builder().build()
         )
     }
 
@@ -70,10 +74,17 @@ class RestoreJournalCoordinatorTest {
 
     @Test
     fun checkAndRecoverWithPreparedPhasePerformsReconcile() = runTest {
-        coordinator.prepareTransaction(AppSettings(), emptyList(), emptyList())
+        val oldAlarm = Alarm(id = 10L, hour = 7, minute = 30, label = "Old Alarm", isEnabled = true)
+        val oldGroup = AlarmGroup(name = "OldGroup")
+        val oldSettings = AppSettings(defaultSnoozeDuration = 15)
+
+        coordinator.prepareTransaction(oldSettings, listOf(oldAlarm), listOf(oldGroup))
 
         coordinator.checkAndRecover()
 
+        val restoredAlarms = database.alarmDao().getAll()
+        assertTrue("Old alarm must be restored", restoredAlarms.any { it.label == "Old Alarm" })
+        coVerify { preferencesManager.update(any()) }
         coVerify { alarmScheduler.rescheduleAllInBatches(any(), any()) }
         assertFalse("Journal file must be cleaned up after recovery", journalFile.exists())
     }
@@ -92,6 +103,21 @@ class RestoreJournalCoordinatorTest {
     @Test(expected = Exception::class)
     fun checkAndRecoverWithCorruptJournalFailsClosed() = runTest {
         journalFile.writeText("corrupt json payload")
+        coordinator.checkAndRecover()
+    }
+
+    @Test(expected = Exception::class)
+    fun checkAndRecoverWithUnsupportedVersionFailsClosed() = runTest {
+        journalFile.writeText("""{"formatVersion": 99, "phase": "PREPARED", "backupJson": "{}", "groupsJson": "[]", "checksum": "abc"}""")
+        coordinator.checkAndRecover()
+    }
+
+    @Test(expected = Exception::class)
+    fun checkAndRecoverWithChecksumMismatchFailsClosed() = runTest {
+        coordinator.prepareTransaction(AppSettings(), emptyList(), emptyList())
+        // Tamper journal file content
+        val content = journalFile.readText()
+        journalFile.writeText(content.replace("PREPARED", "COMMITTED_TAMPERED"))
         coordinator.checkAndRecover()
     }
 }
