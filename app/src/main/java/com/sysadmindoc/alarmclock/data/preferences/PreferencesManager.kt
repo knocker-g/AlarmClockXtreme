@@ -14,6 +14,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.squareup.moshi.JsonClass
 import com.sysadmindoc.alarmclock.domain.ChronotypeEstimator
 import com.sysadmindoc.alarmclock.domain.GroupTabPosition
 import com.sysadmindoc.alarmclock.domain.JetLagDirection
@@ -33,6 +34,7 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 
 const val DEFAULT_NEWS_FEED_URL = "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en"
 
+@JsonClass(generateAdapter = true)
 data class AppSettings(
     val is24HourFormat: Boolean = false,
     val defaultSnoozeDuration: Int = 10,
