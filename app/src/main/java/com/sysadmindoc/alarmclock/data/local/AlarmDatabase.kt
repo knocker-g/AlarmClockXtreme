@@ -25,7 +25,7 @@ import com.sysadmindoc.alarmclock.data.model.Alarm
         AlarmGroup::class,
         NewsSource::class
     ],
-    version = 27,
+    version = AlarmDatabase.VERSION,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -40,6 +40,8 @@ abstract class AlarmDatabase : RoomDatabase() {
     abstract fun newsSourceDao(): NewsSourceDao
 
     companion object {
+        const val VERSION = 27
+
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE alarms ADD COLUMN challengeType TEXT NOT NULL DEFAULT 'NONE'")

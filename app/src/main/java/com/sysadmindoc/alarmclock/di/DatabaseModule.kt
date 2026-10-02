@@ -10,7 +10,6 @@ import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 import com.sysadmindoc.alarmclock.data.local.AlarmEventDao
 import com.sysadmindoc.alarmclock.data.local.AlarmGroupDao
 import com.sysadmindoc.alarmclock.data.local.AlarmIncidentEventDao
-import com.sysadmindoc.alarmclock.data.local.DatabaseDowngradeNotice
 import com.sysadmindoc.alarmclock.data.local.NewsSourceDao
 import com.sysadmindoc.alarmclock.data.local.PreSleepTagDao
 import com.sysadmindoc.alarmclock.data.local.SnoreEventDao
@@ -34,24 +33,12 @@ object DatabaseModule {
             "alarm_clock.db"
         )
             .addMigrations(*AlarmDatabase.ALL_MIGRATIONS)
-            // The manifest allows restoring a backup from any version, so a
-            // database stamped by a newer build can land on an older one. Room
-            // throws on open in that case and every DB-backed screen crashes;
-            // starting empty is recoverable, a crash loop is not. Losing the
-            // alarms quietly would be its own failure, so say so.
-            .fallbackToDestructiveMigrationOnDowngrade()
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onCreate(db: SupportSQLiteDatabase) {
-                    // v1.15.42: Seed standard groups on fresh install. Migrating
-                    // users are handled by MIGRATION_24_25 in AlarmDatabase.
                     db.execSQL(
                         "INSERT OR IGNORE INTO alarm_groups (name) " +
                             "VALUES ('Work'), ('School'), ('Gym'), ('Medication'), ('Personal'), ('Calendar')"
                     )
-                }
-
-                override fun onDestructiveMigration(db: SupportSQLiteDatabase) {
-                    DatabaseDowngradeNotice.post(context)
                 }
             })
             .build()

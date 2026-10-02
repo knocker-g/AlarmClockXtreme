@@ -8,13 +8,30 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import com.sysadmindoc.alarmclock.data.local.DatabaseCompatibilityGate
+import com.sysadmindoc.alarmclock.data.local.DatabaseCompatibilityStatus
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.preferences.AppSettings
 import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
@@ -49,6 +66,21 @@ class MainActivity : ComponentActivity() {
     private var pendingSharedAlarmDraft by mutableStateOf<Alarm?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val isIncompatible = (application as? AlarmClockApp)?.databaseIncompatible == true ||
+            DatabaseCompatibilityGate.preflight(this) ==
+            DatabaseCompatibilityStatus.INCOMPATIBLE_NEWER_SCHEMA
+
+        if (isIncompatible) {
+            super.onCreate(savedInstanceState)
+            enableEdgeToEdge()
+            setContent {
+                AlarmClockXtremeTheme {
+                    DatabaseIncompatibilityScreen()
+                }
+            }
+            return
+        }
+
         installSplashScreen().setKeepOnScreenCondition {
             alarmListViewModel.uiState.value.isInitialLoading
         }
@@ -112,6 +144,14 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onResume() {
+        val isIncompatible = (application as? AlarmClockApp)?.databaseIncompatible == true ||
+            DatabaseCompatibilityGate.preflight(this) ==
+            DatabaseCompatibilityStatus.INCOMPATIBLE_NEWER_SCHEMA
+        if (isIncompatible) {
+            super.onResume()
+            return
+        }
+
         super.onResume()
 
         // 1. Prioritize memory state (fastest)
@@ -250,5 +290,37 @@ class MainActivity : ComponentActivity() {
             "Fixed a small background resource leak in the Quick Settings skip-alarm tile.",
             "No new permissions."
         )
+    }
+}
+
+@Composable
+fun DatabaseIncompatibilityScreen() {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "App Version Incompatible",
+                style = MaterialTheme.colorScheme.error.let {
+                    MaterialTheme.typography.headlineMedium.copy(color = it)
+                },
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "The installed database was created by a newer version of Alarm Clock Xtreme. Your alarms and data have been safely preserved. Please update the app to continue.",
+                style = MaterialTheme.typography.bodyLarge,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+        }
     }
 }
