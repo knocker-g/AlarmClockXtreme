@@ -22,7 +22,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @JsonClass(generateAdapter = true)
-data class RestoreSnapshot(
+internal data class RestoreSnapshot(
     val settings: AppSettings,
     val alarms: List<Alarm>,
     val groups: List<AlarmGroup>
@@ -67,23 +67,45 @@ class RestoreJournalCoordinator @Inject constructor(
     }
 
     suspend fun markCommitted() {
-        val jsonStr = readJournalString() ?: return
-        val json = JSONObject(jsonStr)
-        val formatVersion = json.optInt("formatVersion", 1)
-        val snapshotJson = json.getString("snapshotJson")
+        val jsonStr = readJournalString() ?: throw IllegalStateException("No journal found for markCommitted")
+        val json = runCatching { JSONObject(jsonStr) }.getOrElse {
+            throw SecurityException("Malformed journal JSON in markCommitted. Fails closed.", it)
+        }
+
+        val formatVersion = json.optInt("formatVersion", -1)
+        if (formatVersion != 1) {
+            throw SecurityException("Unsupported or missing formatVersion in markCommitted: $formatVersion. Fails closed.")
+        }
+
+        val phase = json.optString("phase", "")
+        if (phase != PHASE_PREPARED) {
+            throw SecurityException("markCommitted called from invalid phase: $phase. Must be PREPARED. Fails closed.")
+        }
+
+        val snapshotJson = json.optString("snapshotJson", "")
+        if (snapshotJson.isBlank()) {
+            throw SecurityException("Missing snapshotJson in markCommitted. Fails closed.")
+        }
+
+        val existingChecksum = json.optString("checksum", "")
+        val expectedPreparedChecksum = sha256("$formatVersion:$PHASE_PREPARED:$snapshotJson")
+        if (expectedPreparedChecksum != existingChecksum) {
+            throw SecurityException("PREPARED checksum validation failed in markCommitted. Tampered journal retained.")
+        }
+
         val newPhase = PHASE_COMMITTED
         val payloadToHash = "$formatVersion:$newPhase:$snapshotJson"
-        val checksum = sha256(payloadToHash)
+        val newChecksum = sha256(payloadToHash)
 
-        json.put("phase", newPhase)
-        json.put("checksum", checksum)
-        writeJournalAtomic(json.toString())
-    }
-
-    suspend fun cleanup() {
-        if (journalFile.exists()) {
-            atomicFile.delete()
+        val updatedJson = JSONObject().apply {
+            put("formatVersion", formatVersion)
+            put("transactionId", json.optString("transactionId", UUID.randomUUID().toString()))
+            put("phase", newPhase)
+            put("createdAt", json.optLong("createdAt", System.currentTimeMillis()))
+            put("snapshotJson", snapshotJson)
+            put("checksum", newChecksum)
         }
+        writeJournalAtomic(updatedJson.toString())
     }
 
     suspend fun checkAndRecover() {
@@ -94,7 +116,7 @@ class RestoreJournalCoordinator @Inject constructor(
         }
 
         if (jsonStr == null) {
-            atomicFile.delete()
+            journalFile.delete()
             return
         }
 
@@ -140,14 +162,14 @@ class RestoreJournalCoordinator @Inject constructor(
                 alarmScheduler.rescheduleAllInBatches()
 
                 // Cleanup journal after successful old-truth reconcile attempt
-                atomicFile.delete()
+                journalFile.delete()
             }
             PHASE_COMMITTED -> {
                 // Reconcile new truth
                 alarmScheduler.rescheduleAllInBatches()
 
                 // Cleanup journal after reconcile attempt
-                atomicFile.delete()
+                journalFile.delete()
             }
         }
     }

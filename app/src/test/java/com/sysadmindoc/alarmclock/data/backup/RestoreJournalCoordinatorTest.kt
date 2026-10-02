@@ -146,6 +146,36 @@ class RestoreJournalCoordinatorTest {
     }
 
     @Test
+    fun markCommittedWithTamperedPreparedFailsClosed() = runTest {
+        coordinator.prepareTransaction(AppSettings(), emptyList(), emptyList())
+        val content = journalFile.readText()
+        // Tamper payload inside journal without updating checksum
+        journalFile.writeText(content.replace("snapshotJson", "tamperedKey"))
+
+        val result = runCatching { coordinator.markCommitted() }
+        assertTrue("markCommitted must reject tampered PREPARED journal", result.isFailure)
+        assertTrue("Journal must be retained", journalFile.exists())
+    }
+
+    @Test
+    fun markCommittedWithNonPreparedPhaseFails() = runTest {
+        coordinator.prepareTransaction(AppSettings(), emptyList(), emptyList())
+        coordinator.markCommitted() // Now it is COMMITTED
+
+        val result = runCatching { coordinator.markCommitted() } // Try committing again from COMMITTED phase
+        assertTrue("markCommitted must reject non-PREPARED phase", result.isFailure)
+    }
+
+    @Test
+    fun validPreparedToCommittedSucceeds() = runTest {
+        coordinator.prepareTransaction(AppSettings(), emptyList(), emptyList())
+        coordinator.markCommitted()
+
+        coordinator.checkAndRecover()
+        assertFalse("Journal must be cleaned up after committed recovery", journalFile.exists())
+    }
+
+    @Test
     fun preparedReconcileFailureRetainsJournalAndSucceedsOnRetry() = runTest {
         coEvery { alarmScheduler.rescheduleAllInBatches(any(), any()) } throws RuntimeException("Transient error")
 
