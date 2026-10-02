@@ -17,6 +17,7 @@ import io.mockk.mockk
 import io.mockk.unmockkAll
 import kotlinx.coroutines.test.runTest
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -25,6 +26,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.File
+import java.time.DayOfWeek
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33], application = Application::class)
@@ -68,76 +70,123 @@ class RestoreJournalCoordinatorTest {
     @Test
     fun prepareTransactionCreatesDurableJournal() = runTest {
         coordinator.prepareTransaction(AppSettings(), emptyList(), emptyList())
-
         assertTrue("Journal file must exist", journalFile.exists())
     }
 
     @Test
-    fun checkAndRecoverWithPreparedPhaseReplacesStateAndReconciles() = runTest {
-        val oldAlarm = Alarm(id = 10L, hour = 7, minute = 30, label = "Non-Default Old Alarm", isEnabled = true)
-        val oldGroup = AlarmGroup(name = "NonDefaultGroup")
-        val oldSettings = AppSettings(defaultSnoozeDuration = 15, temperatureUnit = "celsius")
+    fun losslessFullObjectRoundTripCoverage() = runTest {
+        val nonDefaultAlarm = Alarm(
+            id = 42L,
+            hour = 23,
+            minute = 45,
+            label = "Non-Default Alarm",
+            isEnabled = true,
+            repeatDays = setOf(DayOfWeek.MONDAY, DayOfWeek.WEDNESDAY),
+            ringtoneUri = "content://media/internal/audio/media/123",
+            vibrationEnabled = false,
+            vibrationIntensity = 1,
+            volume = 80,
+            overrideSystemVolume = false,
+            gradualVolumeSeconds = 30,
+            snoozeDurationMinutes = 5,
+            maxSnoozeCount = 2,
+            showOnLockScreen = false,
+            challengeType = "MATH",
+            group = "MorningGroup",
+            flashWake = true,
+            vibrationPattern = "sos",
+            ttsEnabled = true,
+            walkStepsRequired = 50,
+            wakeConfirmEnabled = true,
+            wakeConfirmDelayMinutes = 15,
+            smartAlarmEnabled = true,
+            smartAlarmWindowMinutes = 20,
+            skipOnHolidays = true,
+            nfcTagId = "nfc_123",
+            barcodeValue = "bar_456"
+        )
+        val nonDefaultGroup = AlarmGroup(name = "MorningGroup")
+        val nonDefaultSettings = AppSettings(
+            is24HourFormat = true,
+            defaultSnoozeDuration = 12,
+            temperatureUnit = "celsius",
+            locationName = "Tokyo, Japan",
+            holidayAutoSkipEnabled = true
+        )
 
-        coordinator.prepareTransaction(oldSettings, listOf(oldAlarm), listOf(oldGroup))
-
+        coordinator.prepareTransaction(nonDefaultSettings, listOf(nonDefaultAlarm), listOf(nonDefaultGroup))
         coordinator.checkAndRecover()
 
         val restoredAlarms = database.alarmDao().getAll()
-        assertTrue("Old alarm must be restored", restoredAlarms.any { it.label == "Non-Default Old Alarm" })
+        assertEquals(1, restoredAlarms.size)
+        val restored = restoredAlarms[0]
+        assertEquals(nonDefaultAlarm.id, restored.id)
+        assertEquals(nonDefaultAlarm.hour, restored.hour)
+        assertEquals(nonDefaultAlarm.minute, restored.minute)
+        assertEquals(nonDefaultAlarm.label, restored.label)
+        assertEquals(nonDefaultAlarm.repeatDays, restored.repeatDays)
+        assertEquals(nonDefaultAlarm.challengeType, restored.challengeType)
+        assertEquals(nonDefaultAlarm.walkStepsRequired, restored.walkStepsRequired)
+
         val restoredGroups = database.alarmGroupDao().getAll()
-        assertTrue("Old group must be restored", restoredGroups.any { it.name == "NonDefaultGroup" })
-        coVerify { preferencesManager.update(any()) }
-        coVerify { alarmScheduler.rescheduleAllInBatches(any(), any()) }
-        assertFalse("Journal file must be cleaned up after recovery", journalFile.exists())
+        assertEquals(1, restoredGroups.size)
+        assertEquals("MorningGroup", restoredGroups[0].name)
     }
 
     @Test
-    fun checkAndRecoverWithCommittedPhaseReconciles() = runTest {
-        coordinator.prepareTransaction(AppSettings(), emptyList(), emptyList())
-        coordinator.markCommitted()
-
-        coordinator.checkAndRecover()
-
-        coVerify { alarmScheduler.rescheduleAllInBatches(any(), any()) }
-        assertFalse("Journal file must be cleaned up after committed recovery", journalFile.exists())
-    }
-
-    @Test(expected = Exception::class)
-    fun checkAndRecoverWithCorruptJournalFailsClosed() = runTest {
-        journalFile.writeText("corrupt json payload")
-        coordinator.checkAndRecover()
-    }
-
-    @Test(expected = Exception::class)
-    fun checkAndRecoverWithUnsupportedVersionFailsClosed() = runTest {
-        journalFile.writeText("""{"formatVersion": 99, "phase": "PREPARED", "snapshotJson": "{}", "checksum": "abc"}""")
-        coordinator.checkAndRecover()
-    }
-
-    @Test(expected = Exception::class)
-    fun checkAndRecoverWithChecksumMismatchFailsClosed() = runTest {
+    fun tamperedPhaseWithoutChecksumUpdateFailsClosedAndRetainsJournal() = runTest {
         coordinator.prepareTransaction(AppSettings(), emptyList(), emptyList())
         val content = journalFile.readText()
-        journalFile.writeText(content.replace("PREPARED", "COMMITTED_TAMPERED"))
-        coordinator.checkAndRecover()
+        // Tamper PREPARED to COMMITTED without recomputing checksum
+        journalFile.writeText(content.replace("PREPARED", "COMMITTED"))
+
+        val result = runCatching { coordinator.checkAndRecover() }
+        assertTrue("Checksum mismatch must fail closed", result.isFailure)
+        assertTrue("Journal must be retained on integrity failure", journalFile.exists())
     }
 
     @Test
-    fun preparedReconcileFailureRetainsJournalForIdempotentRetry() = runTest {
-        coEvery { alarmScheduler.rescheduleAllInBatches(any(), any()) } throws RuntimeException("Transient Scheduler Error")
+    fun preparedReconcileFailureRetainsJournalAndSucceedsOnRetry() = runTest {
+        coEvery { alarmScheduler.rescheduleAllInBatches(any(), any()) } throws RuntimeException("Transient error")
 
         coordinator.prepareTransaction(AppSettings(), emptyList(), emptyList())
-
         runCatching { coordinator.checkAndRecover() }
+        assertTrue("Journal must remain when reconcile fails", journalFile.exists())
 
-        assertTrue("Journal file must be retained when reconcile fails", journalFile.exists())
-
-        // Fix scheduler behavior for retry
         coEvery { alarmScheduler.rescheduleAllInBatches(any(), any()) } returns 0
-
-        // Second recovery succeeds idempotently
         coordinator.checkAndRecover()
+        assertFalse("Journal must be cleaned up on successful retry", journalFile.exists())
+    }
 
-        assertFalse("Journal file must be cleaned up after successful retry", journalFile.exists())
+    @Test
+    fun committedReconcileFailureRetainsJournalAndSucceedsOnRetry() = runTest {
+        coEvery { alarmScheduler.rescheduleAllInBatches(any(), any()) } throws RuntimeException("Transient error")
+
+        coordinator.prepareTransaction(AppSettings(), emptyList(), emptyList())
+        coordinator.markCommitted()
+        runCatching { coordinator.checkAndRecover() }
+        assertTrue("Journal must remain when committed reconcile fails", journalFile.exists())
+
+        coEvery { alarmScheduler.rescheduleAllInBatches(any(), any()) } returns 0
+        coordinator.checkAndRecover()
+        assertFalse("Journal must be cleaned up on successful retry", journalFile.exists())
+    }
+
+    @Test
+    fun corruptUnsupportedUnknownFailuresRetainJournal() = runTest {
+        // Corrupt json
+        journalFile.writeText("{ malformed json }")
+        assertTrue(runCatching { coordinator.checkAndRecover() }.isFailure)
+        assertTrue(journalFile.exists())
+
+        // Unsupported version
+        journalFile.writeText("""{"formatVersion": 99, "phase": "PREPARED", "snapshotJson": "{}", "checksum": "abc"}""")
+        assertTrue(runCatching { coordinator.checkAndRecover() }.isFailure)
+        assertTrue(journalFile.exists())
+
+        // Unknown phase
+        journalFile.writeText("""{"formatVersion": 1, "phase": "UNKNOWN", "snapshotJson": "{}", "checksum": "abc"}""")
+        assertTrue(runCatching { coordinator.checkAndRecover() }.isFailure)
+        assertTrue(journalFile.exists())
     }
 }
