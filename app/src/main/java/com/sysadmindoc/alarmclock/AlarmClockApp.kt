@@ -6,12 +6,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.UserManager
+import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator
 import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import com.sysadmindoc.alarmclock.receiver.MissedAlarmUnlockReceiver
 import com.sysadmindoc.alarmclock.service.AlarmService
@@ -72,6 +74,7 @@ class AlarmClockApp : Application(), Configuration.Provider {
         fun alarmIncidentRepository(): com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository
         fun webhookService(): com.sysadmindoc.alarmclock.service.WebhookService
         fun preferencesManager(): PreferencesManager
+        fun restoreJournalCoordinator(): RestoreJournalCoordinator
     }
 
     override fun onCreate() {
@@ -88,6 +91,17 @@ class AlarmClockApp : Application(), Configuration.Provider {
     private fun initializeUnlockedApp() {
         if (unlockedStartupComplete) return
         unlockedStartupComplete = true
+
+        val entryPoint = EntryPointAccessors.fromApplication(this, AppEntryPoint::class.java)
+        try {
+            runBlocking(Dispatchers.IO) {
+                entryPoint.restoreJournalCoordinator().checkAndRecover()
+            }
+        } catch (e: Exception) {
+            Log.e("AlarmClockApp", "Critical restore journal recovery failure. Aborting startup for safety.", e)
+            throw RuntimeException("Critical restore journal recovery failure", e)
+        }
+
         ReliabilityDoctor.recordCurrentBuildFingerprint(this)
         unlockReceiver?.let { receiver ->
             runCatching { unregisterReceiver(receiver) }
@@ -130,7 +144,6 @@ class AlarmClockApp : Application(), Configuration.Provider {
         }
 
         // Start persistent next-alarm notification observer
-        val entryPoint = EntryPointAccessors.fromApplication(this, AppEntryPoint::class.java)
         entryPoint.nextAlarmNotifier().also { notifier ->
             startedNextAlarmNotifier = notifier
             notifier.startObserving()

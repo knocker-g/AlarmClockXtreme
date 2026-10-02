@@ -20,4 +20,7 @@ interface AlarmGroupDao {
 
     @Delete
     suspend fun delete(group: AlarmGroup)
+
+    @Query("DELETE FROM alarm_groups")
+    suspend fun deleteAll()
 }
