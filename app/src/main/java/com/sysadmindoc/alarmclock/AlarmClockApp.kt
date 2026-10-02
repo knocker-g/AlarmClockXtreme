@@ -101,7 +101,6 @@ class AlarmClockApp : Application(), Configuration.Provider {
             Log.e("AlarmClockApp", "Critical restore journal recovery failure. Aborting startup for safety.", e)
             throw RuntimeException("Critical restore journal recovery failure", e)
         }
-
         ReliabilityDoctor.recordCurrentBuildFingerprint(this)
         unlockReceiver?.let { receiver ->
             runCatching { unregisterReceiver(receiver) }
