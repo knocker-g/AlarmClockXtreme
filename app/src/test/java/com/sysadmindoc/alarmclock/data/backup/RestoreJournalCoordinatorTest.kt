@@ -73,17 +73,19 @@ class RestoreJournalCoordinatorTest {
     }
 
     @Test
-    fun checkAndRecoverWithPreparedPhasePerformsReconcile() = runTest {
-        val oldAlarm = Alarm(id = 10L, hour = 7, minute = 30, label = "Old Alarm", isEnabled = true)
-        val oldGroup = AlarmGroup(name = "OldGroup")
-        val oldSettings = AppSettings(defaultSnoozeDuration = 15)
+    fun checkAndRecoverWithPreparedPhaseReplacesStateAndReconciles() = runTest {
+        val oldAlarm = Alarm(id = 10L, hour = 7, minute = 30, label = "Non-Default Old Alarm", isEnabled = true)
+        val oldGroup = AlarmGroup(name = "NonDefaultGroup")
+        val oldSettings = AppSettings(defaultSnoozeDuration = 15, temperatureUnit = "celsius")
 
         coordinator.prepareTransaction(oldSettings, listOf(oldAlarm), listOf(oldGroup))
 
         coordinator.checkAndRecover()
 
         val restoredAlarms = database.alarmDao().getAll()
-        assertTrue("Old alarm must be restored", restoredAlarms.any { it.label == "Old Alarm" })
+        assertTrue("Old alarm must be restored", restoredAlarms.any { it.label == "Non-Default Old Alarm" })
+        val restoredGroups = database.alarmGroupDao().getAll()
+        assertTrue("Old group must be restored", restoredGroups.any { it.name == "NonDefaultGroup" })
         coVerify { preferencesManager.update(any()) }
         coVerify { alarmScheduler.rescheduleAllInBatches(any(), any()) }
         assertFalse("Journal file must be cleaned up after recovery", journalFile.exists())
@@ -108,16 +110,34 @@ class RestoreJournalCoordinatorTest {
 
     @Test(expected = Exception::class)
     fun checkAndRecoverWithUnsupportedVersionFailsClosed() = runTest {
-        journalFile.writeText("""{"formatVersion": 99, "phase": "PREPARED", "backupJson": "{}", "groupsJson": "[]", "checksum": "abc"}""")
+        journalFile.writeText("""{"formatVersion": 99, "phase": "PREPARED", "snapshotJson": "{}", "checksum": "abc"}""")
         coordinator.checkAndRecover()
     }
 
     @Test(expected = Exception::class)
     fun checkAndRecoverWithChecksumMismatchFailsClosed() = runTest {
         coordinator.prepareTransaction(AppSettings(), emptyList(), emptyList())
-        // Tamper journal file content
         val content = journalFile.readText()
         journalFile.writeText(content.replace("PREPARED", "COMMITTED_TAMPERED"))
         coordinator.checkAndRecover()
+    }
+
+    @Test
+    fun preparedReconcileFailureRetainsJournalForIdempotentRetry() = runTest {
+        coEvery { alarmScheduler.rescheduleAllInBatches(any(), any()) } throws RuntimeException("Transient Scheduler Error")
+
+        coordinator.prepareTransaction(AppSettings(), emptyList(), emptyList())
+
+        runCatching { coordinator.checkAndRecover() }
+
+        assertTrue("Journal file must be retained when reconcile fails", journalFile.exists())
+
+        // Fix scheduler behavior for retry
+        coEvery { alarmScheduler.rescheduleAllInBatches(any(), any()) } returns 0
+
+        // Second recovery succeeds idempotently
+        coordinator.checkAndRecover()
+
+        assertFalse("Journal file must be cleaned up after successful retry", journalFile.exists())
     }
 }

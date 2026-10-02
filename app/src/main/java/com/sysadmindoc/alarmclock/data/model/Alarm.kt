@@ -4,6 +4,7 @@ import androidx.annotation.StringRes
 import com.sysadmindoc.alarmclock.R
 import androidx.room.Entity
 import androidx.room.PrimaryKey
+import com.squareup.moshi.JsonClass
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalTime
@@ -15,6 +16,7 @@ import java.util.Locale
  * Core alarm entity stored in Room database.
  * Maps directly to the alarm list UI and scheduling engine.
  */
+@JsonClass(generateAdapter = true)
 @Entity(tableName = "alarms")
 data class Alarm(
     @PrimaryKey(autoGenerate = true)
