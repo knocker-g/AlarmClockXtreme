@@ -162,14 +162,14 @@ class RestoreJournalCoordinator @Inject constructor(
                 alarmScheduler.rescheduleAllInBatches()
 
                 // Cleanup journal after successful old-truth reconcile attempt
-                journalFile.delete()
+                atomicFile.delete()
             }
             PHASE_COMMITTED -> {
                 // Reconcile new truth
                 alarmScheduler.rescheduleAllInBatches()
 
                 // Cleanup journal after reconcile attempt
-                journalFile.delete()
+                atomicFile.delete()
             }
         }
     }
