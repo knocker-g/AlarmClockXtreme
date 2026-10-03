@@ -46,6 +46,7 @@ import com.sysadmindoc.alarmclock.ui.components.WhatsNewDialog
 import com.sysadmindoc.alarmclock.ui.navigation.AppNavigation
 import com.sysadmindoc.alarmclock.ui.theme.AlarmClockXtremeTheme
 import com.sysadmindoc.alarmclock.util.WhatsNewTracker
+import dagger.Lazy
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -54,10 +55,12 @@ import javax.inject.Inject
 class MainActivity : ComponentActivity() {
 
     @Inject
-    lateinit var preferencesManager: PreferencesManager
+    lateinit var preferencesManagerLazy: Lazy<PreferencesManager>
+    private val preferencesManager get() = preferencesManagerLazy.get()
 
     @Inject
-    lateinit var repository: AlarmRepository
+    lateinit var repositoryLazy: Lazy<AlarmRepository>
+    private val repository get() = repositoryLazy.get()
 
     private val alarmListViewModel: AlarmListViewModel by viewModels()
 

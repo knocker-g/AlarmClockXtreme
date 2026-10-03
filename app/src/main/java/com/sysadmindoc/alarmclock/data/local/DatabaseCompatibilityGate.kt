@@ -26,8 +26,8 @@ object DatabaseCompatibilityGate {
             } else {
                 DatabaseCompatibilityStatus.COMPATIBLE
             }
-        } catch (_: Exception) {
-            DatabaseCompatibilityStatus.COMPATIBLE
+        } catch (e: Exception) {
+            throw IllegalStateException("Failed to inspect database version for compatibility preflight", e)
         } finally {
             try {
                 db?.close()
