@@ -2577,5 +2577,9 @@
 
     <!-- Schedule App Integration (ALA-107) -->
     <string name="schedule_app_launch_failed">Unable to open calendar app.</string>
+
+    <!-- Database Incompatibility (KNO-92) -->
+    <string name="db_incompatible_title">App Version Incompatible</string>
+    <string name="db_incompatible_text">The installed database was created by a newer version of Alarm Clock Xtreme. Your alarms and data have been safely preserved. Please update the app to continue.</string>
 </resources>
 

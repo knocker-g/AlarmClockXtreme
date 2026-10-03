@@ -14,6 +14,8 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator
+import com.sysadmindoc.alarmclock.data.local.DatabaseCompatibilityGate
+import com.sysadmindoc.alarmclock.data.local.DatabaseCompatibilityStatus
 import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import com.sysadmindoc.alarmclock.receiver.MissedAlarmUnlockReceiver
 import com.sysadmindoc.alarmclock.service.AlarmService
@@ -88,8 +90,19 @@ class AlarmClockApp : Application(), Configuration.Provider {
         initializeUnlockedApp()
     }
 
+    var databaseIncompatible = false
+        private set
+
     private fun initializeUnlockedApp() {
         if (unlockedStartupComplete) return
+
+        val compatibilityStatus = DatabaseCompatibilityGate.preflight(this)
+        if (compatibilityStatus == DatabaseCompatibilityStatus.INCOMPATIBLE_NEWER_SCHEMA) {
+            databaseIncompatible = true
+            unlockedStartupComplete = true
+            return
+        }
+
         unlockedStartupComplete = true
 
         val entryPoint = EntryPointAccessors.fromApplication(this, AppEntryPoint::class.java)

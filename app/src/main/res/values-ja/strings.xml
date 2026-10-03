@@ -2488,4 +2488,8 @@
 
     <!-- Schedule App Integration (ALA-107) -->
     <string name="schedule_app_launch_failed">カレンダーアプリを開けませんでした</string>
+
+    <!-- Database Incompatibility (KNO-92) -->
+    <string name="db_incompatible_title">アプリバージョン不適合</string>
+    <string name="db_incompatible_text">インストールされているデータベースは新しいバージョンの Alarm Clock Xtreme で作成されました。アラームとデータは安全に保存されています。アプリを更新して継続してください。</string>
 </resources>
