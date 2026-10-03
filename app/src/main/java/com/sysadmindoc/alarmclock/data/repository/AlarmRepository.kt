@@ -81,4 +81,31 @@ class AlarmRepository @Inject constructor(
 
     suspend fun updateSortOrders(idsInOrder: List<Long>) =
         dao.updateSortOrders(idsInOrder)
+
+    suspend fun restoreAlarmsTransaction(
+        alarms: List<Alarm>,
+        isReplace: Boolean
+    ): List<Long> {
+        return database.withTransaction {
+            if (isReplace) {
+                dao.deleteAll()
+            }
+            val prepared = alarms.map { alarm ->
+                val sanitized = alarm.sanitized()
+                if (sanitized.group.isNotBlank()) {
+                    groupDao.insert(AlarmGroup(sanitized.group))
+                }
+                if (isReplace) {
+                    sanitized
+                } else {
+                    sanitized.copy(id = 0L)
+                }
+            }
+            if (prepared.isNotEmpty()) {
+                dao.insertAll(prepared)
+            } else {
+                emptyList()
+            }
+        }
+    }
 }
