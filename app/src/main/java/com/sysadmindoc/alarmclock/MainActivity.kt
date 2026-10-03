@@ -24,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -310,7 +311,7 @@ fun DatabaseIncompatibilityScreen() {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "App Version Incompatible",
+                text = stringResource(R.string.db_incompatible_title),
                 style = MaterialTheme.colorScheme.error.let {
                     MaterialTheme.typography.headlineMedium.copy(color = it)
                 },
@@ -319,7 +320,7 @@ fun DatabaseIncompatibilityScreen() {
             )
             Spacer(modifier = Modifier.height(16.dp))
             Text(
-                text = "The installed database was created by a newer version of Alarm Clock Xtreme. Your alarms and data have been safely preserved. Please update the app to continue.",
+                text = stringResource(R.string.db_incompatible_text),
                 style = MaterialTheme.typography.bodyLarge,
                 textAlign = TextAlign.Center,
                 color = MaterialTheme.colorScheme.onBackground

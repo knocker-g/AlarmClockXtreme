@@ -4,9 +4,14 @@ import android.app.Application
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import androidx.room.Room
+import androidx.sqlite.db.SimpleSQLiteQuery
+import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.sqlite.db.SupportSQLiteOpenHelper
+import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -119,6 +124,56 @@ class DatabaseCompatibilityGateTest {
         assertEquals("sentinel_data", cursor.getString(0))
         cursor.close()
         readDb.close()
+        roomDb.close()
+    }
+
+    @Test
+    fun compatibleDatabaseOpensNormallyWithRoom() {
+        val roomDb = Room.databaseBuilder(context, AlarmDatabase::class.java, "alarm_clock.db")
+            .addMigrations(*AlarmDatabase.ALL_MIGRATIONS)
+            .allowMainThreadQueries()
+            .build()
+
+        val db = roomDb.openHelper.writableDatabase
+        assertNotNull(db)
+        assertTrue(db.isOpen)
+        assertEquals(AlarmDatabase.VERSION, db.version)
+        roomDb.close()
+    }
+
+    @Test
+    fun explicitUpgradeMigrationSucceeds() {
+        dbFile.parentFile?.mkdirs()
+        val initDb = SQLiteDatabase.openOrCreateDatabase(dbFile, null)
+        initDb.version = 21
+        initDb.execSQL("CREATE TABLE alarms (id INTEGER PRIMARY KEY NOT NULL)")
+        initDb.close()
+
+        val frameworkDb = FrameworkSQLiteOpenHelperFactory()
+            .create(
+                SupportSQLiteOpenHelper.Configuration.builder(context)
+                    .name("alarm_clock.db")
+                    .callback(object : SupportSQLiteOpenHelper.Callback(22) {
+                        override fun onCreate(db: SupportSQLiteDatabase) {}
+                        override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {
+                            AlarmDatabase.MIGRATION_21_22.migrate(db)
+                        }
+                    })
+                    .build()
+            ).writableDatabase
+
+        assertNotNull(frameworkDb)
+        val cursor = frameworkDb.query(SimpleSQLiteQuery("PRAGMA table_info(alarms)"))
+        var hasShiftPattern = false
+        while (cursor.moveToNext()) {
+            val nameIndex = cursor.getColumnIndex("name")
+            if (nameIndex >= 0 && cursor.getString(nameIndex) == "shiftPattern") {
+                hasShiftPattern = true
+            }
+        }
+        cursor.close()
+        frameworkDb.close()
+        assertTrue("MIGRATION_21_22 must add shiftPattern column to alarms table", hasShiftPattern)
     }
 
     @Test(expected = IllegalStateException::class)
