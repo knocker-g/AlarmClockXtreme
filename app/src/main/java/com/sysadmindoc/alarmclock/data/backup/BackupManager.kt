@@ -859,6 +859,7 @@ class BackupManager @Inject constructor(
         json: String,
         options: BackupImportOptions = BackupImportOptions()
     ): Result<Int> {
+        var journalPrepared = false
         return try {
             val backup = adapter.fromJson(json)
                 ?: return Result.failure(Exception("Invalid backup format"))
@@ -904,6 +905,8 @@ class BackupManager @Inject constructor(
             val oldAlarms = repository.getAll()
             val oldGroups = database.alarmGroupDao().getAll()
             restoreJournalCoordinator.prepareTransaction(currentSettings, oldAlarms, oldGroups)
+            journalPrepared = true
+            var journalPrepared = true
 
             // 4. Atomic Room Commit
             val isReplace = options.mode == BackupImportMode.Replace
@@ -933,6 +936,19 @@ class BackupManager @Inject constructor(
 
             Result.success(stagedAlarms.size)
         } catch (e: Exception) {
+            if (journalPrepared) {
+                val rollbackResult = runCatching { restoreJournalCoordinator.checkAndRecover() }
+                if (rollbackResult.isFailure) {
+                    val rollbackError = rollbackResult.exceptionOrNull()
+                    android.util.Log.e("BackupManager", "Synchronous rollback failed after pre-COMMITTED restore error", rollbackError)
+                    return Result.failure(
+                        IllegalStateException(
+                            "Restore failed: ${e.message}; Rollback failed: ${rollbackError?.message}",
+                            e
+                        )
+                    )
+                }
+            }
             Result.failure(e)
         }
     }

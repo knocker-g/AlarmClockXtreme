@@ -350,4 +350,34 @@ class BackupManagerHardeningTest {
         assertEquals("locationName must be preserved", "Dallas, Texas", settingsBackup?.locationName)
         assertEquals("useManualLocation must be preserved", true, settingsBackup?.useManualLocation)
     }
+
+    @Test
+    fun preCommittedSettingsWriteFailureTriggersSynchronousOldTruthRollback() = runTest {
+        coEvery { preferencesManager.update(any()) } throws RuntimeException("Settings write failed")
+
+        val exportJson = backupManager.export()
+
+        val result = backupManager.importFromUriStringForTest(exportJson, BackupImportOptions(importSettings = true))
+        assertTrue("Restore must fail when pre-COMMITTED settings write fails", result.isFailure)
+
+        coVerifyOrder {
+            restoreJournalCoordinator.prepareTransaction(any(), any(), any())
+            repository.restoreAlarmsTransaction(any(), any())
+            restoreJournalCoordinator.checkAndRecover()
+        }
+        coVerify(exactly = 0) { restoreJournalCoordinator.markCommitted() }
+    }
+
+    @Test
+    fun rollbackFailureIsSurfacedAndDoesNotClaimSuccess() = runTest {
+        coEvery { preferencesManager.update(any()) } throws RuntimeException("Settings write failed")
+        coEvery { restoreJournalCoordinator.checkAndRecover() } throws RuntimeException("Rollback recovery failed")
+
+        val exportJson = backupManager.export()
+
+        val result = backupManager.importFromUriStringForTest(exportJson, BackupImportOptions(importSettings = true))
+        assertTrue("Restore must fail if both restore and rollback fail", result.isFailure)
+        assertTrue(result.exceptionOrNull() is IllegalStateException)
+        coVerify(exactly = 0) { restoreJournalCoordinator.markCommitted() }
+    }
 }

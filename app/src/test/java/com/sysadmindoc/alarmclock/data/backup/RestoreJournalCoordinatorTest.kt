@@ -219,4 +219,25 @@ class RestoreJournalCoordinatorTest {
         assertTrue(runCatching { coordinator.checkAndRecover() }.isFailure)
         assertTrue(journalFile.exists())
     }
+
+    @Test
+    fun standaloneOrphanGroupsSurviveRollbackExactly() = runTest {
+        val orphanGroup1 = AlarmGroup(name = "Gym")
+        val orphanGroup2 = AlarmGroup(name = "Medication")
+        val settings = AppSettings()
+
+        coordinator.prepareTransaction(settings, emptyList(), listOf(orphanGroup1, orphanGroup2))
+
+        // Mutate DB to simulate partial/failed restore
+        database.alarmGroupDao().insert(AlarmGroup(name = "TemporaryNewGroup"))
+
+        // Perform PREPARED recovery (rollback)
+        coordinator.checkAndRecover()
+
+        val restoredGroups = database.alarmGroupDao().getAll()
+        assertEquals(2, restoredGroups.size)
+        assertTrue(restoredGroups.any { it.name == "Gym" })
+        assertTrue(restoredGroups.any { it.name == "Medication" })
+        assertFalse(restoredGroups.any { it.name == "TemporaryNewGroup" })
+    }
 }
