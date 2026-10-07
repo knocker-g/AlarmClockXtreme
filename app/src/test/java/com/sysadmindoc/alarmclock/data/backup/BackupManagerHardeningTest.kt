@@ -5,6 +5,7 @@ import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
+import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.preferences.AppSettings
 import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
@@ -369,15 +370,166 @@ class BackupManagerHardeningTest {
     }
 
     @Test
-    fun rollbackFailureIsSurfacedAndDoesNotClaimSuccess() = runTest {
-        coEvery { preferencesManager.update(any()) } throws RuntimeException("Settings write failed")
-        coEvery { restoreJournalCoordinator.checkAndRecover() } throws RuntimeException("Rollback recovery failed")
+    fun realRestoreJournalCoordinatorSynchronousOldTruthRollbackTest() = runTest {
+        val realCoordinator = RestoreJournalCoordinator(
+            context = context,
+            database = database,
+            preferencesManager = preferencesManager,
+            alarmScheduler = scheduler,
+            moshi = Moshi.Builder().build()
+        )
 
-        val exportJson = backupManager.export()
+        val realBackupManager = BackupManager(
+            context = context,
+            repository = repository,
+            preferencesManager = preferencesManager,
+            scheduler = scheduler,
+            restoreJournalCoordinator = realCoordinator,
+            database = database
+        )
 
-        val result = backupManager.importFromUriStringForTest(exportJson, BackupImportOptions(importSettings = true))
+        val oldAlarm = Alarm(id = 123L, hour = 8, minute = 30, label = "OLD Alarm", group = "Work")
+        val oldGroup1 = com.sysadmindoc.alarmclock.data.local.entity.AlarmGroup(name = "Work")
+        val oldGroup2 = com.sysadmindoc.alarmclock.data.local.entity.AlarmGroup(name = "Gym") // Standalone/orphan group
+        val oldSettings = AppSettings(newsFeedUrl = "https://destination.example/rss.xml")
+
+        database.alarmDao().insert(oldAlarm)
+        database.alarmGroupDao().insert(oldGroup1)
+        database.alarmGroupDao().insert(oldGroup2)
+
+        coEvery { repository.getAll() } coAnswers { database.alarmDao().getAll() }
+        coEvery { preferencesManager.getCurrentSettings() } returns oldSettings
+
+        // Simulate a failure during NEW settings write (after Room NEW mutation)
+        var settingsUpdateCount = 0
+        coEvery { preferencesManager.update(any()) } coAnswers {
+            settingsUpdateCount++
+            if (settingsUpdateCount == 1) {
+                throw RuntimeException("Settings write failed pre-COMMITTED")
+            } else {
+                // Allow rollback update to succeed
+                val transform = firstArg<(AppSettings) -> AppSettings>()
+                transform(oldSettings)
+                Unit
+            }
+        }
+
+        // Mock repository.restoreAlarmsTransaction to perform actual DB replace
+        coEvery { repository.restoreAlarmsTransaction(any(), eq(true)) } coAnswers {
+            val staged = firstArg<List<Alarm>>()
+            database.alarmDao().deleteAll()
+            if (staged.isNotEmpty()) database.alarmDao().insertAll(staged)
+            staged.map { it.id }
+        }
+
+        // Verify scheduler sees ONLY OLD Alarm truth during rollback reschedule
+        coEvery { scheduler.rescheduleAllInBatches(any(), any()) } coAnswers {
+            val currentAlarmsInDb = database.alarmDao().getAll()
+            assertTrue("Scheduler during rollback must see only OLD Alarm truth", currentAlarmsInDb.all { it.label == "OLD Alarm" })
+            0
+        }
+
+        val newJson = """
+            {
+              "version": 19,
+              "alarms": [
+                {
+                  "id": 999,
+                  "hour": 9,
+                  "minute": 0,
+                  "label": "NEW Transient Alarm",
+                  "isEnabled": true,
+                  "repeatDays": [],
+                  "ringtoneUri": "",
+                  "vibrationEnabled": true,
+                  "vibrationIntensity": 1,
+                  "volume": 80,
+                  "overrideSystemVolume": false,
+                  "gradualVolumeSeconds": 30,
+                  "snoozeDurationMinutes": 5,
+                  "maxSnoozeCount": 3,
+                  "showOnLockScreen": true,
+                  "challengeType": "NONE"
+                }
+              ],
+              "settings": {
+                "is24HourFormat": true
+              }
+            }
+        """.trimIndent()
+
+        val result = realBackupManager.importFromUriStringForTest(newJson, BackupImportOptions(importSettings = true))
+        assertTrue("Restore must fail on pre-COMMITTED settings write error", result.isFailure)
+
+        // Assert persisted OLD state exactly
+        val restoredAlarms = database.alarmDao().getAll()
+        assertEquals(1, restoredAlarms.size)
+        assertEquals("OLD Alarm", restoredAlarms[0].label)
+
+        val restoredGroups = database.alarmGroupDao().getAll()
+        assertEquals(2, restoredGroups.size)
+        assertTrue("Standalone orphan group 'Gym' must be preserved", restoredGroups.any { it.name == "Gym" })
+        assertTrue("Group 'Work' must be preserved", restoredGroups.any { it.name == "Work" })
+    }
+
+    @Test
+    fun realJournalRetentionOnRollbackFailureTest() = runTest {
+        val realCoordinator = RestoreJournalCoordinator(
+            context = context,
+            database = database,
+            preferencesManager = preferencesManager,
+            alarmScheduler = scheduler,
+            moshi = Moshi.Builder().build()
+        )
+
+        val realBackupManager = BackupManager(
+            context = context,
+            repository = repository,
+            preferencesManager = preferencesManager,
+            scheduler = scheduler,
+            restoreJournalCoordinator = realCoordinator,
+            database = database
+        )
+
+        coEvery { preferencesManager.getCurrentSettings() } returns AppSettings()
+        coEvery { repository.getAll() } returns emptyList()
+
+        // 1. Fail initial Room restore transaction
+        coEvery { repository.restoreAlarmsTransaction(any(), any()) } throws RuntimeException("Room DB restore failed")
+
+        // 2. Also fail preferences update during rollback in checkAndRecover
+        coEvery { preferencesManager.update(any()) } throws RuntimeException("Preferences update failed during rollback")
+
+        val json = """
+            {
+              "version": 19,
+              "alarms": [
+                {
+                  "id": 1,
+                  "hour": 7,
+                  "minute": 0,
+                  "label": "Test",
+                  "isEnabled": true,
+                  "repeatDays": [],
+                  "ringtoneUri": "",
+                  "vibrationEnabled": true,
+                  "vibrationIntensity": 2,
+                  "volume": 100,
+                  "overrideSystemVolume": true,
+                  "gradualVolumeSeconds": 60,
+                  "snoozeDurationMinutes": 10,
+                  "maxSnoozeCount": 3,
+                  "showOnLockScreen": true,
+                  "challengeType": "NONE"
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val result = realBackupManager.importFromUriStringForTest(json)
         assertTrue("Restore must fail if both restore and rollback fail", result.isFailure)
-        assertTrue(result.exceptionOrNull() is IllegalStateException)
-        coVerify(exactly = 0) { restoreJournalCoordinator.markCommitted() }
+
+        val journalFile = java.io.File(context.filesDir, RestoreJournalCoordinator.JOURNAL_FILENAME)
+        assertTrue("Journal file must be retained on rollback failure for safe recovery", journalFile.exists())
     }
 }

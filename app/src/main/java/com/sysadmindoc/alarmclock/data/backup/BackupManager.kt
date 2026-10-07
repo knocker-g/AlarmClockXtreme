@@ -860,6 +860,7 @@ class BackupManager @Inject constructor(
         options: BackupImportOptions = BackupImportOptions()
     ): Result<Int> {
         var journalPrepared = false
+        var stagedCount = 0
         return try {
             val backup = adapter.fromJson(json)
                 ?: return Result.failure(Exception("Invalid backup format"))
@@ -894,6 +895,7 @@ class BackupManager @Inject constructor(
                 val finalAlarm = alarm.prepareForImport(options)
                 stagedAlarms.add(finalAlarm)
             }
+            val stagedCount = stagedAlarms.size
 
             // 2. Active Session Gate
             val currentSettings = preferencesManager.getCurrentSettings()
@@ -906,7 +908,6 @@ class BackupManager @Inject constructor(
             val oldGroups = database.alarmGroupDao().getAll()
             restoreJournalCoordinator.prepareTransaction(currentSettings, oldAlarms, oldGroups)
             journalPrepared = true
-            var journalPrepared = true
 
             // 4. Atomic Room Commit
             val isReplace = options.mode == BackupImportMode.Replace
@@ -934,19 +935,22 @@ class BackupManager @Inject constructor(
                 scheduler.rescheduleAllInBatches()
             }
 
-            Result.success(stagedAlarms.size)
+            Result.success(stagedCount)
         } catch (e: Exception) {
             if (journalPrepared) {
                 val rollbackResult = runCatching { restoreJournalCoordinator.checkAndRecover() }
                 if (rollbackResult.isFailure) {
                     val rollbackError = rollbackResult.exceptionOrNull()
-                    android.util.Log.e("BackupManager", "Synchronous rollback failed after pre-COMMITTED restore error", rollbackError)
+                    android.util.Log.e("BackupManager", "Synchronous recovery failed after restore error", rollbackError)
                     return Result.failure(
                         IllegalStateException(
-                            "Restore failed: ${e.message}; Rollback failed: ${rollbackError?.message}",
+                            "Restore failed: ${e.message}; Recovery failed: ${rollbackError?.message}",
                             e
                         )
                     )
+                }
+                if (rollbackResult.getOrNull() == RecoveryOutcome.RECOVERED_NEW) {
+                    return Result.success(stagedCount)
                 }
             }
             Result.failure(e)

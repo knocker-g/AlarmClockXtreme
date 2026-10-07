@@ -21,6 +21,12 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
+enum class RecoveryOutcome {
+    NONE,
+    RESTORED_OLD,
+    RECOVERED_NEW
+}
+
 @JsonClass(generateAdapter = true)
 internal data class RestoreSnapshot(
     val settings: AppSettings,
@@ -108,8 +114,8 @@ class RestoreJournalCoordinator @Inject constructor(
         writeJournalAtomic(updatedJson.toString())
     }
 
-    suspend fun checkAndRecover() {
-        if (!journalFile.exists()) return
+    suspend fun checkAndRecover(): RecoveryOutcome {
+        if (!journalFile.exists()) return RecoveryOutcome.NONE
 
         val jsonStr = runCatching { readJournalString() }.getOrElse {
             throw IllegalStateException("Corrupt or unparseable restore transaction journal. Startup aborted for safety.", it)
@@ -117,7 +123,7 @@ class RestoreJournalCoordinator @Inject constructor(
 
         if (jsonStr == null) {
             journalFile.delete()
-            return
+            return RecoveryOutcome.NONE
         }
 
         val json = runCatching { JSONObject(jsonStr) }.getOrElse {
@@ -142,7 +148,7 @@ class RestoreJournalCoordinator @Inject constructor(
             throw SecurityException("Restore journal checksum mismatch or tampered phase. Fails closed for data safety.")
         }
 
-        when (phase) {
+        return when (phase) {
             PHASE_PREPARED -> {
                 val snapshot = snapshotAdapter.fromJson(snapshotJson)
                     ?: throw IllegalStateException("Failed to decode RestoreSnapshot in PREPARED journal")
@@ -163,6 +169,7 @@ class RestoreJournalCoordinator @Inject constructor(
 
                 // Cleanup journal after successful old-truth reconcile attempt
                 atomicFile.delete()
+                RecoveryOutcome.RESTORED_OLD
             }
             PHASE_COMMITTED -> {
                 // Reconcile new truth
@@ -170,7 +177,9 @@ class RestoreJournalCoordinator @Inject constructor(
 
                 // Cleanup journal after reconcile attempt
                 atomicFile.delete()
+                RecoveryOutcome.RECOVERED_NEW
             }
+            else -> RecoveryOutcome.NONE
         }
     }
 
