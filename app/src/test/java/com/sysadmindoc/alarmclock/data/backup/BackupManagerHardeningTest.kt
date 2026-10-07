@@ -16,6 +16,8 @@ import io.mockk.mockk
 import io.mockk.unmockkAll
 import kotlinx.coroutines.test.runTest
 import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -260,5 +262,62 @@ class BackupManagerHardeningTest {
         val result = backupManager.importFromUriStringForTest(json)
         assertTrue("Restore must remain successful even if post-commit reconcile fails", result.isSuccess)
         coVerify { restoreJournalCoordinator.markCommitted() }
+    }
+
+    @Test
+    fun sanitizedImportPreservesDestinationCustomNewsFeedUrl() = runTest {
+        val destSettings = AppSettings(newsFeedUrl = "https://destination.example/rss.xml")
+        coEvery { preferencesManager.getCurrentSettings() } returns destSettings
+
+        val exportJson = backupManager.export()
+
+        var appliedSettings: AppSettings? = null
+        coEvery { preferencesManager.update(any()) } coAnswers {
+            val transform = firstArg<(AppSettings) -> AppSettings>()
+            appliedSettings = transform(destSettings)
+        }
+
+        val result = backupManager.importFromUriStringForTest(
+            exportJson,
+            BackupImportOptions(importSettings = true, keepIntegrationsAndContacts = false)
+        )
+        assertTrue("Import must succeed", result.isSuccess)
+        assertEquals("https://destination.example/rss.xml", appliedSettings?.newsFeedUrl)
+    }
+
+    @Test
+    fun trustedImportRestoresSourceNewsFeedUrl() = runTest {
+        val destSettings = AppSettings(newsFeedUrl = "https://destination.example/rss.xml")
+        coEvery { preferencesManager.getCurrentSettings() } returns destSettings
+
+        val exportJson = backupManager.export()
+
+        var appliedSettings: AppSettings? = null
+        coEvery { preferencesManager.update(any()) } coAnswers {
+            val transform = firstArg<(AppSettings) -> AppSettings>()
+            appliedSettings = transform(destSettings)
+        }
+
+        val result = backupManager.importFromUriStringForTest(
+            exportJson,
+            BackupImportOptions(importSettings = true, keepIntegrationsAndContacts = true)
+        )
+        assertTrue("Import must succeed", result.isSuccess)
+        assertEquals("https://destination.example/rss.xml", appliedSettings?.newsFeedUrl)
+    }
+
+    @Test
+    fun exportExcludesDeviceLocalFields() = runTest {
+        val sourceSettings = AppSettings(
+            pauseUntilMillis = 999_999L,
+            lastKnownLatitude = 35.68,
+            lastKnownLongitude = 139.76
+        )
+        coEvery { preferencesManager.getCurrentSettings() } returns sourceSettings
+
+        val json = backupManager.export()
+        assertFalse("Exported JSON must not leak pauseUntilMillis", json.contains("\"pauseUntilMillis\":999999"))
+        assertFalse("Exported JSON must not leak lastKnownLatitude", json.contains("\"lastKnownLatitude\":35.68"))
+        assertFalse("Exported JSON must not leak lastKnownLongitude", json.contains("\"lastKnownLongitude\":139.76"))
     }
 }

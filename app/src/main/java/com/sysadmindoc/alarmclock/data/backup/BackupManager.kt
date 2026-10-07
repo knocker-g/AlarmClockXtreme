@@ -432,7 +432,10 @@ class BackupManager @Inject constructor(
          * Blanks everything an untrusted file could use to reach out on the
          * user's behalf, leaving the rest of the restored settings intact.
          */
-        fun withoutIntegrationsAndContacts(settings: SettingsBackup): SettingsBackup =
+        fun withoutIntegrationsAndContacts(
+            settings: SettingsBackup,
+            destinationNewsFeedUrl: String = DEFAULT_NEWS_FEED_URL
+        ): SettingsBackup =
             settings.copy(
                 webhookEnabled = false,
                 webhookUrl = "",
@@ -441,9 +444,8 @@ class BackupManager @Inject constructor(
                 hueApiKey = "",
                 hueLightIds = "",
                 googleRoutesApiKey = "",
-                // The app fetches and renders this feed unattended, so a
-                // crafted backup must not be able to point it somewhere else.
-                newsFeedUrl = AppSettings().newsFeedUrl
+                // Preserve destination's current newsFeedUrl rather than resetting to built-in default
+                newsFeedUrl = destinationNewsFeedUrl
             )
 
         fun assessExportWarning(
@@ -590,14 +592,15 @@ class BackupManager @Inject constructor(
                 sleepSoundFadeSeconds = settings.sleepSoundFadeSeconds,
                 repeatMissedAlarms = settings.repeatMissedAlarms,
                 napDefaultMinutes = settings.napDefaultMinutes,
-                pauseUntilMillis = settings.pauseUntilMillis,
+                // Device-local runtime/cache values excluded from cross-device portable export
+                pauseUntilMillis = 0L,
                 healthConnectEnabled = settings.healthConnectEnabled,
                 newsFeedUrl = settings.newsFeedUrl,
                 autoSilenceMinutes = settings.autoSilenceMinutes,
                 locationName = settings.locationName,
                 useManualLocation = settings.useManualLocation,
-                lastKnownLatitude = settings.lastKnownLatitude,
-                lastKnownLongitude = settings.lastKnownLongitude,
+                lastKnownLatitude = 0.0,
+                lastKnownLongitude = 0.0,
                 showDashboardTab = settings.showDashboardTab,
                 showTimerTab = settings.showTimerTab,
                 showWorldClockTab = settings.showWorldClockTab,
@@ -912,7 +915,7 @@ class BackupManager @Inject constructor(
                     val safeSettings = if (options.keepIntegrationsAndContacts) {
                         s
                     } else {
-                        withoutIntegrationsAndContacts(s)
+                        withoutIntegrationsAndContacts(s, currentSettings.newsFeedUrl)
                     }
                     preferencesManager.update {
                         it.applyBackup(safeSettings)
