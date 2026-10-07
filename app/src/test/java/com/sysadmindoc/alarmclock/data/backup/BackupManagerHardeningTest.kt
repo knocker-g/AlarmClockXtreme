@@ -397,20 +397,22 @@ class BackupManagerHardeningTest {
         database.alarmGroupDao().insert(oldGroup1)
         database.alarmGroupDao().insert(oldGroup2)
 
+        var currentPersistedSettings = oldSettings
+        coEvery { preferencesManager.getCurrentSettings() } coAnswers { currentPersistedSettings }
         coEvery { repository.getAll() } coAnswers { database.alarmDao().getAll() }
-        coEvery { preferencesManager.getCurrentSettings() } returns oldSettings
 
         // Simulate a failure during NEW settings write (after Room NEW mutation)
         var settingsUpdateCount = 0
         coEvery { preferencesManager.update(any()) } coAnswers {
             settingsUpdateCount++
+            val transform = firstArg<(AppSettings) -> AppSettings>()
             if (settingsUpdateCount == 1) {
+                // Apply NEW settings to mutable test state, then throw pre-COMMITTED error
+                currentPersistedSettings = transform(currentPersistedSettings)
                 throw RuntimeException("Settings write failed pre-COMMITTED")
             } else {
-                // Allow rollback update to succeed
-                val transform = firstArg<(AppSettings) -> AppSettings>()
-                transform(oldSettings)
-                Unit
+                // Rollback update (restore OLD settings)
+                currentPersistedSettings = transform(currentPersistedSettings)
             }
         }
 
@@ -422,10 +424,13 @@ class BackupManagerHardeningTest {
             staged.map { it.id }
         }
 
-        // Verify scheduler sees ONLY OLD Alarm truth during rollback reschedule
+        // Verify scheduler sees ONLY OLD Alarm truth during rollback reschedule (Gap 4)
         coEvery { scheduler.rescheduleAllInBatches(any(), any()) } coAnswers {
             val currentAlarmsInDb = database.alarmDao().getAll()
-            assertTrue("Scheduler during rollback must see only OLD Alarm truth", currentAlarmsInDb.all { it.label == "OLD Alarm" })
+            assertEquals("Scheduler during rollback must see exact 1 OLD Alarm", 1, currentAlarmsInDb.size)
+            assertEquals("OLD Alarm ID must match exact OLD id", 123L, currentAlarmsInDb[0].id)
+            assertEquals("OLD Alarm label must match exact OLD label", "OLD Alarm", currentAlarmsInDb[0].label)
+            assertTrue("Scheduler during rollback must NOT see transient NEW Alarm", currentAlarmsInDb.none { it.id == 999L || it.label == "NEW Transient Alarm" })
             0
         }
 
@@ -453,7 +458,8 @@ class BackupManagerHardeningTest {
                 }
               ],
               "settings": {
-                "is24HourFormat": true
+                "is24HourFormat": true,
+                "newsFeedUrl": "https://source.example/rss.xml"
               }
             }
         """.trimIndent()
@@ -461,15 +467,90 @@ class BackupManagerHardeningTest {
         val result = realBackupManager.importFromUriStringForTest(newJson, BackupImportOptions(importSettings = true))
         assertTrue("Restore must fail on pre-COMMITTED settings write error", result.isFailure)
 
-        // Assert persisted OLD state exactly
+        // Assert persisted OLD Alarm state exactly
         val restoredAlarms = database.alarmDao().getAll()
         assertEquals(1, restoredAlarms.size)
+        assertEquals(123L, restoredAlarms[0].id)
         assertEquals("OLD Alarm", restoredAlarms[0].label)
 
+        // Assert persisted OLD AlarmGroup state exactly (including standalone orphan group)
         val restoredGroups = database.alarmGroupDao().getAll()
         assertEquals(2, restoredGroups.size)
         assertTrue("Standalone orphan group 'Gym' must be preserved", restoredGroups.any { it.name == "Gym" })
         assertTrue("Group 'Work' must be preserved", restoredGroups.any { it.name == "Work" })
+
+        // Assert persisted OLD AppSettings state exactly (Gap 1)
+        assertEquals("AppSettings must be restored to exact OLD truth", "https://destination.example/rss.xml", currentPersistedSettings.newsFeedUrl)
+        org.junit.Assert.assertNotEquals("AppSettings must NOT remain as NEW settings", "https://source.example/rss.xml", currentPersistedSettings.newsFeedUrl)
+    }
+
+    @Test
+    fun durableCommittedBoundaryPreservesNewDataAndReturnsSuccessCount() = runTest {
+        val realCoordinator = RestoreJournalCoordinator(
+            context = context,
+            database = database,
+            preferencesManager = preferencesManager,
+            alarmScheduler = scheduler,
+            moshi = Moshi.Builder().build()
+        )
+
+        val realBackupManager = BackupManager(
+            context = context,
+            repository = repository,
+            preferencesManager = preferencesManager,
+            scheduler = scheduler,
+            restoreJournalCoordinator = realCoordinator,
+            database = database
+        )
+
+        coEvery { preferencesManager.getCurrentSettings() } returns AppSettings()
+        coEvery { repository.getAll() } returns emptyList()
+
+        coEvery { repository.restoreAlarmsTransaction(any(), eq(true)) } coAnswers {
+            val staged = firstArg<List<Alarm>>()
+            database.alarmDao().deleteAll()
+            if (staged.isNotEmpty()) database.alarmDao().insertAll(staged)
+            staged.map { it.id }
+        }
+
+        // Fail scheduler AFTER COMMITTED
+        coEvery { scheduler.rescheduleAllInBatches(any(), any()) } throws RuntimeException("Post-commit scheduler error")
+
+        val json = """
+            {
+              "version": 19,
+              "alarms": [
+                {
+                  "id": 888,
+                  "hour": 8,
+                  "minute": 0,
+                  "label": "NEW Committed Alarm",
+                  "isEnabled": true,
+                  "repeatDays": [],
+                  "ringtoneUri": "",
+                  "vibrationEnabled": true,
+                  "vibrationIntensity": 1,
+                  "volume": 80,
+                  "overrideSystemVolume": false,
+                  "gradualVolumeSeconds": 30,
+                  "snoozeDurationMinutes": 5,
+                  "maxSnoozeCount": 3,
+                  "showOnLockScreen": true,
+                  "challengeType": "NONE"
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val result = realBackupManager.importFromUriStringForTest(json, BackupImportOptions(mode = BackupImportMode.Replace))
+        assertTrue("Post-COMMITTED scheduler failure must still return success", result.isSuccess)
+        assertEquals("Returned success count must match actual staged Alarm count (N = 1 > 0)", 1, result.getOrNull())
+
+        // Verify NEW data remains in DB
+        val alarmsInDb = database.alarmDao().getAll()
+        assertEquals(1, alarmsInDb.size)
+        assertEquals(888L, alarmsInDb[0].id)
+        assertEquals("NEW Committed Alarm", alarmsInDb[0].label)
     }
 
     @Test

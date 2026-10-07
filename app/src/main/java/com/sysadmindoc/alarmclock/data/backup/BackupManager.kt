@@ -895,7 +895,7 @@ class BackupManager @Inject constructor(
                 val finalAlarm = alarm.prepareForImport(options)
                 stagedAlarms.add(finalAlarm)
             }
-            val stagedCount = stagedAlarms.size
+            stagedCount = stagedAlarms.size
 
             // 2. Active Session Gate
             val currentSettings = preferencesManager.getCurrentSettings()
