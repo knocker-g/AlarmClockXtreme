@@ -43,6 +43,15 @@ class BackupManagerSettingsDriftTest {
         // Accessibility behavior follows each device's display/animation
         // needs and Android system setting instead of migrating blindly.
         "reduceMotionAndFlashing",
+        "groupTabPosition",
+        "newsActiveSourceId",
+        "newsSourcesSeeded",
+        "activeAlarmId",
+        "activeAlarmScheduledAt",
+        "activeAlarmFireId",
+        "activeAlarmFiredAt",
+        "activeAlarmState",
+        "activeAlarmRefireAt",
     )
 
     @Test

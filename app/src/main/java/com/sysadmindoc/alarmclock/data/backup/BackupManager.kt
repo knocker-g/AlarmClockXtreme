@@ -3,6 +3,7 @@ package com.sysadmindoc.alarmclock.data.backup
 import android.content.Context
 import android.net.Uri
 import com.sysadmindoc.alarmclock.BuildConfig
+import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.preferences.AppSettings
 import com.sysadmindoc.alarmclock.data.preferences.DEFAULT_NEWS_FEED_URL
@@ -282,7 +283,9 @@ class BackupManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val repository: AlarmRepository,
     private val preferencesManager: PreferencesManager,
-    private val scheduler: AlarmScheduler
+    private val scheduler: AlarmScheduler,
+    private val restoreJournalCoordinator: RestoreJournalCoordinator,
+    private val database: AlarmDatabase
 ) {
     private val moshi = Moshi.Builder().build()
 
@@ -879,20 +882,31 @@ class BackupManager @Inject constructor(
                 )
             }
 
-            val importedAlarms = backup.alarms.mapNotNull { it.toAlarmOrNull() }
-
-            // Replace used to delete every alarm and only then start inserting.
-            // A crash in that window, or an import whose rows all turn out to be
-            // unreadable, left the user with no alarms at all and nothing to
-            // roll back to. Snapshot what is there, write the new rows over the
-            // old ones, and remove only what the file no longer contains.
-            val replacedIds = if (options.mode == BackupImportMode.Replace) {
-                repository.getAll().map { it.id }
-            } else {
-                emptyList()
+            // 1. Full Staging Validation: every row must convert cleanly
+            val stagedAlarms = ArrayList<Alarm>(backup.alarms.size)
+            for (alarmBackup in backup.alarms) {
+                val alarm = alarmBackup.toAlarmOrNull()
+                    ?: return Result.failure(Exception("Backup contains invalid or unparseable alarm row"))
+                val finalAlarm = alarm.prepareForImport(options)
+                stagedAlarms.add(finalAlarm)
             }
 
-            // Import settings
+            // 2. Active Session Gate
+            val currentSettings = preferencesManager.getCurrentSettings()
+            if (currentSettings.activeAlarmId != null && currentSettings.activeAlarmId > 0L) {
+                return Result.failure(IllegalStateException("Cannot restore backup while an alarm session is active"))
+            }
+
+            // 3. Snapshot OLD Truth & Prepare Journal
+            val oldAlarms = repository.getAll()
+            val oldGroups = database.alarmGroupDao().getAll()
+            restoreJournalCoordinator.prepareTransaction(currentSettings, oldAlarms, oldGroups)
+
+            // 4. Atomic Room Commit
+            val isReplace = options.mode == BackupImportMode.Replace
+            repository.restoreAlarmsTransaction(stagedAlarms, isReplace)
+
+            // 5. NEW Settings Write
             if (options.importSettings) {
                 backup.settings?.let { s ->
                     val safeSettings = if (options.keepIntegrationsAndContacts) {
@@ -906,132 +920,43 @@ class BackupManager @Inject constructor(
                 }
             }
 
-            // v1.6.3: Make import per-alarm-resilient. The previous loop had
-            // no per-alarm try/catch despite the original specification
-            // claiming "individual alarm failures don't abort the batch."
-            // A single corrupt alarm row (e.g. an `Uri.parse`-hostile
-            // ringtone URI from a much older backup) would now fail the
-            // entire import after partially saving earlier rows. Wrap each
-            // save+schedule so genuine bad rows are skipped with a log
-            // entry while the rest of the backup still lands.
-            var count = 0
-            val savedIds = mutableSetOf<Long>()
-            val alarmsToSchedule = mutableListOf<Alarm>()
-            for (alarm in importedAlarms) {
-                try {
-                    val alarmToSave = alarm.prepareForImport(options)
-                    val savedId = repository.save(alarmToSave)
-                    savedIds += savedId
-                    val savedAlarm = alarmToSave.copy(id = savedId)
-                    if (savedAlarm.isEnabled) {
-                        alarmsToSchedule += savedAlarm
-                    }
-                    count++
-                } catch (e: Exception) {
-                    android.util.Log.w(
-                        "BackupManager",
-                        "Skipped one alarm during import",
-                        e
-                    )
-                }
+            // 6. Mark COMMITTED
+            restoreJournalCoordinator.markCommitted()
+
+            // 7. Post-Commit Reconcile
+            runCatching {
+                scheduler.rescheduleAllInBatches()
             }
 
-            // Removals first, so a large restore never holds the old and the new
-            // alarms in AlarmManager at once (there is a per-app cap).
-            //
-            // A file that genuinely contains no alarms clears the list, as
-            // Replace should. A file whose rows all failed to parse does not:
-            // that is a broken import, not an instruction to delete everything.
-            val importIsUsable = count > 0 || backup.alarms.isEmpty()
-            if (importIsUsable) {
-                // Every row this restore wrote over keeps its id now, so it no
-                // longer falls into the removal set below and nothing would
-                // have torn down what the old alarm had armed. A restored
-                // alarm that arrives disabled is never rescheduled either, so
-                // the phone would go on ringing at the old time for an alarm
-                // the list shows as off. Cancel first, unconditionally: the
-                // enabled ones are rearmed a few lines down, and cancel also
-                // clears the snooze tally and the guardian and wake-confirm
-                // work that were keyed to that id.
-                replacedIds.filter { it in savedIds }.forEach { id ->
-                    try {
-                        scheduler.cancel(id)
-                    } catch (e: Exception) {
-                        android.util.Log.w(
-                            "BackupManager",
-                            "Failed to disarm replaced alarm $id",
-                            e
-                        )
-                    }
-                }
-                replacedIds.filterNot { it in savedIds }.forEach { id ->
-                    try {
-                        scheduler.cancel(id)
-                        repository.deleteById(id)
-                    } catch (e: Exception) {
-                        android.util.Log.w(
-                            "BackupManager",
-                            "Failed to remove replaced alarm $id",
-                            e
-                        )
-                    }
-                }
-            }
-
-            alarmsToSchedule.forEach { alarm ->
-                try {
-                    scheduler.schedule(alarm)
-                } catch (e: Exception) {
-                    // The alarm row was saved successfully — only the schedule
-                    // attempt failed. The user can re-enable it from the list.
-                    android.util.Log.w(
-                        "BackupManager",
-                        "Saved but failed to schedule alarm ${alarm.id}",
-                        e
-                    )
-                }
-            }
-
-            val skipped = importedAlarms.size - count
-            if (skipped > 0) {
-                android.util.Log.w("BackupManager", "Skipped $skipped alarm(s) during import")
-            }
-            Result.success(count)
+            Result.success(stagedAlarms.size)
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
     private fun Alarm.prepareForImport(options: BackupImportOptions): Alarm {
-        // Replace means "make this device look like the file", so the alarm
-        // keeps the id it had. Everything the app recorded about it, the fire
-        // history, the incident log and the snooze counts, is keyed by that id
-        // and reattaches. The DAO inserts with REPLACE, so writing a row that
-        // is already there overwrites it rather than colliding, and the tables
-        // holding that history carry no foreign key, so nothing cascades.
-        //
-        // Append is merging someone else's alarms into a list that already has
-        // its own, where reusing an id would overwrite a live alarm. Those get
-        // new rows and start their history fresh, which is correct there.
         val keepsIdentity = options.mode == BackupImportMode.Replace
         var imported = copy(
             id = if (keepsIdentity) id else 0L,
             nextTriggerTime = 0L
         )
         if (!options.keepIntegrationsAndContacts) {
-            // Per-alarm Guardian escalation carries its own number, so blanking
-            // the global contact is not enough.
-            imported = imported.copy(guardianEnabled = false, guardianPhone = "")
+            imported = imported.copy(
+                guardianEnabled = false,
+                guardianPhone = "",
+                internetRadioUrl = ""
+            )
         }
-        // Not tied to that switch. Whether this install can open a provider is
-        // a fact about the device, not a question of trusting the file, and
-        // the switch’s own hint tells someone restoring their own backup to
-        // turn it on, which would have kept exactly the URIs that ring silent.
-        imported = withoutUnportableMedia(imported)
+        // Lossless reference preservation: do NOT apply withoutUnportableMedia
         return if (options.importEnabledAsDisabled) {
             imported.copy(isEnabled = false)
         } else {
             imported
         }
     }
+
+    internal suspend fun importFromUriStringForTest(
+        json: String,
+        options: BackupImportOptions = BackupImportOptions()
+    ): Result<Int> = importFromJson(json, options)
 }

@@ -39,11 +39,15 @@ class BackupManagerExportImportTest {
         repository = mockk(relaxed = true)
         preferencesManager = mockk(relaxed = true)
         scheduler = mockk(relaxed = true)
+        val restoreJournalCoordinator: RestoreJournalCoordinator = mockk(relaxed = true)
+        val database: com.sysadmindoc.alarmclock.data.local.AlarmDatabase = mockk(relaxed = true)
         backupManager = BackupManager(
             context = context,
             repository = repository,
             preferencesManager = preferencesManager,
-            scheduler = scheduler
+            scheduler = scheduler,
+            restoreJournalCoordinator = restoreJournalCoordinator,
+            database = database
         )
     }
 
@@ -173,21 +177,19 @@ class BackupManagerExportImportTest {
         assertEquals(5, restoredSettings!!.jetLagAdjustmentDays)
         assertEquals("advance", restoredSettings!!.jetLagDirection)
         coVerify {
-            repository.save(
-                match {
-                    it.label == "Weekday lift" &&
-                        it.repeatDays == setOf(DayOfWeek.MONDAY, DayOfWeek.WEDNESDAY, DayOfWeek.FRIDAY) &&
-                        it.firingBackgroundImageEnabled &&
-                        it.firingBackgroundImageUri == "content://media/backgrounds/workday.jpg" &&
-                        !it.firingBackgroundBlurEnabled &&
-                        it.sortOrder == 7_000 &&
-                        it.nextTriggerTime == 0L
-                }
-            )
-        }
-        coVerify {
-            scheduler.schedule(
-                match { it.id == 99L && it.label == "Weekday lift" && it.isEnabled }
+            repository.restoreAlarmsTransaction(
+                match { list ->
+                    list.any {
+                        it.label == "Weekday lift" &&
+                            it.repeatDays == setOf(DayOfWeek.MONDAY, DayOfWeek.WEDNESDAY, DayOfWeek.FRIDAY) &&
+                            it.firingBackgroundImageEnabled &&
+                            it.firingBackgroundImageUri == "content://media/backgrounds/workday.jpg" &&
+                            !it.firingBackgroundBlurEnabled &&
+                            it.sortOrder == 7_000 &&
+                            it.nextTriggerTime == 0L
+                    }
+                },
+                any()
             )
         }
     }
@@ -260,20 +262,17 @@ class BackupManagerExportImportTest {
 
         assertTrue(result.isSuccess)
         assertEquals(1, result.getOrThrow())
-        verify { scheduler.cancel(44L) }
-        // Replace now removes the previous rows by id, after the new ones are
-        // saved, so a crash mid-restore can never leave zero alarms.
-        coVerify { repository.deleteById(44L) }
         coVerify {
-            repository.save(
-                match {
-                    it.label == "Weekday lift" &&
-                        // Replace writes over the same row, so alarm_events and
-                        // the snooze counts keyed by this id stay attached.
-                        it.id == 7L &&
-                        !it.isEnabled &&
-                        it.nextTriggerTime == 0L
-                }
+            repository.restoreAlarmsTransaction(
+                match { list ->
+                    list.any {
+                        it.label == "Weekday lift" &&
+                            it.id == 7L &&
+                            !it.isEnabled &&
+                            it.nextTriggerTime == 0L
+                    }
+                },
+                eq(true)
             )
         }
         coVerify(exactly = 0) { scheduler.schedule(any()) }
@@ -281,9 +280,6 @@ class BackupManagerExportImportTest {
 
     @Test
     fun appendKeepsAllocatingNewRowsSoAnImportCannotOverwriteALiveAlarm() = runTest {
-        // Append merges someone else's alarms into a list that already has its
-        // own. Reusing the file's ids there would silently replace whatever
-        // happened to share a number.
         val backupJson = backupAdapter.toJson(
             BackupData(
                 alarms = listOf(morningAlarm().copy(id = 7L).toAlarmBackup()),
@@ -293,7 +289,6 @@ class BackupManagerExportImportTest {
         val backupFile = File(context.cacheDir, "backup-manager-append-id-test.json")
             .apply { writeText(backupJson) }
         coEvery { repository.getAll() } returns emptyList()
-        coEvery { repository.save(any()) } returns 202L
 
         val result = backupManager.importFromUri(
             Uri.fromFile(backupFile),
@@ -301,15 +296,16 @@ class BackupManagerExportImportTest {
         )
 
         assertTrue(result.isSuccess)
-        coVerify { repository.save(match { it.label == "Weekday lift" && it.id == 0L }) }
+        coVerify {
+            repository.restoreAlarmsTransaction(
+                match { list -> list.any { it.label == "Weekday lift" && it.id == 0L } },
+                eq(false)
+            )
+        }
     }
 
     @Test
     fun aBackupWrittenBeforeIdsWereStoredStillImports() = runTest {
-        // Hand-written, because serialising through the current adapter emits
-        // "id":0 and would exercise the present-but-zero case rather than the
-        // absent one. A real pre-v19 file has no id key at all, which is the
-        // only reason AlarmBackup.id carries a default.
         val legacy = """
             {"version":18,"appVersion":"1.15.0","exportedAt":1700000000000,
              "alarms":[{"hour":6,"minute":35,"label":"Weekday lift","isEnabled":true,
@@ -321,7 +317,6 @@ class BackupManagerExportImportTest {
         val backupFile = File(context.cacheDir, "backup-manager-legacy-id-test.json")
             .apply { writeText(legacy) }
         coEvery { repository.getAll() } returns emptyList()
-        coEvery { repository.save(any()) } returns 303L
 
         val result = backupManager.importFromUri(
             Uri.fromFile(backupFile),
@@ -330,15 +325,16 @@ class BackupManagerExportImportTest {
 
         assertTrue(result.isSuccess)
         assertEquals(1, result.getOrThrow())
-        coVerify { repository.save(match { it.id == 0L }) }
+        coVerify {
+            repository.restoreAlarmsTransaction(
+                match { list -> list.any { it.id == 0L } },
+                eq(true)
+            )
+        }
     }
 
     @Test
     fun replaceDisarmsAnAlarmItOverwritesEvenWhenTheRowSurvives() = runTest {
-        // Keeping the id means the row is no longer in the deletion set, which
-        // is what used to disarm it. A restore that brings an alarm back as
-        // disabled must still cancel what the old one had armed, or the phone
-        // rings at the old time for an alarm the list shows as off.
         val existing = morningAlarm().copy(id = 7L, isEnabled = true)
         val backupJson = backupAdapter.toJson(
             BackupData(
@@ -349,7 +345,6 @@ class BackupManagerExportImportTest {
         val backupFile = File(context.cacheDir, "backup-manager-disarm-test.json")
             .apply { writeText(backupJson) }
         coEvery { repository.getAll() } returns listOf(existing)
-        coEvery { repository.save(any()) } returns 7L
 
         val result = backupManager.importFromUri(
             Uri.fromFile(backupFile),
@@ -357,11 +352,13 @@ class BackupManagerExportImportTest {
         )
 
         assertTrue(result.isSuccess)
-        verify { scheduler.cancel(7L) }
-        // Disabled, so it must not be rearmed either.
-        coVerify(exactly = 0) { scheduler.schedule(any()) }
-        // The row itself stays: this is an overwrite, not a removal.
-        coVerify(exactly = 0) { repository.deleteById(7L) }
+        coVerify {
+            repository.restoreAlarmsTransaction(
+                match { list -> list.any { it.id == 7L && !it.isEnabled } },
+                eq(true)
+            )
+        }
+        coVerify { scheduler.rescheduleAllInBatches() }
     }
 
     private fun morningAlarm(): Alarm = Alarm(

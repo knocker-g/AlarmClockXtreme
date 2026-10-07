@@ -42,11 +42,15 @@ class BackupManagerImportConsentTest {
         repository = mockk(relaxed = true)
         preferencesManager = mockk(relaxed = true)
         scheduler = mockk(relaxed = true)
+        val restoreJournalCoordinator: RestoreJournalCoordinator = mockk(relaxed = true)
+        val database: com.sysadmindoc.alarmclock.data.local.AlarmDatabase = mockk(relaxed = true)
         backupManager = BackupManager(
             context = context,
             repository = repository,
             preferencesManager = preferencesManager,
-            scheduler = scheduler
+            scheduler = scheduler,
+            restoreJournalCoordinator = restoreJournalCoordinator,
+            database = database
         )
         coEvery { repository.getAll() } returns emptyList()
         coEvery { repository.save(any()) } returns 1L
@@ -125,13 +129,14 @@ class BackupManagerImportConsentTest {
 
     @Test
     fun `per-alarm guardian escalation is stripped unless integrations are kept`() = runTest {
-        val saved = slot<Alarm>()
-        coEvery { repository.save(capture(saved)) } returns 1L
+        val saved = slot<List<Alarm>>()
+        coEvery { repository.restoreAlarmsTransaction(capture(saved), any()) } returns listOf(1L)
 
         backupManager.importFromUri(writeBackup(), BackupImportOptions())
 
-        assertFalse(saved.captured.guardianEnabled)
-        assertEquals("", saved.captured.guardianPhone)
+        val alarm = saved.captured.first()
+        assertFalse(alarm.guardianEnabled)
+        assertEquals("", alarm.guardianPhone)
     }
 
     @Test
@@ -163,32 +168,23 @@ class BackupManagerImportConsentTest {
     }
 
     @Test
-    fun `replace writes the new rows before removing the old ones`() = runTest {
+    fun `replace uses atomic restoreAlarmsTransaction to replace rows`() = runTest {
         val existing = Alarm(id = 44L, hour = 5, minute = 0, label = "Keep me")
         coEvery { repository.getAll() } returns listOf(existing)
-        val order = mutableListOf<String>()
-        val saved = slot<Alarm>()
-        coEvery { repository.save(capture(saved)) } coAnswers { order += "save"; 101L }
-        coEvery { repository.deleteById(any()) } coAnswers { order += "delete" }
 
         val uri = writeBackup(name = "replace-order.json")
-        coEvery { repository.getAll() } returns listOf(existing)
         val result = backupManager.importFromUri(
             uri,
             BackupImportOptions(mode = BackupImportMode.Replace)
         )
 
         assertTrue(result.isSuccess)
-        assertEquals(
-            "The old rows must not be removed until the new ones are on disk",
-            listOf("save", "delete"),
-            order
-        )
-        // The fixture exports an alarm with id 5, and Replace writes over that
-        // same row so alarm_events and the snooze counts keyed to it survive.
-        // This assertion used to demand 0, which recorded the defect: the
-        // format had no id, so a restore could only orphan the history.
-        assertEquals(5L, saved.captured.id)
+        coVerify {
+            repository.restoreAlarmsTransaction(
+                match { list -> list.any { it.id == 5L } },
+                eq(true)
+            )
+        }
     }
 
     @Test
@@ -207,25 +203,21 @@ class BackupManagerImportConsentTest {
 
         assertTrue(result.isSuccess)
         assertEquals(0, result.getOrThrow())
-        coVerify { repository.deleteById(44L) }
+        coVerify { repository.restoreAlarmsTransaction(emptyList(), true) }
     }
 
     @Test
     fun `replace keeps the existing alarms when no row can be saved`() = runTest {
         val existing = Alarm(id = 44L, hour = 5, minute = 0, label = "Keep me")
-        // The file carries a row, but saving it fails: a broken import, not an
-        // instruction to delete everything the user had.
         val uri = writeBackup(name = "unsavable-backup.json")
         coEvery { repository.getAll() } returns listOf(existing)
-        coEvery { repository.save(any()) } throws IllegalStateException("bad row")
+        coEvery { repository.restoreAlarmsTransaction(any(), any()) } throws IllegalStateException("bad row")
 
         val result = backupManager.importFromUri(
             uri,
             BackupImportOptions(mode = BackupImportMode.Replace)
         )
 
-        assertTrue(result.isSuccess)
-        assertEquals(0, result.getOrThrow())
-        coVerify(exactly = 0) { repository.deleteById(any()) }
+        assertTrue(result.isFailure)
     }
 }
