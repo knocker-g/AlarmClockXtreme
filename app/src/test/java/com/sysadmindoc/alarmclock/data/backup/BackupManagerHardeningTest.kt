@@ -9,6 +9,7 @@ import com.sysadmindoc.alarmclock.data.preferences.AppSettings
 import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
+import com.squareup.moshi.Moshi
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.coVerifyOrder
@@ -18,6 +19,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -266,10 +268,13 @@ class BackupManagerHardeningTest {
 
     @Test
     fun sanitizedImportPreservesDestinationCustomNewsFeedUrl() = runTest {
+        val sourceSettings = AppSettings(newsFeedUrl = "https://source.example/rss.xml")
         val destSettings = AppSettings(newsFeedUrl = "https://destination.example/rss.xml")
-        coEvery { preferencesManager.getCurrentSettings() } returns destSettings
 
-        val exportJson = backupManager.export()
+        coEvery { preferencesManager.getCurrentSettings() } returns sourceSettings
+        val sourceJson = backupManager.export()
+
+        coEvery { preferencesManager.getCurrentSettings() } returns destSettings
 
         var appliedSettings: AppSettings? = null
         coEvery { preferencesManager.update(any()) } coAnswers {
@@ -278,19 +283,26 @@ class BackupManagerHardeningTest {
         }
 
         val result = backupManager.importFromUriStringForTest(
-            exportJson,
+            sourceJson,
             BackupImportOptions(importSettings = true, keepIntegrationsAndContacts = false)
         )
         assertTrue("Import must succeed", result.isSuccess)
-        assertEquals("https://destination.example/rss.xml", appliedSettings?.newsFeedUrl)
+        assertEquals(
+            "Sanitized import must retain destination's custom newsFeedUrl",
+            "https://destination.example/rss.xml",
+            appliedSettings?.newsFeedUrl
+        )
     }
 
     @Test
     fun trustedImportRestoresSourceNewsFeedUrl() = runTest {
+        val sourceSettings = AppSettings(newsFeedUrl = "https://source.example/rss.xml")
         val destSettings = AppSettings(newsFeedUrl = "https://destination.example/rss.xml")
-        coEvery { preferencesManager.getCurrentSettings() } returns destSettings
 
-        val exportJson = backupManager.export()
+        coEvery { preferencesManager.getCurrentSettings() } returns sourceSettings
+        val sourceJson = backupManager.export()
+
+        coEvery { preferencesManager.getCurrentSettings() } returns destSettings
 
         var appliedSettings: AppSettings? = null
         coEvery { preferencesManager.update(any()) } coAnswers {
@@ -299,11 +311,15 @@ class BackupManagerHardeningTest {
         }
 
         val result = backupManager.importFromUriStringForTest(
-            exportJson,
+            sourceJson,
             BackupImportOptions(importSettings = true, keepIntegrationsAndContacts = true)
         )
         assertTrue("Import must succeed", result.isSuccess)
-        assertEquals("https://destination.example/rss.xml", appliedSettings?.newsFeedUrl)
+        assertEquals(
+            "Trusted import must restore source's custom newsFeedUrl",
+            "https://source.example/rss.xml",
+            appliedSettings?.newsFeedUrl
+        )
     }
 
     @Test
@@ -311,13 +327,27 @@ class BackupManagerHardeningTest {
         val sourceSettings = AppSettings(
             pauseUntilMillis = 999_999L,
             lastKnownLatitude = 35.68,
-            lastKnownLongitude = 139.76
+            lastKnownLongitude = 139.76,
+            locationName = "Dallas, Texas",
+            useManualLocation = true
         )
         coEvery { preferencesManager.getCurrentSettings() } returns sourceSettings
 
         val json = backupManager.export()
-        assertFalse("Exported JSON must not leak pauseUntilMillis", json.contains("\"pauseUntilMillis\":999999"))
-        assertFalse("Exported JSON must not leak lastKnownLatitude", json.contains("\"lastKnownLatitude\":35.68"))
-        assertFalse("Exported JSON must not leak lastKnownLongitude", json.contains("\"lastKnownLongitude\":139.76"))
+
+        val moshi = Moshi.Builder().build()
+        val adapter = moshi.adapter(BackupData::class.java)
+        val backupData = adapter.fromJson(json)
+
+        assertNotNull("Exported BackupData must parse successfully", backupData)
+        val settingsBackup = backupData?.settings
+        assertNotNull("SettingsBackup must be present in export", settingsBackup)
+
+        assertEquals("pauseUntilMillis must be excluded (set to 0L)", 0L, settingsBackup?.pauseUntilMillis)
+        assertEquals("lastKnownLatitude must be excluded (set to 0.0)", 0.0, settingsBackup?.lastKnownLatitude ?: -1.0, 0.001)
+        assertEquals("lastKnownLongitude must be excluded (set to 0.0)", 0.0, settingsBackup?.lastKnownLongitude ?: -1.0, 0.001)
+
+        assertEquals("locationName must be preserved", "Dallas, Texas", settingsBackup?.locationName)
+        assertEquals("useManualLocation must be preserved", true, settingsBackup?.useManualLocation)
     }
 }
