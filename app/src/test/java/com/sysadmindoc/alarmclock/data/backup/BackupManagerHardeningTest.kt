@@ -485,7 +485,7 @@ class BackupManagerHardeningTest {
     }
 
     @Test
-    fun durableCommittedBoundaryPreservesNewDataAndReturnsSuccessCount() = runTest {
+    fun durableCommittedMarkBoundaryRecoveryReturnsRecoveredNewSuccess() = runTest {
         val realCoordinator = RestoreJournalCoordinator(
             context = context,
             database = database,
@@ -493,6 +493,11 @@ class BackupManagerHardeningTest {
             alarmScheduler = scheduler,
             moshi = Moshi.Builder().build()
         )
+
+        // Inject hook to throw immediately after durable COMMITTED write
+        realCoordinator.onPostDurableCommittedHookForTest = {
+            throw RuntimeException("Simulated exception boundary right after durable markCommitted write")
+        }
 
         val realBackupManager = BackupManager(
             context = context,
@@ -503,8 +508,12 @@ class BackupManagerHardeningTest {
             database = database
         )
 
+        // Seed an OLD Alarm into DB before import to prove OLD rollback does not execute
+        val oldAlarm = Alarm(id = 123L, hour = 7, minute = 0, label = "OLD Alarm")
+        database.alarmDao().insert(oldAlarm)
+
         coEvery { preferencesManager.getCurrentSettings() } returns AppSettings()
-        coEvery { repository.getAll() } returns emptyList()
+        coEvery { repository.getAll() } coAnswers { database.alarmDao().getAll() }
 
         coEvery { repository.restoreAlarmsTransaction(any(), eq(true)) } coAnswers {
             val staged = firstArg<List<Alarm>>()
@@ -512,9 +521,6 @@ class BackupManagerHardeningTest {
             if (staged.isNotEmpty()) database.alarmDao().insertAll(staged)
             staged.map { it.id }
         }
-
-        // Fail scheduler AFTER COMMITTED
-        coEvery { scheduler.rescheduleAllInBatches(any(), any()) } throws RuntimeException("Post-commit scheduler error")
 
         val json = """
             {
@@ -543,14 +549,15 @@ class BackupManagerHardeningTest {
         """.trimIndent()
 
         val result = realBackupManager.importFromUriStringForTest(json, BackupImportOptions(mode = BackupImportMode.Replace))
-        assertTrue("Post-COMMITTED scheduler failure must still return success", result.isSuccess)
+        assertTrue("Durable COMMITTED boundary exception must still return success", result.isSuccess)
         assertEquals("Returned success count must match actual staged Alarm count (N = 1 > 0)", 1, result.getOrNull())
 
-        // Verify NEW data remains in DB
+        // Verify NEW data remains in DB and OLD rollback did NOT execute
         val alarmsInDb = database.alarmDao().getAll()
-        assertEquals(1, alarmsInDb.size)
+        assertEquals("DB must contain exact 1 committed NEW alarm", 1, alarmsInDb.size)
         assertEquals(888L, alarmsInDb[0].id)
         assertEquals("NEW Committed Alarm", alarmsInDb[0].label)
+        assertTrue("OLD Alarm 123 must not be restored after COMMITTED boundary", alarmsInDb.none { it.id == 123L || it.label == "OLD Alarm" })
     }
 
     @Test

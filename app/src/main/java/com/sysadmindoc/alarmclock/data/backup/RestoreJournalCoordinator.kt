@@ -112,7 +112,13 @@ class RestoreJournalCoordinator @Inject constructor(
             put("checksum", newChecksum)
         }
         writeJournalAtomic(updatedJson.toString())
+        onPostDurableCommittedHookForTest?.invoke()
     }
+
+    /**
+     * Test-only injectable hook invoked immediately after durable COMMITTED write in [markCommitted].
+     */
+    internal var onPostDurableCommittedHookForTest: (() -> Unit)? = null
 
     suspend fun checkAndRecover(): RecoveryOutcome {
         if (!journalFile.exists()) return RecoveryOutcome.NONE
