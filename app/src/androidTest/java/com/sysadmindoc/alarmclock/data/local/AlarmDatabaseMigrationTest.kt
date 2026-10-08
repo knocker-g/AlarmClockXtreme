@@ -34,7 +34,7 @@ class AlarmDatabaseMigrationTest {
 
         db = helper.runMigrationsAndValidate(
             "migration-4-to-latest.db",
-            LATEST_SCHEMA_VERSION,
+            AlarmDatabase.VERSION,
             true,
             *AlarmDatabase.ALL_MIGRATIONS.fromVersion(4),
         )
@@ -59,7 +59,7 @@ class AlarmDatabaseMigrationTest {
     @Test
     fun everyExportedSchemaCanMigrateToLatest() {
         exportedSchemaVersions()
-            .filter { it < LATEST_SCHEMA_VERSION }
+            .filter { it < AlarmDatabase.VERSION }
             .forEach { startVersion ->
                 var db = helper.createDatabase(
                     "migration-$startVersion-to-latest.db",
@@ -70,7 +70,7 @@ class AlarmDatabaseMigrationTest {
 
                 db = helper.runMigrationsAndValidate(
                     "migration-$startVersion-to-latest.db",
-                    LATEST_SCHEMA_VERSION,
+                    AlarmDatabase.VERSION,
                     true,
                     *AlarmDatabase.ALL_MIGRATIONS.fromVersion(startVersion),
                 )
@@ -348,7 +348,7 @@ class AlarmDatabaseMigrationTest {
         migrations.zipWithNext().forEach { (left, right) ->
             assertEquals(left.endVersion, right.startVersion)
         }
-        assertEquals(LATEST_SCHEMA_VERSION, migrations.last().endVersion)
+        assertEquals(AlarmDatabase.VERSION, migrations.last().endVersion)
     }
 
     private fun insertSyntheticAlarm(
@@ -480,6 +480,7 @@ class AlarmDatabaseMigrationTest {
     private fun latestExportedSchemaVersion(): Int {
         val versions = exportedSchemaVersions()
         val latest = versions.max()
+        assertEquals("Exported latest schema version must match production AlarmDatabase.VERSION", AlarmDatabase.VERSION, latest)
         assetsForSchemas().open(File(schemaAssetDirectory(), "$latest.json").path).use { input ->
             assertTrue("Latest exported schema is empty", input.read() >= 0)
         }
@@ -530,8 +531,4 @@ class AlarmDatabaseMigrationTest {
         val type: String,
         val primaryKeyPosition: Int,
     )
-
-    private companion object {
-        const val LATEST_SCHEMA_VERSION = 24
-    }
 }

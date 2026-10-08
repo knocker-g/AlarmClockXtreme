@@ -115,6 +115,16 @@ class DatabaseCompatibilityGateTest {
             roomDb.openHelper.writableDatabase
         }
         assertTrue("Attempting to open newer DB with Room without fallback must fail", openResult.isFailure)
+        val exception = openResult.exceptionOrNull()
+        assertNotNull("Exception must be present on open failure", exception)
+        val isIncompatibilityOrDowngradeError = exception is IllegalStateException ||
+            exception is android.database.sqlite.SQLiteException ||
+            exception?.cause is IllegalStateException ||
+            exception?.cause is android.database.sqlite.SQLiteException ||
+            exception?.message?.contains("downgrade", ignoreCase = true) == true ||
+            exception?.message?.contains("version", ignoreCase = true) == true ||
+            exception?.message?.contains("Can't downgrade", ignoreCase = true) == true
+        assertTrue("Failure must be categorized as version/downgrade incompatibility: ${exception?.message}", isIncompatibilityOrDowngradeError)
 
         // Verify file and sentinel data are preserved and NOT destructively wiped
         assertTrue("DB file must still exist after Room open failure", dbFile.exists())
