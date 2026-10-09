@@ -71,6 +71,12 @@ class RestoreJournalCoordinatorTest {
     fun prepareTransactionCreatesDurableJournal() = runTest {
         coordinator.prepareTransaction(AppSettings(), emptyList(), emptyList())
         assertTrue("Journal file must exist", journalFile.exists())
+        val json = org.json.JSONObject(journalFile.readText())
+        assertEquals(
+            "prepareTransaction must write CURRENT_FORMAT_VERSION",
+            RestoreJournalCoordinator.CURRENT_FORMAT_VERSION,
+            json.getInt("formatVersion")
+        )
     }
 
     @Test
@@ -142,6 +148,9 @@ class RestoreJournalCoordinatorTest {
 
         val result = runCatching { coordinator.checkAndRecover() }
         assertTrue("Checksum mismatch must fail closed", result.isFailure)
+        val ex = result.exceptionOrNull()
+        assertTrue("Exception must be SecurityException", ex is SecurityException)
+        assertTrue("Message must mention checksum: ${ex?.message}", ex?.message?.contains("checksum", ignoreCase = true) == true)
         assertTrue("Journal must be retained on integrity failure", journalFile.exists())
     }
 
@@ -154,6 +163,9 @@ class RestoreJournalCoordinatorTest {
 
         val result = runCatching { coordinator.markCommitted() }
         assertTrue("markCommitted must reject tampered PREPARED journal", result.isFailure)
+        val ex = result.exceptionOrNull()
+        assertTrue("Exception must be SecurityException", ex is SecurityException)
+        assertTrue("Message must mention missing or tampered snapshotJson/checksum", ex?.message?.contains("Missing snapshotJson", ignoreCase = true) == true || ex?.message?.contains("checksum", ignoreCase = true) == true)
         assertTrue("Journal must be retained", journalFile.exists())
     }
 
@@ -164,6 +176,20 @@ class RestoreJournalCoordinatorTest {
 
         val result = runCatching { coordinator.markCommitted() } // Try committing again from COMMITTED phase
         assertTrue("markCommitted must reject non-PREPARED phase", result.isFailure)
+        val ex = result.exceptionOrNull()
+        assertTrue("Exception must be SecurityException", ex is SecurityException)
+        assertTrue("Message must mention invalid phase: ${ex?.message}", ex?.message?.contains("invalid phase", ignoreCase = true) == true || ex?.message?.contains("PREPARED", ignoreCase = true) == true)
+    }
+
+    @Test
+    fun markCommittedWithUnsupportedVersionFailsClosed() = runTest {
+        val unsupportedVersion = RestoreJournalCoordinator.CURRENT_FORMAT_VERSION + 1
+        journalFile.writeText("""{"formatVersion": $unsupportedVersion, "phase": "PREPARED", "snapshotJson": "{}", "checksum": "abc"}""")
+        val result = runCatching { coordinator.markCommitted() }
+        assertTrue("markCommitted must reject unsupported formatVersion", result.isFailure)
+        val ex = result.exceptionOrNull()
+        assertTrue("Exception must be SecurityException", ex is SecurityException)
+        assertTrue("Message must mention formatVersion: ${ex?.message}", ex?.message?.contains("formatVersion", ignoreCase = true) == true || ex?.message?.contains("version", ignoreCase = true) == true)
     }
 
     @Test
@@ -212,13 +238,13 @@ class RestoreJournalCoordinatorTest {
         assertTrue("Corrupt JSON must fail", corruptResult.isFailure)
         assertTrue(journalFile.exists())
 
-        // Unsupported version
-        val unsupportedVersion = currentVersion + 98
+        // Unsupported version (using currentVersion + 1)
+        val unsupportedVersion = currentVersion + 1
         journalFile.writeText("""{"formatVersion": $unsupportedVersion, "phase": "PREPARED", "snapshotJson": "{}", "checksum": "abc"}""")
         val unsupportedResult = runCatching { coordinator.checkAndRecover() }
         assertTrue("Unsupported version must fail", unsupportedResult.isFailure)
         assertTrue("Exception must be SecurityException for unsupported version", unsupportedResult.exceptionOrNull() is SecurityException)
-        assertTrue("Message must mention format version: ${unsupportedResult.exceptionOrNull()?.message}", unsupportedResult.exceptionOrNull()?.message?.contains("version") == true || unsupportedResult.exceptionOrNull()?.message?.contains("format") == true)
+        assertTrue("Message must mention format version: ${unsupportedResult.exceptionOrNull()?.message}", unsupportedResult.exceptionOrNull()?.message?.contains("version", ignoreCase = true) == true || unsupportedResult.exceptionOrNull()?.message?.contains("format", ignoreCase = true) == true)
         assertTrue(journalFile.exists())
 
         // Unknown phase with CURRENT format version
@@ -226,7 +252,7 @@ class RestoreJournalCoordinatorTest {
         val unknownPhaseResult = runCatching { coordinator.checkAndRecover() }
         assertTrue("Unknown phase must fail", unknownPhaseResult.isFailure)
         assertTrue("Exception must be SecurityException for unknown phase", unknownPhaseResult.exceptionOrNull() is SecurityException)
-        assertTrue("Message must mention unknown phase: ${unknownPhaseResult.exceptionOrNull()?.message}", unknownPhaseResult.exceptionOrNull()?.message?.contains("phase") == true)
+        assertTrue("Message must mention unknown phase: ${unknownPhaseResult.exceptionOrNull()?.message}", unknownPhaseResult.exceptionOrNull()?.message?.contains("phase", ignoreCase = true) == true)
         assertTrue(journalFile.exists())
     }
 
