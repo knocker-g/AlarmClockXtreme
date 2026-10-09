@@ -56,7 +56,7 @@ class RestoreJournalCoordinator @Inject constructor(
         val snapshotJson = snapshotAdapter.toJson(snapshot)
             ?: throw IllegalStateException("Failed to serialize RestoreSnapshot")
 
-        val formatVersion = 1
+        val formatVersion = CURRENT_FORMAT_VERSION
         val phase = PHASE_PREPARED
         val payloadToHash = "$formatVersion:$phase:$snapshotJson"
         val checksum = sha256(payloadToHash)
@@ -79,7 +79,7 @@ class RestoreJournalCoordinator @Inject constructor(
         }
 
         val formatVersion = json.optInt("formatVersion", -1)
-        if (formatVersion != 1) {
+        if (formatVersion != CURRENT_FORMAT_VERSION) {
             throw SecurityException("Unsupported or missing formatVersion in markCommitted: $formatVersion. Fails closed.")
         }
 
@@ -137,7 +137,7 @@ class RestoreJournalCoordinator @Inject constructor(
         }
 
         val formatVersion = json.optInt("formatVersion", -1)
-        if (formatVersion != 1) {
+        if (formatVersion != CURRENT_FORMAT_VERSION) {
             throw SecurityException("Unsupported or missing restore journal format version: $formatVersion. Fails closed.")
         }
 
@@ -216,6 +216,7 @@ class RestoreJournalCoordinator @Inject constructor(
     }
 
     companion object {
+        const val CURRENT_FORMAT_VERSION = 1
         const val JOURNAL_FILENAME = "restore_transaction.journal"
         const val PHASE_PREPARED = "PREPARED"
         const val PHASE_COMMITTED = "COMMITTED"

@@ -204,19 +204,29 @@ class RestoreJournalCoordinatorTest {
 
     @Test
     fun corruptUnsupportedUnknownFailuresRetainJournal() = runTest {
+        val currentVersion = RestoreJournalCoordinator.CURRENT_FORMAT_VERSION
+
         // Corrupt json
         journalFile.writeText("{ malformed json }")
-        assertTrue(runCatching { coordinator.checkAndRecover() }.isFailure)
+        val corruptResult = runCatching { coordinator.checkAndRecover() }
+        assertTrue("Corrupt JSON must fail", corruptResult.isFailure)
         assertTrue(journalFile.exists())
 
         // Unsupported version
-        journalFile.writeText("""{"formatVersion": 99, "phase": "PREPARED", "snapshotJson": "{}", "checksum": "abc"}""")
-        assertTrue(runCatching { coordinator.checkAndRecover() }.isFailure)
+        val unsupportedVersion = currentVersion + 98
+        journalFile.writeText("""{"formatVersion": $unsupportedVersion, "phase": "PREPARED", "snapshotJson": "{}", "checksum": "abc"}""")
+        val unsupportedResult = runCatching { coordinator.checkAndRecover() }
+        assertTrue("Unsupported version must fail", unsupportedResult.isFailure)
+        assertTrue("Exception must be SecurityException for unsupported version", unsupportedResult.exceptionOrNull() is SecurityException)
+        assertTrue("Message must mention format version: ${unsupportedResult.exceptionOrNull()?.message}", unsupportedResult.exceptionOrNull()?.message?.contains("version") == true || unsupportedResult.exceptionOrNull()?.message?.contains("format") == true)
         assertTrue(journalFile.exists())
 
-        // Unknown phase
-        journalFile.writeText("""{"formatVersion": 1, "phase": "UNKNOWN", "snapshotJson": "{}", "checksum": "abc"}""")
-        assertTrue(runCatching { coordinator.checkAndRecover() }.isFailure)
+        // Unknown phase with CURRENT format version
+        journalFile.writeText("""{"formatVersion": $currentVersion, "phase": "UNKNOWN_PHASE", "snapshotJson": "{}", "checksum": "abc"}""")
+        val unknownPhaseResult = runCatching { coordinator.checkAndRecover() }
+        assertTrue("Unknown phase must fail", unknownPhaseResult.isFailure)
+        assertTrue("Exception must be SecurityException for unknown phase", unknownPhaseResult.exceptionOrNull() is SecurityException)
+        assertTrue("Message must mention unknown phase: ${unknownPhaseResult.exceptionOrNull()?.message}", unknownPhaseResult.exceptionOrNull()?.message?.contains("phase") == true)
         assertTrue(journalFile.exists())
     }
 
