@@ -257,7 +257,7 @@ class AlarmFiringViewModelTest {
 
     @Test
     fun `NFC hardware missing swaps the challenge for math`() = runTest(dispatcher) {
-        val viewModel = viewModelFor(challengeType = "NFC_SCAN")
+        val viewModel = viewModelFor(challengeType = "NFC_SCAN", nfcTagId = "nfc_tag_123")
         advanceUntilIdle()
         assertTrue(viewModel.uiState.value.challenge is Challenge.NfcChallenge)
 
@@ -272,14 +272,15 @@ class AlarmFiringViewModelTest {
         points = listOf(InkPoint(1f, 1f, 0L), InkPoint(20f, 30f, 12L), InkPoint(40f, 10f, 24L))
     )
 
-    private fun viewModelFor(challengeType: String): AlarmFiringViewModel {
+    private fun viewModelFor(challengeType: String, nfcTagId: String = "nfc_tag_123"): AlarmFiringViewModel {
         coEvery { repository.getById(any()) } returns Alarm(
             id = 5L,
             hour = 7,
             minute = 0,
             label = "Wake",
             isEnabled = true,
-            challengeType = challengeType
+            challengeType = challengeType,
+            nfcTagId = nfcTagId
         )
         return viewModel()
     }
