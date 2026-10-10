@@ -8,6 +8,7 @@ import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import com.sysadmindoc.alarmclock.R
 import com.sysadmindoc.alarmclock.service.BedtimeNoiseBaselineSampler
+import java.util.Locale
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Before
@@ -30,13 +31,14 @@ import org.robolectric.annotation.Config
  * chooser, which is visible.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [30])
+@Config(sdk = [30], qualifiers = "en")
 class BedtimeReminderBaselineTest {
 
     private lateinit var context: Context
 
     @Before
     fun setUp() {
+        Locale.setDefault(Locale.US)
         context = ApplicationProvider.getApplicationContext<Application>()
         context.getSharedPreferences("bedtime_noise_baseline", Context.MODE_PRIVATE)
             .edit()
