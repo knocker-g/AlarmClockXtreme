@@ -10,14 +10,29 @@ import com.sysadmindoc.alarmclock.data.repository.CalendarEvent
 import com.sysadmindoc.alarmclock.worker.WakeConfirmWorker
 import java.time.LocalDate
 import java.time.LocalTime
+import java.util.Locale
+import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 
 class AlarmServiceControllerTest {
+    private var previousDefaultLocale: Locale? = null
+
+    @Before
+    fun setUp() {
+        previousDefaultLocale = Locale.getDefault()
+        Locale.setDefault(Locale.US)
+    }
+
+    @After
+    fun tearDown() {
+        previousDefaultLocale?.let { Locale.setDefault(it) }
+    }
     @Test
     fun hapticControllerPlansDelayAndMutedProfile() {
         val muted = Alarm(
