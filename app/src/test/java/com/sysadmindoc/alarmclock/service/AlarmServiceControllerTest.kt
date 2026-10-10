@@ -11,28 +11,14 @@ import com.sysadmindoc.alarmclock.worker.WakeConfirmWorker
 import java.time.LocalDate
 import java.time.LocalTime
 import java.util.Locale
-import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Before
 import org.junit.Test
 
 class AlarmServiceControllerTest {
-    private var previousDefaultLocale: Locale? = null
-
-    @Before
-    fun setUp() {
-        previousDefaultLocale = Locale.getDefault()
-        Locale.setDefault(Locale.US)
-    }
-
-    @After
-    fun tearDown() {
-        previousDefaultLocale?.let { Locale.setDefault(it) }
-    }
     @Test
     fun hapticControllerPlansDelayAndMutedProfile() {
         val muted = Alarm(
@@ -103,27 +89,33 @@ class AlarmServiceControllerTest {
 
     @Test
     fun postDismissControllerBuildsAnnouncementAndBriefingPayload() {
-        // The template and the spoken clock come from the caller now, so the
-        // day and month can follow the locale rather than the enum constant.
-        val text = AlarmPostDismissController.morningAnnouncementText(
-            template = "It is %1\$s. Today is %2\$s, %3\$s %4\$d.",
-            spokenTime = "6:05 AM",
-            now = LocalTime.of(6, 5),
-            today = LocalDate.of(2026, 7, 2)
-        )
-        val payload = AlarmPostDismissController.morningBriefingPayload(
-            alarm = Alarm(morningRoutine = "Stretch, water"),
-            now = LocalTime.of(13, 7),
-            today = LocalDate.of(2026, 7, 2),
-            is24Hour = false
-        )
+        val previousLocale = Locale.getDefault()
+        Locale.setDefault(Locale.US)
+        try {
+            // The template and the spoken clock come from the caller now, so the
+            // day and month can follow the locale rather than the enum constant.
+            val text = AlarmPostDismissController.morningAnnouncementText(
+                template = "It is %1\$s. Today is %2\$s, %3\$s %4\$d.",
+                spokenTime = "6:05 AM",
+                now = LocalTime.of(6, 5),
+                today = LocalDate.of(2026, 7, 2)
+            )
+            val payload = AlarmPostDismissController.morningBriefingPayload(
+                alarm = Alarm(morningRoutine = "Stretch, water"),
+                now = LocalTime.of(13, 7),
+                today = LocalDate.of(2026, 7, 2),
+                is24Hour = false
+            )
 
-        assertEquals("It is 6:05 AM. Today is Thursday, July 2.", text)
-        assertEquals("1:07 PM", payload.time)
-        assertEquals("Thursday, July 2", payload.date)
-        assertEquals("", payload.weather)
-        assertEquals("", payload.nextEvent)
-        assertEquals("Stretch, water", payload.routine)
+            assertEquals("It is 6:05 AM. Today is Thursday, July 2.", text)
+            assertEquals("1:07 PM", payload.time)
+            assertEquals("Thursday, July 2", payload.date)
+            assertEquals("", payload.weather)
+            assertEquals("", payload.nextEvent)
+            assertEquals("Stretch, water", payload.routine)
+        } finally {
+            Locale.setDefault(previousLocale)
+        }
     }
 
     @Test
