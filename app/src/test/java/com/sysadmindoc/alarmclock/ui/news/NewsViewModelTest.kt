@@ -99,12 +99,17 @@ class NewsViewModelTest {
 
     @Test
     fun `items are cleared when last source is deleted`() = runTest(dispatcher) {
+        coEvery { repository.fetchFeed(1L, "url1") } returns Result.success(
+            NewsFeedSnapshot(items = listOf(item1), fetchedAtMillis = 1000L, isStale = false)
+        )
         settingsFlow.value = AppSettings(newsActiveSourceId = 1L, newsSourcesSeeded = true)
         val viewModel = NewsViewModel(context, repository, sourceRepository, preferencesManager)
         advanceUntilIdle()
 
-        // Verify initial non-empty sources
+        // Verify initial non-empty sources and loaded items
         assertEquals(sources, viewModel.uiState.value.sources)
+        assertEquals(1L, viewModel.uiState.value.activeSourceId)
+        assertEquals(listOf(item1), viewModel.uiState.value.items)
 
         // Delete all sources via the active StateFlow
         sourcesFlow.value = emptyList()
