@@ -272,7 +272,7 @@ class AlarmFiringViewModelTest {
         points = listOf(InkPoint(1f, 1f, 0L), InkPoint(20f, 30f, 12L), InkPoint(40f, 10f, 24L))
     )
 
-    private fun viewModelFor(challengeType: String, nfcTagId: String = "nfc_tag_123"): AlarmFiringViewModel {
+    private fun viewModelFor(challengeType: String, nfcTagId: String = ""): AlarmFiringViewModel {
         coEvery { repository.getById(any()) } returns Alarm(
             id = 5L,
             hour = 7,
