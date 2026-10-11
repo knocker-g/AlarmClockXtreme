@@ -79,10 +79,10 @@ class BedtimeReminderBaselineTest {
         val notification = fireReminder()
 
         assertNotNull(notification)
-        assertEquals(
-            context.getString(R.string.bedtime_room_loud_advice),
-            notification!!.extras.getCharSequence(Notification.EXTRA_TEXT).toString()
-        )
+        val expectedAdvice = context.getString(R.string.bedtime_room_loud_advice)
+        val actualText = notification!!.extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
+            ?: notification.extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
+        assertEquals(expectedAdvice, actualText)
         // Sampling from the background would have replaced the measurement.
         assertEquals(
             -20f,

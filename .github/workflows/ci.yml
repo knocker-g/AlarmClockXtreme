@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  JAVA_TOOL_OPTIONS: "-Duser.language=en -Duser.country=US"
+  JAVA_TOOL_OPTIONS: "-Duser.language=en -Duser.country=US -Duser.timezone=UTC"
 
 jobs:
   build-and-test:
