@@ -10,6 +10,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  JAVA_TOOL_OPTIONS: "-Duser.language=en -Duser.country=US"
+
 jobs:
   build-and-test:
     name: Build & Test
