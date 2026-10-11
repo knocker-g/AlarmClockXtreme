@@ -201,7 +201,8 @@ val verifyLocalizedPrimaryScreens by tasks.registering {
             "nfcAlpha", "sheep-drift", "sheep-drift-value", "icon_scale", "loading-card",
             "loading-alpha", "skeleton-block", "skeleton-alpha", "funnel", "funnel-rotation",
             "funnel-drift", "glowAlpha", "burnInDrift", "driftX", "driftY", "timer-pulse",
-            "key-press-scale", "barcodeScan", "scanLine", "dotWidth\$index"
+            "key-press-scale", "barcodeScan", "scanLine", "dotWidth\$index",
+            "alarm-edit-page-transition", "delete_bg", "driftPhaseX", "driftPhaseY", "settings-pane-transition"
         )
         val animationLabelPattern = Regex("""\blabel\s*=\s*"([^"\r\n]*)"""")
         val interpolation = Regex("""\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*""")
