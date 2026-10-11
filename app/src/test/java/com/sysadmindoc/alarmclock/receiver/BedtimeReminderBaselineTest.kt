@@ -32,7 +32,7 @@ import org.robolectric.annotation.Config
  * chooser, which is visible.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [30], qualifiers = "en")
+@Config(sdk = [30], qualifiers = "en-rUS")
 class BedtimeReminderBaselineTest {
 
     private lateinit var context: Context
@@ -43,6 +43,14 @@ class BedtimeReminderBaselineTest {
         previousDefaultLocale = Locale.getDefault()
         Locale.setDefault(Locale.US)
         context = ApplicationProvider.getApplicationContext<Application>()
+        val config = context.resources.configuration
+        config.setLocale(Locale.US)
+        @Suppress("DEPRECATION")
+        context.resources.updateConfiguration(config, context.resources.displayMetrics)
+        context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .commit()
         context.getSharedPreferences("bedtime_noise_baseline", Context.MODE_PRIVATE)
             .edit()
             .clear()
