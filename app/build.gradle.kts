@@ -2,7 +2,7 @@ import java.util.Properties
 import java.io.FileInputStream
 import org.gradle.api.GradleException
 
-// AlarmClockXtreme v1.15.34
+// AlarmClockXtreme Personal Build (Single Variant)
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -120,7 +120,7 @@ tasks.matching { it.name in releaseArtifactTasks }.configureEach {
 val verifyRoomSchemaExports by tasks.registering {
     group = "verification"
     description = "Reject Room schema exports changed by a debug build until they are reviewed and committed."
-    dependsOn("kspDebugKotlin")
+    dependsOn("kspDebugKotlin", "kspReleaseKotlin")
 
     doLast {
         fun runGit(vararg arguments: String): Pair<Int, String> {
@@ -201,8 +201,7 @@ val verifyLocalizedPrimaryScreens by tasks.registering {
             "nfcAlpha", "sheep-drift", "sheep-drift-value", "icon_scale", "loading-card",
             "loading-alpha", "skeleton-block", "skeleton-alpha", "funnel", "funnel-rotation",
             "funnel-drift", "glowAlpha", "burnInDrift", "driftX", "driftY", "timer-pulse",
-            "key-press-scale", "barcodeScan", "scanLine", "dotWidth\$index",
-            "alarm-edit-page-transition", "delete_bg", "driftPhaseX", "driftPhaseY", "settings-pane-transition"
+            "key-press-scale", "barcodeScan", "scanLine", "dotWidth\$index"
         )
         val animationLabelPattern = Regex("""\blabel\s*=\s*"([^"\r\n]*)"""")
         val interpolation = Regex("""\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*""")
