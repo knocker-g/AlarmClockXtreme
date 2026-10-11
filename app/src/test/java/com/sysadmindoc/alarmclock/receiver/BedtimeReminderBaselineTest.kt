@@ -42,7 +42,10 @@ class BedtimeReminderBaselineTest {
     fun setUp() {
         previousDefaultLocale = Locale.getDefault()
         Locale.setDefault(Locale.US)
-        context = ApplicationProvider.getApplicationContext<Application>()
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val config = app.resources.configuration
+        config.setLocale(Locale.US)
+        context = app.createConfigurationContext(config)
         context.getSharedPreferences("bedtime_noise_baseline", Context.MODE_PRIVATE)
             .edit()
             .clear()
