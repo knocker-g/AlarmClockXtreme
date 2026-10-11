@@ -25,7 +25,7 @@ import org.robolectric.android.controller.ServiceController
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [30], qualifiers = "en-rUS")
+@Config(sdk = [30])
 class TimerAlarmServiceTest {
     private lateinit var context: Context
     private lateinit var controller: ServiceController<TimerAlarmService>

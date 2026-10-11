@@ -32,7 +32,7 @@ import org.robolectric.annotation.Config
  * chooser, which is visible.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [30], qualifiers = "en-rUS")
+@Config(sdk = [30], qualifiers = "en")
 class BedtimeReminderBaselineTest {
 
     private lateinit var context: Context
@@ -42,12 +42,7 @@ class BedtimeReminderBaselineTest {
     fun setUp() {
         previousDefaultLocale = Locale.getDefault()
         Locale.setDefault(Locale.US)
-        val app = ApplicationProvider.getApplicationContext<Application>()
-        val config = app.resources.configuration
-        config.setLocale(Locale.US)
-        @Suppress("DEPRECATION")
-        app.resources.updateConfiguration(config, app.resources.displayMetrics)
-        context = app
+        context = ApplicationProvider.getApplicationContext<Application>()
         context.getSharedPreferences("bedtime_noise_baseline", Context.MODE_PRIVATE)
             .edit()
             .clear()
@@ -79,10 +74,10 @@ class BedtimeReminderBaselineTest {
         val notification = fireReminder()
 
         assertNotNull(notification)
-        val expectedAdvice = context.getString(R.string.bedtime_room_loud_advice)
-        val actualText = notification!!.extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
-            ?: notification.extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
-        assertEquals(expectedAdvice, actualText)
+        assertEquals(
+            context.getString(R.string.bedtime_room_loud_advice),
+            notification!!.extras.getCharSequence(Notification.EXTRA_TEXT).toString()
+        )
         // Sampling from the background would have replaced the measurement.
         assertEquals(
             -20f,
