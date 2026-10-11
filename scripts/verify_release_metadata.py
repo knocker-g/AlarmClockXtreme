@@ -199,27 +199,17 @@ def verify_release_metadata(root: Path) -> ReleaseSnapshot:
     )
     database_version = int(
         extract_one(
-            database_block,
-            r"\bversion\s*=\s*([0-9]+)",
-            "AlarmDatabase.kt schema version",
+            database_source,
+            r"\bconst\s+val\s+VERSION\s*=\s*([0-9]+)",
+            "AlarmDatabase.kt VERSION constant",
         )
     )
     migration_test = read_text(
         root,
         "app/src/androidTest/java/com/sysadmindoc/alarmclock/data/local/AlarmDatabaseMigrationTest.kt",
     )
-    tested_database_version = int(
-        extract_one(
-            migration_test,
-            r"LATEST_SCHEMA_VERSION\s*=\s*([0-9]+)",
-            "AlarmDatabaseMigrationTest.kt LATEST_SCHEMA_VERSION",
-        )
-    )
-    expect(
-        "AlarmDatabaseMigrationTest.kt LATEST_SCHEMA_VERSION",
-        tested_database_version,
-        database_version,
-    )
+    if "AlarmDatabase.VERSION" not in migration_test:
+        errors.append("AlarmDatabaseMigrationTest.kt: expected reference to AlarmDatabase.VERSION")
     schema_dir = root / SCHEMA_DIRECTORY
     schema_versions = sorted(
         int(path.stem)
