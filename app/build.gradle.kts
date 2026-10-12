@@ -109,7 +109,8 @@ android {
 
 val releaseArtifactTasks = setOf(
     "assembleRelease",
-    "bundleRelease"
+    "bundleRelease",
+    "checkReleaseAarMetadata"
 )
 
 tasks.matching { it.name in releaseArtifactTasks }.configureEach {
