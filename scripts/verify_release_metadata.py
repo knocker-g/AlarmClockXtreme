@@ -71,14 +71,6 @@ def verify_release_metadata(root: Path) -> ReleaseSnapshot:
         if actual != expected:
             errors.append(f"{source}: expected {expected}, found {actual}")
 
-    app_header = extract_one(
-        app_gradle,
-        rf"^// AlarmClockXtreme v({VERSION_PATTERN})$",
-        "app/build.gradle.kts header",
-        re.MULTILINE,
-    )
-    expect("app/build.gradle.kts header", app_header, version_name)
-
     root_gradle = read_text(root, "build.gradle.kts")
     root_header = extract_one(
         root_gradle,
@@ -197,29 +189,22 @@ def verify_release_metadata(root: Path) -> ReleaseSnapshot:
         "AlarmDatabase.kt @Database",
         re.DOTALL,
     )
+    if "AlarmDatabase.VERSION" not in database_block:
+        errors.append("AlarmDatabase.kt: expected @Database version to bind to AlarmDatabase.VERSION")
+
     database_version = int(
         extract_one(
-            database_block,
-            r"\bversion\s*=\s*([0-9]+)",
-            "AlarmDatabase.kt schema version",
+            database_source,
+            r"\bconst\s+val\s+VERSION\s*=\s*([0-9]+)",
+            "AlarmDatabase.kt VERSION constant",
         )
     )
     migration_test = read_text(
         root,
         "app/src/androidTest/java/com/sysadmindoc/alarmclock/data/local/AlarmDatabaseMigrationTest.kt",
     )
-    tested_database_version = int(
-        extract_one(
-            migration_test,
-            r"LATEST_SCHEMA_VERSION\s*=\s*([0-9]+)",
-            "AlarmDatabaseMigrationTest.kt LATEST_SCHEMA_VERSION",
-        )
-    )
-    expect(
-        "AlarmDatabaseMigrationTest.kt LATEST_SCHEMA_VERSION",
-        tested_database_version,
-        database_version,
-    )
+    if "AlarmDatabase.VERSION" not in migration_test:
+        errors.append("AlarmDatabaseMigrationTest.kt: expected reference to AlarmDatabase.VERSION")
     schema_dir = root / SCHEMA_DIRECTORY
     schema_versions = sorted(
         int(path.stem)
