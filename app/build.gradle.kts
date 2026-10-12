@@ -2,7 +2,7 @@ import java.util.Properties
 import java.io.FileInputStream
 import org.gradle.api.GradleException
 
-// AlarmClockXtreme Personal Build (Single Variant)
+// AlarmClockXtreme v1.15.34
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
