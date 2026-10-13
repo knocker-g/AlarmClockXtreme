@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Run CI Verification Gates & Dump XML Results
+        run: |
+          set +e
+          ./gradlew app:testDebugUnitTest --tests "com.sysadmindoc.alarmclock.ui.timer.TimerAlarmServiceTest" --no-daemon
+          status=$?
+          echo "=== JUNIT XML RESULTS: TimerAlarmServiceTest ==="
+          find app/build/test-results/testDebugUnitTest -name "*TimerAlarmServiceTest*.xml" -exec cat {} +
+          exit $status

@@ -199,7 +199,18 @@ class TimerAlarmServiceTest {
         // suspect for this case's one recorded flake is an alarm leaking in
         // from a neighbouring class, and filtering to timer alarms would let
         // exactly that pass unnoticed while still calling itself a diagnosis.
-        assertEquals("[timer#4]", scheduledAlarmSummary())
+        val summary = scheduledAlarmSummary()
+        val alarms = shadowOf(context.getSystemService(AlarmManager::class.java)).scheduledAlarms
+        System.err.println("=== KNO-225 DIAGNOSTIC RESTART TIMER ===")
+        System.err.println("Scheduled Summary: '$summary'")
+        System.err.println("Total Scheduled Alarms: ${alarms.size}")
+        alarms.forEachIndexed { i, alarm ->
+            val intent = alarm.operation?.let { shadowOf(it).savedIntent }
+            System.err.println("  Alarm #$i: triggerAt=${alarm.triggerAtTime}, action=${intent?.action}, extras=${intent?.extras}")
+        }
+        System.err.println("=========================================")
+
+        assertEquals("[timer#4]", summary)
         val notifications = shadowOf(context.getSystemService(NotificationManager::class.java))
         assertNull(notifications.getNotification(TimerNotifications.notificationId(3)))
         assertNotNull(notifications.getNotification(TimerNotifications.notificationId(4)))
