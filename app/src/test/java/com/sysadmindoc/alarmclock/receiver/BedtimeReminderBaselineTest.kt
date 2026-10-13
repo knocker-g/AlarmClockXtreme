@@ -62,16 +62,51 @@ class BedtimeReminderBaselineTest {
 
     @Test
     fun `the reminder repeats the last in-app measurement instead of taking one`() {
-        // Written straight to the store rather than through the sampler: the
-        // sampler is exactly the path this test is asserting nobody takes.
-        context.getSharedPreferences("bedtime_noise_baseline", Context.MODE_PRIVATE)
-            .edit()
+        val prefs = context.getSharedPreferences("bedtime_noise_baseline", Context.MODE_PRIVATE)
+        prefs.edit()
             .putString("level", "LOUD")
             .putFloat("dbfs", -20f)
             .putLong("measured_at", 1_787_600_000_000L)
             .commit()
 
+        val manager = shadowOf(context.getSystemService(NotificationManager::class.java))
+        System.err.println("=== KNO-220 DIAGNOSTIC BEFORE FIRE ===")
+        System.err.println("Prefs Level: ${prefs.getString("level", null)}")
+        System.err.println("Prefs DBFS: ${prefs.getFloat("dbfs", Float.NaN)}")
+        System.err.println("Prefs MeasuredAt: ${prefs.getLong("measured_at", -1L)}")
+        System.err.println("Existing Notifications Count: ${manager.allNotifications.size}")
+
         val notification = fireReminder()
+
+        val expectedAdvice = context.getString(R.string.bedtime_room_loud_advice)
+        val selectedText = (notification?.extras?.getCharSequence(Notification.EXTRA_TEXT)
+            ?: notification?.extras?.getCharSequence(Notification.EXTRA_BIG_TEXT))?.toString()
+        val selectedTitle = notification?.extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString()
+
+        val direct3001Notif = manager.getNotification(3001)
+        val direct3001Text = (direct3001Notif?.extras?.getCharSequence(Notification.EXTRA_TEXT)
+            ?: direct3001Notif?.extras?.getCharSequence(Notification.EXTRA_BIG_TEXT))?.toString()
+        val direct3001Title = direct3001Notif?.extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString()
+
+        System.err.println("=== KNO-220 DIAGNOSTIC AFTER FIRE ===")
+        System.err.println("Expected Loud Advice String: '$expectedAdvice'")
+        System.err.println("Selected Notification Title: '$selectedTitle'")
+        System.err.println("Selected Notification Text: '$selectedText'")
+        System.err.println("Direct NOTIFICATION_ID 3001 Found: ${direct3001Notif != null}")
+        System.err.println("Direct 3001 Title: '$direct3001Title'")
+        System.err.println("Direct 3001 Text: '$direct3001Text'")
+        System.err.println("Total Notifications In Manager: ${manager.allNotifications.size}")
+        manager.allNotifications.forEachIndexed { index, notif ->
+            val t = notif.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
+            val txt = notif.extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
+            val btxt = notif.extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
+            System.err.println("  Notif #$index: title='$t', extra_text='$txt', extra_big_text='$btxt'")
+        }
+        val postSnapshot = BedtimeNoiseBaselineSampler.readSnapshot(context)
+        System.err.println("Post Snapshot Level: ${postSnapshot.baseline?.level}")
+        System.err.println("Post Snapshot DBFS: ${postSnapshot.baseline?.dbfs}")
+        System.err.println("Post Snapshot MeasuredAt: ${postSnapshot.measuredAtMillis}")
+        System.err.println("======================================")
 
         assertNotNull(notification)
         val actualLoudText = (notification!!.extras.getCharSequence(Notification.EXTRA_TEXT)
