@@ -32,7 +32,7 @@ jobs:
       - name: Run CI Verification Gates & Dump XML Results
         run: |
           set +e
-          ./gradlew app:testDebugUnitTest --tests "com.sysadmindoc.alarmclock.ui.timer.TimerAlarmServiceTest" --no-daemon
+          ./gradlew app:testDebugUnitTest --no-daemon
           status=$?
           echo "=== JUNIT XML RESULTS: TimerAlarmServiceTest ==="
           find app/build/test-results/testDebugUnitTest -name "*TimerAlarmServiceTest*.xml" -exec cat {} +
