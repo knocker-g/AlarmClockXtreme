@@ -57,7 +57,7 @@ class BedtimeReminderBaselineTest {
     private fun fireReminder(): Notification? {
         BedtimeReceiver().onReceive(context, Intent(BedtimeReceiver.ACTION_BEDTIME_REMINDER))
         val manager = shadowOf(context.getSystemService(NotificationManager::class.java))
-        return manager.allNotifications.lastOrNull()
+        return manager.getNotification(BedtimeReceiver.NOTIFICATION_ID)
     }
 
     @Test
