@@ -1857,8 +1857,8 @@
     <string name="bedtime_tagged_waiting_for_sleep_sessions">%1$d 夜タグ付け済み。睡眠セッションを待機中</string>
     <string name="bedtime_tagged_nights_with_local_sleep_data">%1$d/%2$d 夜、ローカル睡眠データあり</string>
     <string name="bedtime_start_sonar_or_smart_wake_to">落ち着きのなさを比較するにはSonarまたはスマートウェイクを開始してください</string>
-    <string name="bedtime_m_restless_vs_baseline">ベースライン比 +%1$s分 落ち着かない</string>
-    <string name="bedtime_m_restless_vs_baseline_2">ベースライン比 %1$s分 落ち着かない</string>
+    <string name="bedtime_m_restless_vs_baseline">ベースライン比 +%1$d分 落ち着かない</string>
+    <string name="bedtime_m_restless_vs_baseline_2">ベースライン比 %1$d分 落ち着かない</string>
     <string name="bedtime_matches_baseline_restlessness">ベースラインの落ち着きと一致</string>
     <string name="bedtime_last_night">昨夜</string>
     <string name="bedtime_not_set">未設定</string>
@@ -1952,9 +1952,9 @@
     <string name="alarmfiring_speech_recognition_failed_try_again_or">音声認識に失敗しました。もう一度試すか、フレーズを入力してください。</string>
     <string name="dashboard_earlier">前</string>
     <string name="dashboard_showing_the_last_saved_forecast">最後に保存済みの予報を表示中。</string>
-    <string name="dashboard_m_ago">%1$d分前</string>
-    <string name="dashboard_h_ago">%1$d時間前</string>
-    <string name="dashboard_d_ago">%1$d日前</string>
+    <string name="dashboard_m_ago">%1$s分前</string>
+    <string name="dashboard_h_ago">%1$s時間前</string>
+    <string name="dashboard_d_ago">%1$s日前</string>
     <string name="ringtone_uses_your_device_s_current_default">デバイスの現在のデフォルトアラーム音を使用します。</string>
     <string name="ringtone_no_audio_best_paired_with_vibration">音声なし。バイブレーションや他の起床エフェクトとの組み合わせに最適です。</string>
     <string name="ringtone_tap_to_preview_then_choose_use">タップしてプレビューし、気に入ったら [使用] を選択してください。</string>

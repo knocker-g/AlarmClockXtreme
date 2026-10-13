@@ -365,8 +365,8 @@ class DashboardViewModel @Inject constructor(
             val daily = response.daily
             val hourly = response.hourly
 
-                _uiState.update { it.copy(
-                    weatherLoading = false,
+            _uiState.update { it.copy(
+                weatherLoading = false,
                     hasLocation = true,
                     locationName = locName,
                     latitude = lat,
