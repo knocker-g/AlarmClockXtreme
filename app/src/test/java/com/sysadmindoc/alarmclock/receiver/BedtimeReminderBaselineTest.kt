@@ -8,6 +8,7 @@ import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import com.sysadmindoc.alarmclock.R
 import com.sysadmindoc.alarmclock.service.BedtimeNoiseBaselineSampler
+import android.content.res.Configuration
 import java.util.Locale
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -37,12 +38,22 @@ class BedtimeReminderBaselineTest {
 
     private lateinit var context: Context
     private var previousDefaultLocale: Locale? = null
+    private var previousAppConfig: Configuration? = null
 
     @Before
     fun setUp() {
         previousDefaultLocale = Locale.getDefault()
         Locale.setDefault(Locale.US)
-        context = ApplicationProvider.getApplicationContext<Application>()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        previousAppConfig = Configuration(app.resources.configuration)
+
+        val testConfig = Configuration(app.resources.configuration)
+        testConfig.setLocale(Locale.US)
+        @Suppress("DEPRECATION")
+        app.resources.updateConfiguration(testConfig, app.resources.displayMetrics)
+
+        context = app
         context.getSharedPreferences("bedtime_noise_baseline", Context.MODE_PRIVATE)
             .edit()
             .clear()
@@ -52,6 +63,11 @@ class BedtimeReminderBaselineTest {
     @After
     fun tearDown() {
         previousDefaultLocale?.let { Locale.setDefault(it) }
+        previousAppConfig?.let { config ->
+            val app = ApplicationProvider.getApplicationContext<Application>()
+            @Suppress("DEPRECATION")
+            app.resources.updateConfiguration(config, app.resources.displayMetrics)
+        }
     }
 
     private fun fireReminder(): Notification? {
