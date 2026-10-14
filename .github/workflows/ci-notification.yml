@@ -86,15 +86,18 @@ jobs:
           )
 
           try:
-              with urllib.request.urlopen(req) as resp:
+              with urllib.request.urlopen(req, timeout=10) as resp:
                   if resp.status not in (200, 204):
                       print(f"::error::Discord webhook returned HTTP status {resp.status}")
                       raise SystemExit(1)
                   print(f"Discord notification delivered successfully for Run #{run_num} ({conclusion}).")
           except urllib.error.HTTPError as e:
-              print(f"::error::Discord webhook HTTPError: {e.code}")
+              print(f"::error::Discord webhook HTTPError: status {e.code}")
               raise SystemExit(1)
-          except Exception as e:
-              print(f"::error::Failed to send Discord webhook: {e}")
+          except urllib.error.URLError as e:
+              print(f"::error::Discord webhook URLError: network or connection failure ({e.reason})")
+              raise SystemExit(1)
+          except Exception:
+              print("::error::Failed to send Discord webhook due to unexpected error")
               raise SystemExit(1)
           '
