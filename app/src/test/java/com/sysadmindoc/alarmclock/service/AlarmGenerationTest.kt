@@ -17,6 +17,8 @@ import org.robolectric.annotation.Config
 @Config(sdk = [30])
 class AlarmGenerationTest {
 
+    // --- Intent Parsing Tests ---
+
     @Test
     fun fromActionIntentRequiresExplicitFireIdAndScheduledAt() {
         val validActionIntent = Intent().apply {
@@ -94,62 +96,155 @@ class AlarmGenerationTest {
         assertFalse(gen1.matches(null))
     }
 
-    @Test
-    fun conflictingStartClassificationIdentifiesSameScheduledAtDifferentFireId() {
-        val activeGen = AlarmGeneration(42L, 1000L, "fire-42-original")
-        val conflictingGen = AlarmGeneration(42L, 1000L, "fire-42-conflicting")
+    // --- Production Admission Policy Classifier Tests (12 Matrix Cases) ---
 
-        assertEquals(activeGen.alarmId, conflictingGen.alarmId)
-        assertEquals(activeGen.scheduledAt, conflictingGen.scheduledAt)
-        assertFalse(activeGen.matches(conflictingGen))
+    @Test
+    fun policyClassifiesFirstTimeStart() {
+        val incoming = AlarmGeneration(42L, 1000L, "fire-42")
+        val decision = AlarmServiceAdmissionPolicy.classifyStart(current = null, incoming = incoming)
+        assertEquals(StartAdmissionDecision.ADMIT_NEW, decision)
     }
 
     @Test
-    fun staleStartLogicRejectsOlderScheduledAtForSameAlarm() {
-        val activeGen = AlarmGeneration(42L, 2000L, "fire-42-new")
-        val incomingStaleGen = AlarmGeneration(42L, 1000L, "fire-42-old")
-
-        assertEquals(activeGen.alarmId, incomingStaleGen.alarmId)
-        assertTrue(incomingStaleGen.scheduledAt < activeGen.scheduledAt)
-        assertFalse(incomingStaleGen.matches(activeGen))
+    fun policyClassifiesDuplicateIdenticalStart() {
+        val current = AlarmGeneration(42L, 1000L, "fire-42")
+        val duplicate = AlarmGeneration(42L, 1000L, "fire-42")
+        val decision = AlarmServiceAdmissionPolicy.classifyStart(current = current, incoming = duplicate)
+        assertEquals(StartAdmissionDecision.DUPLICATE_IDEMPOTENT, decision)
     }
 
     @Test
-    fun serviceRestartActionAdoptionFailsClosedWithoutMatchingEvidence() {
+    fun policyClassifiesStaleStart() {
+        val current = AlarmGeneration(42L, 2000L, "fire-42-new")
+        val stale = AlarmGeneration(42L, 1000L, "fire-42-old")
+        val decision = AlarmServiceAdmissionPolicy.classifyStart(current = current, incoming = stale)
+        assertEquals(StartAdmissionDecision.REJECT_STALE, decision)
+    }
+
+    @Test
+    fun policyClassifiesConflictingStartSameScheduledAtDifferentFireId() {
+        val current = AlarmGeneration(42L, 1000L, "fire-42-original")
+        val conflicting = AlarmGeneration(42L, 1000L, "fire-42-conflicting")
+        val decision = AlarmServiceAdmissionPolicy.classifyStart(current = current, incoming = conflicting)
+        assertEquals(StartAdmissionDecision.REJECT_CONFLICTING, decision)
+    }
+
+    @Test
+    fun policyClassifiesValidNewGenerationStart() {
+        val current = AlarmGeneration(42L, 1000L, "fire-42")
+        val newGen = AlarmGeneration(42L, 2000L, "fire-42-next")
+        val decision = AlarmServiceAdmissionPolicy.classifyStart(current = current, incoming = newGen)
+        assertEquals(StartAdmissionDecision.ADMIT_NEW, decision)
+
+        val differentAlarm = AlarmGeneration(99L, 1000L, "fire-99")
+        val decisionDifferent = AlarmServiceAdmissionPolicy.classifyStart(current = current, incoming = differentAlarm)
+        assertEquals(StartAdmissionDecision.ADMIT_NEW, decisionDifferent)
+    }
+
+    @Test
+    fun policyClassifiesExactMatchSnooze() {
+        val current = AlarmGeneration(42L, 1000L, "fire-42")
+        val snooze = AlarmGeneration(42L, 1000L, "fire-42")
+        val decision = AlarmServiceAdmissionPolicy.classifyAction(
+            current = current,
+            incoming = snooze,
+            isRestart = false,
+            activeEvidence = null
+        )
+        assertEquals(ActionAdmissionDecision.ADMIT_EXACT_MATCH, decision)
+    }
+
+    @Test
+    fun policyClassifiesStaleSnooze() {
+        val current = AlarmGeneration(42L, 2000L, "fire-42-new")
+        val staleSnooze = AlarmGeneration(42L, 1000L, "fire-42-old")
+        val decision = AlarmServiceAdmissionPolicy.classifyAction(
+            current = current,
+            incoming = staleSnooze,
+            isRestart = false,
+            activeEvidence = null
+        )
+        assertEquals(ActionAdmissionDecision.REJECT_STALE, decision)
+    }
+
+    @Test
+    fun policyClassifiesExactMatchDismiss() {
+        val current = AlarmGeneration(42L, 1000L, "fire-42")
+        val dismiss = AlarmGeneration(42L, 1000L, "fire-42")
+        val decision = AlarmServiceAdmissionPolicy.classifyAction(
+            current = current,
+            incoming = dismiss,
+            isRestart = false,
+            activeEvidence = null
+        )
+        assertEquals(ActionAdmissionDecision.ADMIT_EXACT_MATCH, decision)
+    }
+
+    @Test
+    fun policyClassifiesStaleDismiss() {
+        val current = AlarmGeneration(42L, 2000L, "fire-42-new")
+        val staleDismiss = AlarmGeneration(42L, 1000L, "fire-42-old")
+        val decision = AlarmServiceAdmissionPolicy.classifyAction(
+            current = current,
+            incoming = staleDismiss,
+            isRestart = false,
+            activeEvidence = null
+        )
+        assertEquals(ActionAdmissionDecision.REJECT_STALE, decision)
+    }
+
+    @Test
+    fun policyClassifiesIncompleteIdentityAction() {
+        val decision = AlarmServiceAdmissionPolicy.classifyAction(
+            current = null,
+            incoming = null,
+            isRestart = false,
+            activeEvidence = null
+        )
+        assertEquals(ActionAdmissionDecision.REJECT_INCOMPLETE, decision)
+    }
+
+    @Test
+    fun policyClassifiesServiceRestartWithMatchingActiveEvidence() {
         val activeSnapshot = AlarmService.Companion.ActiveAlarmSnapshot(
             alarmId = 42L,
             scheduledAt = 1000L,
             fireId = "fire-42",
             firedAt = 500L
         )
-
-        // Matching restart action -> accepted
-        val matchingGen = AlarmGeneration(42L, 1000L, "fire-42")
-        val matchesActive = activeSnapshot.alarmId == matchingGen.alarmId &&
-            activeSnapshot.scheduledAt == matchingGen.scheduledAt &&
-            activeSnapshot.fireId == matchingGen.fireId
-        assertTrue(matchesActive)
-
-        // Mismatched restart action -> rejected
-        val mismatchedGen = AlarmGeneration(42L, 9999L, "fire-42-stale")
-        val matchesMismatched = activeSnapshot.alarmId == mismatchedGen.alarmId &&
-            activeSnapshot.scheduledAt == mismatchedGen.scheduledAt &&
-            activeSnapshot.fireId == mismatchedGen.fireId
-        assertFalse(matchesMismatched)
-
-        // Null snapshot -> fail-closed
-        val nullSnapshot: AlarmService.Companion.ActiveAlarmSnapshot? = null
-        val matchesNull = nullSnapshot != null &&
-            nullSnapshot.alarmId == matchingGen.alarmId
-        assertFalse(matchesNull)
+        val restartSnooze = AlarmGeneration(42L, 1000L, "fire-42")
+        val decision = AlarmServiceAdmissionPolicy.classifyAction(
+            current = null,
+            incoming = restartSnooze,
+            isRestart = true,
+            activeEvidence = activeSnapshot
+        )
+        assertEquals(ActionAdmissionDecision.ADMIT_RESTART, decision)
     }
 
     @Test
-    fun asyncCleanupGenerationGuardPreventsClearingNewerActiveGeneration() {
-        val startGen = AlarmGeneration(42L, 1000L, "fire-42-a")
-        val newerActiveGen = AlarmGeneration(99L, 2000L, "fire-99-b")
+    fun policyClassifiesServiceRestartWithMissingOrMismatchedActiveEvidence() {
+        val activeSnapshot = AlarmService.Companion.ActiveAlarmSnapshot(
+            alarmId = 42L,
+            scheduledAt = 1000L,
+            fireId = "fire-42",
+            firedAt = 500L
+        )
+        val mismatchedAction = AlarmGeneration(42L, 9999L, "fire-42-stale")
+        val decisionMismatched = AlarmServiceAdmissionPolicy.classifyAction(
+            current = null,
+            incoming = mismatchedAction,
+            isRestart = true,
+            activeEvidence = activeSnapshot
+        )
+        assertEquals(ActionAdmissionDecision.REJECT_RESTART_NO_EVIDENCE, decisionMismatched)
 
-        // Newer generation has taken over: guard evaluates to false, preventing stale side-effects/cleanup
-        assertFalse(newerActiveGen.matches(startGen))
+        val decisionNoEvidence = AlarmServiceAdmissionPolicy.classifyAction(
+            current = null,
+            incoming = AlarmGeneration(42L, 1000L, "fire-42"),
+            isRestart = true,
+            activeEvidence = null
+        )
+        assertEquals(ActionAdmissionDecision.REJECT_RESTART_NO_EVIDENCE, decisionNoEvidence)
     }
 }
