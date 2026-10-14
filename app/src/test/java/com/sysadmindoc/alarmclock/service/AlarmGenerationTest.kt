@@ -298,17 +298,37 @@ class AlarmGenerationTest {
     }
 
     @Test
-    fun callbackPolicyGuardsGlobalPlaybackReleaseAndWatchdogCancellation() {
+    fun callbackPolicyGuardsGlobalPlaybackReleaseAndNullTarget() {
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val genB = AlarmGeneration(42L, 2000L, "fire-42-b")
 
         val dummyPlayerA = FakeAlarmPlaybackPlayer()
         val dummyPlayerB = FakeAlarmPlaybackPlayer()
 
+        // Null targetPlayback (e.g. setup exception before assignment) -> rejected
+        assertFalse(
+            AlarmServiceCallbackPolicy.shouldReleaseGlobalPlayback(
+                currentGen = genA,
+                callbackGen = genA,
+                currentPlayback = dummyPlayerA,
+                targetPlayback = null
+            )
+        )
+
         // Global playback release rejected when generation is no longer active
         assertFalse(
             AlarmServiceCallbackPolicy.shouldReleaseGlobalPlayback(
                 currentGen = genB,
+                callbackGen = genA,
+                currentPlayback = dummyPlayerB,
+                targetPlayback = dummyPlayerA
+            )
+        )
+
+        // Global playback release rejected when targetPlayback does not match currentPlayback
+        assertFalse(
+            AlarmServiceCallbackPolicy.shouldReleaseGlobalPlayback(
+                currentGen = genA,
                 callbackGen = genA,
                 currentPlayback = dummyPlayerB,
                 targetPlayback = dummyPlayerA

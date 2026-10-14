@@ -32,7 +32,9 @@ internal object AlarmServiceCallbackPolicy {
      * to clean up or release the global `alarmPlayback` variable.
      *
      * A callback or exception handler may clear `alarmPlayback = null` ONLY IF
-     * current generation still matches AND `alarmPlayback` holds that exact player instance.
+     * current generation still matches AND `alarmPlayback` holds that exact non-null player instance.
+     * If targetPlayback is null (e.g. player creation threw before assignment),
+     * global `alarmPlayback` must NOT be released.
      */
     fun shouldReleaseGlobalPlayback(
         currentGen: AlarmGeneration?,
@@ -43,7 +45,7 @@ internal object AlarmServiceCallbackPolicy {
         if (currentGen == null || !currentGen.matches(callbackGen)) {
             return false
         }
-        if (targetPlayback != null && currentPlayback !== targetPlayback) {
+        if (targetPlayback == null || currentPlayback !== targetPlayback) {
             return false
         }
         return true
