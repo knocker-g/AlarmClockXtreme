@@ -834,6 +834,11 @@ class AlarmFiringActivity : ComponentActivity() {
                 Intent(this, com.sysadmindoc.alarmclock.service.AlarmService::class.java)
                     .setAction(com.sysadmindoc.alarmclock.service.AlarmService.ACTION_SET_CHALLENGE_DUCKING)
                     .putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
+                    .putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, scheduledAt)
+                    .putExtra(
+                        AlarmScheduler.EXTRA_ALARM_FIRE_ID,
+                        fireId.ifBlank { AlarmIncidentEvent.fireIdFor(alarmId, scheduledAt) }
+                    )
                     .putExtra(
                         com.sysadmindoc.alarmclock.service.AlarmService.EXTRA_CHALLENGE_DUCKING_ACTIVE,
                         command.active
