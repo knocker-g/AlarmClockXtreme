@@ -311,7 +311,7 @@ class AlarmService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START_ALARM -> {
-                val incomingGen = AlarmGeneration.fromIntent(intent)
+                val incomingGen = AlarmGeneration.fromStartIntent(intent)
                 val alarmId = incomingGen?.alarmId ?: intent.getLongExtra(AlarmScheduler.EXTRA_ALARM_ID, -1L)
                 if (alarmId != -1L) {
                     val scheduledAt = incomingGen?.scheduledAt ?: intent.getLongExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 0L)
@@ -416,7 +416,7 @@ class AlarmService : Service() {
                 }
             }
             ACTION_SNOOZE -> {
-                val incomingGen = AlarmGeneration.fromIntent(intent)
+                val incomingGen = AlarmGeneration.fromActionIntent(intent)
                 if (incomingGen == null || !incomingGen.isValid) {
                     Log.w(TAG, "Rejecting incomplete/invalid ACTION_SNOOZE intent")
                     recordIncidentAsync(
@@ -489,7 +489,7 @@ class AlarmService : Service() {
                 }
             }
             ACTION_SET_CHALLENGE_DUCKING -> {
-                val incomingGen = AlarmGeneration.fromIntent(intent)
+                val incomingGen = AlarmGeneration.fromActionIntent(intent)
                 val currentGen = currentGeneration()
                 if (currentGen != null && incomingGen != null && incomingGen.matches(currentGen)) {
                     challengeAudioDuckingActive = intent.getBooleanExtra(
@@ -507,7 +507,7 @@ class AlarmService : Service() {
                 }
             }
             ACTION_DISMISS -> {
-                val incomingGen = AlarmGeneration.fromIntent(intent)
+                val incomingGen = AlarmGeneration.fromActionIntent(intent)
                 if (incomingGen == null || !incomingGen.isValid) {
                     Log.w(TAG, "Rejecting incomplete/invalid ACTION_DISMISS intent")
                     recordIncidentAsync(
@@ -582,6 +582,11 @@ class AlarmService : Service() {
 
     private suspend fun startAlarm(startGen: AlarmGeneration) {
         val alarmId = startGen.alarmId
+        if (currentGeneration()?.matches(startGen) != true) {
+            Log.i(TAG, "Aborting startAlarm for $startGen: generation no longer current")
+            return
+        }
+
         SnoozeCountdownReceiver.cancel(this)
         // v1.5.1: Sanitise before any downstream logic touches the row. This
         // catches corrupt challengeType / vibrationPattern / specificDate /
@@ -604,6 +609,11 @@ class AlarmService : Service() {
             return
         }
 
+        if (currentGeneration()?.matches(startGen) != true) {
+            Log.i(TAG, "Aborting startAlarm after DB fetch for $startGen: generation no longer current")
+            return
+        }
+
         if (!alarm.isEnabled) {
             recordIncident(
                 type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
@@ -618,6 +628,11 @@ class AlarmService : Service() {
                 releaseAlarmMediaSession()
                 stopSelf()
             }
+            return
+        }
+
+        if (currentGeneration()?.matches(startGen) != true) {
+            Log.i(TAG, "Aborting startAlarm before delivery side effects for $startGen: generation no longer current")
             return
         }
 

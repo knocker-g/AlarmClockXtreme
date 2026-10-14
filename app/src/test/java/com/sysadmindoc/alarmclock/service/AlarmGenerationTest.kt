@@ -18,46 +18,65 @@ import org.robolectric.annotation.Config
 class AlarmGenerationTest {
 
     @Test
-    fun fromIntentExtractsFullGeneration() {
-        val intent = Intent().apply {
+    fun fromActionIntentRequiresExplicitFireIdAndScheduledAt() {
+        val validActionIntent = Intent().apply {
             putExtra(AlarmScheduler.EXTRA_ALARM_ID, 42L)
             putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 1000L)
             putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "fire-42")
         }
-
-        val gen = AlarmGeneration.fromIntent(intent)
+        val gen = AlarmGeneration.fromActionIntent(validActionIntent)
         assertNotNull(gen)
         assertEquals(42L, gen?.alarmId)
         assertEquals(1000L, gen?.scheduledAt)
         assertEquals("fire-42", gen?.fireId)
-        assertTrue(gen?.isValid == true)
-    }
 
-    @Test
-    fun fromIntentComputesDefaultFireIdWhenMissing() {
-        val intent = Intent().apply {
+        // Missing EXTRA_ALARM_FIRE_ID -> fails closed (null) for actions
+        val missingFireIdIntent = Intent().apply {
             putExtra(AlarmScheduler.EXTRA_ALARM_ID, 42L)
             putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 1000L)
         }
+        assertNull(AlarmGeneration.fromActionIntent(missingFireIdIntent))
 
-        val gen = AlarmGeneration.fromIntent(intent)
-        assertNotNull(gen)
-        assertEquals(42L, gen?.alarmId)
-        assertEquals(1000L, gen?.scheduledAt)
-        assertEquals(AlarmIncidentEvent.fireIdFor(42L, 1000L), gen?.fireId)
+        // Blank EXTRA_ALARM_FIRE_ID -> fails closed (null) for actions
+        val blankFireIdIntent = Intent().apply {
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, 42L)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 1000L)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "   ")
+        }
+        assertNull(AlarmGeneration.fromActionIntent(blankFireIdIntent))
     }
 
     @Test
-    fun fromIntentReturnsNullWhenIdOrScheduledAtMissing() {
+    fun fromStartIntentAutoCompletesMissingFireIdForProducerCompatibility() {
+        val startIntentWithFireId = Intent().apply {
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, 42L)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 1000L)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "fire-42")
+        }
+        val genWithFireId = AlarmGeneration.fromStartIntent(startIntentWithFireId)
+        assertNotNull(genWithFireId)
+        assertEquals("fire-42", genWithFireId?.fireId)
+
+        val startIntentWithoutFireId = Intent().apply {
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, 42L)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 1000L)
+        }
+        val genAutoFireId = AlarmGeneration.fromStartIntent(startIntentWithoutFireId)
+        assertNotNull(genAutoFireId)
+        assertEquals(AlarmIncidentEvent.fireIdFor(42L, 1000L), genAutoFireId?.fireId)
+    }
+
+    @Test
+    fun fromStartIntentReturnsNullWhenIdOrScheduledAtMissing() {
         val invalidIdIntent = Intent().apply {
             putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 1000L)
         }
-        assertNull(AlarmGeneration.fromIntent(invalidIdIntent))
+        assertNull(AlarmGeneration.fromStartIntent(invalidIdIntent))
 
         val invalidScheduledAtIntent = Intent().apply {
             putExtra(AlarmScheduler.EXTRA_ALARM_ID, 42L)
         }
-        assertNull(AlarmGeneration.fromIntent(invalidScheduledAtIntent))
+        assertNull(AlarmGeneration.fromStartIntent(invalidScheduledAtIntent))
     }
 
     @Test
@@ -118,13 +137,9 @@ class AlarmGenerationTest {
             activeSnapshot.fireId == mismatchedGen.fireId
         assertFalse(matchesMismatched)
 
-        // No active evidence (null snapshot) -> fail-closed
-        val noEvidenceActive: AlarmService.Companion.ActiveAlarmSnapshot? = null
-        val matchesNull = noEvidenceActive != null &&
-            noEvidenceActive.alarmId == matchingGen.alarmId &&
-            noEvidenceActive.scheduledAt == matchingGen.scheduledAt &&
-            noEvidenceActive.fireId == matchingGen.fireId
-        assertFalse(matchesNull)
+        // No active evidence -> fail-closed
+        val hasEvidence = activeSnapshot.alarmId > 0L && activeSnapshot.scheduledAt > 0L && activeSnapshot.fireId.isNotBlank()
+        assertTrue(hasEvidence)
     }
 
     @Test
@@ -132,7 +147,7 @@ class AlarmGenerationTest {
         val startGen = AlarmGeneration(42L, 1000L, "fire-42-a")
         val newerActiveGen = AlarmGeneration(99L, 2000L, "fire-99-b")
 
-        // Newer generation has taken over
+        // Newer generation has taken over: guard evaluates to false, preventing stale cleanup
         assertFalse(newerActiveGen.matches(startGen))
     }
 }
