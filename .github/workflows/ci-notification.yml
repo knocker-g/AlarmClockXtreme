@@ -94,8 +94,8 @@ jobs:
           except urllib.error.HTTPError as e:
               print(f"::error::Discord webhook HTTPError: status {e.code}")
               raise SystemExit(1)
-          except urllib.error.URLError as e:
-              print(f"::error::Discord webhook URLError: network or connection failure ({e.reason})")
+          except urllib.error.URLError:
+              print("::error::Discord webhook network or connection failure")
               raise SystemExit(1)
           except Exception:
               print("::error::Failed to send Discord webhook due to unexpected error")
