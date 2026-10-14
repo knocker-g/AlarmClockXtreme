@@ -283,17 +283,57 @@ class AlarmService : Service() {
         }
     }
 
+    private fun currentGeneration(): AlarmGeneration? {
+        if (currentAlarmId <= 0L || currentScheduledAt <= 0L || currentFireId.isBlank()) return null
+        return AlarmGeneration(currentAlarmId, currentScheduledAt, currentFireId)
+    }
+
+    private fun getPersistedActiveAlarmSnapshot(): ActiveAlarmSnapshot? {
+        val memory = activeAlarm.get()
+        if (memory != null && memory.alarmId > 0L && memory.scheduledAt > 0L && memory.fireId.isNotBlank()) {
+            return memory
+        }
+        val settings = preferencesManager.getCachedSettings()
+        val savedId = settings.activeAlarmId
+        if (savedId != null && savedId > 0L && settings.activeAlarmScheduledAt > 0L && settings.activeAlarmFireId.isNotBlank()) {
+            return ActiveAlarmSnapshot(
+                alarmId = savedId,
+                scheduledAt = settings.activeAlarmScheduledAt,
+                fireId = settings.activeAlarmFireId,
+                firedAt = settings.activeAlarmFiredAt,
+                state = settings.activeAlarmState,
+                refireAt = settings.activeAlarmRefireAt
+            )
+        }
+        return null
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START_ALARM -> {
-                val alarmId = intent.getLongExtra(AlarmScheduler.EXTRA_ALARM_ID, -1L)
+                val incomingGen = AlarmGeneration.fromIntent(intent)
+                val alarmId = incomingGen?.alarmId ?: intent.getLongExtra(AlarmScheduler.EXTRA_ALARM_ID, -1L)
                 if (alarmId != -1L) {
-                    val scheduledAt = intent.getLongExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 0L)
-                    val fireId = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID)
+                    val scheduledAt = incomingGen?.scheduledAt ?: intent.getLongExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 0L)
+                    val fireId = incomingGen?.fireId ?: intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID)
                         ?: AlarmIncidentEvent.fireIdFor(alarmId, scheduledAt)
 
+                    val startGen = AlarmGeneration(alarmId, scheduledAt, fireId)
+                    if (!startGen.isValid) {
+                        Log.w(TAG, "Rejecting invalid/incomplete ACTION_START_ALARM for alarm $alarmId")
+                        recordIncidentAsync(
+                            type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                            status = AlarmIncidentEvent.STATUS_FAILED,
+                            reasonCode = "INVALID_START_COMMAND_REJECTED",
+                            source = "AlarmService"
+                        )
+                        return START_NOT_STICKY
+                    }
+
+                    val currentGen = currentGeneration()
+
                     // Idempotency: duplicate identical START for the exact same active generation
-                    if (currentAlarmId == alarmId && currentScheduledAt == scheduledAt && currentFireId == fireId && currentAlarmId > 0L) {
+                    if (currentGen != null && startGen.matches(currentGen)) {
                         Log.i(TAG, "Duplicate identical ACTION_START_ALARM received for alarm $alarmId (generation: scheduledAt=$scheduledAt, fireId=$fireId). Idempotently ignoring.")
                         recordIncidentAsync(
                             type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
@@ -304,25 +344,31 @@ class AlarmService : Service() {
                         return START_NOT_STICKY
                     }
 
-                    // Stale same-alarm START check
-                    if (currentAlarmId == alarmId && scheduledAt > 0L && currentScheduledAt > 0L && scheduledAt < currentScheduledAt) {
-                        Log.w(TAG, "Rejecting stale ACTION_START_ALARM for alarm $alarmId (scheduledAt $scheduledAt < current $currentScheduledAt)")
-                        recordIncidentAsync(
-                            type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
-                            status = AlarmIncidentEvent.STATUS_FAILED,
-                            reasonCode = "STALE_START_COMMAND_REJECTED",
-                            source = "AlarmService"
-                        )
-                        return START_NOT_STICKY
+                    // Stale or conflicting same-alarm START check
+                    if (currentAlarmId == alarmId && currentScheduledAt > 0L) {
+                        if (scheduledAt < currentScheduledAt) {
+                            Log.w(TAG, "Rejecting stale ACTION_START_ALARM for alarm $alarmId (scheduledAt $scheduledAt < current $currentScheduledAt)")
+                            recordIncidentAsync(
+                                type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                                status = AlarmIncidentEvent.STATUS_FAILED,
+                                reasonCode = "STALE_START_COMMAND_REJECTED",
+                                source = "AlarmService"
+                            )
+                            return START_NOT_STICKY
+                        }
+                        if (scheduledAt == currentScheduledAt && fireId != currentFireId) {
+                            Log.w(TAG, "Rejecting conflicting ACTION_START_ALARM for alarm $alarmId (same scheduledAt $scheduledAt, different fireId $fireId vs $currentFireId)")
+                            recordIncidentAsync(
+                                type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                                status = AlarmIncidentEvent.STATUS_FAILED,
+                                reasonCode = "CONFLICTING_START_COMMAND_REJECTED",
+                                source = "AlarmService"
+                            )
+                            return START_NOT_STICKY
+                        }
                     }
 
-                    // A different alarm still mid-ring is being preempted (two
-                    // alarms in the same minute, or one firing inside another's
-                    // auto-silence window). Finalize it first: record the missed
-                    // outcome and re-arm its next occurrence — otherwise a
-                    // repeating alarm is left with a stale past nextTriggerTime
-                    // and no armed PendingIntent, silently losing every future
-                    // occurrence until the next full reschedule pass.
+                    // A different alarm still mid-ring is being preempted
                     val preemptedAlarmId = currentAlarmId
                     if (preemptedAlarmId != -1L && preemptedAlarmId != alarmId) {
                         val preemptedScheduledAt = currentScheduledAt
@@ -365,77 +411,59 @@ class AlarmService : Service() {
                         source = "AlarmService"
                     )
                     activateAlarmMediaSession("START_COMMAND")
-                    // v1.5.4: Android 14+ requires startForeground() within ~5 s of
-                    // startForegroundService() or the app crashes with
-                    // ForegroundServiceDidNotStartInTimeException. Previously the
-                    // call happened inside the IO-dispatched coroutine below, which
-                    // on a busy device (cold start from Doze, heavy IO contention)
-                    // could miss the window. Promote startForeground() out of the
-                    // coroutine using a placeholder; startAlarm() later replaces
-                    // the notification via nm.notify() with the labelled version.
                     startForegroundWithPlaceholder()
-                    serviceScope.launch { startAlarm(alarmId) }
+                    serviceScope.launch { startAlarm(startGen) }
                 }
             }
             ACTION_SNOOZE -> {
-                val alarmId = intent.getLongExtra(AlarmScheduler.EXTRA_ALARM_ID, currentAlarmId)
-                val scheduledAt = intent.getLongExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, currentScheduledAt)
-                val fireId = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID)
-                    ?: currentFireId.ifBlank { AlarmIncidentEvent.fireIdFor(alarmId, scheduledAt) }
+                val incomingGen = AlarmGeneration.fromIntent(intent)
+                if (incomingGen == null || !incomingGen.isValid) {
+                    Log.w(TAG, "Rejecting incomplete/invalid ACTION_SNOOZE intent")
+                    recordIncidentAsync(
+                        type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                        status = AlarmIncidentEvent.STATUS_FAILED,
+                        reasonCode = "INCOMPLETE_SNOOZE_ACTION_REJECTED",
+                        source = "AlarmService"
+                    )
+                    return START_NOT_STICKY
+                }
+
+                val alarmId = incomingGen.alarmId
                 val customMinutes = intent.getIntExtra(EXTRA_CUSTOM_SNOOZE_MINUTES, -1)
                     .takeIf { it > 0 }
                     ?.coerceIn(MIN_CUSTOM_SNOOZE_MINUTES, MAX_CUSTOM_SNOOZE_MINUTES)
                 val snoozeAtMillis = intent.getLongExtra(EXTRA_SNOOZE_UNTIL_MILLIS, -1L)
                     .takeIf { it > System.currentTimeMillis() }
-
                 val intentFiredAt = intent.getLongExtra(EXTRA_FIRED_AT, 0L)
 
-                // Stale Snooze rejection for active firing alarm
-                if (currentAlarmId > 0L) {
-                    if (alarmId != currentAlarmId) {
-                        Log.w(TAG, "Rejecting stale ACTION_SNOOZE for alarm $alarmId (current active is $currentAlarmId)")
+                val currentGen = currentGeneration()
+                if (currentGen != null) {
+                    // Active firing alarm exists: require exact full-generation match
+                    if (!incomingGen.matches(currentGen)) {
+                        Log.w(TAG, "Rejecting stale ACTION_SNOOZE for $incomingGen (active generation is $currentGen)")
                         recordIncidentAsync(
                             type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
                             status = AlarmIncidentEvent.STATUS_FAILED,
-                            reasonCode = "STALE_SNOOZE_ALARM_ID_MISMATCH",
+                            reasonCode = "STALE_SNOOZE_GENERATION_MISMATCH",
                             source = "AlarmService"
                         )
                         return START_NOT_STICKY
                     }
-                    if (scheduledAt > 0L && currentScheduledAt > 0L && scheduledAt != currentScheduledAt) {
-                        Log.w(TAG, "Rejecting stale ACTION_SNOOZE for alarm $alarmId (scheduledAt $scheduledAt vs current $currentScheduledAt)")
-                        recordIncidentAsync(
-                            type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
-                            status = AlarmIncidentEvent.STATUS_FAILED,
-                            reasonCode = "STALE_SNOOZE_SCHEDULED_AT_MISMATCH",
-                            source = "AlarmService"
-                        )
-                        return START_NOT_STICKY
-                    }
-                    if (fireId.isNotBlank() && currentFireId.isNotBlank() && fireId != currentFireId) {
-                        Log.w(TAG, "Rejecting stale ACTION_SNOOZE for alarm $alarmId (fireId $fireId vs current $currentFireId)")
-                        recordIncidentAsync(
-                            type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
-                            status = AlarmIncidentEvent.STATUS_FAILED,
-                            reasonCode = "STALE_SNOOZE_FIRE_ID_MISMATCH",
-                            source = "AlarmService"
-                        )
-                        return START_NOT_STICKY
-                    }
-                } else if (currentAlarmId == -1L && alarmId > 0L) {
-                    // Service restart: require matching persisted active evidence
-                    val active = activeAlarm.get()
-                    val matchesActive = active != null && active.alarmId == alarmId &&
-                        (scheduledAt <= 0L || active.scheduledAt <= 0L || active.scheduledAt == scheduledAt) &&
-                        (fireId.isBlank() || active.fireId.isBlank() || active.fireId == fireId)
-                    if (matchesActive) {
+                } else if (currentAlarmId == -1L) {
+                    // Service restart: require exact matching persisted active evidence
+                    val active = getPersistedActiveAlarmSnapshot()
+                    val matchesActive = active != null &&
+                        incomingGen.alarmId == active.alarmId &&
+                        incomingGen.scheduledAt == active.scheduledAt &&
+                        incomingGen.fireId == active.fireId
+                    if (matchesActive && active != null) {
                         currentAlarmId = active.alarmId
-                        currentScheduledAt = if (scheduledAt > 0L) scheduledAt else active.scheduledAt
-                        currentFireId = if (fireId.isNotBlank()) fireId else active.fireId
+                        currentScheduledAt = active.scheduledAt
+                        currentFireId = active.fireId
                         currentSnoozeCount = readPersistedSnoozeCount(alarmId)
                         alarmFiredAt = if (intentFiredAt > 0L) intentFiredAt else active.firedAt
                     } else {
-                        Log.w(TAG, "Rejecting ACTION_SNOOZE on restarted service for alarm $alarmId: no matching persisted active evidence.")
+                        Log.w(TAG, "Rejecting ACTION_SNOOZE on restarted service for $incomingGen: no matching persisted active evidence.")
                         recordIncidentAsync(
                             type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
                             status = AlarmIncidentEvent.STATUS_FAILED,
@@ -461,18 +489,9 @@ class AlarmService : Service() {
                 }
             }
             ACTION_SET_CHALLENGE_DUCKING -> {
-                val alarmId = intent.getLongExtra(AlarmScheduler.EXTRA_ALARM_ID, -1L)
-                val scheduledAt = intent.getLongExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 0L)
-                val fireId = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID) ?: ""
-                if (alarmId == currentAlarmId && alarmId > 0L) {
-                    if (scheduledAt > 0L && currentScheduledAt > 0L && scheduledAt != currentScheduledAt) {
-                        Log.i(TAG, "Rejecting stale ACTION_SET_CHALLENGE_DUCKING for alarm $alarmId (scheduledAt $scheduledAt vs current $currentScheduledAt)")
-                        return START_NOT_STICKY
-                    }
-                    if (fireId.isNotBlank() && currentFireId.isNotBlank() && fireId != currentFireId) {
-                        Log.i(TAG, "Rejecting stale ACTION_SET_CHALLENGE_DUCKING for alarm $alarmId (fireId $fireId vs current $currentFireId)")
-                        return START_NOT_STICKY
-                    }
+                val incomingGen = AlarmGeneration.fromIntent(intent)
+                val currentGen = currentGeneration()
+                if (currentGen != null && incomingGen != null && incomingGen.matches(currentGen)) {
                     challengeAudioDuckingActive = intent.getBooleanExtra(
                         EXTRA_CHALLENGE_DUCKING_ACTIVE,
                         false
@@ -482,68 +501,61 @@ class AlarmService : Service() {
                         35
                     ).coerceIn(10, 80)
                     applyPlaybackGain()
+                } else {
+                    Log.i(TAG, "Rejecting ACTION_SET_CHALLENGE_DUCKING for $incomingGen (active generation is $currentGen)")
+                    return START_NOT_STICKY
                 }
             }
             ACTION_DISMISS -> {
-                val alarmId = intent.getLongExtra(AlarmScheduler.EXTRA_ALARM_ID, currentAlarmId)
-                val scheduledAt = intent.getLongExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, currentScheduledAt)
-                val fireId = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID)
-                    ?: currentFireId.ifBlank { AlarmIncidentEvent.fireIdFor(alarmId, scheduledAt) }
+                val incomingGen = AlarmGeneration.fromIntent(intent)
+                if (incomingGen == null || !incomingGen.isValid) {
+                    Log.w(TAG, "Rejecting incomplete/invalid ACTION_DISMISS intent")
+                    recordIncidentAsync(
+                        type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                        status = AlarmIncidentEvent.STATUS_FAILED,
+                        reasonCode = "INCOMPLETE_DISMISS_ACTION_REJECTED",
+                        source = "AlarmService"
+                    )
+                    return START_NOT_STICKY
+                }
+
+                val alarmId = incomingGen.alarmId
                 val challengeRetryCount = intent
                     .getIntExtra(EXTRA_CHALLENGE_RETRY_COUNT, 0)
                     .coerceAtLeast(0)
                 val challengeSolveTimeMs = intent
                     .getLongExtra(EXTRA_CHALLENGE_SOLVE_TIME_MS, 0L)
                     .coerceAtLeast(0L)
-
                 val intentFiredAt = intent.getLongExtra(EXTRA_FIRED_AT, 0L)
 
-                // Stale Dismiss rejection for active firing alarm
-                if (currentAlarmId > 0L) {
-                    if (alarmId != currentAlarmId) {
-                        Log.w(TAG, "Rejecting stale ACTION_DISMISS for alarm $alarmId (current active is $currentAlarmId)")
+                val currentGen = currentGeneration()
+                if (currentGen != null) {
+                    // Active firing alarm exists: require exact full-generation match
+                    if (!incomingGen.matches(currentGen)) {
+                        Log.w(TAG, "Rejecting stale ACTION_DISMISS for $incomingGen (active generation is $currentGen)")
                         recordIncidentAsync(
                             type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
                             status = AlarmIncidentEvent.STATUS_FAILED,
-                            reasonCode = "STALE_DISMISS_ALARM_ID_MISMATCH",
+                            reasonCode = "STALE_DISMISS_GENERATION_MISMATCH",
                             source = "AlarmService"
                         )
                         return START_NOT_STICKY
                     }
-                    if (scheduledAt > 0L && currentScheduledAt > 0L && scheduledAt != currentScheduledAt) {
-                        Log.w(TAG, "Rejecting stale ACTION_DISMISS for alarm $alarmId (scheduledAt $scheduledAt vs current $currentScheduledAt)")
-                        recordIncidentAsync(
-                            type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
-                            status = AlarmIncidentEvent.STATUS_FAILED,
-                            reasonCode = "STALE_DISMISS_SCHEDULED_AT_MISMATCH",
-                            source = "AlarmService"
-                        )
-                        return START_NOT_STICKY
-                    }
-                    if (fireId.isNotBlank() && currentFireId.isNotBlank() && fireId != currentFireId) {
-                        Log.w(TAG, "Rejecting stale ACTION_DISMISS for alarm $alarmId (fireId $fireId vs current $currentFireId)")
-                        recordIncidentAsync(
-                            type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
-                            status = AlarmIncidentEvent.STATUS_FAILED,
-                            reasonCode = "STALE_DISMISS_FIRE_ID_MISMATCH",
-                            source = "AlarmService"
-                        )
-                        return START_NOT_STICKY
-                    }
-                } else if (currentAlarmId == -1L && alarmId > 0L) {
-                    // Service restart: require matching persisted active evidence
-                    val active = activeAlarm.get()
-                    val matchesActive = active != null && active.alarmId == alarmId &&
-                        (scheduledAt <= 0L || active.scheduledAt <= 0L || active.scheduledAt == scheduledAt) &&
-                        (fireId.isBlank() || active.fireId.isBlank() || active.fireId == fireId)
-                    if (matchesActive) {
+                } else if (currentAlarmId == -1L) {
+                    // Service restart: require exact matching persisted active evidence
+                    val active = getPersistedActiveAlarmSnapshot()
+                    val matchesActive = active != null &&
+                        incomingGen.alarmId == active.alarmId &&
+                        incomingGen.scheduledAt == active.scheduledAt &&
+                        incomingGen.fireId == active.fireId
+                    if (matchesActive && active != null) {
                         currentAlarmId = active.alarmId
-                        currentScheduledAt = if (scheduledAt > 0L) scheduledAt else active.scheduledAt
-                        currentFireId = if (fireId.isNotBlank()) fireId else active.fireId
+                        currentScheduledAt = active.scheduledAt
+                        currentFireId = active.fireId
                         currentSnoozeCount = readPersistedSnoozeCount(alarmId)
                         alarmFiredAt = if (intentFiredAt > 0L) intentFiredAt else active.firedAt
                     } else {
-                        Log.w(TAG, "Rejecting ACTION_DISMISS on restarted service for alarm $alarmId: no matching persisted active evidence.")
+                        Log.w(TAG, "Rejecting ACTION_DISMISS on restarted service for $incomingGen: no matching persisted active evidence.")
                         recordIncidentAsync(
                             type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
                             status = AlarmIncidentEvent.STATUS_FAILED,
@@ -568,7 +580,8 @@ class AlarmService : Service() {
         return START_NOT_STICKY
     }
 
-    private suspend fun startAlarm(alarmId: Long) {
+    private suspend fun startAlarm(startGen: AlarmGeneration) {
+        val alarmId = startGen.alarmId
         SnoozeCountdownReceiver.cancel(this)
         // v1.5.1: Sanitise before any downstream logic touches the row. This
         // catches corrupt challengeType / vibrationPattern / specificDate /
@@ -581,10 +594,13 @@ class AlarmService : Service() {
                 reasonCode = "ALARM_ROW_MISSING",
                 source = "AlarmService"
             )
-            clearAlarmRuntimeState(alarmId)
-            updateActiveAlarm(null)
-            releaseAlarmMediaSession()
-            stopSelf()
+            val current = currentGeneration()
+            if (current != null && current.matches(startGen)) {
+                clearAlarmRuntimeState(alarmId)
+                updateActiveAlarm(null)
+                releaseAlarmMediaSession()
+                stopSelf()
+            }
             return
         }
 
@@ -595,10 +611,13 @@ class AlarmService : Service() {
                 reasonCode = "ALARM_DISABLED_START_REJECTED",
                 source = "AlarmService"
             )
-            clearAlarmRuntimeState(alarmId)
-            updateActiveAlarm(null)
-            releaseAlarmMediaSession()
-            stopSelf()
+            val current = currentGeneration()
+            if (current != null && current.matches(startGen)) {
+                clearAlarmRuntimeState(alarmId)
+                updateActiveAlarm(null)
+                releaseAlarmMediaSession()
+                stopSelf()
+            }
             return
         }
 

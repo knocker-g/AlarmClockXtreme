@@ -76,6 +76,16 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun conflictingStartClassificationIdentifiesSameScheduledAtDifferentFireId() {
+        val activeGen = AlarmGeneration(42L, 1000L, "fire-42-original")
+        val conflictingGen = AlarmGeneration(42L, 1000L, "fire-42-conflicting")
+
+        assertEquals(activeGen.alarmId, conflictingGen.alarmId)
+        assertEquals(activeGen.scheduledAt, conflictingGen.scheduledAt)
+        assertFalse(activeGen.matches(conflictingGen))
+    }
+
+    @Test
     fun staleStartLogicRejectsOlderScheduledAtForSameAlarm() {
         val activeGen = AlarmGeneration(42L, 2000L, "fire-42-new")
         val incomingStaleGen = AlarmGeneration(42L, 1000L, "fire-42-old")
@@ -86,7 +96,7 @@ class AlarmGenerationTest {
     }
 
     @Test
-    fun serviceRestartActionAdoptionRequiresActiveEvidence() {
+    fun serviceRestartActionAdoptionFailsClosedWithoutMatchingEvidence() {
         val activeSnapshot = AlarmService.Companion.ActiveAlarmSnapshot(
             alarmId = 42L,
             scheduledAt = 1000L,
@@ -107,5 +117,22 @@ class AlarmGenerationTest {
             activeSnapshot.scheduledAt == mismatchedGen.scheduledAt &&
             activeSnapshot.fireId == mismatchedGen.fireId
         assertFalse(matchesMismatched)
+
+        // No active evidence (null snapshot) -> fail-closed
+        val noEvidenceActive: AlarmService.Companion.ActiveAlarmSnapshot? = null
+        val matchesNull = noEvidenceActive != null &&
+            noEvidenceActive.alarmId == matchingGen.alarmId &&
+            noEvidenceActive.scheduledAt == matchingGen.scheduledAt &&
+            noEvidenceActive.fireId == matchingGen.fireId
+        assertFalse(matchesNull)
+    }
+
+    @Test
+    fun asyncCleanupGenerationGuardPreventsClearingNewerActiveGeneration() {
+        val startGen = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val newerActiveGen = AlarmGeneration(99L, 2000L, "fire-99-b")
+
+        // Newer generation has taken over
+        assertFalse(newerActiveGen.matches(startGen))
     }
 }

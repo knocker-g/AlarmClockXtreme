@@ -250,6 +250,7 @@ class SmartAlarmService : Service(), SensorEventListener {
         runCatching { alarmScheduler.cancelMainScheduledAlarm(alarmId) }
             .onFailure { android.util.Log.e("SmartAlarmService", "Failed to cancel stale alarm $alarmId", it) }
 
+        val fireId = com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent.fireIdFor(alarmId, targetTimeMs)
         val intent = Intent(this, AlarmService::class.java).apply {
             action = AlarmService.ACTION_START_ALARM
             putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
@@ -258,6 +259,7 @@ class SmartAlarmService : Service(), SensorEventListener {
             // alarm dismissed after an early fire recomputes today's
             // still-future original minute and rings a second time.
             putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, targetTimeMs)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, fireId)
         }
         try {
             startForegroundService(intent)
