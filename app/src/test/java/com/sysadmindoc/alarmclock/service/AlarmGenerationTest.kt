@@ -248,35 +248,94 @@ class AlarmGenerationTest {
         assertEquals(ActionAdmissionDecision.REJECT_RESTART_NO_EVIDENCE, decisionNoEvidence)
     }
 
-    // --- Async & Delayed Callback Generation & Ownership Binding Tests ---
+    // --- Production Callback Policy Classifier Tests ---
 
     @Test
-    fun delayedCallbackRejectsSameIdNewerGeneration() {
+    fun callbackPolicyRejectsSameIdNewerGeneration() {
         val startGenA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val currentGenB = AlarmGeneration(42L, 2000L, "fire-42-b")
 
-        // Same alarmId=42, but generation B is newer
-        assertFalse(currentGenB.matches(startGenA))
+        assertFalse(AlarmServiceCallbackPolicy.shouldProcessCallback(currentGenB, startGenA))
     }
 
     @Test
-    fun mediaCallbackRequiresGenerationAndPlayerOwnershipMatch() {
+    fun callbackPolicyRequiresGenerationAndPlayerOwnershipMatch() {
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val genB = AlarmGeneration(42L, 2000L, "fire-42-b")
 
-        val playerA: Any = Object()
-        val playerB: Any = Object()
+        val dummyPlayerA = FakeAlarmPlaybackPlayer()
+        val dummyPlayerB = FakeAlarmPlaybackPlayer()
 
         // Same player reference but stale generation -> rejected
-        val matchesStaleGen = genB.matches(genA) && (playerA === playerA)
-        assertFalse(matchesStaleGen)
+        assertFalse(
+            AlarmServiceCallbackPolicy.shouldProcessCallback(
+                currentGen = genB,
+                callbackGen = genA,
+                currentPlayback = dummyPlayerA,
+                callbackPlayback = dummyPlayerA
+            )
+        )
 
         // Matching generation but stale player reference -> rejected
-        val matchesStalePlayer = genA.matches(genA) && (playerB === playerA)
-        assertFalse(matchesStalePlayer)
+        assertFalse(
+            AlarmServiceCallbackPolicy.shouldProcessCallback(
+                currentGen = genA,
+                callbackGen = genA,
+                currentPlayback = dummyPlayerB,
+                callbackPlayback = dummyPlayerA
+            )
+        )
 
         // Matching generation AND player reference -> accepted
-        val matchesValid = genA.matches(genA) && (playerA === playerA)
-        assertTrue(matchesValid)
+        assertTrue(
+            AlarmServiceCallbackPolicy.shouldProcessCallback(
+                currentGen = genA,
+                callbackGen = genA,
+                currentPlayback = dummyPlayerA,
+                callbackPlayback = dummyPlayerA
+            )
+        )
+    }
+
+    @Test
+    fun callbackPolicyGuardsGlobalPlaybackReleaseAndWatchdogCancellation() {
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val genB = AlarmGeneration(42L, 2000L, "fire-42-b")
+
+        val dummyPlayerA = FakeAlarmPlaybackPlayer()
+        val dummyPlayerB = FakeAlarmPlaybackPlayer()
+
+        // Global playback release rejected when generation is no longer active
+        assertFalse(
+            AlarmServiceCallbackPolicy.shouldReleaseGlobalPlayback(
+                currentGen = genB,
+                callbackGen = genA,
+                currentPlayback = dummyPlayerB,
+                targetPlayback = dummyPlayerA
+            )
+        )
+
+        // Global playback release accepted when generation and player instance match
+        assertTrue(
+            AlarmServiceCallbackPolicy.shouldReleaseGlobalPlayback(
+                currentGen = genA,
+                callbackGen = genA,
+                currentPlayback = dummyPlayerA,
+                targetPlayback = dummyPlayerA
+            )
+        )
+
+        // Watchdog cancellation rejected when generation is stale
+        assertFalse(AlarmServiceCallbackPolicy.shouldCancelWatchdog(genB, genA))
+
+        // Watchdog cancellation accepted when generation matches
+        assertTrue(AlarmServiceCallbackPolicy.shouldCancelWatchdog(genA, genA))
+    }
+
+    private class FakeAlarmPlaybackPlayer : AlarmPlaybackPlayer {
+        override fun setVolume(left: Float, right: Float) {}
+        override fun durationMs(): Long = 0L
+        override fun seekTo(positionMs: Long) {}
+        override fun stopAndRelease() {}
     }
 }

@@ -1267,8 +1267,8 @@ class AlarmService : Service() {
     }
 
     private fun startMedia3Radio(alarm: Alarm, radioUrl: String, startGen: AlarmGeneration): Boolean {
+        var playbackRef: AlarmPlaybackPlayer? = null
         return try {
-            var playbackRef: AlarmPlaybackPlayer? = null
             val playbackStarted = AtomicBoolean(false)
             val playback = createMedia3Playback(
                 mediaItem = MediaItem.fromUri(radioUrl),
@@ -1350,6 +1350,7 @@ class AlarmService : Service() {
     }
 
     private fun startMedia3Tone(alarm: Alarm, uri: Uri, startGen: AlarmGeneration) {
+        var playbackRef: AlarmPlaybackPlayer? = null
         try {
             val fadeInMs = alarm.gradualVolumeSeconds * 1000L
             val initialVolume = when {
@@ -1363,7 +1364,6 @@ class AlarmService : Service() {
                 )
             }
             playbackRampGain = if (fadeInMs > 0) 0f else 1f
-            var playbackRef: AlarmPlaybackPlayer? = null
             val playbackStarted = AtomicBoolean(false)
             val playback = createMedia3Playback(
                 mediaItem = MediaItem.fromUri(uri),
@@ -1454,8 +1454,10 @@ class AlarmService : Service() {
                 fireId = startGen.fireId,
                 scheduledAt = startGen.scheduledAt
             )
-            try { alarmPlayback?.stopAndRelease() } catch (_: Exception) {}
-            alarmPlayback = null
+            try { playbackRef?.stopAndRelease() } catch (_: Exception) {}
+            if (AlarmServiceCallbackPolicy.shouldReleaseGlobalPlayback(currentGeneration(), startGen, alarmPlayback, playbackRef)) {
+                alarmPlayback = null
+            }
             escalateMedia3PlaybackFailure(alarm, startGen)
         }
     }
@@ -1469,7 +1471,7 @@ class AlarmService : Service() {
         cancelPlaybackWatchdog()
         playbackWatchdogJob = serviceScope.launch {
             delay(PLAYBACK_START_TIMEOUT_MS)
-            if (!playbackStarted.get() && currentGeneration()?.matches(startGen) == true && alarmPlayback === playback) {
+            if (!playbackStarted.get() && AlarmServiceCallbackPolicy.shouldProcessCallback(currentGeneration(), startGen, alarmPlayback, playback)) {
                 recordIncidentAsync(
                     type = AlarmIncidentEvent.TYPE_AUDIO,
                     status = AlarmIncidentEvent.STATUS_FAILED,
@@ -1515,7 +1517,7 @@ class AlarmService : Service() {
         cancelPlaybackWatchdog()
         playbackWatchdogJob = serviceScope.launch {
             delay(PLAYBACK_START_TIMEOUT_MS)
-            if (currentGeneration()?.matches(startGen) != true || alarmPlayback != null) return@launch
+            if (!AlarmServiceCallbackPolicy.shouldProcessCallback(currentGeneration(), startGen) || alarmPlayback != null) return@launch
             val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager
             val started = audioManager != null && mediaStreamsBefore() > mediaStreamsAtLaunch
             if (started) {
@@ -1549,8 +1551,8 @@ class AlarmService : Service() {
     }
 
     private fun escalateMedia3PlaybackFailure(alarm: Alarm, startGen: AlarmGeneration) {
+        if (!AlarmServiceCallbackPolicy.shouldCancelWatchdog(currentGeneration(), startGen)) return
         cancelPlaybackWatchdog()
-        if (currentGeneration()?.matches(startGen) != true) return
         forceBuiltInSpeakerForFallback = true
         val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager
         if (audioManager != null) {
@@ -1587,8 +1589,8 @@ class AlarmService : Service() {
     }
 
     private fun startMedia3DefaultFallback(alarm: Alarm, startGen: AlarmGeneration) {
+        if (!AlarmServiceCallbackPolicy.shouldCancelWatchdog(currentGeneration(), startGen)) return
         cancelPlaybackWatchdog()
-        if (currentGeneration()?.matches(startGen) != true) return
         recordIncidentAsync(
             type = AlarmIncidentEvent.TYPE_AUDIO,
             status = AlarmIncidentEvent.STATUS_REQUESTED,
