@@ -726,7 +726,7 @@ class AlarmService : Service() {
 
         if (currentGeneration()?.matches(startGen) != true) return
 
-        startAudio(alarm)
+        startAudio(alarm, startGen)
 
         AlarmHapticController.vibrationDelayMillis(alarm)?.let { delayMillis ->
             // v1.12.0 (roadmap N7): optional pre-vibration delay. Defers haptic
@@ -739,9 +739,7 @@ class AlarmService : Service() {
             if (delayMillis > 0) {
                 serviceScope.launch {
                     kotlinx.coroutines.delay(delayMillis)
-                    // Re-check the live alarm id — service-restart races could
-                    // otherwise vibrate for an alarm the user already dismissed.
-                    if (currentAlarmId == alarmId) startVibration(alarm)
+                    if (currentGeneration()?.matches(startGen) == true) startVibration(alarm)
                 }
             } else {
                 startVibration(alarm)
@@ -754,13 +752,13 @@ class AlarmService : Service() {
             alarmId = alarm.id,
             label = alarm.label,
             timeFormatted = wireAlarmTime(alarm),
-            scheduledForMillis = currentScheduledAt.takeIf { it > 0L },
-            fireId = currentFireId
+            scheduledForMillis = startGen.scheduledAt,
+            fireId = startGen.fireId
         )
         AlarmBroadcastContract.send(
             this, AlarmBroadcastContract.ACTION_ALARM_FIRED,
             alarmId = alarm.id, label = alarm.label,
-            displayTime = wireAlarmTime(alarm), fireId = currentFireId
+            displayTime = wireAlarmTime(alarm), fireId = startGen.fireId
         )
 
         // Auto-silence after timeout - records as missed
@@ -768,6 +766,7 @@ class AlarmService : Service() {
         if (autoSilenceMinutes > 0) {
             autoSilenceJob = serviceScope.launch {
                 kotlinx.coroutines.delay(autoSilenceMinutes * 60 * 1000L)
+                if (currentGeneration()?.matches(startGen) != true) return@launch
                 val missedAlarm = repository.getById(alarmId)
                 if (missedAlarm != null) {
                     // Once the auto-silence delay elapses the outcome IS "missed".
@@ -777,25 +776,29 @@ class AlarmService : Service() {
                     // missed event, incident, webhook, broadcast, notification,
                     // and repeat-missed state all land atomically before teardown.
                     withContext(NonCancellable) {
+                        if (currentGeneration()?.matches(startGen) != true) return@withContext
                         recordEvent(missedAlarm, com.sysadmindoc.alarmclock.data.local.entity.AlarmEvent.ACTION_MISSED)
                         recordIncident(
                             type = AlarmIncidentEvent.TYPE_AUTO_SILENCE,
                             status = AlarmIncidentEvent.STATUS_SUCCEEDED,
                             reasonCode = "AUTO_SILENCED_AFTER_${autoSilenceMinutes}_MINUTES",
-                            source = "AlarmService"
+                            source = "AlarmService",
+                            alarmId = startGen.alarmId,
+                            fireId = startGen.fireId,
+                            scheduledAt = startGen.scheduledAt
                         )
                         webhookService.fireAsync(
                             event = WebhookEvent.AlarmMissed,
                             alarmId = missedAlarm.id,
                             label = missedAlarm.label,
                             timeFormatted = wireAlarmTime(missedAlarm),
-                            scheduledForMillis = currentScheduledAt.takeIf { it > 0L },
-                            fireId = currentFireId
+                            scheduledForMillis = startGen.scheduledAt,
+                            fireId = startGen.fireId
                         )
                         AlarmBroadcastContract.send(
                             this@AlarmService, AlarmBroadcastContract.ACTION_ALARM_MISSED,
                             alarmId = missedAlarm.id, label = missedAlarm.label,
-                            displayTime = wireAlarmTime(missedAlarm), fireId = currentFireId
+                            displayTime = wireAlarmTime(missedAlarm), fireId = startGen.fireId
                         )
                         showMissedNotification(missedAlarm, autoSilenceMinutes)
                         // v1.4.0/v1.15.20: Repeat missed alarms — record the alarm
@@ -806,16 +809,18 @@ class AlarmService : Service() {
                         }
                     }
                 }
-                clearAlarmRuntimeState(alarmId)
-                currentSnoozeCount = 0
-                currentAlarmId = -1
-                updateActiveAlarm(null)
-                alarmScheduler.handleAlarmFired(alarmId, currentScheduledAt)
-                stopAlarmPlayback()
-                if (isForeground.compareAndSet(true, false)) {
-                    stopForeground(STOP_FOREGROUND_REMOVE)
+                if (currentGeneration()?.matches(startGen) == true) {
+                    clearAlarmRuntimeState(alarmId)
+                    currentSnoozeCount = 0
+                    currentAlarmId = -1
+                    updateActiveAlarm(null)
+                    alarmScheduler.handleAlarmFired(alarmId, startGen.scheduledAt)
+                    stopAlarmPlayback()
+                    if (isForeground.compareAndSet(true, false)) {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                    }
+                    stopSelf()
                 }
-                stopSelf()
             }
         }
 
@@ -823,11 +828,7 @@ class AlarmService : Service() {
         if (alarm.backupSoundEnabled && !AlarmHapticController.usesMutedAlarmAudio(alarm)) {
             backupSoundJob = serviceScope.launch {
                 delay(alarm.backupSoundDelaySec * 1000L)
-                // Escalate: set volume to max and switch to system alarm tone.
-                // v1.11.2: the call observer still has priority — if we're
-                // muted because of a call, escalate the *system* stream so the
-                // post-call audio is loud, but don't unmute the player
-                // mid-call.
+                if (currentGeneration()?.matches(startGen) != true) return@launch
                 val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager ?: return@launch
                 val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
                 backupSoundOriginalAlarmVolume = backupSoundOriginalAlarmVolume
@@ -837,7 +838,10 @@ class AlarmService : Service() {
                     type = AlarmIncidentEvent.TYPE_AUDIO,
                     status = AlarmIncidentEvent.STATUS_SUCCEEDED,
                     reasonCode = "BACKUP_SOUND_ESCALATED",
-                    source = "AlarmService"
+                    source = "AlarmService",
+                    alarmId = startGen.alarmId,
+                    fireId = startGen.fireId,
+                    scheduledAt = startGen.scheduledAt
                 )
                 playbackRampGain = 1f
                 applyPlaybackGain()
@@ -1108,14 +1112,17 @@ class AlarmService : Service() {
         }
     }
 
-    private fun startAudio(alarm: Alarm) {
+    private fun startAudio(alarm: Alarm, startGen: AlarmGeneration) {
         // Silent mode - skip audio entirely
         if (alarm.ringtoneUri == "silent" || AlarmHapticController.usesMutedAlarmAudio(alarm)) {
             recordIncidentAsync(
                 type = AlarmIncidentEvent.TYPE_AUDIO,
                 status = AlarmIncidentEvent.STATUS_SKIPPED,
                 reasonCode = "SILENT_OR_HAPTIC_ONLY",
-                source = "AlarmService"
+                source = "AlarmService",
+                alarmId = startGen.alarmId,
+                fireId = startGen.fireId,
+                scheduledAt = startGen.scheduledAt
             )
             updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
             return
@@ -1136,7 +1143,10 @@ class AlarmService : Service() {
                 type = AlarmIncidentEvent.TYPE_AUDIO,
                 status = AlarmIncidentEvent.STATUS_SKIPPED,
                 reasonCode = "AUDIO_START_REENTRY_SKIPPED",
-                source = "AlarmService"
+                source = "AlarmService",
+                alarmId = startGen.alarmId,
+                fireId = startGen.fireId,
+                scheduledAt = startGen.scheduledAt
             )
             return
         }
@@ -1148,13 +1158,13 @@ class AlarmService : Service() {
                 ?.let { pool -> alarm.copy(ringtoneUri = pool.random()) }
                 ?: alarm
 
-            startAudioInternal(pooledAlarm)
+            startAudioInternal(pooledAlarm, startGen)
         } finally {
             audioStarting.set(false)
         }
     }
 
-    private fun startAudioInternal(alarm: Alarm) {
+    private fun startAudioInternal(alarm: Alarm, startGen: AlarmGeneration) {
 
         // F14: Spotify ringtone — open Spotify URI and skip in-app playback.
         // Only accept canonical Spotify schemes ("spotify:..." or
@@ -1186,14 +1196,17 @@ class AlarmService : Service() {
                         type = AlarmIncidentEvent.TYPE_AUDIO,
                         status = AlarmIncidentEvent.STATUS_SUCCEEDED,
                         reasonCode = "SPOTIFY_DELEGATED",
-                        source = "AlarmService"
+                        source = "AlarmService",
+                        alarmId = startGen.alarmId,
+                        fireId = startGen.fireId,
+                        scheduledAt = startGen.scheduledAt
                     )
                     // Delegation is a promise, not proof. A background-activity
                     // start can be refused without throwing, and Spotify can
                     // open without playing (logged out, offline, free tier).
                     // Either way the alarm would be completely silent, so watch
                     // for real playback and fall back if none arrives.
-                    armSpotifyPlaybackWatchdog(alarm, mediaStreamsBefore())
+                    armSpotifyPlaybackWatchdog(alarm, mediaStreamsBefore(), startGen)
                     return
                 }
             } catch (_: Exception) {
@@ -1205,7 +1218,7 @@ class AlarmService : Service() {
         // dead: startMedia3DefaultFallback drops into it whenever Media3
         // cannot play, which is the safety net for the app's whole reason to
         // exist.
-        startMedia3AudioInternal(alarm)
+        startMedia3AudioInternal(alarm, startGen)
     }
 
     /**
@@ -1222,12 +1235,12 @@ class AlarmService : Service() {
             .commit()
     }
 
-    private fun startMedia3AudioInternal(alarm: Alarm) {
+    private fun startMedia3AudioInternal(alarm: Alarm, startGen: AlarmGeneration) {
         val radioUrl = alarm.internetRadioUrl.trim()
         // https only: cleartext is blocked at this targetSdk, so an http stream
         // would stall until the watchdog escalated instead of failing fast.
         if (radioUrl.startsWith("https://", ignoreCase = true)) {
-            if (startMedia3Radio(alarm, radioUrl)) {
+            if (startMedia3Radio(alarm, radioUrl, startGen)) {
                 return
             }
         }
@@ -1242,15 +1255,18 @@ class AlarmService : Service() {
                 type = AlarmIncidentEvent.TYPE_AUDIO,
                 status = AlarmIncidentEvent.STATUS_SKIPPED,
                 reasonCode = "NO_DEFAULT_TONE",
-                source = "AlarmService"
+                source = "AlarmService",
+                alarmId = startGen.alarmId,
+                fireId = startGen.fireId,
+                scheduledAt = startGen.scheduledAt
             )
             return
         }
 
-        startMedia3Tone(alarm, uri)
+        startMedia3Tone(alarm, uri, startGen)
     }
 
-    private fun startMedia3Radio(alarm: Alarm, radioUrl: String): Boolean {
+    private fun startMedia3Radio(alarm: Alarm, radioUrl: String, startGen: AlarmGeneration): Boolean {
         return try {
             var playbackRef: AlarmPlaybackPlayer? = null
             val playbackStarted = AtomicBoolean(false)
@@ -1266,42 +1282,55 @@ class AlarmService : Service() {
                     alarmVolume = alarm.volume
                 ),
                 onReady = {
-                    playbackStarted.set(true)
-                    cancelPlaybackWatchdog()
-                    updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
-                    recordIncidentAsync(
-                        type = AlarmIncidentEvent.TYPE_AUDIO,
-                        status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                        reasonCode = "MEDIA3_INTERNET_RADIO_STARTED",
-                        source = "AlarmService"
-                    )
-                    if (alarm.overrideSystemVolume) {
-                        setConfiguredAlarmStreamVolume(alarm)
+                    if (currentGeneration()?.matches(startGen) == true && alarmPlayback === playbackRef) {
+                        playbackStarted.set(true)
+                        cancelPlaybackWatchdog()
+                        updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
+                        recordIncidentAsync(
+                            type = AlarmIncidentEvent.TYPE_AUDIO,
+                            status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                            reasonCode = "MEDIA3_INTERNET_RADIO_STARTED",
+                            source = "AlarmService",
+                            alarmId = startGen.alarmId,
+                            fireId = startGen.fireId,
+                            scheduledAt = startGen.scheduledAt
+                        )
+                        if (alarm.overrideSystemVolume) {
+                            setConfiguredAlarmStreamVolume(alarm)
+                        }
+                        playbackRampGain = 1f
+                        applyPlaybackGain()
                     }
-                    playbackRampGain = 1f
-                    applyPlaybackGain()
                 },
                 onEnded = {},
                 onError = { error ->
-                    cancelPlaybackWatchdog()
-                    playbackRef?.let { releasePlaybackIfCurrent(it) }
-                    recordIncidentAsync(
-                        type = AlarmIncidentEvent.TYPE_AUDIO,
-                        status = AlarmIncidentEvent.STATUS_FAILED,
-                        reasonCode = "MEDIA3_INTERNET_RADIO_ERROR_${error.javaClass.simpleName}",
-                        source = "AlarmService"
-                    )
-                    serviceScope.launch { escalateMedia3PlaybackFailure(alarm) }
+                    if (currentGeneration()?.matches(startGen) == true && alarmPlayback === playbackRef) {
+                        cancelPlaybackWatchdog()
+                        playbackRef?.let { releasePlaybackIfCurrent(it) }
+                        recordIncidentAsync(
+                            type = AlarmIncidentEvent.TYPE_AUDIO,
+                            status = AlarmIncidentEvent.STATUS_FAILED,
+                            reasonCode = "MEDIA3_INTERNET_RADIO_ERROR_${error.javaClass.simpleName}",
+                            source = "AlarmService",
+                            alarmId = startGen.alarmId,
+                            fireId = startGen.fireId,
+                            scheduledAt = startGen.scheduledAt
+                        )
+                        serviceScope.launch { escalateMedia3PlaybackFailure(alarm, startGen) }
+                    }
                 }
             )
             playbackRef = playback
             alarmPlayback = playback
-            armMedia3PlaybackWatchdog(alarm, playback, playbackStarted)
+            armMedia3PlaybackWatchdog(alarm, playback, playbackStarted, startGen)
             recordIncidentAsync(
                 type = AlarmIncidentEvent.TYPE_AUDIO,
                 status = AlarmIncidentEvent.STATUS_REQUESTED,
                 reasonCode = "MEDIA3_INTERNET_RADIO_PREPARING",
-                source = "AlarmService"
+                source = "AlarmService",
+                alarmId = startGen.alarmId,
+                fireId = startGen.fireId,
+                scheduledAt = startGen.scheduledAt
             )
             true
         } catch (e: Exception) {
@@ -1309,7 +1338,10 @@ class AlarmService : Service() {
                 type = AlarmIncidentEvent.TYPE_AUDIO,
                 status = AlarmIncidentEvent.STATUS_FAILED,
                 reasonCode = "MEDIA3_INTERNET_RADIO_SETUP_FAILED_${e.javaClass.simpleName}",
-                source = "AlarmService"
+                source = "AlarmService",
+                alarmId = startGen.alarmId,
+                fireId = startGen.fireId,
+                scheduledAt = startGen.scheduledAt
             )
             try { alarmPlayback?.stopAndRelease() } catch (_: Exception) {}
             alarmPlayback = null
@@ -1317,7 +1349,7 @@ class AlarmService : Service() {
         }
     }
 
-    private fun startMedia3Tone(alarm: Alarm, uri: Uri) {
+    private fun startMedia3Tone(alarm: Alarm, uri: Uri, startGen: AlarmGeneration) {
         try {
             val fadeInMs = alarm.gradualVolumeSeconds * 1000L
             val initialVolume = when {
@@ -1339,39 +1371,46 @@ class AlarmService : Service() {
                 repeatMode = if (alarm.dismissAtRingtoneEnd) Player.REPEAT_MODE_OFF else Player.REPEAT_MODE_ONE,
                 initialVolume = initialVolume,
                 onReady = {
-                    playbackStarted.set(true)
-                    cancelPlaybackWatchdog()
-                    seekToRandomPoolOffset(alarm, playbackRef)
-                    if (alarm.overrideSystemVolume) {
-                        setConfiguredAlarmStreamVolume(alarm)
+                    if (currentGeneration()?.matches(startGen) == true && alarmPlayback === playbackRef) {
+                        playbackStarted.set(true)
+                        cancelPlaybackWatchdog()
+                        seekToRandomPoolOffset(alarm, playbackRef)
+                        if (alarm.overrideSystemVolume) {
+                            setConfiguredAlarmStreamVolume(alarm)
+                        }
+                        applyPlaybackGain()
+                        updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
+                        recordIncidentAsync(
+                            type = AlarmIncidentEvent.TYPE_AUDIO,
+                            status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                            reasonCode = "MEDIA3_PLAYER_STARTED",
+                            source = "AlarmService",
+                            alarmId = startGen.alarmId,
+                            fireId = startGen.fireId,
+                            scheduledAt = startGen.scheduledAt
+                        )
                     }
-                    applyPlaybackGain()
-                    updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
-                    recordIncidentAsync(
-                        type = AlarmIncidentEvent.TYPE_AUDIO,
-                        status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                        reasonCode = "MEDIA3_PLAYER_STARTED",
-                        source = "AlarmService"
-                    )
                 },
                 onEnded = {
-                    if (alarm.dismissAtRingtoneEnd) {
-                        val id = currentAlarmId
-                        if (id != -1L) {
-                            serviceScope.launch { dismissAlarm(id) }
-                        }
+                    if (alarm.dismissAtRingtoneEnd && currentGeneration()?.matches(startGen) == true && alarmPlayback === playbackRef) {
+                        serviceScope.launch { dismissAlarm(startGen.alarmId) }
                     }
                 },
                 onError = { error ->
-                    cancelPlaybackWatchdog()
-                    playbackRef?.let { releasePlaybackIfCurrent(it) }
-                    recordIncidentAsync(
-                        type = AlarmIncidentEvent.TYPE_AUDIO,
-                        status = AlarmIncidentEvent.STATUS_FAILED,
-                        reasonCode = "MEDIA3_PLAYER_FAILED_${error.javaClass.simpleName}",
-                        source = "AlarmService"
-                    )
-                    escalateMedia3PlaybackFailure(alarm)
+                    if (currentGeneration()?.matches(startGen) == true && alarmPlayback === playbackRef) {
+                        cancelPlaybackWatchdog()
+                        playbackRef?.let { releasePlaybackIfCurrent(it) }
+                        recordIncidentAsync(
+                            type = AlarmIncidentEvent.TYPE_AUDIO,
+                            status = AlarmIncidentEvent.STATUS_FAILED,
+                            reasonCode = "MEDIA3_PLAYER_FAILED_${error.javaClass.simpleName}",
+                            source = "AlarmService",
+                            alarmId = startGen.alarmId,
+                            fireId = startGen.fireId,
+                            scheduledAt = startGen.scheduledAt
+                        )
+                        escalateMedia3PlaybackFailure(alarm, startGen)
+                    }
                 }
             )
             playbackRef = playback
@@ -1380,13 +1419,16 @@ class AlarmService : Service() {
                 type = AlarmIncidentEvent.TYPE_AUDIO,
                 status = AlarmIncidentEvent.STATUS_REQUESTED,
                 reasonCode = "MEDIA3_PLAYER_PREPARING",
-                source = "AlarmService"
+                source = "AlarmService",
+                alarmId = startGen.alarmId,
+                fireId = startGen.fireId,
+                scheduledAt = startGen.scheduledAt
             )
 
             // If the player never reaches READY (for example, a stream stuck
             // buffering with no onPlayerError), escalate before the delayed
             // backup-sound timer gets a chance to fire.
-            armMedia3PlaybackWatchdog(alarm, playback, playbackStarted)
+            armMedia3PlaybackWatchdog(alarm, playback, playbackStarted, startGen)
 
             if (fadeInMs > 0) {
                 volumeJob = serviceScope.launch {
@@ -1394,6 +1436,7 @@ class AlarmService : Service() {
                     val stepDelay = fadeInMs / steps
                     for (i in 1..steps) {
                         delay(stepDelay)
+                        if (currentGeneration()?.matches(startGen) != true) break
                         val volume = i.toFloat() / steps
                         playbackRampGain = volume
                         applyPlaybackGain()
@@ -1406,31 +1449,38 @@ class AlarmService : Service() {
                 type = AlarmIncidentEvent.TYPE_AUDIO,
                 status = AlarmIncidentEvent.STATUS_FAILED,
                 reasonCode = "MEDIA3_PLAYER_SETUP_FAILED_${e.javaClass.simpleName}",
-                source = "AlarmService"
+                source = "AlarmService",
+                alarmId = startGen.alarmId,
+                fireId = startGen.fireId,
+                scheduledAt = startGen.scheduledAt
             )
             try { alarmPlayback?.stopAndRelease() } catch (_: Exception) {}
             alarmPlayback = null
-            escalateMedia3PlaybackFailure(alarm)
+            escalateMedia3PlaybackFailure(alarm, startGen)
         }
     }
 
     private fun armMedia3PlaybackWatchdog(
         alarm: Alarm,
         playback: AlarmPlaybackPlayer,
-        playbackStarted: AtomicBoolean
+        playbackStarted: AtomicBoolean,
+        startGen: AlarmGeneration
     ) {
         cancelPlaybackWatchdog()
         playbackWatchdogJob = serviceScope.launch {
             delay(PLAYBACK_START_TIMEOUT_MS)
-            if (!playbackStarted.get() && currentAlarmId == alarm.id && alarmPlayback === playback) {
+            if (!playbackStarted.get() && currentGeneration()?.matches(startGen) == true && alarmPlayback === playback) {
                 recordIncidentAsync(
                     type = AlarmIncidentEvent.TYPE_AUDIO,
                     status = AlarmIncidentEvent.STATUS_FAILED,
                     reasonCode = "MEDIA3_PLAYER_STALL_TIMEOUT",
-                    source = "AlarmService"
+                    source = "AlarmService",
+                    alarmId = startGen.alarmId,
+                    fireId = startGen.fireId,
+                    scheduledAt = startGen.scheduledAt
                 )
                 releasePlaybackIfCurrent(playback)
-                escalateMedia3PlaybackFailure(alarm)
+                escalateMedia3PlaybackFailure(alarm, startGen)
             }
         }
     }
@@ -1457,11 +1507,15 @@ class AlarmService : Service() {
         }.getOrDefault(if (audioManager.isMusicActive) 1 else 0)
     }
 
-    private fun armSpotifyPlaybackWatchdog(alarm: Alarm, mediaStreamsAtLaunch: Int) {
+    private fun armSpotifyPlaybackWatchdog(
+        alarm: Alarm,
+        mediaStreamsAtLaunch: Int,
+        startGen: AlarmGeneration
+    ) {
         cancelPlaybackWatchdog()
         playbackWatchdogJob = serviceScope.launch {
             delay(PLAYBACK_START_TIMEOUT_MS)
-            if (currentAlarmId != alarm.id || alarmPlayback != null) return@launch
+            if (currentGeneration()?.matches(startGen) != true || alarmPlayback != null) return@launch
             val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager
             val started = audioManager != null && mediaStreamsBefore() > mediaStreamsAtLaunch
             if (started) {
@@ -1469,7 +1523,10 @@ class AlarmService : Service() {
                     type = AlarmIncidentEvent.TYPE_AUDIO,
                     status = AlarmIncidentEvent.STATUS_SUCCEEDED,
                     reasonCode = "SPOTIFY_PLAYBACK_CONFIRMED",
-                    source = "AlarmService"
+                    source = "AlarmService",
+                    alarmId = startGen.alarmId,
+                    fireId = startGen.fireId,
+                    scheduledAt = startGen.scheduledAt
                 )
                 return@launch
             }
@@ -1477,9 +1534,12 @@ class AlarmService : Service() {
                 type = AlarmIncidentEvent.TYPE_AUDIO,
                 status = AlarmIncidentEvent.STATUS_FAILED,
                 reasonCode = "SPOTIFY_FALLBACK",
-                source = "AlarmService"
+                source = "AlarmService",
+                alarmId = startGen.alarmId,
+                fireId = startGen.fireId,
+                scheduledAt = startGen.scheduledAt
             )
-            startMedia3DefaultFallback(alarm)
+            startMedia3DefaultFallback(alarm, startGen)
         }
     }
 
@@ -1488,8 +1548,9 @@ class AlarmService : Service() {
         playbackWatchdogJob = null
     }
 
-    private fun escalateMedia3PlaybackFailure(alarm: Alarm) {
+    private fun escalateMedia3PlaybackFailure(alarm: Alarm, startGen: AlarmGeneration) {
         cancelPlaybackWatchdog()
+        if (currentGeneration()?.matches(startGen) != true) return
         forceBuiltInSpeakerForFallback = true
         val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager
         if (audioManager != null) {
@@ -1506,7 +1567,10 @@ class AlarmService : Service() {
                     type = AlarmIncidentEvent.TYPE_AUDIO,
                     status = AlarmIncidentEvent.STATUS_FAILED,
                     reasonCode = "MEDIA3_FALLBACK_VOLUME_FAILED_${error.javaClass.simpleName}",
-                    source = "AlarmService"
+                    source = "AlarmService",
+                    alarmId = startGen.alarmId,
+                    fireId = startGen.fireId,
+                    scheduledAt = startGen.scheduledAt
                 )
             }
         }
@@ -1514,24 +1578,32 @@ class AlarmService : Service() {
             type = AlarmIncidentEvent.TYPE_AUDIO,
             status = AlarmIncidentEvent.STATUS_FAILED,
             reasonCode = "MEDIA3_FALLBACK_ROUTING_FORCED",
-            source = "AlarmService"
+            source = "AlarmService",
+            alarmId = startGen.alarmId,
+            fireId = startGen.fireId,
+            scheduledAt = startGen.scheduledAt
         )
-        startMedia3DefaultFallback(alarm)
+        startMedia3DefaultFallback(alarm, startGen)
     }
 
-    private fun startMedia3DefaultFallback(alarm: Alarm) {
+    private fun startMedia3DefaultFallback(alarm: Alarm, startGen: AlarmGeneration) {
         cancelPlaybackWatchdog()
+        if (currentGeneration()?.matches(startGen) != true) return
         recordIncidentAsync(
             type = AlarmIncidentEvent.TYPE_AUDIO,
             status = AlarmIncidentEvent.STATUS_REQUESTED,
             reasonCode = "MEDIA3_DEFAULT_FALLBACK_TO_LEGACY",
-            source = "AlarmService"
+            source = "AlarmService",
+            alarmId = startGen.alarmId,
+            fireId = startGen.fireId,
+            scheduledAt = startGen.scheduledAt
         )
         startMediaPlayerAudioInternal(
             alarm.copy(
                 internetRadioUrl = "",
                 spotifyUri = ""
-            )
+            ),
+            startGen
         )
     }
 
@@ -1617,7 +1689,7 @@ class AlarmService : Service() {
         audioManager.setStreamVolume(AudioManager.STREAM_ALARM, targetVol, 0)
     }
 
-    private fun startMediaPlayerAudioInternal(alarm: Alarm) {
+    private fun startMediaPlayerAudioInternal(alarm: Alarm, startGen: AlarmGeneration) {
         // v1.2.0: Internet radio stream. Defensive: only accept http(s) URLs so a
         // malformed setting can't crash MediaPlayer with an unknown scheme.
         val radioUrl = alarm.internetRadioUrl.trim()
@@ -1636,23 +1708,27 @@ class AlarmService : Service() {
                     setDataSource(radioUrl)
                     isLooping = false  // Streams don't loop
                     setOnPreparedListener { mp ->
-                        mp.start()
-                        updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
-                        recordIncidentAsync(
-                            type = AlarmIncidentEvent.TYPE_AUDIO,
-                            status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                            reasonCode = "INTERNET_RADIO_STARTED",
-                            source = "AlarmService"
-                        )
-                        if (alarm.overrideSystemVolume) {
-                            val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-                            val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
-                            val targetVol = (maxVol * alarm.volume / 100f).toInt().coerceIn(1, maxVol)
-                            audioManager.setStreamVolume(AudioManager.STREAM_ALARM, targetVol, 0)
+                        if (currentGeneration()?.matches(startGen) == true && alarmPlayback === playback) {
+                            mp.start()
+                            updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
+                            recordIncidentAsync(
+                                type = AlarmIncidentEvent.TYPE_AUDIO,
+                                status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                                reasonCode = "INTERNET_RADIO_STARTED",
+                                source = "AlarmService",
+                                alarmId = startGen.alarmId,
+                                fireId = startGen.fireId,
+                                scheduledAt = startGen.scheduledAt
+                            )
+                            if (alarm.overrideSystemVolume) {
+                                val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+                                val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+                                val targetVol = (maxVol * alarm.volume / 100f).toInt().coerceIn(1, maxVol)
+                                audioManager.setStreamVolume(AudioManager.STREAM_ALARM, targetVol, 0)
+                            }
+                            playbackRampGain = 1f
+                            applyPlaybackGain()
                         }
-                        // v1.11.2: if a call landed during prepareAsync, honour it.
-                        playbackRampGain = 1f
-                        applyPlaybackGain()
                     }
                     // Without an OnErrorListener, a stream failure (DNS, 404, codec
                     // mismatch) results in a silent alarm — fall back to the device
@@ -1664,13 +1740,15 @@ class AlarmService : Service() {
                             type = AlarmIncidentEvent.TYPE_AUDIO,
                             status = AlarmIncidentEvent.STATUS_FAILED,
                             reasonCode = "INTERNET_RADIO_ERROR",
-                            source = "AlarmService"
+                            source = "AlarmService",
+                            alarmId = startGen.alarmId,
+                            fireId = startGen.fireId,
+                            scheduledAt = startGen.scheduledAt
                         )
-                        // Re-enter startAudio without the radio URL so the default
-                        // ringtone path runs. Done on the service scope so the
-                        // OnErrorListener returns immediately.
-                        serviceScope.launch {
-                            startAudio(alarm.copy(internetRadioUrl = ""))
+                        if (currentGeneration()?.matches(startGen) == true) {
+                            serviceScope.launch {
+                                startAudio(alarm.copy(internetRadioUrl = ""), startGen)
+                            }
                         }
                         true
                     }
@@ -1680,16 +1758,21 @@ class AlarmService : Service() {
                     type = AlarmIncidentEvent.TYPE_AUDIO,
                     status = AlarmIncidentEvent.STATUS_REQUESTED,
                     reasonCode = "INTERNET_RADIO_PREPARING",
-                    source = "AlarmService"
+                    source = "AlarmService",
+                    alarmId = startGen.alarmId,
+                    fireId = startGen.fireId,
+                    scheduledAt = startGen.scheduledAt
                 )
                 return  // Radio handles playback
             } catch (e: Exception) {
-                // Fall through to default audio
                 recordIncidentAsync(
                     type = AlarmIncidentEvent.TYPE_AUDIO,
                     status = AlarmIncidentEvent.STATUS_FAILED,
                     reasonCode = "INTERNET_RADIO_SETUP_FAILED_${e.javaClass.simpleName}",
-                    source = "AlarmService"
+                    source = "AlarmService",
+                    alarmId = startGen.alarmId,
+                    fireId = startGen.fireId,
+                    scheduledAt = startGen.scheduledAt
                 )
                 try { alarmPlayback?.stopAndRelease() } catch (_: Exception) {}
                 alarmPlayback = null
@@ -1702,14 +1785,14 @@ class AlarmService : Service() {
             RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
                 ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
         } ?: run {
-            // Stripped-down AOSP / managed-profile devices may not report any
-            // default ringtone. Don't crash — leave the alarm silent (the
-            // notification + vibration + flashlight still fire) and bail out.
             recordIncidentAsync(
                 type = AlarmIncidentEvent.TYPE_AUDIO,
                 status = AlarmIncidentEvent.STATUS_SKIPPED,
                 reasonCode = "NO_DEFAULT_TONE",
-                source = "AlarmService"
+                source = "AlarmService",
+                alarmId = startGen.alarmId,
+                fireId = startGen.fireId,
+                scheduledAt = startGen.scheduledAt
             )
             return
         }
@@ -1725,15 +1808,11 @@ class AlarmService : Service() {
             player.apply {
                 setAudioAttributes(AlarmAudioRouting.alarmSonificationAttributes())
                 setDataSource(applicationContext, uri)
-                // v1.4.0: "Dismiss at ringtone end" — honour a song/ringtone's
-                // natural length by disabling the loop and auto-dismissing
-                // when playback completes.
                 isLooping = !alarm.dismissAtRingtoneEnd
                 if (alarm.dismissAtRingtoneEnd) {
                     setOnCompletionListener {
-                        val id = currentAlarmId
-                        if (id != -1L) {
-                            serviceScope.launch { dismissAlarm(id) }
+                        if (currentGeneration()?.matches(startGen) == true && alarmPlayback === playback) {
+                            serviceScope.launch { dismissAlarm(startGen.alarmId) }
                         }
                     }
                 }
@@ -1748,11 +1827,6 @@ class AlarmService : Service() {
                     audioManager.setStreamVolume(AudioManager.STREAM_ALARM, targetVol, 0)
                 }
 
-                // For a fade-in we start at 0 so the first sample isn't the loud
-                // attack of the ringtone; otherwise start at full so the user
-                // hears the alarm immediately at the configured level.
-                // v1.11.2: callMutedAudio overrides both — a ringing call at
-                // alarm fire-time keeps audio at 0 until the call ends.
                 playbackRampGain = if (fadeInMs > 0) 0f else 1f
                 val initialGain = alarmPlaybackGain(
                     callMuted = callMutedAudio,
@@ -1769,7 +1843,10 @@ class AlarmService : Service() {
                 type = AlarmIncidentEvent.TYPE_AUDIO,
                 status = AlarmIncidentEvent.STATUS_SUCCEEDED,
                 reasonCode = "MEDIA_PLAYER_STARTED",
-                source = "AlarmService"
+                source = "AlarmService",
+                alarmId = startGen.alarmId,
+                fireId = startGen.fireId,
+                scheduledAt = startGen.scheduledAt
             )
 
             if (fadeInMs > 0) {
@@ -1778,8 +1855,7 @@ class AlarmService : Service() {
                     val stepDelay = fadeInMs / steps
                     for (i in 1..steps) {
                         delay(stepDelay)
-                        // v1.11.2: the call observer takes priority; don't ramp
-                        // volume during a call (it'll be restored on IDLE).
+                        if (currentGeneration()?.matches(startGen) != true) break
                         val volume = i.toFloat() / steps
                         playbackRampGain = volume
                         applyPlaybackGain()

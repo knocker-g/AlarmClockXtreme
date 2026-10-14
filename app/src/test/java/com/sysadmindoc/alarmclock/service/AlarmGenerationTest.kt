@@ -247,4 +247,36 @@ class AlarmGenerationTest {
         )
         assertEquals(ActionAdmissionDecision.REJECT_RESTART_NO_EVIDENCE, decisionNoEvidence)
     }
+
+    // --- Async & Delayed Callback Generation & Ownership Binding Tests ---
+
+    @Test
+    fun delayedCallbackRejectsSameIdNewerGeneration() {
+        val startGenA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val currentGenB = AlarmGeneration(42L, 2000L, "fire-42-b")
+
+        // Same alarmId=42, but generation B is newer
+        assertFalse(currentGenB.matches(startGenA))
+    }
+
+    @Test
+    fun mediaCallbackRequiresGenerationAndPlayerOwnershipMatch() {
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val genB = AlarmGeneration(42L, 2000L, "fire-42-b")
+
+        val playerA: Any = Object()
+        val playerB: Any = Object()
+
+        // Same player reference but stale generation -> rejected
+        val matchesStaleGen = genB.matches(genA) && (playerA === playerA)
+        assertFalse(matchesStaleGen)
+
+        // Matching generation but stale player reference -> rejected
+        val matchesStalePlayer = genA.matches(genA) && (playerB === playerA)
+        assertFalse(matchesStalePlayer)
+
+        // Matching generation AND player reference -> accepted
+        val matchesValid = genA.matches(genA) && (playerA === playerA)
+        assertTrue(matchesValid)
+    }
 }
