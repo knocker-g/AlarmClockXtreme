@@ -638,12 +638,19 @@ class AlarmService : Service() {
 
         currentAlarmVolume = alarm.volume
         val settings = preferencesManager.getCurrentSettings()
+        if (currentGeneration()?.matches(startGen) != true) {
+            Log.i(TAG, "Aborting startAlarm after settings fetch for $startGen: generation no longer current")
+            return
+        }
+
         OnCallDndOverride.begin(this, settings.onCallModeEnabled)
 
         // v1.5.4: startForeground() was already called synchronously in
         // onStartCommand with a placeholder to satisfy Android 14+ timing.
         // Update the notification in-place with the fully-labelled version.
         val notification = buildAlarmNotification(alarm)
+        if (currentGeneration()?.matches(startGen) != true) return
+
         wearNextAlarmBridge.publishAlarmFiring(alarm)
         try {
             if (isForeground.compareAndSet(false, true)) {
@@ -670,6 +677,8 @@ class AlarmService : Service() {
             )
         }
 
+        if (currentGeneration()?.matches(startGen) != true) return
+
         val firingIntent = AlarmFireDismissContract.firingActivityIntent(
             context = this,
             alarmId = alarmId,
@@ -693,6 +702,8 @@ class AlarmService : Service() {
                 source = "AlarmService"
             )
         }
+
+        if (currentGeneration()?.matches(startGen) != true) return
 
         startAudio(alarm)
 

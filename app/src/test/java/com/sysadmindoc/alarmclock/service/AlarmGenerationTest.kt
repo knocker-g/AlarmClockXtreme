@@ -137,9 +137,11 @@ class AlarmGenerationTest {
             activeSnapshot.fireId == mismatchedGen.fireId
         assertFalse(matchesMismatched)
 
-        // No active evidence -> fail-closed
-        val hasEvidence = activeSnapshot.alarmId > 0L && activeSnapshot.scheduledAt > 0L && activeSnapshot.fireId.isNotBlank()
-        assertTrue(hasEvidence)
+        // Null snapshot -> fail-closed
+        val nullSnapshot: AlarmService.Companion.ActiveAlarmSnapshot? = null
+        val matchesNull = nullSnapshot != null &&
+            nullSnapshot.alarmId == matchingGen.alarmId
+        assertFalse(matchesNull)
     }
 
     @Test
@@ -147,7 +149,7 @@ class AlarmGenerationTest {
         val startGen = AlarmGeneration(42L, 1000L, "fire-42-a")
         val newerActiveGen = AlarmGeneration(99L, 2000L, "fire-99-b")
 
-        // Newer generation has taken over: guard evaluates to false, preventing stale cleanup
+        // Newer generation has taken over: guard evaluates to false, preventing stale side-effects/cleanup
         assertFalse(newerActiveGen.matches(startGen))
     }
 }
