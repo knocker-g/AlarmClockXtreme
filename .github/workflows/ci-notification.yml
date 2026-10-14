@@ -1,0 +1,100 @@
+name: CI Notification
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  notify-discord:
+    name: Notify Discord
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send Discord Webhook Notification
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_CI_WEBHOOK_URL }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          WORKFLOW_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          EVENT_NAME: ${{ github.event.workflow_run.event }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "::error::DISCORD_CI_WEBHOOK_URL secret is not configured or empty."
+            exit 1
+          fi
+
+          python3 -c '
+          import os, json, urllib.request, urllib.error
+
+          webhook_url = os.environ.get("DISCORD_WEBHOOK", "").strip()
+          if not webhook_url:
+              print("::error::Webhook URL missing in environment")
+              raise SystemExit(1)
+
+          conclusion = os.environ.get("WORKFLOW_CONCLUSION", "unknown").upper()
+          branch = os.environ.get("HEAD_BRANCH", "unknown")
+          sha = os.environ.get("HEAD_SHA", "")[:7]
+          event = os.environ.get("EVENT_NAME", "unknown")
+          run_url = os.environ.get("RUN_URL", "")
+          run_num = os.environ.get("RUN_NUMBER", "")
+
+          if conclusion == "SUCCESS":
+              color = 3066993   # Green (#2ECC71)
+              title = f"🟢 CI Passed — Run #{run_num}"
+          elif conclusion in ("FAILURE", "TIMED_OUT", "STARTUP_FAILURE"):
+              color = 15158332  # Red (#E74C3C)
+              title = f"🔴 CI Failed — Run #{run_num}"
+          elif conclusion in ("CANCELLED", "CANCELED"):
+              color = 15105570  # Orange (#E67E22)
+              title = f"🟠 CI Cancelled — Run #{run_num}"
+          else:
+              color = 9807270   # Grey (#95A5A6)
+              title = f"⚪ CI Status: {conclusion} — Run #{run_num}"
+
+          fields = [
+              {"name": "Result", "value": f"`{conclusion}`", "inline": True},
+              {"name": "Branch", "value": f"`{branch}`", "inline": True},
+              {"name": "Event", "value": f"`{event}`", "inline": True},
+          ]
+          if sha:
+              fields.append({"name": "Commit", "value": f"`{sha}`", "inline": True})
+
+          embed = {
+              "title": title,
+              "url": run_url if run_url else None,
+              "color": color,
+              "fields": fields,
+              "footer": {"text": "ACX GitHub Actions CI Notification"}
+          }
+
+          payload = json.dumps({"embeds": [embed]}).encode("utf-8")
+
+          req = urllib.request.Request(
+              webhook_url,
+              data=payload,
+              headers={
+                  "Content-Type": "application/json",
+                  "User-Agent": "ACX-CI-Notification-Workflow"
+              },
+              method="POST"
+          )
+
+          try:
+              with urllib.request.urlopen(req) as resp:
+                  if resp.status not in (200, 204):
+                      print(f"::error::Discord webhook returned HTTP status {resp.status}")
+                      raise SystemExit(1)
+                  print(f"Discord notification delivered successfully for Run #{run_num} ({conclusion}).")
+          except urllib.error.HTTPError as e:
+              print(f"::error::Discord webhook HTTPError: {e.code}")
+              raise SystemExit(1)
+          except Exception as e:
+              print(f"::error::Failed to send Discord webhook: {e}")
+              raise SystemExit(1)
+          '
