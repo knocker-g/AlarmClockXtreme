@@ -648,7 +648,6 @@ class AlarmGenerationTest {
 
     @Test
     fun productionSeamLegacyOnPreparedStartExceptionReleasesPlayerAndTriggersFallbackOnce() {
-        // Scenario 2: onPrepared内のstart例外 → 旧Player解放・Fallback要求1回
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val tokenA = auth.mintNextToken(genA)
@@ -677,7 +676,6 @@ class AlarmGenerationTest {
 
     @Test
     fun productionSeamLegacyOnPreparedSetVolumeExceptionReleasesPlayerAndTriggersFallbackOnce() {
-        // Scenario 3: setVolume例外 → 旧Player解放・Fallback要求1回
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val tokenA = auth.mintNextToken(genA)
@@ -706,7 +704,6 @@ class AlarmGenerationTest {
 
     @Test
     fun productionSeamOnPreparedExceptionFollowedByDelayedOnErrorPreventsDuplicateFallback() {
-        // Scenario 4: onPrepared例外後のonError → Fallback重複なし
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val tokenA = auth.mintNextToken(genA)
@@ -715,7 +712,6 @@ class AlarmGenerationTest {
         val holder = PlayerCallbackStateHolder(tokenA, player)
         var fallbackCount = 0
 
-        // 1. onPrepared throws exception -> triggers fallback 1 time
         AlarmPlayerCallbackSeam.handleOnPrepared(
             authority = auth,
             currentGenSupplier = { genA },
@@ -728,7 +724,6 @@ class AlarmGenerationTest {
         )
         assertEquals(1, fallbackCount)
 
-        // 2. Delayed onError fires for same player -> claims handoff, but claim is one-shot -> 0 additional fallback!
         AlarmPlayerCallbackSeam.handleOnError(
             authority = auth,
             currentGenSupplier = { genA },
@@ -738,12 +733,11 @@ class AlarmGenerationTest {
             triggerFallbackAction = { fallbackCount++ }
         )
 
-        assertEquals(1, fallbackCount) // Still exactly 1 fallback!
+        assertEquals(1, fallbackCount)
     }
 
     @Test
     fun productionSeamOnErrorFollowedByDelayedOnPreparedRejectsOldPlayerStart() {
-        // Scenario 5: onError後のonPrepared → 旧Player開始なし
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val tokenA = auth.mintNextToken(genA)
@@ -752,7 +746,6 @@ class AlarmGenerationTest {
         val holder = PlayerCallbackStateHolder(tokenA, player)
         var fallbackCount = 0
 
-        // 1. onError fires first -> claims handoff & activates fallback token
         AlarmPlayerCallbackSeam.handleOnError(
             authority = auth,
             currentGenSupplier = { genA },
@@ -763,7 +756,6 @@ class AlarmGenerationTest {
         )
         assertEquals(1, fallbackCount)
 
-        // 2. Delayed onPrepared fires for old player -> terminal check blocks start!
         val preparedResult = AlarmPlayerCallbackSeam.handleOnPrepared(
             authority = auth,
             currentGenSupplier = { genA },
@@ -778,12 +770,11 @@ class AlarmGenerationTest {
         assertFalse(preparedResult)
         assertEquals(0, player.startCount)
         assertEquals(1, player.releaseCount) // Idempotent releaseCount == 1!
-        assertEquals(1, fallbackCount) // Fallback not re-triggered
+        assertEquals(1, fallbackCount)
     }
 
     @Test
     fun productionSeamDismissAfterPrepareRejectsOldPlayerStartAndReleasesResource() {
-        // Scenario 6: Dismiss後のonPrepared → startなし・旧Playerのみ解放
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val tokenA = auth.mintNextToken(genA)
@@ -812,7 +803,6 @@ class AlarmGenerationTest {
 
     @Test
     fun productionSeamNewStartFollowedByOldOnErrorPreservesNewPlayerState() {
-        // Scenario 7: 新START後のonError → 新Playerの共有状態維持
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
 
@@ -841,7 +831,6 @@ class AlarmGenerationTest {
 
     @Test
     fun productionSeamDefaultFallbackNormalOnPreparedStartsPlayerOnce() {
-        // Scenario 8: Default Fallbackの正常準備 → startが1回
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val tokenA = auth.mintNextToken(genA)
@@ -873,7 +862,6 @@ class AlarmGenerationTest {
 
     @Test
     fun productionSeamDefaultFallbackOnPreparedExceptionReleasesPlayerWithoutInfiniteRetry() {
-        // Scenario 9 & 11: Default FallbackのonPrepared例外 → release・再Fallbackなし・Incident記録
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val tokenA = auth.mintNextToken(genA)
@@ -905,7 +893,6 @@ class AlarmGenerationTest {
 
     @Test
     fun productionSeamDefaultFallbackSynchronousSetupExceptionReleasesPlayerAndClearsSharedRef() {
-        // Scenario 10: Default Fallbackの同期セットアップ例外 → release・共有参照クリア
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val tokenA = auth.mintNextToken(genA)
@@ -917,7 +904,6 @@ class AlarmGenerationTest {
         val holder = PlayerCallbackStateHolder(fallbackToken!!, fallbackPlayer, isDefaultFallbackStage = true)
         var currentPlayback: AlarmPlaybackPlayer? = fallbackPlayer
 
-        // Simulate setup exception in Default Fallback (e.g. setDataSource throws)
         holder.markTerminalAndRelease()
         if (auth.shouldReleaseGlobalPlayback(genA, fallbackToken, currentPlayback, fallbackPlayer)) {
             currentPlayback = null
@@ -929,7 +915,6 @@ class AlarmGenerationTest {
 
     @Test
     fun productionSeamConcurrentWatchdogAndPlayerErrorDoNotTriggerDuplicateFallback() {
-        // Scenario 12: WatchdogとPlayer Errorが競合してもFallback重複なし
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val tokenA = auth.mintNextToken(genA)
@@ -944,6 +929,37 @@ class AlarmGenerationTest {
         assertNull(handoff2)
 
         assertEquals(fallbackToken, auth.activeAttemptToken())
+    }
+
+    @Test
+    fun mediaPlayerAlarmPlaybackPlayerReleaseIsIdempotent() {
+        val mediaPlayer = android.media.MediaPlayer()
+        val player = MediaPlayerAlarmPlaybackPlayer(mediaPlayer)
+
+        assertFalse(player.isReleased())
+        player.stopAndRelease()
+        assertTrue(player.isReleased())
+
+        // Second stopAndRelease call does NOT throw or re-release
+        player.stopAndRelease()
+        assertTrue(player.isReleased())
+    }
+
+    @Test
+    fun controllableFakePlayerReleaseIsIdempotentThroughHolder() {
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
+
+        val player = ControllableFakePlayer()
+        val holder = PlayerCallbackStateHolder(tokenA, player)
+
+        // Multiple calls to markTerminalAndRelease
+        assertTrue(holder.markTerminalAndRelease())
+        assertFalse(holder.markTerminalAndRelease()) // Second call returns false
+
+        assertEquals(1, player.releaseCount) // Exactly 1 release!
+        assertTrue(holder.isTerminal())
     }
 
     private class ControllableFakePlayer : AlarmPlaybackPlayer {

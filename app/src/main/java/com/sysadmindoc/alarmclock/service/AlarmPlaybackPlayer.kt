@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import androidx.media3.exoplayer.ExoPlayer
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 internal interface AlarmPlaybackPlayer {
@@ -12,6 +13,7 @@ internal interface AlarmPlaybackPlayer {
     fun durationMs(): Long
     fun seekTo(positionMs: Long)
     fun stopAndRelease()
+    fun isReleased(): Boolean = false
 }
 
 internal fun randomRingtoneStartOffsetMs(durationMs: Long, randomUnit: Double): Long {
@@ -85,51 +87,80 @@ internal fun <T> callOnPlaybackMainThread(block: () -> T): T {
 internal class MediaPlayerAlarmPlaybackPlayer(
     private val player: MediaPlayer
 ) : AlarmPlaybackPlayer {
+    private val released = AtomicBoolean(false)
+
     override fun setVolume(left: Float, right: Float) {
-        player.setVolume(left, right)
+        if (released.get()) return
+        try { player.setVolume(left, right) } catch (_: Exception) {}
     }
 
-    override fun durationMs(): Long = runCatching { player.duration.toLong() }.getOrDefault(0L)
+    override fun durationMs(): Long {
+        if (released.get()) return 0L
+        return runCatching { player.duration.toLong() }.getOrDefault(0L)
+    }
 
     override fun seekTo(positionMs: Long) {
-        player.seekTo(positionMs.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt())
+        if (released.get()) return
+        try { player.seekTo(positionMs.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()) } catch (_: Exception) {}
     }
 
     override fun stopAndRelease() {
-        try {
-            if (player.isPlaying) {
-                player.stop()
+        if (released.compareAndSet(false, true)) {
+            try {
+                if (player.isPlaying) {
+                    player.stop()
+                }
+            } catch (_: Exception) {
+                // Some platform players throw when queried after an async error.
+            } finally {
+                try {
+                    player.release()
+                } catch (_: Exception) {}
             }
-        } catch (_: Exception) {
-            // Some platform players throw when queried after an async error.
-        } finally {
-            player.release()
         }
     }
+
+    override fun isReleased(): Boolean = released.get()
 }
 
 internal class Media3AlarmPlaybackPlayer(
     private val player: ExoPlayer
 ) : AlarmPlaybackPlayer {
+    private val released = AtomicBoolean(false)
+
     override fun setVolume(left: Float, right: Float) {
+        if (released.get()) return
         PlaybackMainThread.run {
-            player.volume = minOf(left, right).coerceIn(0f, 1f)
+            try { player.volume = minOf(left, right).coerceIn(0f, 1f) } catch (_: Exception) {}
         }
     }
 
-    override fun durationMs(): Long = callOnPlaybackMainThread { player.duration.coerceAtLeast(0L) }
+    override fun durationMs(): Long {
+        if (released.get()) return 0L
+        return callOnPlaybackMainThread { runCatching { player.duration.coerceAtLeast(0L) }.getOrDefault(0L) }
+    }
 
     override fun seekTo(positionMs: Long) {
-        PlaybackMainThread.run { player.seekTo(positionMs.coerceAtLeast(0L)) }
+        if (released.get()) return
+        PlaybackMainThread.run {
+            try { player.seekTo(positionMs.coerceAtLeast(0L)) } catch (_: Exception) {}
+        }
     }
 
     override fun stopAndRelease() {
-        PlaybackMainThread.runBlocking {
-            try {
-                player.stop()
-            } finally {
-                player.release()
+        if (released.compareAndSet(false, true)) {
+            PlaybackMainThread.runBlocking {
+                try {
+                    player.stop()
+                } catch (_: Exception) {
+                } finally {
+                    try {
+                        player.release()
+                    } catch (_: Exception) {}
+                }
             }
         }
     }
+
+    override fun isReleased(): Boolean = released.get()
 }
