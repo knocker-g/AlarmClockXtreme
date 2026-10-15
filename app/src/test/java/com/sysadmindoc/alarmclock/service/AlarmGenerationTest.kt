@@ -995,6 +995,23 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun backupVolumeOwnershipProtectsOriginalVolumeAcrossGenerations() {
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val genB = AlarmGeneration(42L, 2000L, "fire-42-b")
+
+        // Backup volume captured for genA
+        val backupGen = genA
+
+        // Attempting restore for mismatched genB -> Rejected!
+        val isOwnerGenB = backupGen.matches(genB)
+        assertFalse(isOwnerGenB)
+
+        // Restoring for matching genA -> Accepted!
+        val isOwnerGenA = backupGen.matches(genA)
+        assertTrue(isOwnerGenA)
+    }
+
+    @Test
     fun controllableFakePlayerReleaseIsIdempotentThroughHolder() {
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")

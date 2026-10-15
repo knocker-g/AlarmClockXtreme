@@ -205,6 +205,8 @@ class AlarmService : Service() {
     private var backupSoundJob: Job? = null
     @Volatile
     private var backupSoundOriginalAlarmVolume: Int? = null
+    @Volatile
+    private var backupSoundOriginalGeneration: AlarmGeneration? = null
     private var flashlightJob: Job? = null
     private var currentSnoozeCount: Int = 0
     private var currentWakeConfirmRefireCount: Int = 0
@@ -843,8 +845,9 @@ class AlarmService : Service() {
                 if (currentGeneration()?.matches(startGen) != true) return@launch
                 val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager ?: return@launch
                 val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
-                if (backupSoundOriginalAlarmVolume == null) {
+                if (backupSoundOriginalAlarmVolume == null || backupSoundOriginalGeneration == null) {
                     backupSoundOriginalAlarmVolume = audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
+                    backupSoundOriginalGeneration = startGen
                 }
                 audioManager.setStreamVolume(AudioManager.STREAM_ALARM, maxVol, 0)
                 recordIncidentAsync(
@@ -1098,9 +1101,14 @@ class AlarmService : Service() {
         }
     }
 
-    private fun restoreBackupSoundVolume() {
+    private fun restoreBackupSoundVolume(targetGen: AlarmGeneration? = null) {
         val originalVolume = backupSoundOriginalAlarmVolume ?: return
+        val backupGen = backupSoundOriginalGeneration
+        if (targetGen != null && backupGen != null && !backupGen.matches(targetGen)) {
+            return
+        }
         backupSoundOriginalAlarmVolume = null
+        backupSoundOriginalGeneration = null
         val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager ?: return
         try {
             val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
@@ -1601,8 +1609,10 @@ class AlarmService : Service() {
         val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager
         if (audioManager != null) {
             runCatching {
-                backupSoundOriginalAlarmVolume = backupSoundOriginalAlarmVolume
-                    ?: audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
+                if (backupSoundOriginalAlarmVolume == null || backupSoundOriginalGeneration == null) {
+                    backupSoundOriginalAlarmVolume = audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
+                    backupSoundOriginalGeneration = fallbackToken.generation
+                }
                 if (playbackAuthority.shouldMutateAudio(currentGeneration(), fallbackToken)) {
                     audioManager.setStreamVolume(
                         AudioManager.STREAM_ALARM,
@@ -2833,7 +2843,7 @@ class AlarmService : Service() {
         } catch (_: Exception) {}
     }
 
-    private fun stopAlarmPlayback() {
+    private fun stopAlarmPlayback(targetGen: AlarmGeneration? = null) {
         invalidatePlaybackTokens()
         OnCallDndOverride.end(this)
         volumeJob?.cancel()
@@ -2843,7 +2853,7 @@ class AlarmService : Service() {
         hapticOnlyJob?.cancel()
         hapticOnlyJob = null
         releaseAlarmMediaSession()
-        restoreBackupSoundVolume()
+        restoreBackupSoundVolume(targetGen)
         flashlightJob?.cancel()
         flashlightJob = null
         try {
