@@ -838,29 +838,26 @@ class AlarmService : Service() {
 
         // v1.2.0: Backup sound escalation
         if (alarm.backupSoundEnabled && !AlarmHapticController.usesMutedAlarmAudio(alarm)) {
-            val attemptToken = playbackAuthority.activeAttemptToken()
-            if (attemptToken != null) {
-                backupSoundJob = serviceScope.launch(Dispatchers.Main.immediate) {
-                    delay(alarm.backupSoundDelaySec * 1000L)
-                    if (!playbackAuthority.shouldMutateAudio(currentGeneration(), attemptToken)) return@launch
-                    val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager ?: return@launch
-                    val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
-                    if (backupSoundOriginalAlarmVolume == null) {
-                        backupSoundOriginalAlarmVolume = audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
-                    }
-                    audioManager.setStreamVolume(AudioManager.STREAM_ALARM, maxVol, 0)
-                    recordIncidentAsync(
-                        type = AlarmIncidentEvent.TYPE_AUDIO,
-                        status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                        reasonCode = "BACKUP_SOUND_ESCALATED",
-                        source = "AlarmService",
-                        alarmId = startGen.alarmId,
-                        fireId = startGen.fireId,
-                        scheduledAt = startGen.scheduledAt
-                    )
-                    playbackRampGain = 1f
-                    applyPlaybackGain()
+            backupSoundJob = serviceScope.launch(Dispatchers.Main.immediate) {
+                delay(alarm.backupSoundDelaySec * 1000L)
+                if (currentGeneration()?.matches(startGen) != true) return@launch
+                val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager ?: return@launch
+                val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+                if (backupSoundOriginalAlarmVolume == null) {
+                    backupSoundOriginalAlarmVolume = audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
                 }
+                audioManager.setStreamVolume(AudioManager.STREAM_ALARM, maxVol, 0)
+                recordIncidentAsync(
+                    type = AlarmIncidentEvent.TYPE_AUDIO,
+                    status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                    reasonCode = "BACKUP_SOUND_ESCALATED",
+                    source = "AlarmService",
+                    alarmId = startGen.alarmId,
+                    fireId = startGen.fireId,
+                    scheduledAt = startGen.scheduledAt
+                )
+                playbackRampGain = 1f
+                applyPlaybackGain()
             }
         }
 

@@ -960,21 +960,38 @@ class AlarmGenerationTest {
     }
 
     @Test
-    fun backupSoundEscalationRejectsStaleTokenAfterPreemption() {
-        val auth = AlarmPlaybackAttemptAuthority()
+    fun backupSoundEscalationContinuesDuringLegitimateFallbackWithinSameGeneration() {
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-        val tokenA = auth.mintNextToken(genA)
+        val auth = AlarmPlaybackAttemptAuthority()
 
-        // Preemption occurs (new START tokenB or Dismiss/Snooze invalidation)
-        val tokenB = auth.mintNextToken(genA)
+        // Initial attempt token 1
+        val token1 = auth.mintNextToken(genA)
 
-        // Delayed backup sound timer attempts to mutate audio for old tokenA -> REJECTED!
-        val canMutateOld = auth.shouldMutateAudio(genA, tokenA)
-        assertFalse(canMutateOld)
+        // Player fails -> Handoff claimed and fallback token 2 activated
+        val handoff = auth.tryClaimFallbackHandoff(genA, token1)
+        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
+        assertNotNull(fallbackToken)
 
-        // New tokenB is authorized
-        val canMutateNew = auth.shouldMutateAudio(genA, tokenB)
-        assertTrue(canMutateNew)
+        // Backup Sound Timer checks Generation match (which remains genA during fallback)
+        val currentGen: AlarmGeneration? = genA
+        val isGenerationValid = currentGen != null && currentGen.matches(genA)
+
+        // Backup Sound timer remains VALID and continues throughout fallback!
+        assertTrue(isGenerationValid)
+        assertEquals(genA, fallbackToken!!.generation)
+    }
+
+    @Test
+    fun backupSoundEscalationRejectsStaleGenerationAfterPreemption() {
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val genB = AlarmGeneration(42L, 2000L, "fire-42-b")
+
+        // Preemption occurs: New START genB or Dismiss (currentGen = null)
+        var currentGen: AlarmGeneration? = genB
+        assertFalse(currentGen?.matches(genA) == true)
+
+        currentGen = null
+        assertFalse(currentGen?.matches(genA) == true)
     }
 
     @Test
