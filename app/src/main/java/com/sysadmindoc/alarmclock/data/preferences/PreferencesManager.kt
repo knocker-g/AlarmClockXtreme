@@ -467,6 +467,9 @@ class PreferencesManager @Inject constructor(
 
     init {
         activeAlarmWriterScope.launch {
+            settings.collect {}
+        }
+        activeAlarmWriterScope.launch {
             for (request in activeAlarmChannel) {
                 try {
                     updateActiveAlarmInternal(request)
@@ -531,7 +534,6 @@ class PreferencesManager @Inject constructor(
     private suspend fun updateActiveAlarmInternal(request: ActiveAlarmUpdateRequest) {
         try {
             var updateResult = ActiveAlarmUpdateResult.COMMITTED
-            var committedSettings: AppSettings? = null
             context.dataStore.edit { prefs ->
                 testFaultInjector?.invoke()
                 val old = prefs.toSettings().sanitized()
@@ -558,11 +560,6 @@ class PreferencesManager @Inject constructor(
                     activeAlarmRefireAt = snapshot?.refireAt ?: 0L
                 )
                 prefs.applySettings(newSettings)
-                committedSettings = newSettings
-            }
-            committedSettings?.let { newSettings ->
-                cachedSettings = newSettings
-                hasLoadedSettings = true
             }
             request.ack?.complete(updateResult)
         } catch (e: Exception) {
@@ -584,16 +581,10 @@ class PreferencesManager @Inject constructor(
     }
 
     suspend fun update(transform: (AppSettings) -> AppSettings) {
-        var committedSettings: AppSettings? = null
         context.dataStore.edit { prefs ->
             val old = prefs.toSettings().sanitized()
             val new = transform(old).sanitized()
             prefs.applySettings(new)
-            committedSettings = new
-        }
-        committedSettings?.let { new ->
-            cachedSettings = new
-            hasLoadedSettings = true
         }
     }
 
