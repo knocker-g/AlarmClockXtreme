@@ -212,6 +212,7 @@ class AlarmService : Service() {
     private var currentSnoozeCount: Int = 0
     private var currentWakeConfirmRefireCount: Int = 0
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val activeAlarmPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val preemptionPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var wakeLock: PowerManager.WakeLock? = null
     // v1.9.1: AtomicBoolean (was @Volatile Boolean). Multiple coroutines on
@@ -1113,7 +1114,7 @@ class AlarmService : Service() {
                 scheduledAt = snapshot?.scheduledAt ?: targetGen?.scheduledAt ?: 0L
             )
         } else {
-            serviceScope.launch(Dispatchers.IO) {
+            activeAlarmPersistenceScope.launch {
                 try {
                     val result = ack.await()
                     if (result == PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT) {

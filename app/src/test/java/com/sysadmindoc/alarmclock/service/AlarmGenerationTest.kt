@@ -1290,6 +1290,49 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun realDataStoreCommitFailureInjectionReturnsFailedCommitAndPreservesCache() = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val pm = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+
+        val initialDiskActiveId = pm.getCurrentSettings().activeAlarmId
+        val initialCachedActiveId = pm.getCachedSettings().activeAlarmId
+
+        val genFailure = AlarmGeneration(888L, 3000L, "fire-888-failure")
+        val snapshotFailure = AlarmService.Companion.ActiveAlarmSnapshot(
+            alarmId = genFailure.alarmId,
+            scheduledAt = genFailure.scheduledAt,
+            fireId = genFailure.fireId,
+            firedAt = 3000L,
+            state = "FIRING"
+        )
+
+        // Inject simulated DataStore write fault
+        pm.testFaultInjector = {
+            throw java.io.IOException("Simulated DataStore commit failure")
+        }
+
+        val ackFailure = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        assertTrue(pm.enqueueActiveAlarmUpdate(snapshotFailure, genFailure, ackFailure))
+
+        // Await ack result -> MUST return FAILED_COMMIT
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT, ackFailure.await())
+
+        // Disk state AND in-memory cache MUST remain uncorrupted (equal to initial pre-write values, NOT 888L)
+        assertEquals(initialDiskActiveId, pm.getCurrentSettings().activeAlarmId)
+        assertEquals(initialCachedActiveId, pm.getCachedSettings().activeAlarmId)
+
+        // Reset fault injector
+        pm.testFaultInjector = null
+
+        // Enqueue subsequent valid update -> Pipeline recovers and commits successfully
+        val ackRecovery = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        assertTrue(pm.enqueueActiveAlarmUpdate(snapshotFailure, genFailure, ackRecovery))
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackRecovery.await())
+        assertEquals(888L, pm.getCurrentSettings().activeAlarmId)
+        assertEquals(888L, pm.getCachedSettings().activeAlarmId)
+    }
+
+    @Test
     fun controllableFakePlayerReleaseIsIdempotentThroughHolder() {
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")

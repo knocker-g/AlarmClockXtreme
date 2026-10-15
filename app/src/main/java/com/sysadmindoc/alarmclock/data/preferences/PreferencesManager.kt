@@ -3,6 +3,7 @@ package com.sysadmindoc.alarmclock.data.preferences
 import android.content.Context
 import android.graphics.Color
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
@@ -521,11 +522,15 @@ class PreferencesManager @Inject constructor(
         }
     }
 
+    @VisibleForTesting
+    internal var testFaultInjector: (() -> Unit)? = null
+
     private suspend fun updateActiveAlarmInternal(request: ActiveAlarmUpdateRequest) {
         try {
             var updateResult = ActiveAlarmUpdateResult.COMMITTED
             var committedSettings: AppSettings? = null
             context.dataStore.edit { prefs ->
+                testFaultInjector?.invoke()
                 val old = prefs.toSettings().sanitized()
 
                 if (!ActiveAlarmWriterPolicy.shouldExecuteUpdate(
