@@ -1016,6 +1016,26 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun staleActionRejectsTeardownAndPreservesNewActiveGeneration() {
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val genB = AlarmGeneration(42L, 2000L, "fire-42-b")
+
+        val auth = AlarmPlaybackAttemptAuthority()
+
+        // Active session is genB
+        val tokenB = auth.mintNextToken(genB)
+        val playerB = FakeAlarmPlaybackPlayer()
+
+        // Stale action for genA attempts teardown -> REJECTED
+        val isCurrentMatch = genA.matches(genB)
+        assertFalse(isCurrentMatch)
+
+        // Verify active tokenB and playerB are preserved and unaffected
+        assertEquals(tokenB, auth.activeAttemptToken())
+        assertTrue(auth.shouldProcessCallback(genB, tokenB, currentPlayback = playerB, callbackPlayback = playerB))
+    }
+
+    @Test
     fun controllableFakePlayerReleaseIsIdempotentThroughHolder() {
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")

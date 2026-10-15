@@ -479,9 +479,10 @@ class AlarmService : Service() {
                             .takeIf { it > System.currentTimeMillis() }
 
                         if (snoozeActionInFlight.compareAndSet(false, true)) {
+                            val acceptedGen = incomingGen!!
                             serviceScope.launch {
                                 try {
-                                    snoozeAlarm(alarmId, customMinutes, snoozeAtMillis)
+                                    snoozeAlarm(alarmId, acceptedGen, customMinutes, snoozeAtMillis)
                                 } finally {
                                     snoozeActionInFlight.set(false)
                                 }
@@ -491,7 +492,8 @@ class AlarmService : Service() {
                         }
                     }
                     ActionAdmissionDecision.ADMIT_EXACT_MATCH -> {
-                        val alarmId = incomingGen!!.alarmId
+                        val acceptedGen = incomingGen!!
+                        val alarmId = acceptedGen.alarmId
                         val customMinutes = intent.getIntExtra(EXTRA_CUSTOM_SNOOZE_MINUTES, -1)
                             .takeIf { it > 0 }
                             ?.coerceIn(MIN_CUSTOM_SNOOZE_MINUTES, MAX_CUSTOM_SNOOZE_MINUTES)
@@ -503,7 +505,7 @@ class AlarmService : Service() {
                         if (snoozeActionInFlight.compareAndSet(false, true)) {
                             serviceScope.launch {
                                 try {
-                                    snoozeAlarm(alarmId, customMinutes, snoozeAtMillis)
+                                    snoozeAlarm(alarmId, acceptedGen, customMinutes, snoozeAtMillis)
                                 } finally {
                                     snoozeActionInFlight.set(false)
                                 }
@@ -572,7 +574,8 @@ class AlarmService : Service() {
                         return START_NOT_STICKY
                     }
                     ActionAdmissionDecision.ADMIT_RESTART -> {
-                        val alarmId = incomingGen!!.alarmId
+                        val acceptedGen = incomingGen!!
+                        val alarmId = acceptedGen.alarmId
                         currentAlarmId = active!!.alarmId
                         currentScheduledAt = active.scheduledAt
                         currentFireId = active.fireId
@@ -586,13 +589,15 @@ class AlarmService : Service() {
                         serviceScope.launch {
                             dismissAlarm(
                                 alarmId = alarmId,
+                                acceptedGen = acceptedGen,
                                 challengeRetryCount = challengeRetryCount,
                                 challengeSolveTimeMs = challengeSolveTimeMs
                             )
                         }
                     }
                     ActionAdmissionDecision.ADMIT_EXACT_MATCH -> {
-                        val alarmId = incomingGen!!.alarmId
+                        val acceptedGen = incomingGen!!
+                        val alarmId = acceptedGen.alarmId
                         val challengeRetryCount = intent.getIntExtra(EXTRA_CHALLENGE_RETRY_COUNT, 0).coerceAtLeast(0)
                         val challengeSolveTimeMs = intent.getLongExtra(EXTRA_CHALLENGE_SOLVE_TIME_MS, 0L).coerceAtLeast(0L)
                         val intentFiredAt = intent.getLongExtra(EXTRA_FIRED_AT, 0L)
@@ -601,6 +606,7 @@ class AlarmService : Service() {
                         serviceScope.launch {
                             dismissAlarm(
                                 alarmId = alarmId,
+                                acceptedGen = acceptedGen,
                                 challengeRetryCount = challengeRetryCount,
                                 challengeSolveTimeMs = challengeSolveTimeMs
                             )
@@ -1424,7 +1430,7 @@ class AlarmService : Service() {
                 },
                 onEnded = {
                     if (alarm.dismissAtRingtoneEnd && playbackAuthority.shouldProcessCallback(currentGeneration(), attemptToken, alarmPlayback, playbackRef)) {
-                        serviceScope.launch { dismissAlarm(startGen.alarmId) }
+                        serviceScope.launch(Dispatchers.Main.immediate) { dismissAlarm(startGen.alarmId, startGen) }
                     }
                 },
                 onError = { error ->
@@ -1931,7 +1937,7 @@ class AlarmService : Service() {
                 if (alarm.dismissAtRingtoneEnd) {
                     setOnCompletionListener {
                         if (playbackAuthority.shouldProcessCallback(currentGeneration(), attemptToken, alarmPlayback, playback)) {
-                            serviceScope.launch(Dispatchers.Main.immediate) { dismissAlarm(startGen.alarmId) }
+                            serviceScope.launch(Dispatchers.Main.immediate) { dismissAlarm(startGen.alarmId, startGen) }
                         }
                     }
                 }
@@ -2244,9 +2250,24 @@ class AlarmService : Service() {
 
     private suspend fun snoozeAlarm(
         alarmId: Long,
+        acceptedGen: AlarmGeneration,
         customMinutes: Int? = null,
         snoozeAtMillis: Long? = null
     ) {
+        if (currentGeneration()?.matches(acceptedGen) != true) {
+            Log.i(TAG, "Rejecting stale snoozeAlarm for $acceptedGen: active generation is ${currentGeneration()}")
+            recordIncidentAsync(
+                type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                status = AlarmIncidentEvent.STATUS_SKIPPED,
+                reasonCode = "STALE_SNOOZE_GENERATION_MISMATCH",
+                source = "AlarmService",
+                alarmId = acceptedGen.alarmId,
+                fireId = acceptedGen.fireId,
+                scheduledAt = acceptedGen.scheduledAt
+            )
+            return
+        }
+
         // v1.11.3 (ALA-88): Block re-snooze if the session is already SNOOZED.
         // Prevents redundant scheduling and potential races or cap-exhaustion bugs.
         val snapshot = activeAlarm.get()
@@ -2259,6 +2280,21 @@ class AlarmService : Service() {
         // by tapping Snooze past the cap, so check before anything is torn
         // down: the alarm has to keep ringing exactly as it was.
         val capped = repository.getById(alarmId)?.sanitized()
+
+        if (currentGeneration()?.matches(acceptedGen) != true) {
+            Log.i(TAG, "Rejecting stale snoozeAlarm post-repository fetch for $acceptedGen: active generation is ${currentGeneration()}")
+            recordIncidentAsync(
+                type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                status = AlarmIncidentEvent.STATUS_SKIPPED,
+                reasonCode = "STALE_SNOOZE_POST_SUSPEND_MISMATCH",
+                source = "AlarmService",
+                alarmId = acceptedGen.alarmId,
+                fireId = acceptedGen.fireId,
+                scheduledAt = acceptedGen.scheduledAt
+            )
+            return
+        }
+
         if (capped != null &&
             SnoozeCapPolicy.outcomeFor(capped, currentSnoozeCount) == SnoozeCapOutcome.REFUSE
         ) {
@@ -2272,13 +2308,12 @@ class AlarmService : Service() {
             refreshFiringNotification(capped)
             return
         }
-        val snoozeGen = currentGeneration()
         SnoozeCountdownReceiver.cancel(this)
         autoSilenceJob?.cancel()
         backupSoundJob?.cancel()
         flashlightJob?.cancel()
         volumeJob?.cancel()
-        stopAlarmPlayback(snoozeGen)
+        stopAlarmPlayback(acceptedGen)
         val alarm = repository.getById(alarmId)?.sanitized()
         if (alarm != null) {
             val webhookScheduledAt = currentScheduledAt
@@ -2397,16 +2432,30 @@ class AlarmService : Service() {
 
     private suspend fun dismissAlarm(
         alarmId: Long,
+        acceptedGen: AlarmGeneration,
         challengeRetryCount: Int = 0,
         challengeSolveTimeMs: Long = 0L
     ) {
-        val dismissGen = currentGeneration()
+        if (currentGeneration()?.matches(acceptedGen) != true) {
+            Log.i(TAG, "Rejecting stale dismissAlarm for $acceptedGen: active generation is ${currentGeneration()}")
+            recordIncidentAsync(
+                type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                status = AlarmIncidentEvent.STATUS_SKIPPED,
+                reasonCode = "STALE_DISMISS_GENERATION_MISMATCH",
+                source = "AlarmService",
+                alarmId = acceptedGen.alarmId,
+                fireId = acceptedGen.fireId,
+                scheduledAt = acceptedGen.scheduledAt
+            )
+            return
+        }
+
         SnoozeCountdownReceiver.cancel(this)
         autoSilenceJob?.cancel()
         backupSoundJob?.cancel()
         flashlightJob?.cancel()
         volumeJob?.cancel()
-        stopAlarmPlayback(dismissGen)
+        stopAlarmPlayback(acceptedGen)
         val alarm = repository.getById(alarmId)?.sanitized()
         if (alarm != null) {
             val wakeConfirmFireId = currentFireId.ifBlank {
