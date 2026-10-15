@@ -1043,6 +1043,30 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun postSuspendInterleavingRejectsStaleActionAndPreservesNewActiveGeneration() {
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val genB = AlarmGeneration(42L, 2000L, "fire-42-b")
+
+        val auth = AlarmPlaybackAttemptAuthority()
+
+        // 1. Action accepted for genA
+        val tokenA = auth.mintNextToken(genA)
+        assertNotNull(tokenA)
+
+        // 2. Repository suspends on IO. While suspending, new START genB arrives
+        val tokenB = auth.mintNextToken(genB)
+        assertNotNull(tokenB)
+
+        // 3. Action resumes after suspend: recheck on Main Thread
+        val activeGen = auth.activeAttemptToken()?.generation
+        val isCurrentMatch = activeGen != null && activeGen.matches(genA)
+
+        // Post-suspend recheck detects genA no longer matches activeGen (genB) -> ABORTED!
+        assertFalse(isCurrentMatch)
+        assertEquals(genB, activeGen)
+    }
+
+    @Test
     fun controllableFakePlayerReleaseIsIdempotentThroughHolder() {
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")

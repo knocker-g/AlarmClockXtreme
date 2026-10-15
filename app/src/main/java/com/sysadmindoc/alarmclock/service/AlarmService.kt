@@ -2300,14 +2300,16 @@ class AlarmService : Service() {
         if (capped != null &&
             SnoozeCapPolicy.outcomeFor(capped, currentSnoozeCount) == SnoozeCapOutcome.REFUSE
         ) {
-            recordIncident(
-                type = AlarmIncidentEvent.TYPE_USER_ACTION,
-                status = AlarmIncidentEvent.STATUS_SKIPPED,
-                reasonCode = "SNOOZE_CAP_REACHED",
-                source = "AlarmService",
-                alarmId = capped.id
-            )
-            refreshFiringNotification(capped)
+            if (currentGeneration()?.matches(acceptedGen) == true) {
+                recordIncident(
+                    type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                    status = AlarmIncidentEvent.STATUS_SKIPPED,
+                    reasonCode = "SNOOZE_CAP_REACHED",
+                    source = "AlarmService",
+                    alarmId = capped.id
+                )
+                refreshFiringNotification(capped)
+            }
             return
         }
 
@@ -2316,9 +2318,13 @@ class AlarmService : Service() {
         }
 
         val alarm = repository.getById(alarmId)?.sanitized()
+        if (currentGeneration()?.matches(acceptedGen) != true) {
+            Log.i(TAG, "Aborting post-repository snoozeAlarm for $acceptedGen: active generation is ${currentGeneration()}")
+            return
+        }
         if (alarm != null) {
-            val webhookScheduledAt = currentScheduledAt
-            val webhookFireId = currentFireId
+            val webhookScheduledAt = acceptedGen.scheduledAt
+            val webhookFireId = acceptedGen.fireId
             // Snoozing means the user interacted with the alarm, so cancel any pending
             // Guardian Angel call/SMS — they're plainly awake enough to hit snooze.
             // The next fire after snooze will re-arm Guardian if still configured.
@@ -2425,10 +2431,14 @@ class AlarmService : Service() {
             currentAlarmId = -1
             updateActiveAlarm(null)
         }
-        if (isForeground.compareAndSet(true, false)) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
+        withContext(Dispatchers.Main.immediate) {
+            if (currentGeneration()?.matches(acceptedGen) == true) {
+                if (isForeground.compareAndSet(true, false)) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                }
+                stopSelf()
+            }
         }
-        stopSelf()
     }
 
     private suspend fun dismissAlarm(
@@ -2442,11 +2452,13 @@ class AlarmService : Service() {
         }
 
         val alarm = repository.getById(alarmId)?.sanitized()
+        if (currentGeneration()?.matches(acceptedGen) != true) {
+            Log.i(TAG, "Aborting post-repository dismissAlarm for $acceptedGen: active generation is ${currentGeneration()}")
+            return
+        }
         if (alarm != null) {
-            val wakeConfirmFireId = currentFireId.ifBlank {
-                AlarmIncidentEvent.fireIdFor(alarm.id, currentScheduledAt)
-            }
-            val wakeConfirmScheduledAt = currentScheduledAt
+            val wakeConfirmFireId = acceptedGen.fireId
+            val wakeConfirmScheduledAt = acceptedGen.scheduledAt
             recordEvent(
                 alarm = alarm,
                 action = AlarmEvent.ACTION_DISMISSED,
@@ -2515,12 +2527,16 @@ class AlarmService : Service() {
             currentAlarmId = -1
             updateActiveAlarm(null)
         }
-        alarmScheduler.handleAlarmFired(alarmId, currentScheduledAt)
-        wearNextAlarmBridge.publishAlarmIdle(alarmId)
-        if (isForeground.compareAndSet(true, false)) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
+        withContext(Dispatchers.Main.immediate) {
+            if (currentGeneration()?.matches(acceptedGen) == true) {
+                alarmScheduler.handleAlarmFired(alarmId, acceptedGen.scheduledAt)
+                wearNextAlarmBridge.publishAlarmIdle(alarmId)
+                if (isForeground.compareAndSet(true, false)) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                }
+                stopSelf()
+            }
         }
-        stopSelf()
     }
 
     // F11: TTS morning announcement
