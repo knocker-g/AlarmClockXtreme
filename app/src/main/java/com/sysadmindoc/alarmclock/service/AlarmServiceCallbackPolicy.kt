@@ -54,11 +54,24 @@ internal object AlarmServiceCallbackPolicy {
     /**
      * Determines whether a watchdog job or failure fallback is authorized
      * to cancel the shared playback watchdog or trigger default fallback audio.
+     *
+     * Requires:
+     * 1. Current generation matches watchdog generation 100%.
+     * 2. If a target player reference is provided, currentPlayback must match
+     *    that exact target player instance.
      */
     fun shouldCancelWatchdog(
         currentGen: AlarmGeneration?,
-        watchdogGen: AlarmGeneration
+        watchdogGen: AlarmGeneration,
+        currentPlayback: AlarmPlaybackPlayer? = null,
+        targetPlayback: AlarmPlaybackPlayer? = null
     ): Boolean {
-        return currentGen != null && currentGen.matches(watchdogGen)
+        if (currentGen == null || !currentGen.matches(watchdogGen)) {
+            return false
+        }
+        if (targetPlayback != null && currentPlayback !== targetPlayback) {
+            return false
+        }
+        return true
     }
 }

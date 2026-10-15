@@ -348,8 +348,25 @@ class AlarmGenerationTest {
         // Watchdog cancellation rejected when generation is stale
         assertFalse(AlarmServiceCallbackPolicy.shouldCancelWatchdog(genB, genA))
 
-        // Watchdog cancellation accepted when generation matches
-        assertTrue(AlarmServiceCallbackPolicy.shouldCancelWatchdog(genA, genA))
+        // Watchdog cancellation rejected when target player differs even within same generation
+        assertFalse(
+            AlarmServiceCallbackPolicy.shouldCancelWatchdog(
+                currentGen = genA,
+                watchdogGen = genA,
+                currentPlayback = dummyPlayerB,
+                targetPlayback = dummyPlayerA
+            )
+        )
+
+        // Watchdog cancellation accepted when generation and target player match
+        assertTrue(
+            AlarmServiceCallbackPolicy.shouldCancelWatchdog(
+                currentGen = genA,
+                watchdogGen = genA,
+                currentPlayback = dummyPlayerA,
+                targetPlayback = dummyPlayerA
+            )
+        )
     }
 
     private class FakeAlarmPlaybackPlayer : AlarmPlaybackPlayer {
