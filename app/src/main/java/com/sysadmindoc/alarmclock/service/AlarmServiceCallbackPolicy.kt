@@ -1,5 +1,6 @@
 package com.sysadmindoc.alarmclock.service
 
+import android.os.Looper
 import java.util.concurrent.atomic.AtomicLong
 
 internal data class PlaybackAttemptToken(
@@ -21,10 +22,23 @@ internal class AlarmPlaybackAttemptAuthority {
     private var activeRoutingAttemptToken: PlaybackAttemptToken? = null
 
     /**
+     * Enforces that state mutations run on the Android Main Looper.
+     */
+    private fun checkMainThread() {
+        val looper = Looper.myLooper()
+        if (looper != null && looper != Looper.getMainLooper()) {
+            throw IllegalStateException(
+                "AlarmPlaybackAttemptAuthority state mutation must be executed on Android Main Looper, but was on thread '${Thread.currentThread().name}'"
+            )
+        }
+    }
+
+    /**
      * Resets authority state for testing or instance initialization.
      */
     @Synchronized
     fun resetState() {
+        checkMainThread()
         sequenceCounter = 0L
         activeAttemptToken = null
         activeFallbackClaimToken = null
@@ -37,6 +51,7 @@ internal class AlarmPlaybackAttemptAuthority {
      */
     @Synchronized
     fun mintNextToken(generation: AlarmGeneration): PlaybackAttemptToken {
+        checkMainThread()
         sequenceCounter++
         val newToken = PlaybackAttemptToken(generation, sequenceCounter, authorityId)
         activeAttemptToken = newToken
@@ -50,6 +65,7 @@ internal class AlarmPlaybackAttemptAuthority {
      */
     @Synchronized
     fun invalidateTokens() {
+        checkMainThread()
         activeAttemptToken = null
         activeFallbackClaimToken = null
         activeRoutingAttemptToken = null
@@ -72,6 +88,7 @@ internal class AlarmPlaybackAttemptAuthority {
      */
     @Synchronized
     fun setRoutingAttemptToken(token: PlaybackAttemptToken): Boolean {
+        checkMainThread()
         if (activeAttemptToken != token) return false
         activeRoutingAttemptToken = token
         return true
@@ -204,6 +221,7 @@ internal class AlarmPlaybackAttemptAuthority {
         currentGen: AlarmGeneration?,
         failingToken: PlaybackAttemptToken
     ): PlaybackAttemptToken? {
+        checkMainThread()
         if (currentGen == null || !currentGen.matches(failingToken.generation)) {
             return null
         }
@@ -233,6 +251,7 @@ internal class AlarmPlaybackAttemptAuthority {
         currentGen: AlarmGeneration?,
         handoffToken: PlaybackAttemptToken
     ): PlaybackAttemptToken? {
+        checkMainThread()
         if (currentGen == null || !currentGen.matches(handoffToken.generation)) {
             return null
         }

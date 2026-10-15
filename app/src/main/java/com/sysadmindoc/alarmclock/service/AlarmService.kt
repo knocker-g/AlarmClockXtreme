@@ -420,7 +420,7 @@ class AlarmService : Service() {
                         )
                         activateAlarmMediaSession("START_COMMAND")
                         startForegroundWithPlaceholder()
-                        serviceScope.launch { startAlarm(startGen) }
+                        serviceScope.launch(Dispatchers.Main.immediate) { startAlarm(startGen) }
                     }
                 }
             }
@@ -623,7 +623,9 @@ class AlarmService : Service() {
         // catches corrupt challengeType / vibrationPattern / specificDate /
         // ringtonePool entries so a bad backup restore or buggy older-version
         // write can't crash the firing path.
-        val alarm = repository.getById(alarmId)?.sanitized() ?: run {
+        val alarm = withContext(Dispatchers.IO) {
+            repository.getById(alarmId)?.sanitized()
+        } ?: run {
             recordIncident(
                 type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
                 status = AlarmIncidentEvent.STATUS_FAILED,
@@ -1331,7 +1333,7 @@ class AlarmService : Service() {
                             fireId = startGen.fireId,
                             scheduledAt = startGen.scheduledAt
                         )
-                        serviceScope.launch { escalateMedia3PlaybackFailure(alarm, handoff) }
+                        serviceScope.launch(Dispatchers.Main.immediate) { escalateMedia3PlaybackFailure(alarm, handoff) }
                     }
                 }
             )
@@ -1494,7 +1496,7 @@ class AlarmService : Service() {
         attemptToken: PlaybackAttemptToken
     ) {
         cancelPlaybackWatchdog()
-        playbackWatchdogJob = serviceScope.launch {
+        playbackWatchdogJob = serviceScope.launch(Dispatchers.Main.immediate) {
             delay(PLAYBACK_START_TIMEOUT_MS)
             val isOwner = !playbackStarted.get() && playbackAuthority.shouldProcessCallback(currentGeneration(), attemptToken, alarmPlayback, playback)
             if (isOwner) {
@@ -1544,7 +1546,7 @@ class AlarmService : Service() {
         attemptToken: PlaybackAttemptToken
     ) {
         cancelPlaybackWatchdog()
-        playbackWatchdogJob = serviceScope.launch {
+        playbackWatchdogJob = serviceScope.launch(Dispatchers.Main.immediate) {
             delay(PLAYBACK_START_TIMEOUT_MS)
             if (!playbackAuthority.shouldProcessCallback(currentGeneration(), attemptToken) || alarmPlayback != null) return@launch
             val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager
@@ -1844,7 +1846,7 @@ class AlarmService : Service() {
                         if (handoff != null) {
                             val fallbackToken = playbackAuthority.tryConsumeFallbackHandoffAndActivate(currentGeneration(), handoff)
                             if (fallbackToken != null) {
-                                serviceScope.launch {
+                                serviceScope.launch(Dispatchers.Main.immediate) {
                                     startAudioWithToken(alarm.copy(internetRadioUrl = ""), fallbackToken)
                                 }
                             }

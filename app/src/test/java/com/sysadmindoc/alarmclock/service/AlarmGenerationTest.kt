@@ -498,6 +498,35 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun nonMainLooperThreadMutatingAuthorityThrowsIllegalStateException() {
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+
+        var exceptionThrown: Throwable? = null
+        val handlerThread = android.os.HandlerThread("TestBackgroundLooperThread")
+        handlerThread.start()
+        val handler = android.os.Handler(handlerThread.looper)
+
+        val latch = CountDownLatch(1)
+        handler.post {
+            try {
+                auth.mintNextToken(genA)
+            } catch (t: Throwable) {
+                exceptionThrown = t
+            } finally {
+                latch.countDown()
+            }
+        }
+
+        latch.await()
+        handlerThread.quitSafely()
+
+        assertNotNull(exceptionThrown)
+        assertTrue(exceptionThrown is IllegalStateException)
+        assertTrue(exceptionThrown?.message?.contains("must be executed on Android Main Looper") == true)
+    }
+
+    @Test
     fun callbackPolicyHandlesAtomicConcurrentClaims() {
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val tokenA = AlarmServiceCallbackPolicy.mintNextToken(genA)
