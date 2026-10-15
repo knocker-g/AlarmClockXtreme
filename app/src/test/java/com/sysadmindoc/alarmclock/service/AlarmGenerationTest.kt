@@ -602,6 +602,51 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun duplicateOnPreparedDoesNotReleasePlayerAndStartsOnce() {
+        // Scenario 2: 重複onPrepared → start 1回 / release 0回
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
+
+        val player = ControllableFakePlayer()
+        val holder = PlayerCallbackStateHolder(tokenA, player)
+        var publishedPlayer: AlarmPlaybackPlayer? = null
+
+        // First onPrepared call
+        val success1 = AlarmPlayerCallbackSeam.handleOnPrepared(
+            authority = auth,
+            currentGenSupplier = { genA },
+            holder = holder,
+            mediaPlayerStartAction = { player.start() },
+            currentPlaybackSupplier = { publishedPlayer },
+            publishPlaybackConsumer = { publishedPlayer = it },
+            clearPlaybackConsumer = { publishedPlayer = null },
+            triggerFallbackAction = {}
+        )
+
+        assertTrue(success1)
+        assertEquals(1, player.startCount)
+        assertEquals(0, player.releaseCount)
+
+        // Duplicate onPrepared call on the same active player instance
+        val success2 = AlarmPlayerCallbackSeam.handleOnPrepared(
+            authority = auth,
+            currentGenSupplier = { genA },
+            holder = holder,
+            mediaPlayerStartAction = { player.start() },
+            currentPlaybackSupplier = { publishedPlayer },
+            publishPlaybackConsumer = { publishedPlayer = it },
+            clearPlaybackConsumer = { publishedPlayer = null },
+            triggerFallbackAction = {}
+        )
+
+        assertTrue(success2)
+        assertEquals(1, player.startCount) // Still exactly 1 start!
+        assertEquals(0, player.releaseCount) // Zero release! Player remains playing!
+        assertEquals(player, publishedPlayer)
+    }
+
+    @Test
     fun productionSeamLegacyOnPreparedStartExceptionReleasesPlayerAndTriggersFallbackOnce() {
         // Scenario 2: onPrepared内のstart例外 → 旧Player解放・Fallback要求1回
         val auth = AlarmPlaybackAttemptAuthority()

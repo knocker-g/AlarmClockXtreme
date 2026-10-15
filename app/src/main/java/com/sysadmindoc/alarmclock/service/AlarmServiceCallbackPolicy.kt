@@ -65,8 +65,10 @@ internal object AlarmPlayerCallbackSeam {
                 publishPlaybackConsumer(holder.player)
                 published = true
             }
-            if (published && holder.markStarted()) {
-                mediaPlayerStartAction()
+            if (published) {
+                if (holder.markStarted()) {
+                    mediaPlayerStartAction()
+                }
                 true
             } else {
                 holder.markTerminalAndRelease()
