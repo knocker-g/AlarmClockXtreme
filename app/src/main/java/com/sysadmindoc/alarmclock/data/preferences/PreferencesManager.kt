@@ -16,6 +16,8 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.squareup.moshi.JsonClass
+import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
+import com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository
 import com.sysadmindoc.alarmclock.domain.ChronotypeEstimator
 import com.sysadmindoc.alarmclock.domain.GroupTabPosition
 import com.sysadmindoc.alarmclock.domain.JetLagDirection
@@ -308,7 +310,8 @@ fun AppSettings.isPaused(now: Long = System.currentTimeMillis()): Boolean =
 
 @Singleton
 class PreferencesManager @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val alarmIncidentRepository: javax.inject.Provider<AlarmIncidentRepository>? = null
 ) {
     // v1.5.1: Lock-free latest-settings snapshot kept in sync by [settings]'s
     // collectors. Callers that can't suspend (scheduler math from a `combine`
@@ -565,6 +568,18 @@ class PreferencesManager @Inject constructor(
         } catch (e: Exception) {
             Log.w("PreferencesManager", "Failed to persist active alarm update", e)
             request.ack?.complete(ActiveAlarmUpdateResult.FAILED_COMMIT)
+            val alarmId = request.snapshot?.alarmId ?: request.targetGen?.alarmId ?: -1L
+            if (alarmId > 0L) {
+                alarmIncidentRepository?.get()?.recordAsync(
+                    alarmId = alarmId,
+                    fireId = request.snapshot?.fireId ?: request.targetGen?.fireId ?: "",
+                    scheduledAt = request.snapshot?.scheduledAt ?: request.targetGen?.scheduledAt ?: 0L,
+                    type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                    status = AlarmIncidentEvent.STATUS_FAILED,
+                    reasonCode = "ACTIVE_ALARM_PERSISTENCE_COMMIT_FAILED",
+                    source = "PreferencesManager"
+                )
+            }
         }
     }
 

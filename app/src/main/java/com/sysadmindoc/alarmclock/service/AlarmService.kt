@@ -212,7 +212,6 @@ class AlarmService : Service() {
     private var currentSnoozeCount: Int = 0
     private var currentWakeConfirmRefireCount: Int = 0
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val activeAlarmPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val preemptionPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var wakeLock: PowerManager.WakeLock? = null
     // v1.9.1: AtomicBoolean (was @Volatile Boolean). Multiple coroutines on
@@ -1100,8 +1099,7 @@ class AlarmService : Service() {
 
     private fun updateActiveAlarm(snapshot: ActiveAlarmSnapshot?, targetGen: AlarmGeneration? = null) {
         activeAlarm.set(snapshot)
-        val ack = CompletableDeferred<PreferencesManager.ActiveAlarmUpdateResult>()
-        val enqueued = preferencesManager.enqueueActiveAlarmUpdate(snapshot, targetGen, ack)
+        val enqueued = preferencesManager.enqueueActiveAlarmUpdate(snapshot, targetGen)
         if (!enqueued) {
             Log.w(TAG, "Failed to enqueue active alarm update to PreferencesManager")
             recordIncidentAsync(
@@ -1113,26 +1111,6 @@ class AlarmService : Service() {
                 fireId = snapshot?.fireId ?: targetGen?.fireId ?: "",
                 scheduledAt = snapshot?.scheduledAt ?: targetGen?.scheduledAt ?: 0L
             )
-        } else {
-            activeAlarmPersistenceScope.launch {
-                try {
-                    val result = ack.await()
-                    if (result == PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT) {
-                        Log.w(TAG, "DataStore commit failed for active alarm update")
-                        recordIncidentAsync(
-                            type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
-                            status = AlarmIncidentEvent.STATUS_FAILED,
-                            reasonCode = "ACTIVE_ALARM_PERSISTENCE_COMMIT_FAILED",
-                            source = "AlarmService",
-                            alarmId = snapshot?.alarmId ?: targetGen?.alarmId ?: -1L,
-                            fireId = snapshot?.fireId ?: targetGen?.fireId ?: "",
-                            scheduledAt = snapshot?.scheduledAt ?: targetGen?.scheduledAt ?: 0L
-                        )
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Error awaiting active alarm update commit ack", e)
-                }
-            }
         }
     }
 
