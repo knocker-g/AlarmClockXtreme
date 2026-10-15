@@ -1112,6 +1112,29 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun preemptionFinalizationTrackerEnforcesExactlyOnceFinalization() {
+        val tracker = PreemptionFinalizationTracker()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+
+        // First preemption finalization: ACCEPTED (true)
+        assertTrue(tracker.markFinalized(genA))
+        assertTrue(tracker.isFinalized(genA))
+
+        // Duplicate preemption finalization for same generation: DENIED (false)
+        assertFalse(tracker.markFinalized(genA))
+    }
+
+    @Test
+    fun finalizedGenerationsAreExcludedOnProcessRestart() {
+        val tracker = AlarmServiceCallbackPolicy.defaultTracker
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+
+        assertFalse(tracker.isFinalized(genA))
+        tracker.markFinalized(genA)
+        assertTrue(tracker.isFinalized(genA))
+    }
+
+    @Test
     fun controllableFakePlayerReleaseIsIdempotentThroughHolder() {
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")

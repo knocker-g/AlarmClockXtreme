@@ -211,6 +211,8 @@ class AlarmService : Service() {
     private var currentSnoozeCount: Int = 0
     private var currentWakeConfirmRefireCount: Int = 0
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val activeAlarmPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val preemptionPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var wakeLock: PowerManager.WakeLock? = null
     // v1.9.1: AtomicBoolean (was @Volatile Boolean). Multiple coroutines on
     // serviceScope's IO dispatcher can race the foreground stop path — e.g.
@@ -306,6 +308,10 @@ class AlarmService : Service() {
         val settings = preferencesManager.getCachedSettings()
         val savedId = settings.activeAlarmId
         if (savedId != null && savedId > 0L && settings.activeAlarmScheduledAt > 0L && settings.activeAlarmFireId.isNotBlank()) {
+            val gen = AlarmGeneration(savedId, settings.activeAlarmScheduledAt, settings.activeAlarmFireId)
+            if (AlarmServiceCallbackPolicy.defaultTracker.isFinalized(gen)) {
+                return null
+            }
             return ActiveAlarmSnapshot(
                 alarmId = savedId,
                 scheduledAt = settings.activeAlarmScheduledAt,
@@ -383,13 +389,12 @@ class AlarmService : Service() {
                             val preemptedFiredAt = alarmFiredAt
                             val preemptedSnoozeCount = currentSnoozeCount
                             val preemptedFireId = currentFireId
-                            serviceScope.launch {
+                            val preemptedGen = AlarmGeneration(preemptedAlarmId, preemptedScheduledAt, preemptedFireId)
+                            preemptionPersistenceScope.launch {
                                 finalizePreemptedAlarm(
-                                    alarmId = preemptedAlarmId,
-                                    scheduledAt = preemptedScheduledAt,
+                                    preemptedGen = preemptedGen,
                                     firedAt = preemptedFiredAt,
-                                    snoozeCount = preemptedSnoozeCount,
-                                    fireId = preemptedFireId
+                                    snoozeCount = preemptedSnoozeCount
                                 )
                             }
                         }
@@ -1094,7 +1099,7 @@ class AlarmService : Service() {
 
     private fun updateActiveAlarm(snapshot: ActiveAlarmSnapshot?) {
         activeAlarm.set(snapshot)
-        serviceScope.launch {
+        activeAlarmPersistenceScope.launch {
             preferencesManager.update {
                 it.copy(
                     activeAlarmId = snapshot?.alarmId,
@@ -2755,26 +2760,28 @@ class AlarmService : Service() {
      * already hold the new alarm's) and re-arms the next occurrence.
      */
     private suspend fun finalizePreemptedAlarm(
-        alarmId: Long,
-        scheduledAt: Long,
+        preemptedGen: AlarmGeneration,
         firedAt: Long,
-        snoozeCount: Int,
-        fireId: String
+        snoozeCount: Int
     ) {
         try {
-            val alarm = repository.getById(alarmId)
+            val alarmId = preemptedGen.alarmId
+            val scheduledAt = preemptedGen.scheduledAt
+            val fireId = preemptedGen.fireId
+
+            if (!AlarmServiceCallbackPolicy.defaultTracker.markFinalized(preemptedGen)) {
+                Log.i(TAG, "Skipping duplicate preemption finalization for $preemptedGen")
+                return
+            }
+
+            val alarm = repository.getById(alarmId)?.sanitized()
             if (alarm != null) {
-                eventRepository.record(
-                    AlarmFireDismissContract.alarmEvent(
-                        alarm = alarm,
-                        scheduledAt = scheduledAt,
-                        firedAt = firedAt,
-                        action = AlarmEvent.ACTION_MISSED,
-                        actionAt = System.currentTimeMillis(),
-                        challengeRetryCount = 0,
-                        challengeSolveTimeMs = 0L,
-                        snoozeCount = snoozeCount
-                    )
+                recordEventAsync(
+                    alarm = alarm,
+                    scheduledAt = scheduledAt,
+                    firedAt = firedAt,
+                    action = AlarmEvent.ACTION_MISSED,
+                    snoozeCount = snoozeCount
                 )
             }
             alarmIncidentRepository.recordAsync(
@@ -2786,10 +2793,12 @@ class AlarmService : Service() {
                 reasonCode = "PREEMPTED_BY_OVERLAPPING_ALARM",
                 source = "AlarmService"
             )
-            clearAlarmRuntimeState(alarmId)
-            alarmScheduler.handleAlarmFired(alarmId, scheduledAt)
+            withContext(Dispatchers.Main.immediate) {
+                clearAlarmRuntimeState(alarmId)
+                alarmScheduler.handleAlarmFired(alarmId, scheduledAt)
+            }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to finalize preempted alarm $alarmId", e)
+            Log.e(TAG, "Failed to finalize preempted alarm ${preemptedGen.alarmId}", e)
         }
     }
 
