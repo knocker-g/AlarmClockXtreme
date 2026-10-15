@@ -22,13 +22,15 @@ internal class AlarmPlaybackAttemptAuthority {
     private var activeRoutingAttemptToken: PlaybackAttemptToken? = null
 
     /**
-     * Enforces that state mutations run on the Android Main Looper.
+     * Enforces strict execution on the Android Main Looper.
+     * Rejects non-Main Looper threads, plain worker threads (looper == null),
+     * and background HandlerThreads.
      */
     private fun checkMainThread() {
         val looper = Looper.myLooper()
-        if (looper != null && looper != Looper.getMainLooper()) {
+        if (looper != Looper.getMainLooper()) {
             throw IllegalStateException(
-                "AlarmPlaybackAttemptAuthority state mutation must be executed on Android Main Looper, but was on thread '${Thread.currentThread().name}'"
+                "AlarmPlaybackAttemptAuthority state mutation must be executed on Android Main Looper, but was on thread '${Thread.currentThread().name}' (looper=$looper)"
             )
         }
     }

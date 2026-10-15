@@ -2753,6 +2753,7 @@ class AlarmService : Service() {
     }
 
     private fun stopAlarmPlayback() {
+        invalidatePlaybackTokens()
         OnCallDndOverride.end(this)
         volumeJob?.cancel()
         volumeJob = null
