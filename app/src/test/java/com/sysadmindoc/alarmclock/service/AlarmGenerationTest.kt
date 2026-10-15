@@ -1290,6 +1290,32 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun reproduceOutofOrderPostCommitCacheAssignmentInversion() = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val pm = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+
+        val genB = AlarmGeneration(99L, 2000L, "fire-99-b")
+        val snapshotB = AlarmService.Companion.ActiveAlarmSnapshot(
+            alarmId = genB.alarmId,
+            scheduledAt = genB.scheduledAt,
+            fireId = genB.fireId,
+            firedAt = 2000L,
+            state = "FIRING"
+        )
+
+        // Enqueue active alarm update genB (99L)
+        val ackB = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        assertTrue(pm.enqueueActiveAlarmUpdate(snapshotB, genB, ackB))
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackB.await())
+
+        // Disk state AND in-memory cache MUST remain 100% consistent (both equal to 99L)
+        val diskSettings = pm.getCurrentSettings()
+        val cachedSettings = pm.getCachedSettings()
+        assertEquals(diskSettings.activeAlarmId, cachedSettings.activeAlarmId)
+        assertEquals(99L, cachedSettings.activeAlarmId)
+    }
+
+    @Test
     fun reproduceCacheRegressionWhenPostCommitAssignmentsAreOutofOrder() = runBlocking {
         val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
         val pm = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
