@@ -1577,7 +1577,10 @@ class AlarmService : Service() {
         }
     }
 
-    private fun cancelPlaybackWatchdog() {
+    private fun cancelPlaybackWatchdog(ownerToken: PlaybackAttemptToken? = null) {
+        if (ownerToken != null && !playbackAuthority.shouldProcessCallback(currentGeneration(), ownerToken)) {
+            return
+        }
         playbackWatchdogJob?.cancel()
         playbackWatchdogJob = null
     }
@@ -1588,18 +1591,22 @@ class AlarmService : Service() {
     ) {
         val fallbackToken = playbackAuthority.tryConsumeFallbackHandoffAndActivate(currentGeneration(), handoffToken)
             ?: return
-        cancelPlaybackWatchdog()
+        if (!playbackAuthority.shouldProcessCallback(currentGeneration(), fallbackToken)) return
+
+        cancelPlaybackWatchdog(fallbackToken)
         forceBuiltInSpeakerForFallback = true
         val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager
         if (audioManager != null) {
             runCatching {
                 backupSoundOriginalAlarmVolume = backupSoundOriginalAlarmVolume
                     ?: audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
-                audioManager.setStreamVolume(
-                    AudioManager.STREAM_ALARM,
-                    audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM),
-                    0
-                )
+                if (playbackAuthority.shouldProcessCallback(currentGeneration(), fallbackToken)) {
+                    audioManager.setStreamVolume(
+                        AudioManager.STREAM_ALARM,
+                        audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM),
+                        0
+                    )
+                }
             }.onFailure { error ->
                 recordIncidentAsync(
                     type = AlarmIncidentEvent.TYPE_AUDIO,
@@ -1612,6 +1619,7 @@ class AlarmService : Service() {
                 )
             }
         }
+        if (!playbackAuthority.shouldProcessCallback(currentGeneration(), fallbackToken)) return
         recordIncidentAsync(
             type = AlarmIncidentEvent.TYPE_AUDIO,
             status = AlarmIncidentEvent.STATUS_FAILED,
@@ -1630,6 +1638,7 @@ class AlarmService : Service() {
     ) {
         val fallbackToken = playbackAuthority.tryConsumeFallbackHandoffAndActivate(currentGeneration(), handoffToken)
             ?: return
+        if (!playbackAuthority.shouldProcessCallback(currentGeneration(), fallbackToken)) return
         startMedia3DefaultFallbackInternal(alarm, fallbackToken)
     }
 
@@ -1637,7 +1646,8 @@ class AlarmService : Service() {
         alarm: Alarm,
         fallbackToken: PlaybackAttemptToken
     ) {
-        cancelPlaybackWatchdog()
+        if (!playbackAuthority.shouldProcessCallback(currentGeneration(), fallbackToken)) return
+        cancelPlaybackWatchdog(fallbackToken)
         recordIncidentAsync(
             type = AlarmIncidentEvent.TYPE_AUDIO,
             status = AlarmIncidentEvent.STATUS_REQUESTED,
@@ -1759,6 +1769,8 @@ class AlarmService : Service() {
         preActivatedToken: PlaybackAttemptToken? = null
     ) {
         val attemptToken = preActivatedToken ?: nextPlaybackToken(startGen)
+        if (!playbackAuthority.shouldProcessCallback(currentGeneration(), attemptToken)) return
+
         // v1.2.0: Internet radio stream. Defensive: only accept http(s) URLs so a
         // malformed setting can't crash MediaPlayer with an unknown scheme.
         val radioUrl = alarm.internetRadioUrl.trim()
@@ -1769,6 +1781,10 @@ class AlarmService : Service() {
             try {
                 val player = MediaPlayer()
                 val playback = MediaPlayerAlarmPlaybackPlayer(player)
+                if (!playbackAuthority.shouldProcessCallback(currentGeneration(), attemptToken)) {
+                    try { playback.stopAndRelease() } catch (_: Exception) {}
+                    return
+                }
                 radioPlayback = playback
                 alarmPlayback = playback
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -1881,6 +1897,10 @@ class AlarmService : Service() {
             val fadeInMs = alarm.gradualVolumeSeconds * 1000L
             val player = MediaPlayer()
             val playback = MediaPlayerAlarmPlaybackPlayer(player)
+            if (!playbackAuthority.shouldProcessCallback(currentGeneration(), attemptToken)) {
+                try { playback.stopAndRelease() } catch (_: Exception) {}
+                return
+            }
             configuredPlayback = playback
             alarmPlayback = playback
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -1960,45 +1980,47 @@ class AlarmService : Service() {
                 if (playbackAuthority.shouldReleaseGlobalPlayback(currentGeneration(), attemptToken, alarmPlayback, configuredPlayback)) {
                     alarmPlayback = null
                 }
-                if (currentGeneration()?.matches(startGen) == true) {
+                val fallbackToken = playbackAuthority.tryConsumeFallbackHandoffAndActivate(currentGeneration(), handoff)
+                if (fallbackToken != null) {
                     // Fallback to default alarm sound
                     try {
                         val fallbackUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
                             ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-                        if (fallbackUri != null) {
-                            val fallbackToken = nextPlaybackToken(startGen)
+                        if (fallbackUri != null && playbackAuthority.shouldProcessCallback(currentGeneration(), fallbackToken)) {
                             val player = MediaPlayer()
                             val fallbackPlayback = MediaPlayerAlarmPlaybackPlayer(player)
-                            alarmPlayback = fallbackPlayback
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                                forcedSpeakerDevice()?.let { runCatching { player.setPreferredDevice(it) } }
-                            }
-                            player.apply {
-                                setAudioAttributes(AlarmAudioRouting.alarmSonificationAttributes())
-                                setDataSource(applicationContext, fallbackUri)
-                                isLooping = true
-                                prepare()
-                                playbackRampGain = 1f
-                                val gain = alarmPlaybackGain(
-                                    callMuted = callMutedAudio,
-                                    challengeDuckingActive = challengeAudioDuckingActive,
-                                    challengeDuckPercent = challengeAudioDuckPercent,
-                                    rampGain = playbackRampGain,
-                                    alarmVolume = alarm.volume
+                            if (playbackAuthority.shouldProcessCallback(currentGeneration(), fallbackToken)) {
+                                alarmPlayback = fallbackPlayback
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                    forcedSpeakerDevice()?.let { runCatching { player.setPreferredDevice(it) } }
+                                }
+                                player.apply {
+                                    setAudioAttributes(AlarmAudioRouting.alarmSonificationAttributes())
+                                    setDataSource(applicationContext, fallbackUri)
+                                    isLooping = true
+                                    prepare()
+                                    playbackRampGain = 1f
+                                    val gain = alarmPlaybackGain(
+                                        callMuted = callMutedAudio,
+                                        challengeDuckingActive = challengeAudioDuckingActive,
+                                        challengeDuckPercent = challengeAudioDuckPercent,
+                                        rampGain = playbackRampGain,
+                                        alarmVolume = alarm.volume
+                                    )
+                                    setVolume(gain, gain)
+                                    start()
+                                    updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
+                                }
+                                recordIncidentAsync(
+                                    type = AlarmIncidentEvent.TYPE_AUDIO,
+                                    status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                                    reasonCode = "DEFAULT_FALLBACK_STARTED",
+                                    source = "AlarmService",
+                                    alarmId = startGen.alarmId,
+                                    fireId = startGen.fireId,
+                                    scheduledAt = startGen.scheduledAt
                                 )
-                                setVolume(gain, gain)
-                                start()
-                                updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
                             }
-                            recordIncidentAsync(
-                                type = AlarmIncidentEvent.TYPE_AUDIO,
-                                status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                                reasonCode = "DEFAULT_FALLBACK_STARTED",
-                                source = "AlarmService",
-                                alarmId = startGen.alarmId,
-                                fireId = startGen.fireId,
-                                scheduledAt = startGen.scheduledAt
-                            )
                         }
                     } catch (fallbackError: Exception) {
                         recordIncidentAsync(
