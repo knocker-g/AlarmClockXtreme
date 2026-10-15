@@ -94,6 +94,84 @@ internal class AlarmPlaybackAttemptAuthority {
     }
 
     /**
+     * Atomically checks active authority AND executes an action inside the synchronized block.
+     */
+    @Synchronized
+    fun executeIfActive(
+        currentGen: AlarmGeneration?,
+        token: PlaybackAttemptToken,
+        action: () -> Unit
+    ): Boolean {
+        if (currentGen == null || !currentGen.matches(token.generation)) {
+            return false
+        }
+        if (activeAttemptToken != token) {
+            return false
+        }
+        action()
+        return true
+    }
+
+    /**
+     * Atomically checks active authority AND publishes playback state inside the synchronized block.
+     */
+    @Synchronized
+    fun publishPlaybackIfActive(
+        currentGen: AlarmGeneration?,
+        token: PlaybackAttemptToken,
+        publishAction: () -> Unit
+    ): Boolean {
+        if (currentGen == null || !currentGen.matches(token.generation)) {
+            return false
+        }
+        if (activeAttemptToken != token) {
+            return false
+        }
+        publishAction()
+        return true
+    }
+
+    /**
+     * Atomically checks active authority AND cancels watchdog inside the synchronized block.
+     */
+    @Synchronized
+    fun cancelWatchdogIfActive(
+        currentGen: AlarmGeneration?,
+        ownerToken: PlaybackAttemptToken?,
+        cancelAction: () -> Unit
+    ): Boolean {
+        if (ownerToken != null) {
+            if (currentGen == null || !currentGen.matches(ownerToken.generation)) {
+                return false
+            }
+            if (activeAttemptToken != ownerToken) {
+                return false
+            }
+        }
+        cancelAction()
+        return true
+    }
+
+    /**
+     * Atomically checks active authority AND mutates audio settings inside the synchronized block.
+     */
+    @Synchronized
+    fun mutateAudioIfActive(
+        currentGen: AlarmGeneration?,
+        token: PlaybackAttemptToken,
+        mutateAction: () -> Unit
+    ): Boolean {
+        if (currentGen == null || !currentGen.matches(token.generation)) {
+            return false
+        }
+        if (activeAttemptToken != token) {
+            return false
+        }
+        mutateAction()
+        return true
+    }
+
+    /**
      * Atomically claims fallback handoff authority upon player or watchdog failure.
      * Succeeds ONLY IF:
      * 1. currentGen matches failingToken.generation 100%.
@@ -212,6 +290,30 @@ internal object AlarmServiceCallbackPolicy {
         currentPlayback: AlarmPlaybackPlayer? = null,
         callbackPlayback: AlarmPlaybackPlayer? = null
     ) = defaultAuthority.shouldProcessCallback(currentGen, callbackToken, currentPlayback, callbackPlayback)
+
+    fun executeIfActive(
+        currentGen: AlarmGeneration?,
+        token: PlaybackAttemptToken,
+        action: () -> Unit
+    ) = defaultAuthority.executeIfActive(currentGen, token, action)
+
+    fun publishPlaybackIfActive(
+        currentGen: AlarmGeneration?,
+        token: PlaybackAttemptToken,
+        publishAction: () -> Unit
+    ) = defaultAuthority.publishPlaybackIfActive(currentGen, token, publishAction)
+
+    fun cancelWatchdogIfActive(
+        currentGen: AlarmGeneration?,
+        ownerToken: PlaybackAttemptToken?,
+        cancelAction: () -> Unit
+    ) = defaultAuthority.cancelWatchdogIfActive(currentGen, ownerToken, cancelAction)
+
+    fun mutateAudioIfActive(
+        currentGen: AlarmGeneration?,
+        token: PlaybackAttemptToken,
+        mutateAction: () -> Unit
+    ) = defaultAuthority.mutateAudioIfActive(currentGen, token, mutateAction)
 
     fun tryClaimFallbackHandoff(
         currentGen: AlarmGeneration?,

@@ -1591,16 +1591,18 @@ class AlarmService : Service() {
     ) {
         val fallbackToken = playbackAuthority.tryConsumeFallbackHandoffAndActivate(currentGeneration(), handoffToken)
             ?: return
-        if (!playbackAuthority.shouldProcessCallback(currentGeneration(), fallbackToken)) return
 
-        cancelPlaybackWatchdog(fallbackToken)
+        playbackAuthority.cancelWatchdogIfActive(currentGeneration(), fallbackToken) {
+            cancelPlaybackWatchdog()
+        }
+
         forceBuiltInSpeakerForFallback = true
         val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager
         if (audioManager != null) {
             runCatching {
                 backupSoundOriginalAlarmVolume = backupSoundOriginalAlarmVolume
                     ?: audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
-                if (playbackAuthority.shouldProcessCallback(currentGeneration(), fallbackToken)) {
+                playbackAuthority.mutateAudioIfActive(currentGeneration(), fallbackToken) {
                     audioManager.setStreamVolume(
                         AudioManager.STREAM_ALARM,
                         audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM),
@@ -1619,16 +1621,17 @@ class AlarmService : Service() {
                 )
             }
         }
-        if (!playbackAuthority.shouldProcessCallback(currentGeneration(), fallbackToken)) return
-        recordIncidentAsync(
-            type = AlarmIncidentEvent.TYPE_AUDIO,
-            status = AlarmIncidentEvent.STATUS_FAILED,
-            reasonCode = "MEDIA3_FALLBACK_ROUTING_FORCED",
-            source = "AlarmService",
-            alarmId = fallbackToken.generation.alarmId,
-            fireId = fallbackToken.generation.fireId,
-            scheduledAt = fallbackToken.generation.scheduledAt
-        )
+        playbackAuthority.executeIfActive(currentGeneration(), fallbackToken) {
+            recordIncidentAsync(
+                type = AlarmIncidentEvent.TYPE_AUDIO,
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "MEDIA3_FALLBACK_ROUTING_FORCED",
+                source = "AlarmService",
+                alarmId = fallbackToken.generation.alarmId,
+                fireId = fallbackToken.generation.fireId,
+                scheduledAt = fallbackToken.generation.scheduledAt
+            )
+        }
         startMedia3DefaultFallbackInternal(alarm, fallbackToken)
     }
 
@@ -1638,7 +1641,6 @@ class AlarmService : Service() {
     ) {
         val fallbackToken = playbackAuthority.tryConsumeFallbackHandoffAndActivate(currentGeneration(), handoffToken)
             ?: return
-        if (!playbackAuthority.shouldProcessCallback(currentGeneration(), fallbackToken)) return
         startMedia3DefaultFallbackInternal(alarm, fallbackToken)
     }
 
@@ -1646,17 +1648,20 @@ class AlarmService : Service() {
         alarm: Alarm,
         fallbackToken: PlaybackAttemptToken
     ) {
-        if (!playbackAuthority.shouldProcessCallback(currentGeneration(), fallbackToken)) return
-        cancelPlaybackWatchdog(fallbackToken)
-        recordIncidentAsync(
-            type = AlarmIncidentEvent.TYPE_AUDIO,
-            status = AlarmIncidentEvent.STATUS_REQUESTED,
-            reasonCode = "MEDIA3_DEFAULT_FALLBACK_TO_LEGACY",
-            source = "AlarmService",
-            alarmId = fallbackToken.generation.alarmId,
-            fireId = fallbackToken.generation.fireId,
-            scheduledAt = fallbackToken.generation.scheduledAt
-        )
+        playbackAuthority.cancelWatchdogIfActive(currentGeneration(), fallbackToken) {
+            cancelPlaybackWatchdog()
+        }
+        playbackAuthority.executeIfActive(currentGeneration(), fallbackToken) {
+            recordIncidentAsync(
+                type = AlarmIncidentEvent.TYPE_AUDIO,
+                status = AlarmIncidentEvent.STATUS_REQUESTED,
+                reasonCode = "MEDIA3_DEFAULT_FALLBACK_TO_LEGACY",
+                source = "AlarmService",
+                alarmId = fallbackToken.generation.alarmId,
+                fireId = fallbackToken.generation.fireId,
+                scheduledAt = fallbackToken.generation.scheduledAt
+            )
+        }
         startMediaPlayerAudioInternal(
             alarm.copy(
                 internetRadioUrl = "",
@@ -1897,12 +1902,14 @@ class AlarmService : Service() {
             val fadeInMs = alarm.gradualVolumeSeconds * 1000L
             val player = MediaPlayer()
             val playback = MediaPlayerAlarmPlaybackPlayer(player)
-            if (!playbackAuthority.shouldProcessCallback(currentGeneration(), attemptToken)) {
+            val published = playbackAuthority.publishPlaybackIfActive(currentGeneration(), attemptToken) {
+                configuredPlayback = playback
+                alarmPlayback = playback
+            }
+            if (!published) {
                 try { playback.stopAndRelease() } catch (_: Exception) {}
                 return
             }
-            configuredPlayback = playback
-            alarmPlayback = playback
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 forcedSpeakerDevice()?.let { runCatching { player.setPreferredDevice(it) } }
             }

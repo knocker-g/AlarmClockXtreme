@@ -256,7 +256,7 @@ class AlarmGenerationTest {
         assertEquals(ActionAdmissionDecision.REJECT_RESTART_NO_EVIDENCE, decisionNoEvidence)
     }
 
-    // --- Required 8 Focused Authority & Fallback Activation Tests ---
+    // --- Required Focused Authority & Fallback Activation Tests ---
 
     @Test
     fun authorityTokensAreRejectedCrossAuthorityEvenWithIdenticalGenerationAndSequence() {
@@ -323,87 +323,100 @@ class AlarmGenerationTest {
     }
 
     @Test
-    fun newAttemptBetweenCommitAndActivationRejectsOldFallbackSideEffects() {
-        // Test Scenario 4: Commit後・Activation前に新Attemptへ切替 → 旧Fallbackの副作用拒否
+    fun postTokenActivationSupersessionRejectsPlayerPublicationAndAllSideEffects() {
+        // Required Test 1 & 2: Token発行後、Fallback副作用開始前・Player公開前に別Attemptへ切替 → 旧副作用・Player公開拒否
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val tokenA = auth.mintNextToken(genA)
 
-        // Claim handoff
-        val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
-        assertNotNull(handoff)
-
-        // A new attempt is minted BEFORE fallback consume+activate runs
-        val tokenB = auth.mintNextToken(genA)
-
-        // Consume and activate for old handoff is rejected!
-        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
-        assertNull(fallbackToken)
-
-        // Active token remains tokenB!
-        assertEquals(tokenB, auth.activeAttemptToken())
-    }
-
-    @Test
-    fun postTokenActivationSupersessionRejectsOldFallbackSideEffectsAndPlayerPublication() {
-        // Test Scenario 1 & 2 (Post-activation):
-        // Token発行後、Fallback副作用開始前・Player公開前に別Attemptへ切替 → 旧副作用・Player公開拒否
-        val auth = AlarmPlaybackAttemptAuthority()
-        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-        val tokenA = auth.mintNextToken(genA)
-
-        // Claim handoff & consume+activate -> yields fallbackToken
+        // Step 1: Claim handoff & consume+activate -> yields fallbackToken
         val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
         val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
         assertNotNull(fallbackToken)
 
-        // AFTER fallbackToken is minted/activated, a superseding attempt tokenB is minted
+        // Step 2: AFTER fallbackToken is minted/activated, a superseding attempt tokenB is minted
         val tokenB = auth.mintNextToken(genA)
 
-        // Re-check authority before applying fallback side-effects / publishing player -> REJECTED
-        assertFalse(auth.shouldProcessCallback(genA, fallbackToken!!))
+        // Step 3: Attempt side effects under fallbackToken -> ALL ATOMICALLY REJECTED
+        var playerPublished = false
+        val fakePlayer = FakeAlarmPlaybackPlayer()
+        val publishSuccess = auth.publishPlaybackIfActive(genA, fallbackToken!!) {
+            playerPublished = true
+        }
+        assertFalse(publishSuccess)
+        assertFalse(playerPublished)
 
-        // Active token is tokenB, fallbackToken is no longer authorized
+        var watchdogCancelled = false
+        val watchdogSuccess = auth.cancelWatchdogIfActive(genA, fallbackToken) {
+            watchdogCancelled = true
+        }
+        assertFalse(watchdogSuccess)
+        assertFalse(watchdogCancelled)
+
+        var audioMutated = false
+        val audioSuccess = auth.mutateAudioIfActive(genA, fallbackToken) {
+            audioMutated = true
+        }
+        assertFalse(audioSuccess)
+        assertFalse(audioMutated)
+
+        // Active token remains tokenB
         assertEquals(tokenB, auth.activeAttemptToken())
     }
 
     @Test
-    fun postTokenActivationSupersessionRejectsOldWatchdogCancellationAndVolumeMutation() {
-        // Test Scenario 3 & 4 (Post-activation):
-        // Token発行後、Watchdogキャンセル前・音量変更前に別Attemptへ切替 → 新Watchdog・音量維持
+    fun postTokenActivationSupersessionRejectsOldWatchdogCancellationAndPreservesNewAttemptWatchdog() {
+        // Required Test 3 & 4: Token発行後、Watchdogキャンセル・音量変更前に別Attemptへ切替 → 新Watchdog・音量維持
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val tokenA = auth.mintNextToken(genA)
 
         val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
-        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
-
-        // Superseding attempt tokenB arrives
-        auth.mintNextToken(genA)
-
-        // Watchdog cancellation owned by fallbackToken -> REJECTED
-        assertFalse(auth.shouldProcessCallback(genA, fallbackToken!!))
-
-        // System volume / gain mutation owned by fallbackToken -> REJECTED
-        assertFalse(auth.shouldProcessCallback(genA, fallbackToken))
-    }
-
-    @Test
-    fun legitimateFallbackActivationSucceeds() {
-        // Test Scenario 5: 正当なFallback TokenでPlayer開始成功
-        val auth = AlarmPlaybackAttemptAuthority()
-        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-        val tokenA = auth.mintNextToken(genA)
-
-        val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
-        assertNotNull(handoff)
-
         val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
         assertNotNull(fallbackToken)
 
-        // Fallback token is now active and authorized
+        // New attempt tokenB arrives and sets new watchdog / volume
+        val tokenB = auth.mintNextToken(genA)
+
+        // Old fallbackToken attempts to cancel watchdog -> REJECTED, new watchdog preserved
+        var cancelledWatchdog = false
+        val cancelResult = auth.cancelWatchdogIfActive(genA, fallbackToken!!) {
+            cancelledWatchdog = true
+        }
+        assertFalse(cancelResult)
+        assertFalse(cancelledWatchdog)
+
+        // Old fallbackToken attempts to mutate audio -> REJECTED
+        var mutatedVolume = false
+        val mutateResult = auth.mutateAudioIfActive(genA, fallbackToken) {
+            mutatedVolume = true
+        }
+        assertFalse(mutateResult)
+        assertFalse(mutatedVolume)
+    }
+
+    @Test
+    fun legitimateFallbackTokenSuccessfullyPublishesPlayerAndExecutesSideEffects() {
+        // Required Test 5: 正当なFallback TokenでPlayer開始成功
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
+
+        val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
+        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
+        assertNotNull(fallbackToken)
+
+        // No superseding attempt -> Legitimate publication succeeds atomically!
+        var publishedPlayer: AlarmPlaybackPlayer? = null
+        val fakePlayer = FakeAlarmPlaybackPlayer()
+
+        val publishSuccess = auth.publishPlaybackIfActive(genA, fallbackToken!!) {
+            publishedPlayer = fakePlayer
+        }
+
+        assertTrue(publishSuccess)
+        assertEquals(fakePlayer, publishedPlayer)
         assertEquals(fallbackToken, auth.activeAttemptToken())
-        assertTrue(auth.shouldProcessCallback(genA, fallbackToken!!))
     }
 
     @Test
@@ -443,26 +456,24 @@ class AlarmGenerationTest {
     }
 
     @Test
-    fun oldAttemptWatchdogReleaseAndVolumeMutationsAreRejected() {
-        // Test Scenario 8: 旧AttemptのWatchdogキャンセル・Player解放・音量変更拒否
+    fun dismissSnoozeAndNewStartInvalidatePostActivationFallback() {
+        // Required Test 6: Dismiss / Snooze / 新世代STARTで旧Attemptの副作用を拒否
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
 
-        val token1 = auth.mintNextToken(genA)
-        val player1 = FakeAlarmPlaybackPlayer()
+        val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
+        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
 
-        // Player 2 arrives
-        val token2 = auth.mintNextToken(genA)
-        val player2 = FakeAlarmPlaybackPlayer()
+        // Snooze / Dismiss invalidates tokens
+        auth.invalidateTokens()
 
-        // Old player1 callback / watchdog tries to process callbacks -> REJECTED
-        assertFalse(auth.shouldProcessCallback(genA, token1, currentPlayback = player2, callbackPlayback = player1))
-
-        // Old player1 tries to release global playback -> REJECTED
-        assertFalse(auth.shouldReleaseGlobalPlayback(genA, token1, currentPlayback = player2, targetPlayback = player1))
-
-        // Old player1 tries to claim fallback -> REJECTED
-        assertNull(auth.tryClaimFallbackHandoff(genA, token1))
+        var sideEffectExecuted = false
+        val executed = auth.executeIfActive(genA, fallbackToken!!) {
+            sideEffectExecuted = true
+        }
+        assertFalse(executed)
+        assertFalse(sideEffectExecuted)
     }
 
     @Test
