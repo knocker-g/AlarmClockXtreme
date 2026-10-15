@@ -960,6 +960,24 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun backupSoundEscalationRejectsStaleTokenAfterPreemption() {
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
+
+        // Preemption occurs (new START tokenB or Dismiss/Snooze invalidation)
+        val tokenB = auth.mintNextToken(genA)
+
+        // Delayed backup sound timer attempts to mutate audio for old tokenA -> REJECTED!
+        val canMutateOld = auth.shouldMutateAudio(genA, tokenA)
+        assertFalse(canMutateOld)
+
+        // New tokenB is authorized
+        val canMutateNew = auth.shouldMutateAudio(genA, tokenB)
+        assertTrue(canMutateNew)
+    }
+
+    @Test
     fun controllableFakePlayerReleaseIsIdempotentThroughHolder() {
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
