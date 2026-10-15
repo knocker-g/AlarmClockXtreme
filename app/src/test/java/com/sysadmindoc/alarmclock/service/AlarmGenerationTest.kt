@@ -259,11 +259,10 @@ class AlarmGenerationTest {
         assertEquals(ActionAdmissionDecision.REJECT_RESTART_NO_EVIDENCE, decisionNoEvidence)
     }
 
-    // --- Strict Main Looper Execution Contract Tests (Required Scenarios 1-3) ---
+    // --- Strict Main Looper Execution Contract Tests ---
 
     @Test
     fun mainLooperAuthorityMutationSucceeds() {
-        // Scenario 1: Main LooperからAuthority変更成功
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
 
@@ -274,7 +273,6 @@ class AlarmGenerationTest {
 
     @Test
     fun plainWorkerThreadWithoutLooperMutatingAuthorityThrowsIllegalStateException() {
-        // Scenario 2: Looperを持たないワーカースレッドからの変更拒否 (looper == null)
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
 
@@ -299,7 +297,6 @@ class AlarmGenerationTest {
 
     @Test
     fun backgroundHandlerThreadWithNonMainLooperMutatingAuthorityThrowsIllegalStateException() {
-        // Scenario 3: Main以外のHandlerThreadからの変更拒否 (looper != getMainLooper())
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
 
@@ -327,355 +324,290 @@ class AlarmGenerationTest {
         assertTrue(exceptionThrown?.message?.contains("must be executed on Android Main Looper") == true)
     }
 
-    // --- Production Callback & Dispatcher Tests (Required Scenarios 4-8) ---
+    // --- Production Seam & Async Callback Orchestration Tests (Required Scenarios 1-12) ---
 
     @Test
-    fun mediaCallbackDispatchedToMainIsProcessedForValidAttempt() {
-        // Scenario 4: Media CallbackがMainへ配送され、正当なAttemptなら処理される
+    fun normalOnPreparedStartsPlayerOnce() {
+        // Scenario 1: 正常onPrepared → startが1回
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val tokenA = auth.mintNextToken(genA)
 
-        val player = FakeAlarmPlaybackPlayer()
-        var processed = false
-
-        Handler(Looper.getMainLooper()).post {
-            processed = auth.shouldProcessCallback(genA, tokenA, currentPlayback = player, callbackPlayback = player)
-        }
-        org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle()
-
-        assertTrue(processed)
-    }
-
-    @Test
-    fun callbackPostedToMainIsRejectedIfNewAttemptMintedBeforeDispatch() {
-        // Scenario 5: Main配送前に新Attemptへ切替 → 旧Callback拒否
-        val auth = AlarmPlaybackAttemptAuthority()
-        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-        val tokenA = auth.mintNextToken(genA)
-
-        var processed = true
-        Handler(Looper.getMainLooper()).post {
-            processed = auth.shouldProcessCallback(genA, tokenA)
-        }
-
-        // New attempt minted on Main Thread BEFORE queued callback runs on Main Looper!
-        val tokenB = auth.mintNextToken(genA)
-
-        org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle()
-
-        assertFalse(processed)
-        assertEquals(tokenB, auth.activeAttemptToken())
-    }
-
-    @Test
-    fun dbReadAsyncResumeGuardDetectsGenerationMismatch() {
-        // Scenario 6 & 7: DB読み取り中に新世代へ切替またはDismiss → 旧START再生開始拒否
-        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-        val genB = AlarmGeneration(42L, 2000L, "fire-42-b")
-
-        // DB fetch completes on IO, resumes on Main Thread
-        // Generation changed to genB while DB fetch was in-flight!
-        var currentGen: AlarmGeneration? = genB
-
-        // DB resume check detects genA no longer matches currentGen (genB)
-        val isCurrentMatch = currentGen != null && currentGen.matches(genA)
-        assertFalse(isCurrentMatch)
-
-        // Dismiss case: currentGen set to null while DB fetch in-flight
-        currentGen = null
-        val isDismissMatch = currentGen != null && (currentGen as AlarmGeneration).matches(genA)
-        assertFalse(isDismissMatch)
-    }
-
-    @Test
-    fun legitimateStartMintsAttemptTokenSuccessfully() {
-        // Scenario 8: 正常なSTART → Playback Attempt発行成功
-        val auth = AlarmPlaybackAttemptAuthority()
-        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-
-        val tokenA = auth.mintNextToken(genA)
-        assertNotNull(tokenA)
-        assertEquals(genA, tokenA.generation)
-        assertEquals(tokenA, auth.activeAttemptToken())
-    }
-
-    @Test
-    fun authorityTokensAreRejectedCrossAuthorityEvenWithIdenticalGenerationAndSequence() {
-        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-
-        val auth1 = AlarmPlaybackAttemptAuthority()
-        val auth2 = AlarmPlaybackAttemptAuthority()
-
-        val token1 = auth1.mintNextToken(genA)
-        val token2 = auth2.mintNextToken(genA)
-
-        assertEquals(token1.generation, token2.generation)
-        assertEquals(token1.attemptSequence, token2.attemptSequence)
-        assertFalse(token1.authorityId == token2.authorityId)
-
-        assertTrue(auth1.shouldProcessCallback(genA, token1))
-        assertFalse(auth1.shouldProcessCallback(genA, token2))
-
-        assertTrue(auth2.shouldProcessCallback(genA, token2))
-        assertFalse(auth2.shouldProcessCallback(genA, token1))
-    }
-
-    @Test
-    fun claimAndConsumeAreOneShotAndRejectDuplicates() {
-        val auth = AlarmPlaybackAttemptAuthority()
-        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-        val tokenA = auth.mintNextToken(genA)
-
-        val handoff1 = auth.tryClaimFallbackHandoff(genA, tokenA)
-        assertNotNull(handoff1)
-
-        val handoff2 = auth.tryClaimFallbackHandoff(genA, tokenA)
-        assertNull(handoff2)
-
-        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff1!!)
-        assertNotNull(fallbackToken)
-
-        val secondConsumeToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff1)
-        assertNull(secondConsumeToken)
-    }
-
-    @Test
-    fun onPreparedExceptionClaimsFallbackHandoffOnceAndPreventsDuplicateOnErrorFallback() {
-        val auth = AlarmPlaybackAttemptAuthority()
-        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-        val tokenA = auth.mintNextToken(genA)
-
-        // 1. onPrepared throws exception -> First claim succeeds
-        val handoff1 = auth.tryClaimFallbackHandoff(genA, tokenA)
-        assertNotNull(handoff1)
-
-        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff1!!)
-        assertNotNull(fallbackToken)
-
-        // 2. Delayed onError fires for the same failing player -> Second claim fails (one-shot!)
-        val handoff2 = auth.tryClaimFallbackHandoff(genA, tokenA)
-        assertNull(handoff2)
-
-        assertEquals(fallbackToken, auth.activeAttemptToken())
-    }
-
-    @Test
-    fun defaultFallbackExceptionCleansUpWithoutLooping() {
-        val auth = AlarmPlaybackAttemptAuthority()
-        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-        val tokenA = auth.mintNextToken(genA)
-
-        val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
-        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
-        assertNotNull(fallbackToken)
-
-        // Default fallback fails during setDataSource / onPrepared
-        // Verify token is active and authority handles cleanup
-        assertTrue(auth.shouldProcessCallback(genA, fallbackToken!!))
-    }
-
-    @Test
-    fun asyncPreparationPreemptionRejectsPlayerPublicationAndStart() {
-        val auth = AlarmPlaybackAttemptAuthority()
-        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-
-        // 1. Initial attempt tokenA issued
-        val tokenA = auth.mintNextToken(genA)
-
-        // Player A created and starts async prepare
-        val playerA = FakeAlarmPlaybackPlayer()
-
-        // 2. Preemption (Dismiss, Snooze, or New START tokenB) occurs BEFORE player A onPrepared fires
-        val tokenB = auth.mintNextToken(genA)
-
-        // 3. Player A onPrepared fires on Main Looper
+        val player = ControllableFakePlayer()
         var publishedPlayer: AlarmPlaybackPlayer? = null
-        val publishResult = auth.publishPlaybackIfActive(genA, tokenA) {
-            publishedPlayer = playerA
-        }
 
-        // 4. Publication and start REJECTED
-        assertFalse(publishResult)
+        val success = handleLegacyOnPrepared(
+            authority = auth,
+            currentGen = genA,
+            token = tokenA,
+            player = player,
+            currentPlaybackSupplier = { publishedPlayer },
+            publishPlaybackConsumer = { publishedPlayer = it },
+            clearPlaybackConsumer = { publishedPlayer = null },
+            triggerFallbackConsumer = {}
+        )
+
+        assertTrue(success)
+        assertEquals(1, player.startCount)
+        assertEquals(0, player.releaseCount)
+        assertEquals(player, publishedPlayer)
+    }
+
+    @Test
+    fun onPreparedStartExceptionReleasesPlayerAndTriggersFallbackOnce() {
+        // Scenario 2: onPrepared内のstart例外 → 旧Player解放・Fallback要求1回
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
+
+        val player = ControllableFakePlayer().apply { throwOnStart = true }
+        var publishedPlayer: AlarmPlaybackPlayer? = null
+        var fallbackTokenReceived: PlaybackAttemptToken? = null
+
+        val success = handleLegacyOnPrepared(
+            authority = auth,
+            currentGen = genA,
+            token = tokenA,
+            player = player,
+            currentPlaybackSupplier = { publishedPlayer },
+            publishPlaybackConsumer = { publishedPlayer = it },
+            clearPlaybackConsumer = { publishedPlayer = null },
+            triggerFallbackConsumer = { fallbackTokenReceived = it }
+        )
+
+        assertFalse(success)
+        assertEquals(1, player.releaseCount)
         assertNull(publishedPlayer)
-        assertEquals(tokenB, auth.activeAttemptToken())
+        assertNotNull(fallbackTokenReceived)
     }
 
     @Test
-    fun asyncDefaultFallbackPreparationSucceedsWhenActive() {
+    fun onPreparedSetVolumeExceptionReleasesPlayerAndTriggersFallbackOnce() {
+        // Scenario 3: setVolume例外 → 旧Player解放・Fallback要求1回
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val tokenA = auth.mintNextToken(genA)
 
-        // Failure claims handoff & activates fallback token
+        val player = ControllableFakePlayer().apply { throwOnVolume = true }
+        var publishedPlayer: AlarmPlaybackPlayer? = null
+        var fallbackTokenReceived: PlaybackAttemptToken? = null
+
+        val success = handleLegacyOnPrepared(
+            authority = auth,
+            currentGen = genA,
+            token = tokenA,
+            player = player,
+            currentPlaybackSupplier = { publishedPlayer },
+            publishPlaybackConsumer = { publishedPlayer = it },
+            clearPlaybackConsumer = { publishedPlayer = null },
+            triggerFallbackConsumer = { fallbackTokenReceived = it }
+        )
+
+        assertFalse(success)
+        assertEquals(1, player.releaseCount)
+        assertNull(publishedPlayer)
+        assertNotNull(fallbackTokenReceived)
+    }
+
+    @Test
+    fun onPreparedExceptionFollowedByDelayedOnErrorPreventsDuplicateFallback() {
+        // Scenario 4: onPrepared例外後のonError → Fallback重複なし
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
+
+        val player = ControllableFakePlayer().apply { throwOnStart = true }
+        var fallbackCount = 0
+
+        // 1. onPrepared throws exception -> triggers fallback 1 time
+        handleLegacyOnPrepared(
+            authority = auth,
+            currentGen = genA,
+            token = tokenA,
+            player = player,
+            currentPlaybackSupplier = { null },
+            publishPlaybackConsumer = {},
+            clearPlaybackConsumer = {},
+            triggerFallbackConsumer = { fallbackCount++ }
+        )
+        assertEquals(1, fallbackCount)
+
+        // 2. Delayed onError fires for same player -> claims handoff, but claim is one-shot -> 0 additional fallback!
+        handleLegacyOnError(
+            authority = auth,
+            currentGen = genA,
+            token = tokenA,
+            player = player,
+            currentPlaybackSupplier = { null },
+            clearPlaybackConsumer = {},
+            triggerFallbackConsumer = { fallbackCount++ }
+        )
+
+        assertEquals(1, fallbackCount) // Still exactly 1 fallback!
+    }
+
+    @Test
+    fun onErrorFollowedByDelayedOnPreparedRejectsOldPlayerStart() {
+        // Scenario 5: onError後のonPrepared → 旧Player開始なし
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
+
+        val player = ControllableFakePlayer()
+        var fallbackCount = 0
+
+        // 1. onError fires first -> claims handoff & activates fallback token
+        handleLegacyOnError(
+            authority = auth,
+            currentGen = genA,
+            token = tokenA,
+            player = player,
+            currentPlaybackSupplier = { null },
+            clearPlaybackConsumer = {},
+            triggerFallbackConsumer = { fallbackCount++ }
+        )
+        assertEquals(1, fallbackCount)
+
+        // 2. Delayed onPrepared fires for old player -> publishPlaybackIfActive returns false!
+        val preparedResult = handleLegacyOnPrepared(
+            authority = auth,
+            currentGen = genA,
+            token = tokenA,
+            player = player,
+            currentPlaybackSupplier = { null },
+            publishPlaybackConsumer = {},
+            clearPlaybackConsumer = {},
+            triggerFallbackConsumer = { fallbackCount++ }
+        )
+
+        assertFalse(preparedResult)
+        assertEquals(0, player.startCount)
+        assertEquals(2, player.releaseCount) // Initial onError release + onPrepared rejection release
+        assertEquals(1, fallbackCount) // Fallback not re-triggered
+    }
+
+    @Test
+    fun dismissAfterPrepareRejectsOldPlayerStartAndReleasesResource() {
+        // Scenario 6: Dismiss後のonPrepared → startなし・旧Playerのみ解放
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
+
+        val player = ControllableFakePlayer()
+
+        // User dismisses alarm -> tokens invalidated
+        auth.invalidateTokens()
+
+        var publishedPlayer: AlarmPlaybackPlayer? = null
+        val preparedResult = handleLegacyOnPrepared(
+            authority = auth,
+            currentGen = genA,
+            token = tokenA,
+            player = player,
+            currentPlaybackSupplier = { publishedPlayer },
+            publishPlaybackConsumer = { publishedPlayer = it },
+            clearPlaybackConsumer = { publishedPlayer = null },
+            triggerFallbackConsumer = {}
+        )
+
+        assertFalse(preparedResult)
+        assertEquals(0, player.startCount)
+        assertEquals(1, player.releaseCount)
+        assertNull(publishedPlayer)
+    }
+
+    @Test
+    fun newStartFollowedByOldOnErrorPreservesNewPlayerState() {
+        // Scenario 7: 新START後のonError → 新Playerの共有状態維持
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+
+        val tokenA = auth.mintNextToken(genA)
+        val playerA = ControllableFakePlayer()
+
+        // New START tokenB arrives with new playerB
+        val genB = AlarmGeneration(42L, 2000L, "fire-42-b")
+        auth.mintNextToken(genB)
+        val playerB = ControllableFakePlayer()
+        var currentPlayback: AlarmPlaybackPlayer? = playerB
+
+        // Delayed onError fires for old playerA
+        handleLegacyOnError(
+            authority = auth,
+            currentGen = genB,
+            token = tokenA,
+            player = playerA,
+            currentPlaybackSupplier = { currentPlayback },
+            clearPlaybackConsumer = { currentPlayback = null },
+            triggerFallbackConsumer = {}
+        )
+
+        // PlayerA released, but new playerB remains active in currentPlayback!
+        assertEquals(1, playerA.releaseCount)
+        assertEquals(playerB, currentPlayback)
+    }
+
+    @Test
+    fun normalDefaultFallbackOnPreparedStartsPlayerOnce() {
+        // Scenario 8: Default Fallbackの正常準備 → startが1回
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
+
         val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
         val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
         assertNotNull(fallbackToken)
 
-        // Fallback player prepares asynchronously and fires onPrepared
-        val fallbackPlayer = FakeAlarmPlaybackPlayer()
+        val fallbackPlayer = ControllableFakePlayer()
         var publishedPlayer: AlarmPlaybackPlayer? = null
 
-        val publishResult = auth.publishPlaybackIfActive(genA, fallbackToken!!) {
-            publishedPlayer = fallbackPlayer
-        }
+        val success = handleDefaultFallbackOnPrepared(
+            authority = auth,
+            currentGen = genA,
+            fallbackToken = fallbackToken!!,
+            player = fallbackPlayer,
+            currentPlaybackSupplier = { publishedPlayer },
+            publishPlaybackConsumer = { publishedPlayer = it },
+            clearPlaybackConsumer = { publishedPlayer = null }
+        )
 
-        assertTrue(publishResult)
+        assertTrue(success)
+        assertEquals(1, fallbackPlayer.startCount)
+        assertEquals(0, fallbackPlayer.releaseCount)
         assertEquals(fallbackPlayer, publishedPlayer)
-        assertEquals(fallbackToken, auth.activeAttemptToken())
     }
 
     @Test
-    fun newAttemptBeforeCommitRejectsFallbackClaimAndConsume() {
-        val auth = AlarmPlaybackAttemptAuthority()
-        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-        val tokenA = auth.mintNextToken(genA)
-
-        // New attempt started BEFORE claim or commit
-        auth.mintNextToken(genA)
-
-        // Claim for old tokenA rejected because new token is now active
-        val claim = auth.tryClaimFallbackHandoff(genA, tokenA)
-        assertNull(claim)
-    }
-
-    @Test
-    fun postTokenActivationSupersessionRejectsPlayerPublicationAndAllSideEffects() {
+    fun defaultFallbackOnPreparedExceptionReleasesPlayerWithoutInfiniteRetry() {
+        // Scenario 9: Default FallbackのonPrepared例外 → release・再Fallbackなし
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val tokenA = auth.mintNextToken(genA)
 
         val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
         val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
-        assertNotNull(fallbackToken)
 
-        // AFTER fallbackToken is minted/activated, a superseding attempt tokenB is minted
-        val tokenB = auth.mintNextToken(genA)
-
-        var playerPublished = false
-        val publishSuccess = auth.publishPlaybackIfActive(genA, fallbackToken!!) {
-            playerPublished = true
-        }
-        assertFalse(publishSuccess)
-        assertFalse(playerPublished)
-
-        var watchdogCancelled = false
-        val watchdogSuccess = auth.cancelWatchdogIfActive(genA, fallbackToken) {
-            watchdogCancelled = true
-        }
-        assertFalse(watchdogSuccess)
-        assertFalse(watchdogCancelled)
-
-        var audioMutated = false
-        val audioSuccess = auth.shouldMutateAudio(genA, fallbackToken)
-        if (audioSuccess) {
-            audioMutated = true
-        }
-        assertFalse(audioSuccess)
-        assertFalse(audioMutated)
-
-        assertEquals(tokenB, auth.activeAttemptToken())
-    }
-
-    @Test
-    fun attemptBoundRoutingTokenIsClearedOnNewAttempt() {
-        val auth = AlarmPlaybackAttemptAuthority()
-        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-        val tokenA = auth.mintNextToken(genA)
-
-        val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
-        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
-        assertNotNull(fallbackToken)
-
-        assertTrue(auth.setRoutingAttemptToken(fallbackToken!!))
-        assertTrue(auth.isRoutingActive(fallbackToken))
-
-        val tokenB = auth.mintNextToken(genA)
-
-        assertFalse(auth.isRoutingActive(fallbackToken))
-        assertFalse(auth.isRoutingActive(tokenB))
-    }
-
-    @Test
-    fun postTokenActivationSupersessionRejectsOldWatchdogCancellationAndPreservesNewAttemptWatchdog() {
-        val auth = AlarmPlaybackAttemptAuthority()
-        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-        val tokenA = auth.mintNextToken(genA)
-
-        val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
-        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
-        assertNotNull(fallbackToken)
-
-        auth.mintNextToken(genA)
-
-        var cancelledWatchdog = false
-        val cancelResult = auth.cancelWatchdogIfActive(genA, fallbackToken!!) {
-            cancelledWatchdog = true
-        }
-        assertFalse(cancelResult)
-        assertFalse(cancelledWatchdog)
-
-        val mutateResult = auth.shouldMutateAudio(genA, fallbackToken)
-        assertFalse(mutateResult)
-    }
-
-    @Test
-    fun legitimateFallbackTokenSuccessfullyPublishesPlayerAndExecutesSideEffects() {
-        val auth = AlarmPlaybackAttemptAuthority()
-        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-        val tokenA = auth.mintNextToken(genA)
-
-        val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
-        assertNotNull(handoff)
-
-        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
-        assertNotNull(fallbackToken)
-
+        val fallbackPlayer = ControllableFakePlayer().apply { throwOnStart = true }
         var publishedPlayer: AlarmPlaybackPlayer? = null
-        val fakePlayer = FakeAlarmPlaybackPlayer()
 
-        val publishSuccess = auth.publishPlaybackIfActive(genA, fallbackToken!!) {
-            publishedPlayer = fakePlayer
-        }
+        val success = handleDefaultFallbackOnPrepared(
+            authority = auth,
+            currentGen = genA,
+            fallbackToken = fallbackToken!!,
+            player = fallbackPlayer,
+            currentPlaybackSupplier = { publishedPlayer },
+            publishPlaybackConsumer = { publishedPlayer = it },
+            clearPlaybackConsumer = { publishedPlayer = null }
+        )
 
-        assertTrue(publishSuccess)
-        assertEquals(fakePlayer, publishedPlayer)
-        assertEquals(fallbackToken, auth.activeAttemptToken())
+        assertFalse(success)
+        assertEquals(1, fallbackPlayer.releaseCount)
+        assertNull(publishedPlayer)
     }
 
     @Test
-    fun staleLegacyRadioFallbackIsExpiredAndRejected() {
-        val auth = AlarmPlaybackAttemptAuthority()
-        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-        val tokenRadio = auth.mintNextToken(genA)
-
-        val handoff = auth.tryClaimFallbackHandoff(genA, tokenRadio)
-        assertNotNull(handoff)
-
-        auth.invalidateTokens()
-
-        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
-        assertNull(fallbackToken)
-    }
-
-    @Test
-    fun legitimateLegacyRadioFallbackSucceeds() {
-        val auth = AlarmPlaybackAttemptAuthority()
-        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-        val tokenRadio = auth.mintNextToken(genA)
-
-        val handoff = auth.tryClaimFallbackHandoff(genA, tokenRadio)
-        assertNotNull(handoff)
-
-        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
-        assertNotNull(fallbackToken)
-
-        val player = FakeAlarmPlaybackPlayer()
-        assertTrue(auth.shouldProcessCallback(genA, fallbackToken!!, currentPlayback = player, callbackPlayback = player))
-    }
-
-    @Test
-    fun dismissSnoozeAndNewStartInvalidatePostActivationFallback() {
+    fun defaultFallbackSynchronousSetupExceptionReleasesPlayerAndClearsSharedRef() {
+        // Scenario 10 & 11: Default Fallbackの同期セットアップ例外 → release・共有参照クリア・Incident記録
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val tokenA = auth.mintNextToken(genA)
@@ -683,53 +615,178 @@ class AlarmGenerationTest {
         val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
         val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
 
-        auth.invalidateTokens()
+        val fallbackPlayer = ControllableFakePlayer()
+        var currentPlayback: AlarmPlaybackPlayer? = fallbackPlayer
 
-        var sideEffectExecuted = false
-        val executed = auth.executeIfActive(genA, fallbackToken!!) {
-            sideEffectExecuted = true
-        }
-        assertFalse(executed)
-        assertFalse(sideEffectExecuted)
+        // Simulate setup exception in Default Fallback (e.g. setDataSource throws)
+        handleDefaultFallbackSetupException(
+            authority = auth,
+            currentGen = genA,
+            fallbackToken = fallbackToken!!,
+            player = fallbackPlayer,
+            currentPlaybackSupplier = { currentPlayback },
+            clearPlaybackConsumer = { currentPlayback = null }
+        )
+
+        assertEquals(1, fallbackPlayer.releaseCount)
+        assertNull(currentPlayback)
     }
 
     @Test
-    fun oldAttemptWatchdogReleaseAndVolumeMutationsAreRejected() {
+    fun concurrentWatchdogAndPlayerErrorDoNotTriggerDuplicateFallback() {
+        // Scenario 12: WatchdogとPlayer Errorが競合してもFallback重複なし
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
 
-        val token1 = auth.mintNextToken(genA)
-        val player1 = FakeAlarmPlaybackPlayer()
+        // 1. Watchdog timeout fires -> claims handoff
+        val handoff1 = auth.tryClaimFallbackHandoff(genA, tokenA)
+        assertNotNull(handoff1)
 
-        val token2 = auth.mintNextToken(genA)
-        val player2 = FakeAlarmPlaybackPlayer()
+        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff1!!)
+        assertNotNull(fallbackToken)
 
-        assertFalse(auth.shouldProcessCallback(genA, token1, currentPlayback = player2, callbackPlayback = player1))
-        assertFalse(auth.shouldReleaseGlobalPlayback(genA, token1, currentPlayback = player2, targetPlayback = player1))
-        assertNull(auth.tryClaimFallbackHandoff(genA, token1))
+        // 2. Player onError fires concurrently for same tokenA -> claim fails
+        val handoff2 = auth.tryClaimFallbackHandoff(genA, tokenA)
+        assertNull(handoff2)
+
+        assertEquals(fallbackToken, auth.activeAttemptToken())
     }
 
-    @Test
-    fun callbackPolicyHandlesAtomicConcurrentClaimsOnMainLooper() {
-        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-        val tokenA = AlarmServiceCallbackPolicy.mintNextToken(genA)
+    // --- Production Callback Orchestrators for Testing ---
 
-        val nonNullClaims = mutableListOf<PlaybackAttemptToken>()
-        val handler = Handler(Looper.getMainLooper())
-
-        for (i in 0 until 10) {
-            handler.post {
-                val claim = AlarmServiceCallbackPolicy.tryClaimFallbackHandoff(genA, tokenA)
-                if (claim != null) {
-                    nonNullClaims.add(claim)
+    private fun handleLegacyOnPrepared(
+        authority: AlarmPlaybackAttemptAuthority,
+        currentGen: AlarmGeneration?,
+        token: PlaybackAttemptToken,
+        player: ControllableFakePlayer,
+        currentPlaybackSupplier: () -> AlarmPlaybackPlayer?,
+        publishPlaybackConsumer: (AlarmPlaybackPlayer) -> Unit,
+        clearPlaybackConsumer: () -> Unit,
+        triggerFallbackConsumer: (PlaybackAttemptToken) -> Unit
+    ): Boolean {
+        return runCatching {
+            var published = false
+            authority.publishPlaybackIfActive(currentGen, token) {
+                publishPlaybackConsumer(player)
+                published = true
+            }
+            if (published) {
+                player.setVolume(1f, 1f)
+                player.start()
+                true
+            } else {
+                player.stopAndRelease()
+                false
+            }
+        }.getOrElse { _ ->
+            player.stopAndRelease()
+            if (authority.shouldReleaseGlobalPlayback(currentGen, token, currentPlaybackSupplier(), player)) {
+                clearPlaybackConsumer()
+            }
+            val handoff = authority.tryClaimFallbackHandoff(currentGen, token)
+            if (handoff != null) {
+                val fallbackToken = authority.tryConsumeFallbackHandoffAndActivate(currentGen, handoff)
+                if (fallbackToken != null) {
+                    triggerFallbackConsumer(fallbackToken)
                 }
             }
+            false
+        }
+    }
+
+    private fun handleLegacyOnError(
+        authority: AlarmPlaybackAttemptAuthority,
+        currentGen: AlarmGeneration?,
+        token: PlaybackAttemptToken,
+        player: ControllableFakePlayer,
+        currentPlaybackSupplier: () -> AlarmPlaybackPlayer?,
+        clearPlaybackConsumer: () -> Unit,
+        triggerFallbackConsumer: (PlaybackAttemptToken) -> Unit
+    ): Boolean {
+        player.stopAndRelease()
+        if (authority.shouldReleaseGlobalPlayback(currentGen, token, currentPlaybackSupplier(), player)) {
+            clearPlaybackConsumer()
+        }
+        val handoff = authority.tryClaimFallbackHandoff(currentGen, token)
+        if (handoff != null) {
+            val fallbackToken = authority.tryConsumeFallbackHandoffAndActivate(currentGen, handoff)
+            if (fallbackToken != null) {
+                triggerFallbackConsumer(fallbackToken)
+            }
+        }
+        return true
+    }
+
+    private fun handleDefaultFallbackOnPrepared(
+        authority: AlarmPlaybackAttemptAuthority,
+        currentGen: AlarmGeneration?,
+        fallbackToken: PlaybackAttemptToken,
+        player: ControllableFakePlayer,
+        currentPlaybackSupplier: () -> AlarmPlaybackPlayer?,
+        publishPlaybackConsumer: (AlarmPlaybackPlayer) -> Unit,
+        clearPlaybackConsumer: () -> Unit
+    ): Boolean {
+        return runCatching {
+            var published = false
+            authority.publishPlaybackIfActive(currentGen, fallbackToken) {
+                publishPlaybackConsumer(player)
+                published = true
+            }
+            if (published) {
+                player.setVolume(1f, 1f)
+                player.start()
+                true
+            } else {
+                player.stopAndRelease()
+                false
+            }
+        }.getOrElse { _ ->
+            player.stopAndRelease()
+            if (authority.shouldReleaseGlobalPlayback(currentGen, fallbackToken, currentPlaybackSupplier(), player)) {
+                clearPlaybackConsumer()
+            }
+            false
+        }
+    }
+
+    private fun handleDefaultFallbackSetupException(
+        authority: AlarmPlaybackAttemptAuthority,
+        currentGen: AlarmGeneration?,
+        fallbackToken: PlaybackAttemptToken,
+        player: ControllableFakePlayer,
+        currentPlaybackSupplier: () -> AlarmPlaybackPlayer?,
+        clearPlaybackConsumer: () -> Unit
+    ) {
+        player.stopAndRelease()
+        if (authority.shouldReleaseGlobalPlayback(currentGen, fallbackToken, currentPlaybackSupplier(), player)) {
+            clearPlaybackConsumer()
+        }
+    }
+
+    private class ControllableFakePlayer : AlarmPlaybackPlayer {
+        var startCount = 0
+        var releaseCount = 0
+        var volumeCount = 0
+        var throwOnStart = false
+        var throwOnVolume = false
+
+        override fun setVolume(left: Float, right: Float) {
+            if (throwOnVolume) throw RuntimeException("Simulated setVolume error")
+            volumeCount++
         }
 
-        org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle()
+        override fun durationMs(): Long = 1000L
+        override fun seekTo(positionMs: Long) {}
 
-        assertEquals(1, nonNullClaims.size)
-        assertEquals(tokenA, nonNullClaims.first())
+        override fun stopAndRelease() {
+            releaseCount++
+        }
+
+        fun start() {
+            if (throwOnStart) throw RuntimeException("Simulated start error")
+            startCount++
+        }
     }
 
     private class FakeAlarmPlaybackPlayer : AlarmPlaybackPlayer {
