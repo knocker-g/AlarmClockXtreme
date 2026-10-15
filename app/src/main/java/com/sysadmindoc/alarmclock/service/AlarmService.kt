@@ -778,6 +778,7 @@ class AlarmService : Service() {
                     withContext(NonCancellable) {
                         if (currentGeneration()?.matches(startGen) != true) return@withContext
                         recordEvent(missedAlarm, com.sysadmindoc.alarmclock.data.local.entity.AlarmEvent.ACTION_MISSED)
+                        if (currentGeneration()?.matches(startGen) != true) return@withContext
                         recordIncident(
                             type = AlarmIncidentEvent.TYPE_AUTO_SILENCE,
                             status = AlarmIncidentEvent.STATUS_SUCCEEDED,
@@ -787,6 +788,7 @@ class AlarmService : Service() {
                             fireId = startGen.fireId,
                             scheduledAt = startGen.scheduledAt
                         )
+                        if (currentGeneration()?.matches(startGen) != true) return@withContext
                         webhookService.fireAsync(
                             event = WebhookEvent.AlarmMissed,
                             alarmId = missedAlarm.id,

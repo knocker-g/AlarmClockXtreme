@@ -10,7 +10,7 @@ internal object AlarmServiceCallbackPolicy {
      * Requires:
      * 1. Current firing generation matches callback generation 100%.
      * 2. If a playback player reference is associated with the callback,
-     *    the current service alarmPlayback must match that exact player instance.
+     *    the current service alarmPlayback must match that exact player instance (or be null during fallback).
      */
     fun shouldProcessCallback(
         currentGen: AlarmGeneration?,
@@ -21,7 +21,7 @@ internal object AlarmServiceCallbackPolicy {
         if (currentGen == null || !currentGen.matches(callbackGen)) {
             return false
         }
-        if (callbackPlayback != null && currentPlayback !== callbackPlayback) {
+        if (callbackPlayback != null && currentPlayback != null && currentPlayback !== callbackPlayback) {
             return false
         }
         return true
@@ -57,8 +57,8 @@ internal object AlarmServiceCallbackPolicy {
      *
      * Requires:
      * 1. Current generation matches watchdog generation 100%.
-     * 2. If a target player reference is provided, currentPlayback must match
-     *    that exact target player instance.
+     * 2. If a target player reference is provided and currentPlayback is non-null,
+     *    currentPlayback must match that exact target player instance.
      */
     fun shouldCancelWatchdog(
         currentGen: AlarmGeneration?,
@@ -69,7 +69,7 @@ internal object AlarmServiceCallbackPolicy {
         if (currentGen == null || !currentGen.matches(watchdogGen)) {
             return false
         }
-        if (targetPlayback != null && currentPlayback !== targetPlayback) {
+        if (targetPlayback != null && currentPlayback != null && currentPlayback !== targetPlayback) {
             return false
         }
         return true
