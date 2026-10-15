@@ -6,6 +6,7 @@ import android.os.HandlerThread
 import android.os.Looper
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -1249,6 +1250,43 @@ class AlarmGenerationTest {
         assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackValidClear.await())
         assertNull(pm.getCurrentSettings().activeAlarmId)
         assertNull(pm.getCachedSettings().activeAlarmId)
+    }
+
+    @Test
+    fun parallelUpdateAndActiveAlarmWriterUpdateMaintainCacheIntegrity() = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val pm = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val snapshotA = AlarmService.Companion.ActiveAlarmSnapshot(
+            alarmId = genA.alarmId,
+            scheduledAt = genA.scheduledAt,
+            fireId = genA.fireId,
+            firedAt = 1000L,
+            state = "FIRING"
+        )
+
+        // Parallel execution: normal preference update and active alarm enqueue
+        val ack = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        val job1 = launch(kotlinx.coroutines.Dispatchers.IO) {
+            pm.update { it.copy(is24HourFormat = true) }
+        }
+        val job2 = launch(kotlinx.coroutines.Dispatchers.IO) {
+            pm.enqueueActiveAlarmUpdate(snapshotA, genA, ack)
+        }
+
+        job1.join()
+        job2.join()
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ack.await())
+
+        // Verify DataStore and in-memory cache consistency
+        val diskSettings = pm.getCurrentSettings()
+        val cachedSettings = pm.getCachedSettings()
+
+        assertEquals(diskSettings.is24HourFormat, cachedSettings.is24HourFormat)
+        assertEquals(diskSettings.activeAlarmId, cachedSettings.activeAlarmId)
+        assertEquals(42L, cachedSettings.activeAlarmId)
+        assertTrue(cachedSettings.is24HourFormat)
     }
 
     @Test

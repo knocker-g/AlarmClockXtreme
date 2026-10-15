@@ -33,6 +33,7 @@ import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.R
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmEvent
 import com.sysadmindoc.alarmclock.data.model.Alarm
+import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import com.sysadmindoc.alarmclock.data.remote.WeatherCodes
 import com.sysadmindoc.alarmclock.data.repository.AlarmEventRepository
 import com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository
@@ -1098,7 +1099,8 @@ class AlarmService : Service() {
 
     private fun updateActiveAlarm(snapshot: ActiveAlarmSnapshot?, targetGen: AlarmGeneration? = null) {
         activeAlarm.set(snapshot)
-        val enqueued = preferencesManager.enqueueActiveAlarmUpdate(snapshot, targetGen)
+        val ack = CompletableDeferred<PreferencesManager.ActiveAlarmUpdateResult>()
+        val enqueued = preferencesManager.enqueueActiveAlarmUpdate(snapshot, targetGen, ack)
         if (!enqueued) {
             Log.w(TAG, "Failed to enqueue active alarm update to PreferencesManager")
             recordIncidentAsync(
@@ -1110,6 +1112,26 @@ class AlarmService : Service() {
                 fireId = snapshot?.fireId ?: targetGen?.fireId ?: "",
                 scheduledAt = snapshot?.scheduledAt ?: targetGen?.scheduledAt ?: 0L
             )
+        } else {
+            serviceScope.launch(Dispatchers.IO) {
+                try {
+                    val result = ack.await()
+                    if (result == PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT) {
+                        Log.w(TAG, "DataStore commit failed for active alarm update")
+                        recordIncidentAsync(
+                            type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                            status = AlarmIncidentEvent.STATUS_FAILED,
+                            reasonCode = "ACTIVE_ALARM_PERSISTENCE_COMMIT_FAILED",
+                            source = "AlarmService",
+                            alarmId = snapshot?.alarmId ?: targetGen?.alarmId ?: -1L,
+                            fireId = snapshot?.fireId ?: targetGen?.fireId ?: "",
+                            scheduledAt = snapshot?.scheduledAt ?: targetGen?.scheduledAt ?: 0L
+                        )
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error awaiting active alarm update commit ack", e)
+                }
+            }
         }
     }
 
