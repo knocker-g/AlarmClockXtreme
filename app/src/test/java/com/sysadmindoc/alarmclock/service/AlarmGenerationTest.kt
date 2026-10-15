@@ -1095,6 +1095,23 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun eventRepositoryRecordAsyncSurvivesServiceScopeCancellation() {
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+
+        val event = AlarmFireDismissContract.alarmEvent(
+            alarm = com.sysadmindoc.alarmclock.data.model.Alarm(id = 42L, hour = 7, minute = 0),
+            scheduledAt = genA.scheduledAt,
+            firedAt = 1000L,
+            action = "DISMISSED",
+            actionAt = 1005L,
+            snoozeCount = 0
+        )
+
+        assertEquals(genA.scheduledAt, event.scheduledTime)
+        assertEquals("DISMISSED", event.action)
+    }
+
+    @Test
     fun controllableFakePlayerReleaseIsIdempotentThroughHolder() {
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")

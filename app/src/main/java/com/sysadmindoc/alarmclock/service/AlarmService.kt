@@ -2812,13 +2812,7 @@ class AlarmService : Service() {
             challengeSolveTimeMs = challengeSolveTimeMs,
             snoozeCount = snoozeCount
         )
-        serviceScope.launch(Dispatchers.IO) {
-            runCatching {
-                eventRepository.record(event)
-            }.onFailure { error ->
-                Log.w(TAG, "Failed to record AlarmEvent async", error)
-            }
-        }
+        eventRepository.recordAsync(event)
     }
 
     private suspend fun recordEvent(
