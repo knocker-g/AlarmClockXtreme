@@ -1135,30 +1135,55 @@ class AlarmGenerationTest {
     }
 
     @Test
-    fun fullGenerationConditionalClearPreventsStaleClearFromWipingNewerActiveGeneration() {
+    fun failClosedConditionalClearRejectsNullOrMismatchedTargetGen() {
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val genB = AlarmGeneration(99L, 2000L, "fire-99-b")
 
-        // Helper matching production PreferencesManager conditional clear logic
+        // Helper matching production PreferencesManager fail-closed conditional clear logic
         fun shouldExecuteClear(storedGen: AlarmGeneration?, targetClearGen: AlarmGeneration?): Boolean {
-            if (targetClearGen != null && storedGen != null) {
-                if (!storedGen.matches(targetClearGen)) {
+            val targetGen = targetClearGen ?: return false // Fail closed if null!
+            if (storedGen != null && storedGen.alarmId > 0L) {
+                if (!storedGen.matches(targetGen)) {
                     return false // Stale clear for old genA when stored is genB -> REJECTED!
                 }
             }
             return true
         }
 
-        // 1. DataStore holds active genB
         val storedGen = genB
 
-        // 2. Stale clear for genA arrives -> REJECTED!
-        val canClearOldGenA = shouldExecuteClear(storedGen = storedGen, targetClearGen = genA)
-        assertFalse(canClearOldGenA)
+        // 1. Null targetGen clear -> REJECTED (fail closed)
+        assertFalse(shouldExecuteClear(storedGen = storedGen, targetClearGen = null))
 
-        // 3. Valid clear for active genB arrives -> ACCEPTED!
-        val canClearActiveGenB = shouldExecuteClear(storedGen = storedGen, targetClearGen = genB)
-        assertTrue(canClearActiveGenB)
+        // 2. Mismatched targetGen clear (genA when stored is genB) -> REJECTED
+        assertFalse(shouldExecuteClear(storedGen = storedGen, targetClearGen = genA))
+
+        // 3. Matching targetGen clear (genB when stored is genB) -> ACCEPTED
+        assertTrue(shouldExecuteClear(storedGen = storedGen, targetClearGen = genB))
+    }
+
+    @Test
+    fun staleSnapshotWriteRejectsOverwriteOfNewerActiveGeneration() {
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val genB = AlarmGeneration(99L, 2000L, "fire-99-b")
+
+        // Helper matching production PreferencesManager stale snapshot overwrite protection
+        fun shouldExecuteSnapshotUpdate(storedGen: AlarmGeneration?, newGen: AlarmGeneration): Boolean {
+            if (storedGen != null && storedGen.alarmId > 0L && storedGen.alarmId != newGen.alarmId) {
+                if (newGen.scheduledAt < storedGen.scheduledAt) {
+                    return false // Stale snapshot from older scheduled time -> REJECTED!
+                }
+            }
+            return true
+        }
+
+        val storedGen = genB
+
+        // Stale snapshot write for older genA -> REJECTED
+        assertFalse(shouldExecuteSnapshotUpdate(storedGen = storedGen, newGen = genA))
+
+        // Valid snapshot write for same or newer genB -> ACCEPTED
+        assertTrue(shouldExecuteSnapshotUpdate(storedGen = storedGen, newGen = genB))
     }
 
     @Test

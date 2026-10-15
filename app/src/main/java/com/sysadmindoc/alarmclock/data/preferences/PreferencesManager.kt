@@ -480,26 +480,50 @@ class PreferencesManager @Inject constructor(
     internal fun enqueueActiveAlarmUpdate(
         snapshot: ActiveAlarmSnapshot?,
         targetGen: AlarmGeneration? = null
-    ) {
-        activeAlarmChannel.trySend(ActiveAlarmUpdateRequest(snapshot, targetGen))
+    ): Boolean {
+        val result = activeAlarmChannel.trySend(ActiveAlarmUpdateRequest(snapshot, targetGen))
+        if (result.isFailure) {
+            Log.w("PreferencesManager", "Failed to enqueue active alarm update request (channel closed or full)")
+            return false
+        }
+        return true
     }
 
     private suspend fun updateActiveAlarmInternal(request: ActiveAlarmUpdateRequest) {
         context.dataStore.edit { prefs ->
             val old = prefs.toSettings().sanitized()
 
-            // Full Generation Conditional Clear Guard:
+            // Fail-Closed Conditional Clear & Stale Overwrite Protection:
             if (request.snapshot == null) {
-                val targetGen = request.targetGen
+                // Fail-Closed: Clear request MUST specify targetGen to establish ownership
+                val targetGen = request.targetGen ?: return@edit
                 val storedId = old.activeAlarmId
                 val storedScheduledAt = old.activeAlarmScheduledAt
                 val storedFireId = old.activeAlarmFireId
 
-                if (targetGen != null && storedId != null && storedId > 0L) {
+                if (storedId != null && storedId > 0L) {
                     val storedGen = AlarmGeneration(storedId, storedScheduledAt, storedFireId)
                     if (!storedGen.matches(targetGen)) {
-                        // DataStore currently holds a DIFFERENT active generation (e.g. new START genB has already landed)!
-                        // Do NOT clear DataStore! Safely ignore stale clear request for old targetGen!
+                        // DataStore holds a DIFFERENT active generation (e.g. new START genB already landed)!
+                        // Do NOT clear DataStore! Safely ignore stale clear for old targetGen!
+                        return@edit
+                    }
+                }
+            } else {
+                // Non-null snapshot update: prevent stale snapshot from overwriting newer active generation
+                val newGen = request.targetGen ?: AlarmGeneration(
+                    request.snapshot.alarmId,
+                    request.snapshot.scheduledAt,
+                    request.snapshot.fireId
+                )
+                val storedId = old.activeAlarmId
+                val storedScheduledAt = old.activeAlarmScheduledAt
+                val storedFireId = old.activeAlarmFireId
+
+                if (storedId != null && storedId > 0L && storedId != newGen.alarmId) {
+                    val storedGen = AlarmGeneration(storedId, storedScheduledAt, storedFireId)
+                    if (newGen.scheduledAt < storedGen.scheduledAt) {
+                        // Stale snapshot from older scheduled time attempting to overwrite newer active alarm -> REJECT!
                         return@edit
                     }
                 }

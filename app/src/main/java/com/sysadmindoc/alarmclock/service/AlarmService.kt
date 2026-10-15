@@ -646,7 +646,7 @@ class AlarmService : Service() {
             val current = currentGeneration()
             if (current != null && current.matches(startGen)) {
                 clearAlarmRuntimeState(alarmId)
-                updateActiveAlarm(null)
+                updateActiveAlarm(null, targetGen = startGen)
                 releaseAlarmMediaSession()
                 stopSelf()
             }
@@ -668,7 +668,7 @@ class AlarmService : Service() {
             val current = currentGeneration()
             if (current != null && current.matches(startGen)) {
                 clearAlarmRuntimeState(alarmId)
-                updateActiveAlarm(null)
+                updateActiveAlarm(null, targetGen = startGen)
                 releaseAlarmMediaSession()
                 stopSelf()
             }
