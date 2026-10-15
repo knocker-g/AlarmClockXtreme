@@ -1067,6 +1067,34 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun atomicFinalizationExecutesForMatchingOwnerAndAbortsForMismatchedOwner() {
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val genB = AlarmGeneration(42L, 2000L, "fire-42-b")
+
+        val auth = AlarmPlaybackAttemptAuthority()
+
+        // 1. Session genA active
+        val tokenA = auth.mintNextToken(genA)
+        assertNotNull(tokenA)
+
+        // Matching owner genA: finalization authorized
+        val isOwnerA = auth.activeAttemptToken()?.generation?.matches(genA) == true
+        assertTrue(isOwnerA)
+
+        // 2. Preemption: Session genB becomes active
+        val tokenB = auth.mintNextToken(genB)
+        assertNotNull(tokenB)
+
+        // Stale action genA attempts finalization: owner check detects mismatch -> ABORTED!
+        val isStaleOwnerA = auth.activeAttemptToken()?.generation?.matches(genA) == true
+        assertFalse(isStaleOwnerA)
+
+        // Active session genB remains untouched
+        val isOwnerB = auth.activeAttemptToken()?.generation?.matches(genB) == true
+        assertTrue(isOwnerB)
+    }
+
+    @Test
     fun controllableFakePlayerReleaseIsIdempotentThroughHolder() {
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
