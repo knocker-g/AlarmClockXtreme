@@ -1,5 +1,10 @@
 package com.sysadmindoc.alarmclock.service
 
+internal data class PlaybackAttemptToken(
+    val generation: AlarmGeneration,
+    val attemptSequence: Long
+)
+
 internal object AlarmServiceCallbackPolicy {
 
     /**
@@ -8,17 +13,22 @@ internal object AlarmServiceCallbackPolicy {
      * is authorized to execute non-local side effects on current service state.
      *
      * Requires:
-     * 1. Current firing generation matches callback generation 100%.
-     * 2. If a callbackPlayback reference is provided, the current service alarmPlayback
-     *    must match that exact player instance. Null currentPlayback is NOT accepted.
+     * 1. Current firing generation matches callback token generation 100%.
+     * 2. activeToken matches callback attempt token.
+     * 3. If a callbackPlayback reference is provided, currentPlayback must match
+     *    that exact player instance.
      */
     fun shouldProcessCallback(
         currentGen: AlarmGeneration?,
-        callbackGen: AlarmGeneration,
+        activeToken: PlaybackAttemptToken?,
+        callbackToken: PlaybackAttemptToken,
         currentPlayback: AlarmPlaybackPlayer? = null,
         callbackPlayback: AlarmPlaybackPlayer? = null
     ): Boolean {
-        if (currentGen == null || !currentGen.matches(callbackGen)) {
+        if (currentGen == null || !currentGen.matches(callbackToken.generation)) {
+            return false
+        }
+        if (activeToken != callbackToken) {
             return false
         }
         if (callbackPlayback != null && currentPlayback !== callbackPlayback) {
@@ -28,39 +38,64 @@ internal object AlarmServiceCallbackPolicy {
     }
 
     /**
-     * Determines whether a stale callback or failure handler is authorized
-     * to clean up or release the global `alarmPlayback` variable.
-     *
-     * A callback or exception handler may clear `alarmPlayback = null` ONLY IF
-     * current generation still matches AND `alarmPlayback` holds that exact non-null player instance.
+     * Claims fallback handoff authority upon player failure.
+     * Succeeds ONLY IF current generation matches failingToken.generation AND activeToken == failingToken.
+     * Returns the one-shot claim token if successful, or null if denied.
      */
-    fun shouldReleaseGlobalPlayback(
+    fun claimFallbackHandoff(
         currentGen: AlarmGeneration?,
-        callbackGen: AlarmGeneration,
-        currentPlayback: AlarmPlaybackPlayer?,
-        targetPlayback: AlarmPlaybackPlayer?
+        activeToken: PlaybackAttemptToken?,
+        currentClaimToken: PlaybackAttemptToken?,
+        failingToken: PlaybackAttemptToken
+    ): PlaybackAttemptToken? {
+        if (currentGen == null || !currentGen.matches(failingToken.generation)) {
+            return null
+        }
+        if (activeToken != failingToken) {
+            return null
+        }
+        if (currentClaimToken != null) {
+            return null // Already claimed
+        }
+        return failingToken
+    }
+
+    /**
+     * Validates whether a fallback execution is authorized to proceed.
+     * Requires:
+     * 1. Current generation matches handoffToken.generation.
+     * 2. activeClaimToken matches handoffToken.
+     */
+    fun shouldExecuteFallback(
+        currentGen: AlarmGeneration?,
+        activeClaimToken: PlaybackAttemptToken?,
+        handoffToken: PlaybackAttemptToken
     ): Boolean {
-        if (currentGen == null || !currentGen.matches(callbackGen)) {
+        if (currentGen == null || !currentGen.matches(handoffToken.generation)) {
             return false
         }
-        if (targetPlayback == null || currentPlayback !== targetPlayback) {
+        if (activeClaimToken != handoffToken) {
             return false
         }
         return true
     }
 
     /**
-     * Determines whether a watchdog job or failure fallback is authorized
-     * to cancel the shared playback watchdog or trigger default fallback audio.
+     * Determines whether a stale callback or failure handler is authorized
+     * to clean up or release the global `alarmPlayback` variable.
      */
-    fun shouldCancelWatchdog(
+    fun shouldReleaseGlobalPlayback(
         currentGen: AlarmGeneration?,
-        watchdogGen: AlarmGeneration,
-        verifiedHandoff: Boolean = false
+        callbackToken: PlaybackAttemptToken,
+        currentPlayback: AlarmPlaybackPlayer?,
+        targetPlayback: AlarmPlaybackPlayer?
     ): Boolean {
-        if (currentGen == null || !currentGen.matches(watchdogGen)) {
+        if (currentGen == null || !currentGen.matches(callbackToken.generation)) {
             return false
         }
-        return verifiedHandoff || currentGen.isValid
+        if (targetPlayback == null || currentPlayback !== targetPlayback) {
+            return false
+        }
+        return true
     }
 }
