@@ -512,6 +512,7 @@ class PreferencesManager @Inject constructor(
     }
 
     private suspend fun updateActiveAlarmInternal(request: ActiveAlarmUpdateRequest) {
+        var committedSettings: AppSettings? = null
         context.dataStore.edit { prefs ->
             val old = prefs.toSettings().sanitized()
 
@@ -536,16 +537,23 @@ class PreferencesManager @Inject constructor(
                 activeAlarmRefireAt = snapshot?.refireAt ?: 0L
             )
             prefs.applySettings(newSettings)
+            committedSettings = newSettings
+        }
+        committedSettings?.let { newSettings ->
             cachedSettings = newSettings
             hasLoadedSettings = true
         }
     }
 
     suspend fun update(transform: (AppSettings) -> AppSettings) {
+        var committedSettings: AppSettings? = null
         context.dataStore.edit { prefs ->
             val old = prefs.toSettings().sanitized()
             val new = transform(old).sanitized()
             prefs.applySettings(new)
+            committedSettings = new
+        }
+        committedSettings?.let { new ->
             cachedSettings = new
             hasLoadedSettings = true
         }
