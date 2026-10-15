@@ -339,7 +339,6 @@ class AlarmGenerationTest {
 
         // Step 3: Attempt side effects under fallbackToken -> ALL ATOMICALLY REJECTED
         var playerPublished = false
-        val fakePlayer = FakeAlarmPlaybackPlayer()
         val publishSuccess = auth.publishPlaybackIfActive(genA, fallbackToken!!) {
             playerPublished = true
         }
@@ -365,6 +364,29 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun attemptBoundRoutingTokenIsClearedOnNewAttempt() {
+        // Required Test: Attemptに紐付いたRouting状態と新Attemptでのリセット
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
+
+        val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
+        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
+        assertNotNull(fallbackToken)
+
+        // Set routing attempt token for fallback
+        assertTrue(auth.setRoutingAttemptToken(fallbackToken!!))
+        assertTrue(auth.isRoutingActive(fallbackToken))
+
+        // New attempt arrives
+        val tokenB = auth.mintNextToken(genA)
+
+        // Routing is no longer active for fallbackToken or tokenB
+        assertFalse(auth.isRoutingActive(fallbackToken))
+        assertFalse(auth.isRoutingActive(tokenB))
+    }
+
+    @Test
     fun postTokenActivationSupersessionRejectsOldWatchdogCancellationAndPreservesNewAttemptWatchdog() {
         // Required Test 3 & 4: Token発行後、Watchdogキャンセル・音量変更前に別Attemptへ切替 → 新Watchdog・音量維持
         val auth = AlarmPlaybackAttemptAuthority()
@@ -376,7 +398,7 @@ class AlarmGenerationTest {
         assertNotNull(fallbackToken)
 
         // New attempt tokenB arrives and sets new watchdog / volume
-        val tokenB = auth.mintNextToken(genA)
+        auth.mintNextToken(genA)
 
         // Old fallbackToken attempts to cancel watchdog -> REJECTED, new watchdog preserved
         var cancelledWatchdog = false
@@ -403,6 +425,8 @@ class AlarmGenerationTest {
         val tokenA = auth.mintNextToken(genA)
 
         val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
+        assertNotNull(handoff)
+
         val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
         assertNotNull(fallbackToken)
 

@@ -18,6 +18,7 @@ internal class AlarmPlaybackAttemptAuthority {
     private var sequenceCounter: Long = 0L
     private var activeAttemptToken: PlaybackAttemptToken? = null
     private var activeFallbackClaimToken: PlaybackAttemptToken? = null
+    private var activeRoutingAttemptToken: PlaybackAttemptToken? = null
 
     /**
      * Resets authority state for testing or instance initialization.
@@ -27,11 +28,12 @@ internal class AlarmPlaybackAttemptAuthority {
         sequenceCounter = 0L
         activeAttemptToken = null
         activeFallbackClaimToken = null
+        activeRoutingAttemptToken = null
     }
 
     /**
      * Mints the next attempt token and sets it as the currently active attempt.
-     * Atomically clears any pending fallback claim.
+     * Atomically clears any pending fallback claim and routing token.
      */
     @Synchronized
     fun mintNextToken(generation: AlarmGeneration): PlaybackAttemptToken {
@@ -39,6 +41,7 @@ internal class AlarmPlaybackAttemptAuthority {
         val newToken = PlaybackAttemptToken(generation, sequenceCounter, authorityId)
         activeAttemptToken = newToken
         activeFallbackClaimToken = null
+        activeRoutingAttemptToken = null
         return newToken
     }
 
@@ -49,6 +52,7 @@ internal class AlarmPlaybackAttemptAuthority {
     fun invalidateTokens() {
         activeAttemptToken = null
         activeFallbackClaimToken = null
+        activeRoutingAttemptToken = null
     }
 
     /**
@@ -62,6 +66,24 @@ internal class AlarmPlaybackAttemptAuthority {
      */
     @Synchronized
     fun activeFallbackClaimToken(): PlaybackAttemptToken? = activeFallbackClaimToken
+
+    /**
+     * Binds speaker routing override to an attempt token.
+     */
+    @Synchronized
+    fun setRoutingAttemptToken(token: PlaybackAttemptToken): Boolean {
+        if (activeAttemptToken != token) return false
+        activeRoutingAttemptToken = token
+        return true
+    }
+
+    /**
+     * Checks if speaker routing override is active for a given attempt token.
+     */
+    @Synchronized
+    fun isRoutingActive(token: PlaybackAttemptToken?): Boolean {
+        return token != null && activeAttemptToken == token && activeRoutingAttemptToken == token
+    }
 
     /**
      * Determines whether an asynchronous callback (Media3 onReady/onEnded/onError,

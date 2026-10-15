@@ -1596,7 +1596,7 @@ class AlarmService : Service() {
             cancelPlaybackWatchdog()
         }
 
-        forceBuiltInSpeakerForFallback = true
+        playbackAuthority.setRoutingAttemptToken(fallbackToken)
         val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager
         if (audioManager != null) {
             runCatching {
@@ -1741,7 +1741,8 @@ class AlarmService : Service() {
      * system-managed hearing-aid / BLE devices.
      */
     private fun forcedSpeakerDevice(): android.media.AudioDeviceInfo? {
-        val usePhoneSpeakers = forceBuiltInSpeakerForFallback ||
+        val attemptToken = playbackAuthority.activeAttemptToken()
+        val usePhoneSpeakers = playbackAuthority.isRoutingActive(attemptToken) ||
             preferencesManager.getCachedSettings().usePhoneSpeakers
         if (!usePhoneSpeakers) return null
         val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager ?: return null
