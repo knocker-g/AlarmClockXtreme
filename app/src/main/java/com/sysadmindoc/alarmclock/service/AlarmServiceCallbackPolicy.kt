@@ -9,8 +9,8 @@ internal object AlarmServiceCallbackPolicy {
      *
      * Requires:
      * 1. Current firing generation matches callback generation 100%.
-     * 2. If a playback player reference is associated with the callback,
-     *    the current service alarmPlayback must match that exact player instance (or be null during fallback).
+     * 2. If a callbackPlayback reference is provided, the current service alarmPlayback
+     *    must match that exact player instance. Null currentPlayback is NOT accepted.
      */
     fun shouldProcessCallback(
         currentGen: AlarmGeneration?,
@@ -21,7 +21,7 @@ internal object AlarmServiceCallbackPolicy {
         if (currentGen == null || !currentGen.matches(callbackGen)) {
             return false
         }
-        if (callbackPlayback != null && currentPlayback != null && currentPlayback !== callbackPlayback) {
+        if (callbackPlayback != null && currentPlayback !== callbackPlayback) {
             return false
         }
         return true
@@ -33,8 +33,6 @@ internal object AlarmServiceCallbackPolicy {
      *
      * A callback or exception handler may clear `alarmPlayback = null` ONLY IF
      * current generation still matches AND `alarmPlayback` holds that exact non-null player instance.
-     * If targetPlayback is null (e.g. player creation threw before assignment),
-     * global `alarmPlayback` must NOT be released.
      */
     fun shouldReleaseGlobalPlayback(
         currentGen: AlarmGeneration?,
@@ -54,24 +52,15 @@ internal object AlarmServiceCallbackPolicy {
     /**
      * Determines whether a watchdog job or failure fallback is authorized
      * to cancel the shared playback watchdog or trigger default fallback audio.
-     *
-     * Requires:
-     * 1. Current generation matches watchdog generation 100%.
-     * 2. If a target player reference is provided and currentPlayback is non-null,
-     *    currentPlayback must match that exact target player instance.
      */
     fun shouldCancelWatchdog(
         currentGen: AlarmGeneration?,
         watchdogGen: AlarmGeneration,
-        currentPlayback: AlarmPlaybackPlayer? = null,
-        targetPlayback: AlarmPlaybackPlayer? = null
+        verifiedHandoff: Boolean = false
     ): Boolean {
         if (currentGen == null || !currentGen.matches(watchdogGen)) {
             return false
         }
-        if (targetPlayback != null && currentPlayback != null && currentPlayback !== targetPlayback) {
-            return false
-        }
-        return true
+        return verifiedHandoff || currentGen.isValid
     }
 }
