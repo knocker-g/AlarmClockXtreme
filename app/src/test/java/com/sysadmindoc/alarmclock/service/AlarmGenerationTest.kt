@@ -6,7 +6,6 @@ import android.os.HandlerThread
 import android.os.Looper
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -1224,49 +1223,30 @@ class AlarmGenerationTest {
         )
 
         // 1. Enqueue START genA -> Enqueued & committed to DataStore
-        assertTrue(pm.enqueueActiveAlarmUpdate(snapshotA, genA))
-
-        // Wait for DataStore pipeline commit and verify persisted disk value directly via pm.getCurrentSettings()
-        kotlinx.coroutines.withTimeoutOrNull(2000L) {
-            while (pm.getCurrentSettings().activeAlarmId != 42L) {
-                delay(10L)
-            }
-        }
+        val ackA = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        assertTrue(pm.enqueueActiveAlarmUpdate(snapshotA, genA, ackA))
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackA.await())
         assertEquals(42L, pm.getCurrentSettings().activeAlarmId)
-        assertEquals(42L, pm.getCachedSettings().activeAlarmId) // Cache synced with DataStore disk!
+        assertEquals(42L, pm.getCachedSettings().activeAlarmId)
 
-        // 2. Enqueue START genB -> Enqueued & committed (overwrites genA)
-        assertTrue(pm.enqueueActiveAlarmUpdate(snapshotB, genB))
-
-        kotlinx.coroutines.withTimeoutOrNull(2000L) {
-            while (pm.getCurrentSettings().activeAlarmId != 99L) {
-                delay(10L)
-            }
-        }
-        assertEquals(99L, pm.getCurrentSettings().activeAlarmId)
-        assertEquals(99L, pm.getCachedSettings().activeAlarmId) // Cache synced with DataStore disk!
-
-        // 3. Stale clear for old genA -> Enqueued but REJECTED by conditional clear guard
-        assertTrue(pm.enqueueActiveAlarmUpdate(null, targetGen = genA))
-
-        // Observe DataStore directly via getCurrentSettings() without fixed delay
-        kotlinx.coroutines.withTimeoutOrNull(500L) {
-            while (pm.getCurrentSettings().activeAlarmId == 99L) {
-                delay(10L)
-            }
-        }
-        // DataStore disk AND in-memory cache MUST still hold active genB (99L)!
+        // 2. Enqueue START genB -> Enqueued & committed
+        val ackB = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        assertTrue(pm.enqueueActiveAlarmUpdate(snapshotB, genB, ackB))
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackB.await())
         assertEquals(99L, pm.getCurrentSettings().activeAlarmId)
         assertEquals(99L, pm.getCachedSettings().activeAlarmId)
 
-        // 4. Valid clear for active genB -> ACCEPTED & committed
-        assertTrue(pm.enqueueActiveAlarmUpdate(null, targetGen = genB))
+        // 3. Stale clear for old genA -> Enqueued & REJECTED_STALE by pipeline consumer
+        val ackStaleClear = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        assertTrue(pm.enqueueActiveAlarmUpdate(null, targetGen = genA, ack = ackStaleClear))
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.REJECTED_STALE, ackStaleClear.await())
+        assertEquals(99L, pm.getCurrentSettings().activeAlarmId)
+        assertEquals(99L, pm.getCachedSettings().activeAlarmId)
 
-        kotlinx.coroutines.withTimeoutOrNull(2000L) {
-            while (pm.getCurrentSettings().activeAlarmId != null) {
-                delay(10L)
-            }
-        }
+        // 4. Valid clear for active genB -> Enqueued & COMMITTED
+        val ackValidClear = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        assertTrue(pm.enqueueActiveAlarmUpdate(null, targetGen = genB, ack = ackValidClear))
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackValidClear.await())
         assertNull(pm.getCurrentSettings().activeAlarmId)
         assertNull(pm.getCachedSettings().activeAlarmId)
     }

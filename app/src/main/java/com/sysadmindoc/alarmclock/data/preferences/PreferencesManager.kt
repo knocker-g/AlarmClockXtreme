@@ -22,6 +22,7 @@ import com.sysadmindoc.alarmclock.domain.LongPressThreshold
 import com.sysadmindoc.alarmclock.service.AlarmGeneration
 import com.sysadmindoc.alarmclock.service.AlarmService.Companion.ActiveAlarmSnapshot
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -472,18 +473,27 @@ class PreferencesManager @Inject constructor(
         }
     }
 
+    internal enum class ActiveAlarmUpdateResult {
+        COMMITTED,
+        REJECTED_STALE,
+        FAILED_COMMIT
+    }
+
     internal data class ActiveAlarmUpdateRequest(
         val snapshot: ActiveAlarmSnapshot?,
-        val targetGen: AlarmGeneration? = null
+        val targetGen: AlarmGeneration? = null,
+        val ack: CompletableDeferred<ActiveAlarmUpdateResult>? = null
     )
 
     internal fun enqueueActiveAlarmUpdate(
         snapshot: ActiveAlarmSnapshot?,
-        targetGen: AlarmGeneration? = null
+        targetGen: AlarmGeneration? = null,
+        ack: CompletableDeferred<ActiveAlarmUpdateResult>? = null
     ): Boolean {
-        val result = activeAlarmChannel.trySend(ActiveAlarmUpdateRequest(snapshot, targetGen))
+        val result = activeAlarmChannel.trySend(ActiveAlarmUpdateRequest(snapshot, targetGen, ack))
         if (result.isFailure) {
             Log.w("PreferencesManager", "Failed to enqueue active alarm update request (channel closed or full)")
+            ack?.complete(ActiveAlarmUpdateResult.FAILED_COMMIT)
             return false
         }
         return true
@@ -512,36 +522,44 @@ class PreferencesManager @Inject constructor(
     }
 
     private suspend fun updateActiveAlarmInternal(request: ActiveAlarmUpdateRequest) {
-        var committedSettings: AppSettings? = null
-        context.dataStore.edit { prefs ->
-            val old = prefs.toSettings().sanitized()
+        try {
+            var updateResult = ActiveAlarmUpdateResult.COMMITTED
+            var committedSettings: AppSettings? = null
+            context.dataStore.edit { prefs ->
+                val old = prefs.toSettings().sanitized()
 
-            if (!ActiveAlarmWriterPolicy.shouldExecuteUpdate(
-                    storedId = old.activeAlarmId,
-                    storedScheduledAt = old.activeAlarmScheduledAt,
-                    storedFireId = old.activeAlarmFireId,
-                    requestSnapshot = request.snapshot,
-                    targetGen = request.targetGen
+                if (!ActiveAlarmWriterPolicy.shouldExecuteUpdate(
+                        storedId = old.activeAlarmId,
+                        storedScheduledAt = old.activeAlarmScheduledAt,
+                        storedFireId = old.activeAlarmFireId,
+                        requestSnapshot = request.snapshot,
+                        targetGen = request.targetGen
+                    )
+                ) {
+                    updateResult = ActiveAlarmUpdateResult.REJECTED_STALE
+                    return@edit
+                }
+
+                val snapshot = request.snapshot
+                val newSettings = old.copy(
+                    activeAlarmId = snapshot?.alarmId,
+                    activeAlarmScheduledAt = snapshot?.scheduledAt ?: 0L,
+                    activeAlarmFireId = snapshot?.fireId ?: "",
+                    activeAlarmFiredAt = snapshot?.firedAt ?: 0L,
+                    activeAlarmState = snapshot?.state ?: "",
+                    activeAlarmRefireAt = snapshot?.refireAt ?: 0L
                 )
-            ) {
-                return@edit
+                prefs.applySettings(newSettings)
+                committedSettings = newSettings
             }
-
-            val snapshot = request.snapshot
-            val newSettings = old.copy(
-                activeAlarmId = snapshot?.alarmId,
-                activeAlarmScheduledAt = snapshot?.scheduledAt ?: 0L,
-                activeAlarmFireId = snapshot?.fireId ?: "",
-                activeAlarmFiredAt = snapshot?.firedAt ?: 0L,
-                activeAlarmState = snapshot?.state ?: "",
-                activeAlarmRefireAt = snapshot?.refireAt ?: 0L
-            )
-            prefs.applySettings(newSettings)
-            committedSettings = newSettings
-        }
-        committedSettings?.let { newSettings ->
-            cachedSettings = newSettings
-            hasLoadedSettings = true
+            committedSettings?.let { newSettings ->
+                cachedSettings = newSettings
+                hasLoadedSettings = true
+            }
+            request.ack?.complete(updateResult)
+        } catch (e: Exception) {
+            Log.w("PreferencesManager", "Failed to persist active alarm update", e)
+            request.ack?.complete(ActiveAlarmUpdateResult.FAILED_COMMIT)
         }
     }
 
