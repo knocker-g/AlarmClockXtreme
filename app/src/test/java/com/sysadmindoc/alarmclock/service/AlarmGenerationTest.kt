@@ -441,6 +441,56 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun asyncPreparationPreemptionRejectsPlayerPublicationAndStart() {
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+
+        // 1. Initial attempt tokenA issued
+        val tokenA = auth.mintNextToken(genA)
+
+        // Player A created and starts async prepare
+        val playerA = FakeAlarmPlaybackPlayer()
+
+        // 2. Preemption (Dismiss, Snooze, or New START tokenB) occurs BEFORE player A onPrepared fires
+        val tokenB = auth.mintNextToken(genA)
+
+        // 3. Player A onPrepared fires on Main Looper
+        var publishedPlayer: AlarmPlaybackPlayer? = null
+        val publishResult = auth.publishPlaybackIfActive(genA, tokenA) {
+            publishedPlayer = playerA
+        }
+
+        // 4. Publication and start REJECTED
+        assertFalse(publishResult)
+        assertNull(publishedPlayer)
+        assertEquals(tokenB, auth.activeAttemptToken())
+    }
+
+    @Test
+    fun asyncDefaultFallbackPreparationSucceedsWhenActive() {
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
+
+        // Failure claims handoff & activates fallback token
+        val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
+        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
+        assertNotNull(fallbackToken)
+
+        // Fallback player prepares asynchronously and fires onPrepared
+        val fallbackPlayer = FakeAlarmPlaybackPlayer()
+        var publishedPlayer: AlarmPlaybackPlayer? = null
+
+        val publishResult = auth.publishPlaybackIfActive(genA, fallbackToken!!) {
+            publishedPlayer = fallbackPlayer
+        }
+
+        assertTrue(publishResult)
+        assertEquals(fallbackPlayer, publishedPlayer)
+        assertEquals(fallbackToken, auth.activeAttemptToken())
+    }
+
+    @Test
     fun newAttemptBeforeCommitRejectsFallbackClaimAndConsume() {
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
