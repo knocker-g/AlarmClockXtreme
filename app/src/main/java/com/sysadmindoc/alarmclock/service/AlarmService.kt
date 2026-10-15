@@ -211,7 +211,6 @@ class AlarmService : Service() {
     private var currentSnoozeCount: Int = 0
     private var currentWakeConfirmRefireCount: Int = 0
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val activeAlarmPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val preemptionPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var wakeLock: PowerManager.WakeLock? = null
     // v1.9.1: AtomicBoolean (was @Volatile Boolean). Multiple coroutines on
@@ -413,7 +412,7 @@ class AlarmService : Service() {
                             fireId = fireId,
                             firedAt = alarmFiredAt,
                             state = "FIRING"
-                        ))
+                        ), targetGen = startGen)
                         currentSnoozeCount = readPersistedSnoozeCount(alarmId)
                         currentWakeConfirmRefireCount = intent.getIntExtra(
                             EXTRA_WAKE_CONFIRM_REFIRE_COUNT, 0
@@ -839,7 +838,7 @@ class AlarmService : Service() {
                     clearAlarmRuntimeState(alarmId)
                     currentSnoozeCount = 0
                     currentAlarmId = -1
-                    updateActiveAlarm(null)
+                    updateActiveAlarm(null, targetGen = startGen)
                     alarmScheduler.handleAlarmFired(alarmId, startGen.scheduledAt)
                     stopAlarmPlayback(startGen)
                     if (isForeground.compareAndSet(true, false)) {
@@ -1097,20 +1096,9 @@ class AlarmService : Service() {
         }
     }
 
-    private fun updateActiveAlarm(snapshot: ActiveAlarmSnapshot?) {
+    private fun updateActiveAlarm(snapshot: ActiveAlarmSnapshot?, targetGen: AlarmGeneration? = null) {
         activeAlarm.set(snapshot)
-        activeAlarmPersistenceScope.launch {
-            preferencesManager.update {
-                it.copy(
-                    activeAlarmId = snapshot?.alarmId,
-                    activeAlarmScheduledAt = snapshot?.scheduledAt ?: 0L,
-                    activeAlarmFireId = snapshot?.fireId ?: "",
-                    activeAlarmFiredAt = snapshot?.firedAt ?: 0L,
-                    activeAlarmState = snapshot?.state ?: "",
-                    activeAlarmRefireAt = snapshot?.refireAt ?: 0L
-                )
-            }
-        }
+        preferencesManager.enqueueActiveAlarmUpdate(snapshot, targetGen)
     }
 
     private fun restoreBackupSoundVolume(targetGen: AlarmGeneration? = null) {
@@ -2380,7 +2368,7 @@ class AlarmService : Service() {
                     clearAlarmRuntimeState(alarmId)
                     currentSnoozeCount = 0
                     currentAlarmId = -1
-                    updateActiveAlarm(null)
+                    updateActiveAlarm(null, targetGen = acceptedGen)
                     alarmScheduler.handleAlarmFired(alarmId, acceptedGen.scheduledAt)
                     webhookEvent = WebhookEvent.AlarmDismissed
                 } else {
@@ -2408,7 +2396,7 @@ class AlarmService : Service() {
                             firedAt = alarmFiredAt,
                             state = "SNOOZED",
                             refireAt = snoozeEndAt
-                        ))
+                        ), targetGen = acceptedGen)
                     }
                     recordEventAsync(
                         alarm = alarm,
@@ -2455,7 +2443,7 @@ class AlarmService : Service() {
                 clearAlarmRuntimeState(alarmId)
                 currentSnoozeCount = 0
                 currentAlarmId = -1
-                updateActiveAlarm(null)
+                updateActiveAlarm(null, targetGen = acceptedGen)
             }
             if (isForeground.compareAndSet(true, false)) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -2506,7 +2494,7 @@ class AlarmService : Service() {
                 clearAlarmRuntimeState(alarmId)
                 currentSnoozeCount = 0
                 currentAlarmId = -1
-                updateActiveAlarm(null)
+                updateActiveAlarm(null, targetGen = acceptedGen)
 
                 // F8: Webhook on dismiss (fire-and-forget on its own scope)
                 webhookService.fireAsync(
@@ -2556,7 +2544,7 @@ class AlarmService : Service() {
                 clearAlarmRuntimeState(alarmId)
                 currentSnoozeCount = 0
                 currentAlarmId = -1
-                updateActiveAlarm(null)
+                updateActiveAlarm(null, targetGen = acceptedGen)
             }
             alarmScheduler.handleAlarmFired(alarmId, acceptedGen.scheduledAt)
             wearNextAlarmBridge.publishAlarmIdle(alarmId)

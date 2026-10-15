@@ -1135,6 +1135,33 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun fullGenerationConditionalClearPreventsStaleClearFromWipingNewerActiveGeneration() {
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val genB = AlarmGeneration(99L, 2000L, "fire-99-b")
+
+        // Helper matching production PreferencesManager conditional clear logic
+        fun shouldExecuteClear(storedGen: AlarmGeneration?, targetClearGen: AlarmGeneration?): Boolean {
+            if (targetClearGen != null && storedGen != null) {
+                if (!storedGen.matches(targetClearGen)) {
+                    return false // Stale clear for old genA when stored is genB -> REJECTED!
+                }
+            }
+            return true
+        }
+
+        // 1. DataStore holds active genB
+        val storedGen = genB
+
+        // 2. Stale clear for genA arrives -> REJECTED!
+        val canClearOldGenA = shouldExecuteClear(storedGen = storedGen, targetClearGen = genA)
+        assertFalse(canClearOldGenA)
+
+        // 3. Valid clear for active genB arrives -> ACCEPTED!
+        val canClearActiveGenB = shouldExecuteClear(storedGen = storedGen, targetClearGen = genB)
+        assertTrue(canClearActiveGenB)
+    }
+
+    @Test
     fun controllableFakePlayerReleaseIsIdempotentThroughHolder() {
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")

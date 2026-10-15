@@ -19,12 +19,19 @@ import com.sysadmindoc.alarmclock.domain.ChronotypeEstimator
 import com.sysadmindoc.alarmclock.domain.GroupTabPosition
 import com.sysadmindoc.alarmclock.domain.JetLagDirection
 import com.sysadmindoc.alarmclock.domain.LongPressThreshold
+import com.sysadmindoc.alarmclock.service.AlarmGeneration
+import com.sysadmindoc.alarmclock.service.AlarmService.Companion.ActiveAlarmSnapshot
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
 import java.io.IOException
 import java.util.Locale
 import javax.inject.Inject
@@ -446,6 +453,71 @@ class PreferencesManager @Inject constructor(
      *  before DataStore has emitted the user's persisted preference. */
     fun shouldHideLabelsOnPublicSurfaces(): Boolean {
         return !hasLoadedSettings || cachedSettings.hideAlarmLabelsOnPublicSurfaces
+    }
+
+    // Application-lived repository scope so active alarm DataStore updates
+    // execute serially in strict FIFO order and survive component teardown (stopSelf / onDestroy).
+    private val activeAlarmWriterScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val activeAlarmChannel = Channel<ActiveAlarmUpdateRequest>(Channel.UNLIMITED)
+
+    init {
+        activeAlarmWriterScope.launch {
+            for (request in activeAlarmChannel) {
+                try {
+                    updateActiveAlarmInternal(request)
+                } catch (e: Exception) {
+                    Log.w("PreferencesManager", "Failed to persist active alarm update", e)
+                }
+            }
+        }
+    }
+
+    internal data class ActiveAlarmUpdateRequest(
+        val snapshot: ActiveAlarmSnapshot?,
+        val targetGen: AlarmGeneration? = null
+    )
+
+    internal fun enqueueActiveAlarmUpdate(
+        snapshot: ActiveAlarmSnapshot?,
+        targetGen: AlarmGeneration? = null
+    ) {
+        activeAlarmChannel.trySend(ActiveAlarmUpdateRequest(snapshot, targetGen))
+    }
+
+    private suspend fun updateActiveAlarmInternal(request: ActiveAlarmUpdateRequest) {
+        context.dataStore.edit { prefs ->
+            val old = prefs.toSettings().sanitized()
+
+            // Full Generation Conditional Clear Guard:
+            if (request.snapshot == null) {
+                val targetGen = request.targetGen
+                val storedId = old.activeAlarmId
+                val storedScheduledAt = old.activeAlarmScheduledAt
+                val storedFireId = old.activeAlarmFireId
+
+                if (targetGen != null && storedId != null && storedId > 0L) {
+                    val storedGen = AlarmGeneration(storedId, storedScheduledAt, storedFireId)
+                    if (!storedGen.matches(targetGen)) {
+                        // DataStore currently holds a DIFFERENT active generation (e.g. new START genB has already landed)!
+                        // Do NOT clear DataStore! Safely ignore stale clear request for old targetGen!
+                        return@edit
+                    }
+                }
+            }
+
+            val snapshot = request.snapshot
+            val newSettings = old.copy(
+                activeAlarmId = snapshot?.alarmId,
+                activeAlarmScheduledAt = snapshot?.scheduledAt ?: 0L,
+                activeAlarmFireId = snapshot?.fireId ?: "",
+                activeAlarmFiredAt = snapshot?.firedAt ?: 0L,
+                activeAlarmState = snapshot?.state ?: "",
+                activeAlarmRefireAt = snapshot?.refireAt ?: 0L
+            )
+            cachedSettings = newSettings
+            hasLoadedSettings = true
+            prefs.applySettings(newSettings)
+        }
     }
 
     suspend fun update(transform: (AppSettings) -> AppSettings) {
