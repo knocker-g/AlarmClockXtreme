@@ -394,9 +394,10 @@ class AlarmService : Service() {
                             }
                         }
                         // Cancel any prior auto-silence/fade jobs before starting new alarm
+                        val preemptedGen = currentGeneration()
                         autoSilenceJob?.cancel()
                         volumeJob?.cancel()
-                        stopAlarmPlayback()
+                        stopAlarmPlayback(preemptedGen)
                         currentAlarmId = alarmId
                         currentScheduledAt = scheduledAt
                         currentFireId = fireId
@@ -829,7 +830,7 @@ class AlarmService : Service() {
                     currentAlarmId = -1
                     updateActiveAlarm(null)
                     alarmScheduler.handleAlarmFired(alarmId, startGen.scheduledAt)
-                    stopAlarmPlayback()
+                    stopAlarmPlayback(startGen)
                     if (isForeground.compareAndSet(true, false)) {
                         stopForeground(STOP_FOREGROUND_REMOVE)
                     }
@@ -2271,12 +2272,13 @@ class AlarmService : Service() {
             refreshFiringNotification(capped)
             return
         }
+        val snoozeGen = currentGeneration()
         SnoozeCountdownReceiver.cancel(this)
         autoSilenceJob?.cancel()
         backupSoundJob?.cancel()
         flashlightJob?.cancel()
         volumeJob?.cancel()
-        stopAlarmPlayback()
+        stopAlarmPlayback(snoozeGen)
         val alarm = repository.getById(alarmId)?.sanitized()
         if (alarm != null) {
             val webhookScheduledAt = currentScheduledAt
@@ -2398,12 +2400,13 @@ class AlarmService : Service() {
         challengeRetryCount: Int = 0,
         challengeSolveTimeMs: Long = 0L
     ) {
+        val dismissGen = currentGeneration()
         SnoozeCountdownReceiver.cancel(this)
         autoSilenceJob?.cancel()
         backupSoundJob?.cancel()
         flashlightJob?.cancel()
         volumeJob?.cancel()
-        stopAlarmPlayback()
+        stopAlarmPlayback(dismissGen)
         val alarm = repository.getById(alarmId)?.sanitized()
         if (alarm != null) {
             val wakeConfirmFireId = currentFireId.ifBlank {
@@ -2972,10 +2975,11 @@ class AlarmService : Service() {
     }
 
     override fun onDestroy() {
+        val destroyGen = currentGeneration()
         autoSilenceJob?.cancel()
         backupSoundJob?.cancel()
         flashlightJob?.cancel()
-        stopAlarmPlayback()
+        stopAlarmPlayback(destroyGen)
         wakeLock?.let {
             if (it.isHeld) it.release()
         }

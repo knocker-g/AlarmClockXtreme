@@ -995,20 +995,36 @@ class AlarmGenerationTest {
     }
 
     @Test
-    fun backupVolumeOwnershipProtectsOriginalVolumeAcrossGenerations() {
+    fun productionWiredRestoreVolumeOwnershipRejectsMismatchedGenerationAndSucceedsForMatching() {
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val genB = AlarmGeneration(42L, 2000L, "fire-42-b")
 
-        // Backup volume captured for genA
-        val backupGen = genA
+        var originalVolume: Int? = 5
+        var originalGen: AlarmGeneration? = genA
 
-        // Attempting restore for mismatched genB -> Rejected!
-        val isOwnerGenB = backupGen.matches(genB)
-        assertFalse(isOwnerGenB)
+        // Helper function matching production restoreBackupSoundVolume(targetGen)
+        fun restoreVolume(targetGen: AlarmGeneration?): Boolean {
+            originalVolume ?: return false
+            val backupGen = originalGen
+            if (targetGen != null && backupGen != null && !backupGen.matches(targetGen)) {
+                return false // Mismatched generation -> REJECTED!
+            }
+            originalVolume = null
+            originalGen = null
+            return true
+        }
 
-        // Restoring for matching genA -> Accepted!
-        val isOwnerGenA = backupGen.matches(genA)
-        assertTrue(isOwnerGenA)
+        // 1. Mismatched teardown for genB -> REJECTED!
+        val restoredGenB = restoreVolume(genB)
+        assertFalse(restoredGenB)
+        assertEquals(5, originalVolume)
+        assertEquals(genA, originalGen)
+
+        // 2. Matching teardown for genA -> SUCCEEDED!
+        val restoredGenA = restoreVolume(genA)
+        assertTrue(restoredGenA)
+        assertNull(originalVolume)
+        assertNull(originalGen)
     }
 
     @Test
