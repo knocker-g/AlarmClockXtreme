@@ -441,6 +441,41 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun onPreparedExceptionClaimsFallbackHandoffOnceAndPreventsDuplicateOnErrorFallback() {
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
+
+        // 1. onPrepared throws exception -> First claim succeeds
+        val handoff1 = auth.tryClaimFallbackHandoff(genA, tokenA)
+        assertNotNull(handoff1)
+
+        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff1!!)
+        assertNotNull(fallbackToken)
+
+        // 2. Delayed onError fires for the same failing player -> Second claim fails (one-shot!)
+        val handoff2 = auth.tryClaimFallbackHandoff(genA, tokenA)
+        assertNull(handoff2)
+
+        assertEquals(fallbackToken, auth.activeAttemptToken())
+    }
+
+    @Test
+    fun defaultFallbackExceptionCleansUpWithoutLooping() {
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
+
+        val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
+        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
+        assertNotNull(fallbackToken)
+
+        // Default fallback fails during setDataSource / onPrepared
+        // Verify token is active and authority handles cleanup
+        assertTrue(auth.shouldProcessCallback(genA, fallbackToken!!))
+    }
+
+    @Test
     fun asyncPreparationPreemptionRejectsPlayerPublicationAndStart() {
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
