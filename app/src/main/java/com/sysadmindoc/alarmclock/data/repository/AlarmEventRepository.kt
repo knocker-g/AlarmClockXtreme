@@ -2,7 +2,11 @@ package com.sysadmindoc.alarmclock.data.repository
 
 import com.sysadmindoc.alarmclock.data.local.AlarmEventDao
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmEvent
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.launch
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
@@ -80,6 +84,10 @@ internal object WakeStreakCalculator {
 class AlarmEventRepository @Inject constructor(
     private val dao: AlarmEventDao
 ) {
+    // Application-lived repository scope so fire-and-forget event records survive
+    // component destruction (e.g. AlarmService calling stopSelf / onDestroy right after dismiss).
+    private val recordScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     fun observeRecent(limit: Int = 50): Flow<List<AlarmEvent>> = dao.observeRecent(limit)
 
     fun observeLatestEventsPerAlarm(): Flow<List<AlarmEvent>> = dao.observeLatestEventsPerAlarm()
@@ -88,6 +96,16 @@ class AlarmEventRepository @Inject constructor(
         val id = dao.insert(event)
         prune()
         return id
+    }
+
+    fun recordAsync(event: AlarmEvent) {
+        recordScope.launch {
+            runCatching {
+                record(event)
+            }.onFailure { error ->
+                android.util.Log.w("AlarmEventRepository", "Failed to record AlarmEvent async", error)
+            }
+        }
     }
 
     /**

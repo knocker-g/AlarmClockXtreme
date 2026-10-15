@@ -195,8 +195,6 @@ class AlarmService : Service() {
     // Fires the guaranteed default tone if the Media3 player never actually
     // starts (stuck buffering with no onPlayerError) so the alarm can't ring silently.
     private var playbackWatchdogJob: Job? = null
-    @Volatile
-    private var forceBuiltInSpeakerForFallback: Boolean = false
     private var currentAlarmId: Long = -1
     @Volatile
     private var currentAlarmVolume: Int = 100
@@ -207,6 +205,8 @@ class AlarmService : Service() {
     private var backupSoundJob: Job? = null
     @Volatile
     private var backupSoundOriginalAlarmVolume: Int? = null
+    @Volatile
+    private var backupSoundOriginalGeneration: AlarmGeneration? = null
     private var flashlightJob: Job? = null
     private var currentSnoozeCount: Int = 0
     private var currentWakeConfirmRefireCount: Int = 0
@@ -228,6 +228,16 @@ class AlarmService : Service() {
     // v1.11.3 (ALA-88): Execution guard for ACTION_SNOOZE to prevent race-induced
     // duplicate scheduling and state corruption.
     private val snoozeActionInFlight = AtomicBoolean(false)
+
+    private val playbackAuthority = AlarmPlaybackAttemptAuthority()
+
+    private fun nextPlaybackToken(generation: AlarmGeneration): PlaybackAttemptToken {
+        return playbackAuthority.mintNextToken(generation)
+    }
+
+    private fun invalidatePlaybackTokens() {
+        playbackAuthority.invalidateTokens()
+    }
 
     // v1.11.2 (roadmap N2): Telephony-aware muting. When a call is OFFHOOK or
     // RINGING during alarm playback the player is muted (vibration and
@@ -384,9 +394,10 @@ class AlarmService : Service() {
                             }
                         }
                         // Cancel any prior auto-silence/fade jobs before starting new alarm
+                        val preemptedGen = currentGeneration()
                         autoSilenceJob?.cancel()
                         volumeJob?.cancel()
-                        stopAlarmPlayback()
+                        stopAlarmPlayback(preemptedGen)
                         currentAlarmId = alarmId
                         currentScheduledAt = scheduledAt
                         currentFireId = fireId
@@ -410,7 +421,7 @@ class AlarmService : Service() {
                         )
                         activateAlarmMediaSession("START_COMMAND")
                         startForegroundWithPlaceholder()
-                        serviceScope.launch { startAlarm(startGen) }
+                        serviceScope.launch(Dispatchers.Main.immediate) { startAlarm(startGen) }
                     }
                 }
             }
@@ -468,9 +479,10 @@ class AlarmService : Service() {
                             .takeIf { it > System.currentTimeMillis() }
 
                         if (snoozeActionInFlight.compareAndSet(false, true)) {
+                            val acceptedGen = incomingGen!!
                             serviceScope.launch {
                                 try {
-                                    snoozeAlarm(alarmId, customMinutes, snoozeAtMillis)
+                                    snoozeAlarm(alarmId, acceptedGen, customMinutes, snoozeAtMillis)
                                 } finally {
                                     snoozeActionInFlight.set(false)
                                 }
@@ -480,7 +492,8 @@ class AlarmService : Service() {
                         }
                     }
                     ActionAdmissionDecision.ADMIT_EXACT_MATCH -> {
-                        val alarmId = incomingGen!!.alarmId
+                        val acceptedGen = incomingGen!!
+                        val alarmId = acceptedGen.alarmId
                         val customMinutes = intent.getIntExtra(EXTRA_CUSTOM_SNOOZE_MINUTES, -1)
                             .takeIf { it > 0 }
                             ?.coerceIn(MIN_CUSTOM_SNOOZE_MINUTES, MAX_CUSTOM_SNOOZE_MINUTES)
@@ -492,7 +505,7 @@ class AlarmService : Service() {
                         if (snoozeActionInFlight.compareAndSet(false, true)) {
                             serviceScope.launch {
                                 try {
-                                    snoozeAlarm(alarmId, customMinutes, snoozeAtMillis)
+                                    snoozeAlarm(alarmId, acceptedGen, customMinutes, snoozeAtMillis)
                                 } finally {
                                     snoozeActionInFlight.set(false)
                                 }
@@ -561,7 +574,8 @@ class AlarmService : Service() {
                         return START_NOT_STICKY
                     }
                     ActionAdmissionDecision.ADMIT_RESTART -> {
-                        val alarmId = incomingGen!!.alarmId
+                        val acceptedGen = incomingGen!!
+                        val alarmId = acceptedGen.alarmId
                         currentAlarmId = active!!.alarmId
                         currentScheduledAt = active.scheduledAt
                         currentFireId = active.fireId
@@ -575,13 +589,15 @@ class AlarmService : Service() {
                         serviceScope.launch {
                             dismissAlarm(
                                 alarmId = alarmId,
+                                acceptedGen = acceptedGen,
                                 challengeRetryCount = challengeRetryCount,
                                 challengeSolveTimeMs = challengeSolveTimeMs
                             )
                         }
                     }
                     ActionAdmissionDecision.ADMIT_EXACT_MATCH -> {
-                        val alarmId = incomingGen!!.alarmId
+                        val acceptedGen = incomingGen!!
+                        val alarmId = acceptedGen.alarmId
                         val challengeRetryCount = intent.getIntExtra(EXTRA_CHALLENGE_RETRY_COUNT, 0).coerceAtLeast(0)
                         val challengeSolveTimeMs = intent.getLongExtra(EXTRA_CHALLENGE_SOLVE_TIME_MS, 0L).coerceAtLeast(0L)
                         val intentFiredAt = intent.getLongExtra(EXTRA_FIRED_AT, 0L)
@@ -590,6 +606,7 @@ class AlarmService : Service() {
                         serviceScope.launch {
                             dismissAlarm(
                                 alarmId = alarmId,
+                                acceptedGen = acceptedGen,
                                 challengeRetryCount = challengeRetryCount,
                                 challengeSolveTimeMs = challengeSolveTimeMs
                             )
@@ -613,7 +630,9 @@ class AlarmService : Service() {
         // catches corrupt challengeType / vibrationPattern / specificDate /
         // ringtonePool entries so a bad backup restore or buggy older-version
         // write can't crash the firing path.
-        val alarm = repository.getById(alarmId)?.sanitized() ?: run {
+        val alarm = withContext(Dispatchers.IO) {
+            repository.getById(alarmId)?.sanitized()
+        } ?: run {
             recordIncident(
                 type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
                 status = AlarmIncidentEvent.STATUS_FAILED,
@@ -726,7 +745,7 @@ class AlarmService : Service() {
 
         if (currentGeneration()?.matches(startGen) != true) return
 
-        startAudio(alarm)
+        startAudio(alarm, startGen)
 
         AlarmHapticController.vibrationDelayMillis(alarm)?.let { delayMillis ->
             // v1.12.0 (roadmap N7): optional pre-vibration delay. Defers haptic
@@ -739,9 +758,7 @@ class AlarmService : Service() {
             if (delayMillis > 0) {
                 serviceScope.launch {
                     kotlinx.coroutines.delay(delayMillis)
-                    // Re-check the live alarm id — service-restart races could
-                    // otherwise vibrate for an alarm the user already dismissed.
-                    if (currentAlarmId == alarmId) startVibration(alarm)
+                    if (currentGeneration()?.matches(startGen) == true) startVibration(alarm)
                 }
             } else {
                 startVibration(alarm)
@@ -754,13 +771,13 @@ class AlarmService : Service() {
             alarmId = alarm.id,
             label = alarm.label,
             timeFormatted = wireAlarmTime(alarm),
-            scheduledForMillis = currentScheduledAt.takeIf { it > 0L },
-            fireId = currentFireId
+            scheduledForMillis = startGen.scheduledAt,
+            fireId = startGen.fireId
         )
         AlarmBroadcastContract.send(
             this, AlarmBroadcastContract.ACTION_ALARM_FIRED,
             alarmId = alarm.id, label = alarm.label,
-            displayTime = wireAlarmTime(alarm), fireId = currentFireId
+            displayTime = wireAlarmTime(alarm), fireId = startGen.fireId
         )
 
         // Auto-silence after timeout - records as missed
@@ -768,6 +785,7 @@ class AlarmService : Service() {
         if (autoSilenceMinutes > 0) {
             autoSilenceJob = serviceScope.launch {
                 kotlinx.coroutines.delay(autoSilenceMinutes * 60 * 1000L)
+                if (currentGeneration()?.matches(startGen) != true) return@launch
                 val missedAlarm = repository.getById(alarmId)
                 if (missedAlarm != null) {
                     // Once the auto-silence delay elapses the outcome IS "missed".
@@ -777,25 +795,31 @@ class AlarmService : Service() {
                     // missed event, incident, webhook, broadcast, notification,
                     // and repeat-missed state all land atomically before teardown.
                     withContext(NonCancellable) {
+                        if (currentGeneration()?.matches(startGen) != true) return@withContext
                         recordEvent(missedAlarm, com.sysadmindoc.alarmclock.data.local.entity.AlarmEvent.ACTION_MISSED)
+                        if (currentGeneration()?.matches(startGen) != true) return@withContext
                         recordIncident(
                             type = AlarmIncidentEvent.TYPE_AUTO_SILENCE,
                             status = AlarmIncidentEvent.STATUS_SUCCEEDED,
                             reasonCode = "AUTO_SILENCED_AFTER_${autoSilenceMinutes}_MINUTES",
-                            source = "AlarmService"
+                            source = "AlarmService",
+                            alarmId = startGen.alarmId,
+                            fireId = startGen.fireId,
+                            scheduledAt = startGen.scheduledAt
                         )
+                        if (currentGeneration()?.matches(startGen) != true) return@withContext
                         webhookService.fireAsync(
                             event = WebhookEvent.AlarmMissed,
                             alarmId = missedAlarm.id,
                             label = missedAlarm.label,
                             timeFormatted = wireAlarmTime(missedAlarm),
-                            scheduledForMillis = currentScheduledAt.takeIf { it > 0L },
-                            fireId = currentFireId
+                            scheduledForMillis = startGen.scheduledAt,
+                            fireId = startGen.fireId
                         )
                         AlarmBroadcastContract.send(
                             this@AlarmService, AlarmBroadcastContract.ACTION_ALARM_MISSED,
                             alarmId = missedAlarm.id, label = missedAlarm.label,
-                            displayTime = wireAlarmTime(missedAlarm), fireId = currentFireId
+                            displayTime = wireAlarmTime(missedAlarm), fireId = startGen.fireId
                         )
                         showMissedNotification(missedAlarm, autoSilenceMinutes)
                         // v1.4.0/v1.15.20: Repeat missed alarms — record the alarm
@@ -806,38 +830,41 @@ class AlarmService : Service() {
                         }
                     }
                 }
-                clearAlarmRuntimeState(alarmId)
-                currentSnoozeCount = 0
-                currentAlarmId = -1
-                updateActiveAlarm(null)
-                alarmScheduler.handleAlarmFired(alarmId, currentScheduledAt)
-                stopAlarmPlayback()
-                if (isForeground.compareAndSet(true, false)) {
-                    stopForeground(STOP_FOREGROUND_REMOVE)
+                if (currentGeneration()?.matches(startGen) == true) {
+                    clearAlarmRuntimeState(alarmId)
+                    currentSnoozeCount = 0
+                    currentAlarmId = -1
+                    updateActiveAlarm(null)
+                    alarmScheduler.handleAlarmFired(alarmId, startGen.scheduledAt)
+                    stopAlarmPlayback(startGen)
+                    if (isForeground.compareAndSet(true, false)) {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                    }
+                    stopSelf()
                 }
-                stopSelf()
             }
         }
 
         // v1.2.0: Backup sound escalation
         if (alarm.backupSoundEnabled && !AlarmHapticController.usesMutedAlarmAudio(alarm)) {
-            backupSoundJob = serviceScope.launch {
+            backupSoundJob = serviceScope.launch(Dispatchers.Main.immediate) {
                 delay(alarm.backupSoundDelaySec * 1000L)
-                // Escalate: set volume to max and switch to system alarm tone.
-                // v1.11.2: the call observer still has priority — if we're
-                // muted because of a call, escalate the *system* stream so the
-                // post-call audio is loud, but don't unmute the player
-                // mid-call.
+                if (currentGeneration()?.matches(startGen) != true) return@launch
                 val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager ?: return@launch
                 val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
-                backupSoundOriginalAlarmVolume = backupSoundOriginalAlarmVolume
-                    ?: audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
+                if (backupSoundOriginalAlarmVolume == null || backupSoundOriginalGeneration == null) {
+                    backupSoundOriginalAlarmVolume = audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
+                    backupSoundOriginalGeneration = startGen
+                }
                 audioManager.setStreamVolume(AudioManager.STREAM_ALARM, maxVol, 0)
-                recordIncident(
+                recordIncidentAsync(
                     type = AlarmIncidentEvent.TYPE_AUDIO,
                     status = AlarmIncidentEvent.STATUS_SUCCEEDED,
                     reasonCode = "BACKUP_SOUND_ESCALATED",
-                    source = "AlarmService"
+                    source = "AlarmService",
+                    alarmId = startGen.alarmId,
+                    fireId = startGen.fireId,
+                    scheduledAt = startGen.scheduledAt
                 )
                 playbackRampGain = 1f
                 applyPlaybackGain()
@@ -1081,9 +1108,14 @@ class AlarmService : Service() {
         }
     }
 
-    private fun restoreBackupSoundVolume() {
+    private fun restoreBackupSoundVolume(targetGen: AlarmGeneration? = null) {
         val originalVolume = backupSoundOriginalAlarmVolume ?: return
+        val backupGen = backupSoundOriginalGeneration
+        if (!playbackAuthority.shouldRestoreBackupVolume(backupGen, targetGen)) {
+            return
+        }
         backupSoundOriginalAlarmVolume = null
+        backupSoundOriginalGeneration = null
         val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager ?: return
         try {
             val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
@@ -1108,14 +1140,17 @@ class AlarmService : Service() {
         }
     }
 
-    private fun startAudio(alarm: Alarm) {
+    private fun startAudio(alarm: Alarm, startGen: AlarmGeneration) {
         // Silent mode - skip audio entirely
         if (alarm.ringtoneUri == "silent" || AlarmHapticController.usesMutedAlarmAudio(alarm)) {
             recordIncidentAsync(
                 type = AlarmIncidentEvent.TYPE_AUDIO,
                 status = AlarmIncidentEvent.STATUS_SKIPPED,
                 reasonCode = "SILENT_OR_HAPTIC_ONLY",
-                source = "AlarmService"
+                source = "AlarmService",
+                alarmId = startGen.alarmId,
+                fireId = startGen.fireId,
+                scheduledAt = startGen.scheduledAt
             )
             updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
             return
@@ -1136,7 +1171,10 @@ class AlarmService : Service() {
                 type = AlarmIncidentEvent.TYPE_AUDIO,
                 status = AlarmIncidentEvent.STATUS_SKIPPED,
                 reasonCode = "AUDIO_START_REENTRY_SKIPPED",
-                source = "AlarmService"
+                source = "AlarmService",
+                alarmId = startGen.alarmId,
+                fireId = startGen.fireId,
+                scheduledAt = startGen.scheduledAt
             )
             return
         }
@@ -1148,13 +1186,13 @@ class AlarmService : Service() {
                 ?.let { pool -> alarm.copy(ringtoneUri = pool.random()) }
                 ?: alarm
 
-            startAudioInternal(pooledAlarm)
+            startAudioInternal(pooledAlarm, startGen)
         } finally {
             audioStarting.set(false)
         }
     }
 
-    private fun startAudioInternal(alarm: Alarm) {
+    private fun startAudioInternal(alarm: Alarm, startGen: AlarmGeneration) {
 
         // F14: Spotify ringtone — open Spotify URI and skip in-app playback.
         // Only accept canonical Spotify schemes ("spotify:..." or
@@ -1180,20 +1218,24 @@ class AlarmService : Service() {
                 // fall through to the default ringtone path so the alarm still
                 // makes noise instead of silently no-oping.
                 if (spotifyIntent.resolveActivity(packageManager) != null) {
+                    val attemptToken = nextPlaybackToken(startGen)
                     startActivity(spotifyIntent)
                     updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
                     recordIncidentAsync(
                         type = AlarmIncidentEvent.TYPE_AUDIO,
                         status = AlarmIncidentEvent.STATUS_SUCCEEDED,
                         reasonCode = "SPOTIFY_DELEGATED",
-                        source = "AlarmService"
+                        source = "AlarmService",
+                        alarmId = startGen.alarmId,
+                        fireId = startGen.fireId,
+                        scheduledAt = startGen.scheduledAt
                     )
                     // Delegation is a promise, not proof. A background-activity
                     // start can be refused without throwing, and Spotify can
                     // open without playing (logged out, offline, free tier).
                     // Either way the alarm would be completely silent, so watch
                     // for real playback and fall back if none arrives.
-                    armSpotifyPlaybackWatchdog(alarm, mediaStreamsBefore())
+                    armSpotifyPlaybackWatchdog(alarm, mediaStreamsBefore(), attemptToken)
                     return
                 }
             } catch (_: Exception) {
@@ -1205,7 +1247,7 @@ class AlarmService : Service() {
         // dead: startMedia3DefaultFallback drops into it whenever Media3
         // cannot play, which is the safety net for the app's whole reason to
         // exist.
-        startMedia3AudioInternal(alarm)
+        startMedia3AudioInternal(alarm, startGen)
     }
 
     /**
@@ -1222,12 +1264,12 @@ class AlarmService : Service() {
             .commit()
     }
 
-    private fun startMedia3AudioInternal(alarm: Alarm) {
+    private fun startMedia3AudioInternal(alarm: Alarm, startGen: AlarmGeneration) {
         val radioUrl = alarm.internetRadioUrl.trim()
         // https only: cleartext is blocked at this targetSdk, so an http stream
         // would stall until the watchdog escalated instead of failing fast.
         if (radioUrl.startsWith("https://", ignoreCase = true)) {
-            if (startMedia3Radio(alarm, radioUrl)) {
+            if (startMedia3Radio(alarm, radioUrl, startGen)) {
                 return
             }
         }
@@ -1242,17 +1284,21 @@ class AlarmService : Service() {
                 type = AlarmIncidentEvent.TYPE_AUDIO,
                 status = AlarmIncidentEvent.STATUS_SKIPPED,
                 reasonCode = "NO_DEFAULT_TONE",
-                source = "AlarmService"
+                source = "AlarmService",
+                alarmId = startGen.alarmId,
+                fireId = startGen.fireId,
+                scheduledAt = startGen.scheduledAt
             )
             return
         }
 
-        startMedia3Tone(alarm, uri)
+        startMedia3Tone(alarm, uri, startGen)
     }
 
-    private fun startMedia3Radio(alarm: Alarm, radioUrl: String): Boolean {
+    private fun startMedia3Radio(alarm: Alarm, radioUrl: String, startGen: AlarmGeneration): Boolean {
+        var playbackRef: AlarmPlaybackPlayer? = null
+        val attemptToken = nextPlaybackToken(startGen)
         return try {
-            var playbackRef: AlarmPlaybackPlayer? = null
             val playbackStarted = AtomicBoolean(false)
             val playback = createMedia3Playback(
                 mediaItem = MediaItem.fromUri(radioUrl),
@@ -1266,42 +1312,56 @@ class AlarmService : Service() {
                     alarmVolume = alarm.volume
                 ),
                 onReady = {
-                    playbackStarted.set(true)
-                    cancelPlaybackWatchdog()
-                    updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
-                    recordIncidentAsync(
-                        type = AlarmIncidentEvent.TYPE_AUDIO,
-                        status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                        reasonCode = "MEDIA3_INTERNET_RADIO_STARTED",
-                        source = "AlarmService"
-                    )
-                    if (alarm.overrideSystemVolume) {
-                        setConfiguredAlarmStreamVolume(alarm)
+                    if (playbackAuthority.shouldProcessCallback(currentGeneration(), attemptToken, alarmPlayback, playbackRef)) {
+                        playbackStarted.set(true)
+                        cancelPlaybackWatchdog()
+                        updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
+                        recordIncidentAsync(
+                            type = AlarmIncidentEvent.TYPE_AUDIO,
+                            status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                            reasonCode = "MEDIA3_INTERNET_RADIO_STARTED",
+                            source = "AlarmService",
+                            alarmId = startGen.alarmId,
+                            fireId = startGen.fireId,
+                            scheduledAt = startGen.scheduledAt
+                        )
+                        if (alarm.overrideSystemVolume) {
+                            setConfiguredAlarmStreamVolume(alarm)
+                        }
+                        playbackRampGain = 1f
+                        applyPlaybackGain()
                     }
-                    playbackRampGain = 1f
-                    applyPlaybackGain()
                 },
                 onEnded = {},
                 onError = { error ->
-                    cancelPlaybackWatchdog()
-                    playbackRef?.let { releasePlaybackIfCurrent(it) }
-                    recordIncidentAsync(
-                        type = AlarmIncidentEvent.TYPE_AUDIO,
-                        status = AlarmIncidentEvent.STATUS_FAILED,
-                        reasonCode = "MEDIA3_INTERNET_RADIO_ERROR_${error.javaClass.simpleName}",
-                        source = "AlarmService"
-                    )
-                    serviceScope.launch { escalateMedia3PlaybackFailure(alarm) }
+                    val handoff = playbackAuthority.tryClaimFallbackHandoff(currentGeneration(), attemptToken)
+                    if (handoff != null) {
+                        cancelPlaybackWatchdog()
+                        playbackRef?.let { releasePlaybackIfCurrent(it) }
+                        recordIncidentAsync(
+                            type = AlarmIncidentEvent.TYPE_AUDIO,
+                            status = AlarmIncidentEvent.STATUS_FAILED,
+                            reasonCode = "MEDIA3_INTERNET_RADIO_ERROR_${error.javaClass.simpleName}",
+                            source = "AlarmService",
+                            alarmId = startGen.alarmId,
+                            fireId = startGen.fireId,
+                            scheduledAt = startGen.scheduledAt
+                        )
+                        serviceScope.launch(Dispatchers.Main.immediate) { escalateMedia3PlaybackFailure(alarm, handoff) }
+                    }
                 }
             )
             playbackRef = playback
             alarmPlayback = playback
-            armMedia3PlaybackWatchdog(alarm, playback, playbackStarted)
+            armMedia3PlaybackWatchdog(alarm, playback, playbackStarted, attemptToken)
             recordIncidentAsync(
                 type = AlarmIncidentEvent.TYPE_AUDIO,
                 status = AlarmIncidentEvent.STATUS_REQUESTED,
                 reasonCode = "MEDIA3_INTERNET_RADIO_PREPARING",
-                source = "AlarmService"
+                source = "AlarmService",
+                alarmId = startGen.alarmId,
+                fireId = startGen.fireId,
+                scheduledAt = startGen.scheduledAt
             )
             true
         } catch (e: Exception) {
@@ -1309,15 +1369,25 @@ class AlarmService : Service() {
                 type = AlarmIncidentEvent.TYPE_AUDIO,
                 status = AlarmIncidentEvent.STATUS_FAILED,
                 reasonCode = "MEDIA3_INTERNET_RADIO_SETUP_FAILED_${e.javaClass.simpleName}",
-                source = "AlarmService"
+                source = "AlarmService",
+                alarmId = startGen.alarmId,
+                fireId = startGen.fireId,
+                scheduledAt = startGen.scheduledAt
             )
-            try { alarmPlayback?.stopAndRelease() } catch (_: Exception) {}
-            alarmPlayback = null
+            try { playbackRef?.stopAndRelease() } catch (_: Exception) {}
+            val handoff = playbackAuthority.tryClaimFallbackHandoff(currentGeneration(), attemptToken)
+            if (handoff != null) {
+                if (playbackAuthority.shouldReleaseGlobalPlayback(currentGeneration(), attemptToken, alarmPlayback, playbackRef)) {
+                    alarmPlayback = null
+                }
+            }
             false
         }
     }
 
-    private fun startMedia3Tone(alarm: Alarm, uri: Uri) {
+    private fun startMedia3Tone(alarm: Alarm, uri: Uri, startGen: AlarmGeneration) {
+        var playbackRef: AlarmPlaybackPlayer? = null
+        val attemptToken = nextPlaybackToken(startGen)
         try {
             val fadeInMs = alarm.gradualVolumeSeconds * 1000L
             val initialVolume = when {
@@ -1331,7 +1401,6 @@ class AlarmService : Service() {
                 )
             }
             playbackRampGain = if (fadeInMs > 0) 0f else 1f
-            var playbackRef: AlarmPlaybackPlayer? = null
             val playbackStarted = AtomicBoolean(false)
             val playback = createMedia3Playback(
                 mediaItem = MediaItem.fromUri(uri),
@@ -1339,39 +1408,47 @@ class AlarmService : Service() {
                 repeatMode = if (alarm.dismissAtRingtoneEnd) Player.REPEAT_MODE_OFF else Player.REPEAT_MODE_ONE,
                 initialVolume = initialVolume,
                 onReady = {
-                    playbackStarted.set(true)
-                    cancelPlaybackWatchdog()
-                    seekToRandomPoolOffset(alarm, playbackRef)
-                    if (alarm.overrideSystemVolume) {
-                        setConfiguredAlarmStreamVolume(alarm)
+                    if (playbackAuthority.shouldProcessCallback(currentGeneration(), attemptToken, alarmPlayback, playbackRef)) {
+                        playbackStarted.set(true)
+                        cancelPlaybackWatchdog()
+                        seekToRandomPoolOffset(alarm, playbackRef)
+                        if (alarm.overrideSystemVolume) {
+                            setConfiguredAlarmStreamVolume(alarm)
+                        }
+                        applyPlaybackGain()
+                        updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
+                        recordIncidentAsync(
+                            type = AlarmIncidentEvent.TYPE_AUDIO,
+                            status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                            reasonCode = "MEDIA3_PLAYER_STARTED",
+                            source = "AlarmService",
+                            alarmId = startGen.alarmId,
+                            fireId = startGen.fireId,
+                            scheduledAt = startGen.scheduledAt
+                        )
                     }
-                    applyPlaybackGain()
-                    updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
-                    recordIncidentAsync(
-                        type = AlarmIncidentEvent.TYPE_AUDIO,
-                        status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                        reasonCode = "MEDIA3_PLAYER_STARTED",
-                        source = "AlarmService"
-                    )
                 },
                 onEnded = {
-                    if (alarm.dismissAtRingtoneEnd) {
-                        val id = currentAlarmId
-                        if (id != -1L) {
-                            serviceScope.launch { dismissAlarm(id) }
-                        }
+                    if (alarm.dismissAtRingtoneEnd && playbackAuthority.shouldProcessCallback(currentGeneration(), attemptToken, alarmPlayback, playbackRef)) {
+                        serviceScope.launch(Dispatchers.Main.immediate) { dismissAlarm(startGen.alarmId, startGen) }
                     }
                 },
                 onError = { error ->
-                    cancelPlaybackWatchdog()
-                    playbackRef?.let { releasePlaybackIfCurrent(it) }
-                    recordIncidentAsync(
-                        type = AlarmIncidentEvent.TYPE_AUDIO,
-                        status = AlarmIncidentEvent.STATUS_FAILED,
-                        reasonCode = "MEDIA3_PLAYER_FAILED_${error.javaClass.simpleName}",
-                        source = "AlarmService"
-                    )
-                    escalateMedia3PlaybackFailure(alarm)
+                    val handoff = playbackAuthority.tryClaimFallbackHandoff(currentGeneration(), attemptToken)
+                    if (handoff != null) {
+                        cancelPlaybackWatchdog()
+                        playbackRef?.let { releasePlaybackIfCurrent(it) }
+                        recordIncidentAsync(
+                            type = AlarmIncidentEvent.TYPE_AUDIO,
+                            status = AlarmIncidentEvent.STATUS_FAILED,
+                            reasonCode = "MEDIA3_PLAYER_FAILED_${error.javaClass.simpleName}",
+                            source = "AlarmService",
+                            alarmId = startGen.alarmId,
+                            fireId = startGen.fireId,
+                            scheduledAt = startGen.scheduledAt
+                        )
+                        escalateMedia3PlaybackFailure(alarm, handoff)
+                    }
                 }
             )
             playbackRef = playback
@@ -1380,13 +1457,16 @@ class AlarmService : Service() {
                 type = AlarmIncidentEvent.TYPE_AUDIO,
                 status = AlarmIncidentEvent.STATUS_REQUESTED,
                 reasonCode = "MEDIA3_PLAYER_PREPARING",
-                source = "AlarmService"
+                source = "AlarmService",
+                alarmId = startGen.alarmId,
+                fireId = startGen.fireId,
+                scheduledAt = startGen.scheduledAt
             )
 
             // If the player never reaches READY (for example, a stream stuck
             // buffering with no onPlayerError), escalate before the delayed
             // backup-sound timer gets a chance to fire.
-            armMedia3PlaybackWatchdog(alarm, playback, playbackStarted)
+            armMedia3PlaybackWatchdog(alarm, playback, playbackStarted, attemptToken)
 
             if (fadeInMs > 0) {
                 volumeJob = serviceScope.launch {
@@ -1394,6 +1474,7 @@ class AlarmService : Service() {
                     val stepDelay = fadeInMs / steps
                     for (i in 1..steps) {
                         delay(stepDelay)
+                        if (!playbackAuthority.shouldProcessCallback(currentGeneration(), attemptToken)) break
                         val volume = i.toFloat() / steps
                         playbackRampGain = volume
                         applyPlaybackGain()
@@ -1406,31 +1487,47 @@ class AlarmService : Service() {
                 type = AlarmIncidentEvent.TYPE_AUDIO,
                 status = AlarmIncidentEvent.STATUS_FAILED,
                 reasonCode = "MEDIA3_PLAYER_SETUP_FAILED_${e.javaClass.simpleName}",
-                source = "AlarmService"
+                source = "AlarmService",
+                alarmId = startGen.alarmId,
+                fireId = startGen.fireId,
+                scheduledAt = startGen.scheduledAt
             )
-            try { alarmPlayback?.stopAndRelease() } catch (_: Exception) {}
-            alarmPlayback = null
-            escalateMedia3PlaybackFailure(alarm)
+            try { playbackRef?.stopAndRelease() } catch (_: Exception) {}
+            val handoff = playbackAuthority.tryClaimFallbackHandoff(currentGeneration(), attemptToken)
+            if (handoff != null) {
+                if (playbackAuthority.shouldReleaseGlobalPlayback(currentGeneration(), attemptToken, alarmPlayback, playbackRef)) {
+                    alarmPlayback = null
+                }
+                escalateMedia3PlaybackFailure(alarm, handoff)
+            }
         }
     }
 
     private fun armMedia3PlaybackWatchdog(
         alarm: Alarm,
         playback: AlarmPlaybackPlayer,
-        playbackStarted: AtomicBoolean
+        playbackStarted: AtomicBoolean,
+        attemptToken: PlaybackAttemptToken
     ) {
         cancelPlaybackWatchdog()
-        playbackWatchdogJob = serviceScope.launch {
+        playbackWatchdogJob = serviceScope.launch(Dispatchers.Main.immediate) {
             delay(PLAYBACK_START_TIMEOUT_MS)
-            if (!playbackStarted.get() && currentAlarmId == alarm.id && alarmPlayback === playback) {
-                recordIncidentAsync(
-                    type = AlarmIncidentEvent.TYPE_AUDIO,
-                    status = AlarmIncidentEvent.STATUS_FAILED,
-                    reasonCode = "MEDIA3_PLAYER_STALL_TIMEOUT",
-                    source = "AlarmService"
-                )
-                releasePlaybackIfCurrent(playback)
-                escalateMedia3PlaybackFailure(alarm)
+            val isOwner = !playbackStarted.get() && playbackAuthority.shouldProcessCallback(currentGeneration(), attemptToken, alarmPlayback, playback)
+            if (isOwner) {
+                val handoff = playbackAuthority.tryClaimFallbackHandoff(currentGeneration(), attemptToken)
+                if (handoff != null) {
+                    recordIncidentAsync(
+                        type = AlarmIncidentEvent.TYPE_AUDIO,
+                        status = AlarmIncidentEvent.STATUS_FAILED,
+                        reasonCode = "MEDIA3_PLAYER_STALL_TIMEOUT",
+                        source = "AlarmService",
+                        alarmId = attemptToken.generation.alarmId,
+                        fireId = attemptToken.generation.fireId,
+                        scheduledAt = attemptToken.generation.scheduledAt
+                    )
+                    releasePlaybackIfCurrent(playback)
+                    escalateMedia3PlaybackFailure(alarm, handoff)
+                }
             }
         }
     }
@@ -1457,11 +1554,15 @@ class AlarmService : Service() {
         }.getOrDefault(if (audioManager.isMusicActive) 1 else 0)
     }
 
-    private fun armSpotifyPlaybackWatchdog(alarm: Alarm, mediaStreamsAtLaunch: Int) {
+    private fun armSpotifyPlaybackWatchdog(
+        alarm: Alarm,
+        mediaStreamsAtLaunch: Int,
+        attemptToken: PlaybackAttemptToken
+    ) {
         cancelPlaybackWatchdog()
-        playbackWatchdogJob = serviceScope.launch {
+        playbackWatchdogJob = serviceScope.launch(Dispatchers.Main.immediate) {
             delay(PLAYBACK_START_TIMEOUT_MS)
-            if (currentAlarmId != alarm.id || alarmPlayback != null) return@launch
+            if (!playbackAuthority.shouldProcessCallback(currentGeneration(), attemptToken) || alarmPlayback != null) return@launch
             val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager
             val started = audioManager != null && mediaStreamsBefore() > mediaStreamsAtLaunch
             if (started) {
@@ -1469,70 +1570,138 @@ class AlarmService : Service() {
                     type = AlarmIncidentEvent.TYPE_AUDIO,
                     status = AlarmIncidentEvent.STATUS_SUCCEEDED,
                     reasonCode = "SPOTIFY_PLAYBACK_CONFIRMED",
-                    source = "AlarmService"
+                    source = "AlarmService",
+                    alarmId = attemptToken.generation.alarmId,
+                    fireId = attemptToken.generation.fireId,
+                    scheduledAt = attemptToken.generation.scheduledAt
                 )
                 return@launch
             }
-            recordIncidentAsync(
-                type = AlarmIncidentEvent.TYPE_AUDIO,
-                status = AlarmIncidentEvent.STATUS_FAILED,
-                reasonCode = "SPOTIFY_FALLBACK",
-                source = "AlarmService"
-            )
-            startMedia3DefaultFallback(alarm)
+            val handoff = playbackAuthority.tryClaimFallbackHandoff(currentGeneration(), attemptToken)
+            if (handoff != null) {
+                recordIncidentAsync(
+                    type = AlarmIncidentEvent.TYPE_AUDIO,
+                    status = AlarmIncidentEvent.STATUS_FAILED,
+                    reasonCode = "SPOTIFY_FALLBACK",
+                    source = "AlarmService",
+                    alarmId = attemptToken.generation.alarmId,
+                    fireId = attemptToken.generation.fireId,
+                    scheduledAt = attemptToken.generation.scheduledAt
+                )
+                startMedia3DefaultFallback(alarm, handoff)
+            }
         }
     }
 
-    private fun cancelPlaybackWatchdog() {
+    private fun cancelPlaybackWatchdog(ownerToken: PlaybackAttemptToken? = null) {
+        if (ownerToken != null && !playbackAuthority.shouldProcessCallback(currentGeneration(), ownerToken)) {
+            return
+        }
         playbackWatchdogJob?.cancel()
         playbackWatchdogJob = null
     }
 
-    private fun escalateMedia3PlaybackFailure(alarm: Alarm) {
-        cancelPlaybackWatchdog()
-        forceBuiltInSpeakerForFallback = true
+    private fun escalateMedia3PlaybackFailure(
+        alarm: Alarm,
+        handoffToken: PlaybackAttemptToken
+    ) {
+        val fallbackToken = playbackAuthority.tryConsumeFallbackHandoffAndActivate(currentGeneration(), handoffToken)
+            ?: return
+
+        playbackAuthority.cancelWatchdogIfActive(currentGeneration(), fallbackToken) {
+            cancelPlaybackWatchdog()
+        }
+
+        playbackAuthority.setRoutingAttemptToken(fallbackToken)
         val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager
         if (audioManager != null) {
             runCatching {
-                backupSoundOriginalAlarmVolume = backupSoundOriginalAlarmVolume
-                    ?: audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
-                audioManager.setStreamVolume(
-                    AudioManager.STREAM_ALARM,
-                    audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM),
-                    0
-                )
+                if (backupSoundOriginalAlarmVolume == null || backupSoundOriginalGeneration == null) {
+                    backupSoundOriginalAlarmVolume = audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
+                    backupSoundOriginalGeneration = fallbackToken.generation
+                }
+                if (playbackAuthority.shouldMutateAudio(currentGeneration(), fallbackToken)) {
+                    audioManager.setStreamVolume(
+                        AudioManager.STREAM_ALARM,
+                        audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM),
+                        0
+                    )
+                }
             }.onFailure { error ->
                 recordIncidentAsync(
                     type = AlarmIncidentEvent.TYPE_AUDIO,
                     status = AlarmIncidentEvent.STATUS_FAILED,
                     reasonCode = "MEDIA3_FALLBACK_VOLUME_FAILED_${error.javaClass.simpleName}",
-                    source = "AlarmService"
+                    source = "AlarmService",
+                    alarmId = fallbackToken.generation.alarmId,
+                    fireId = fallbackToken.generation.fireId,
+                    scheduledAt = fallbackToken.generation.scheduledAt
                 )
             }
         }
-        recordIncidentAsync(
-            type = AlarmIncidentEvent.TYPE_AUDIO,
-            status = AlarmIncidentEvent.STATUS_FAILED,
-            reasonCode = "MEDIA3_FALLBACK_ROUTING_FORCED",
-            source = "AlarmService"
-        )
-        startMedia3DefaultFallback(alarm)
+        playbackAuthority.executeIfActive(currentGeneration(), fallbackToken) {
+            recordIncidentAsync(
+                type = AlarmIncidentEvent.TYPE_AUDIO,
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "MEDIA3_FALLBACK_ROUTING_FORCED",
+                source = "AlarmService",
+                alarmId = fallbackToken.generation.alarmId,
+                fireId = fallbackToken.generation.fireId,
+                scheduledAt = fallbackToken.generation.scheduledAt
+            )
+        }
+        startMedia3DefaultFallbackInternal(alarm, fallbackToken)
     }
 
-    private fun startMedia3DefaultFallback(alarm: Alarm) {
-        cancelPlaybackWatchdog()
-        recordIncidentAsync(
-            type = AlarmIncidentEvent.TYPE_AUDIO,
-            status = AlarmIncidentEvent.STATUS_REQUESTED,
-            reasonCode = "MEDIA3_DEFAULT_FALLBACK_TO_LEGACY",
-            source = "AlarmService"
-        )
+    private fun startMedia3DefaultFallback(
+        alarm: Alarm,
+        handoffToken: PlaybackAttemptToken
+    ) {
+        val fallbackToken = playbackAuthority.tryConsumeFallbackHandoffAndActivate(currentGeneration(), handoffToken)
+            ?: return
+        startMedia3DefaultFallbackInternal(alarm, fallbackToken)
+    }
+
+    private fun startMedia3DefaultFallbackInternal(
+        alarm: Alarm,
+        fallbackToken: PlaybackAttemptToken
+    ) {
+        playbackAuthority.cancelWatchdogIfActive(currentGeneration(), fallbackToken) {
+            cancelPlaybackWatchdog()
+        }
+        playbackAuthority.executeIfActive(currentGeneration(), fallbackToken) {
+            recordIncidentAsync(
+                type = AlarmIncidentEvent.TYPE_AUDIO,
+                status = AlarmIncidentEvent.STATUS_REQUESTED,
+                reasonCode = "MEDIA3_DEFAULT_FALLBACK_TO_LEGACY",
+                source = "AlarmService",
+                alarmId = fallbackToken.generation.alarmId,
+                fireId = fallbackToken.generation.fireId,
+                scheduledAt = fallbackToken.generation.scheduledAt
+            )
+        }
         startMediaPlayerAudioInternal(
             alarm.copy(
                 internetRadioUrl = "",
                 spotifyUri = ""
-            )
+            ),
+            fallbackToken.generation,
+            preActivatedToken = fallbackToken
         )
+    }
+
+    private fun startAudioWithToken(
+        alarm: Alarm,
+        token: PlaybackAttemptToken
+    ) {
+        if (!playbackAuthority.shouldProcessCallback(currentGeneration(), token)) return
+        val pooledAlarm = alarm.ringtonePool.split(",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .takeIf { it.isNotEmpty() }
+            ?.let { pool -> alarm.copy(ringtoneUri = pool.random()) }
+            ?: alarm
+        startMediaPlayerAudioInternal(pooledAlarm, token.generation, preActivatedToken = token)
     }
 
     @AndroidXOptIn(UnstableApi::class)
@@ -1590,7 +1759,8 @@ class AlarmService : Service() {
      * system-managed hearing-aid / BLE devices.
      */
     private fun forcedSpeakerDevice(): android.media.AudioDeviceInfo? {
-        val usePhoneSpeakers = forceBuiltInSpeakerForFallback ||
+        val attemptToken = playbackAuthority.activeAttemptToken()
+        val usePhoneSpeakers = playbackAuthority.isRoutingActive(attemptToken) ||
             preferencesManager.getCachedSettings().usePhoneSpeakers
         if (!usePhoneSpeakers) return null
         val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager ?: return null
@@ -1617,16 +1787,29 @@ class AlarmService : Service() {
         audioManager.setStreamVolume(AudioManager.STREAM_ALARM, targetVol, 0)
     }
 
-    private fun startMediaPlayerAudioInternal(alarm: Alarm) {
+    private fun startMediaPlayerAudioInternal(
+        alarm: Alarm,
+        startGen: AlarmGeneration,
+        preActivatedToken: PlaybackAttemptToken? = null
+    ) {
+        val attemptToken = preActivatedToken ?: nextPlaybackToken(startGen)
+        if (!playbackAuthority.shouldProcessCallback(currentGeneration(), attemptToken)) return
+
         // v1.2.0: Internet radio stream. Defensive: only accept http(s) URLs so a
         // malformed setting can't crash MediaPlayer with an unknown scheme.
         val radioUrl = alarm.internetRadioUrl.trim()
         // https only: cleartext is blocked at this targetSdk, so an http stream
         // would stall until the watchdog escalated instead of failing fast.
         if (radioUrl.startsWith("https://", ignoreCase = true)) {
+            var radioPlayback: AlarmPlaybackPlayer? = null
             try {
                 val player = MediaPlayer()
                 val playback = MediaPlayerAlarmPlaybackPlayer(player)
+                if (!playbackAuthority.shouldProcessCallback(currentGeneration(), attemptToken)) {
+                    try { playback.stopAndRelease() } catch (_: Exception) {}
+                    return
+                }
+                radioPlayback = playback
                 alarmPlayback = playback
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     forcedSpeakerDevice()?.let { runCatching { player.setPreferredDevice(it) } }
@@ -1636,41 +1819,53 @@ class AlarmService : Service() {
                     setDataSource(radioUrl)
                     isLooping = false  // Streams don't loop
                     setOnPreparedListener { mp ->
-                        mp.start()
-                        updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
-                        recordIncidentAsync(
-                            type = AlarmIncidentEvent.TYPE_AUDIO,
-                            status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                            reasonCode = "INTERNET_RADIO_STARTED",
-                            source = "AlarmService"
-                        )
-                        if (alarm.overrideSystemVolume) {
-                            val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-                            val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
-                            val targetVol = (maxVol * alarm.volume / 100f).toInt().coerceIn(1, maxVol)
-                            audioManager.setStreamVolume(AudioManager.STREAM_ALARM, targetVol, 0)
+                        if (playbackAuthority.shouldProcessCallback(currentGeneration(), attemptToken, alarmPlayback, playback)) {
+                            mp.start()
+                            updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
+                            recordIncidentAsync(
+                                type = AlarmIncidentEvent.TYPE_AUDIO,
+                                status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                                reasonCode = "INTERNET_RADIO_STARTED",
+                                source = "AlarmService",
+                                alarmId = startGen.alarmId,
+                                fireId = startGen.fireId,
+                                scheduledAt = startGen.scheduledAt
+                            )
+                            if (alarm.overrideSystemVolume) {
+                                val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+                                val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+                                val targetVol = (maxVol * alarm.volume / 100f).toInt().coerceIn(1, maxVol)
+                                audioManager.setStreamVolume(AudioManager.STREAM_ALARM, targetVol, 0)
+                            }
+                            playbackRampGain = 1f
+                            applyPlaybackGain()
                         }
-                        // v1.11.2: if a call landed during prepareAsync, honour it.
-                        playbackRampGain = 1f
-                        applyPlaybackGain()
                     }
                     // Without an OnErrorListener, a stream failure (DNS, 404, codec
                     // mismatch) results in a silent alarm — fall back to the device
                     // default ringtone via the standard path below.
                     setOnErrorListener { mp, _, _ ->
+                        val handoff = playbackAuthority.tryClaimFallbackHandoff(currentGeneration(), attemptToken)
                         try { playback.stopAndRelease() } catch (_: Exception) {}
-                        if (alarmPlayback === playback) alarmPlayback = null
+                        if (playbackAuthority.shouldReleaseGlobalPlayback(currentGeneration(), attemptToken, alarmPlayback, playback)) {
+                            alarmPlayback = null
+                        }
                         recordIncidentAsync(
                             type = AlarmIncidentEvent.TYPE_AUDIO,
                             status = AlarmIncidentEvent.STATUS_FAILED,
                             reasonCode = "INTERNET_RADIO_ERROR",
-                            source = "AlarmService"
+                            source = "AlarmService",
+                            alarmId = startGen.alarmId,
+                            fireId = startGen.fireId,
+                            scheduledAt = startGen.scheduledAt
                         )
-                        // Re-enter startAudio without the radio URL so the default
-                        // ringtone path runs. Done on the service scope so the
-                        // OnErrorListener returns immediately.
-                        serviceScope.launch {
-                            startAudio(alarm.copy(internetRadioUrl = ""))
+                        if (handoff != null) {
+                            val fallbackToken = playbackAuthority.tryConsumeFallbackHandoffAndActivate(currentGeneration(), handoff)
+                            if (fallbackToken != null) {
+                                serviceScope.launch(Dispatchers.Main.immediate) {
+                                    startAudioWithToken(alarm.copy(internetRadioUrl = ""), fallbackToken)
+                                }
+                            }
                         }
                         true
                     }
@@ -1680,19 +1875,26 @@ class AlarmService : Service() {
                     type = AlarmIncidentEvent.TYPE_AUDIO,
                     status = AlarmIncidentEvent.STATUS_REQUESTED,
                     reasonCode = "INTERNET_RADIO_PREPARING",
-                    source = "AlarmService"
+                    source = "AlarmService",
+                    alarmId = startGen.alarmId,
+                    fireId = startGen.fireId,
+                    scheduledAt = startGen.scheduledAt
                 )
                 return  // Radio handles playback
             } catch (e: Exception) {
-                // Fall through to default audio
                 recordIncidentAsync(
                     type = AlarmIncidentEvent.TYPE_AUDIO,
                     status = AlarmIncidentEvent.STATUS_FAILED,
                     reasonCode = "INTERNET_RADIO_SETUP_FAILED_${e.javaClass.simpleName}",
-                    source = "AlarmService"
+                    source = "AlarmService",
+                    alarmId = startGen.alarmId,
+                    fireId = startGen.fireId,
+                    scheduledAt = startGen.scheduledAt
                 )
-                try { alarmPlayback?.stopAndRelease() } catch (_: Exception) {}
-                alarmPlayback = null
+                try { radioPlayback?.stopAndRelease() } catch (_: Exception) {}
+                if (playbackAuthority.shouldReleaseGlobalPlayback(currentGeneration(), attemptToken, alarmPlayback, radioPlayback)) {
+                    alarmPlayback = null
+                }
             }
         }
 
@@ -1702,89 +1904,118 @@ class AlarmService : Service() {
             RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
                 ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
         } ?: run {
-            // Stripped-down AOSP / managed-profile devices may not report any
-            // default ringtone. Don't crash — leave the alarm silent (the
-            // notification + vibration + flashlight still fire) and bail out.
             recordIncidentAsync(
                 type = AlarmIncidentEvent.TYPE_AUDIO,
                 status = AlarmIncidentEvent.STATUS_SKIPPED,
                 reasonCode = "NO_DEFAULT_TONE",
-                source = "AlarmService"
+                source = "AlarmService",
+                alarmId = startGen.alarmId,
+                fireId = startGen.fireId,
+                scheduledAt = startGen.scheduledAt
             )
             return
         }
 
+        var configuredPlayback: AlarmPlaybackPlayer? = null
         try {
             val fadeInMs = alarm.gradualVolumeSeconds * 1000L
             val player = MediaPlayer()
             val playback = MediaPlayerAlarmPlaybackPlayer(player)
-            alarmPlayback = playback
+            if (!playbackAuthority.shouldProcessCallback(currentGeneration(), attemptToken)) {
+                try { playback.stopAndRelease() } catch (_: Exception) {}
+                return
+            }
+            configuredPlayback = playback
+            val holder = PlayerCallbackStateHolder(attemptToken, playback, isDefaultFallbackStage = false)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 forcedSpeakerDevice()?.let { runCatching { player.setPreferredDevice(it) } }
             }
             player.apply {
                 setAudioAttributes(AlarmAudioRouting.alarmSonificationAttributes())
                 setDataSource(applicationContext, uri)
-                // v1.4.0: "Dismiss at ringtone end" — honour a song/ringtone's
-                // natural length by disabling the loop and auto-dismissing
-                // when playback completes.
                 isLooping = !alarm.dismissAtRingtoneEnd
                 if (alarm.dismissAtRingtoneEnd) {
                     setOnCompletionListener {
-                        val id = currentAlarmId
-                        if (id != -1L) {
-                            serviceScope.launch { dismissAlarm(id) }
+                        if (playbackAuthority.shouldProcessCallback(currentGeneration(), attemptToken, alarmPlayback, playback)) {
+                            serviceScope.launch(Dispatchers.Main.immediate) { dismissAlarm(startGen.alarmId, startGen) }
                         }
                     }
                 }
-                prepare()
-
-                seekToRandomPoolOffset(alarm, playback)
-
-                if (alarm.overrideSystemVolume) {
-                    val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-                    val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
-                    val targetVol = (maxVol * alarm.volume / 100f).toInt().coerceIn(1, maxVol)
-                    audioManager.setStreamVolume(AudioManager.STREAM_ALARM, targetVol, 0)
+                setOnPreparedListener { mp ->
+                    AlarmPlayerCallbackSeam.handleOnPrepared(
+                        authority = playbackAuthority,
+                        currentGenSupplier = { currentGeneration() },
+                        holder = holder,
+                        mediaPlayerStartAction = {
+                            seekToRandomPoolOffset(alarm, playback)
+                            if (alarm.overrideSystemVolume) {
+                                if (playbackAuthority.shouldMutateAudio(currentGeneration(), attemptToken)) {
+                                    val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+                                    val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+                                    val targetVol = (maxVol * alarm.volume / 100f).toInt().coerceIn(1, maxVol)
+                                    audioManager.setStreamVolume(AudioManager.STREAM_ALARM, targetVol, 0)
+                                }
+                            }
+                            playbackRampGain = if (fadeInMs > 0) 0f else 1f
+                            val initialGain = alarmPlaybackGain(
+                                callMuted = callMutedAudio,
+                                challengeDuckingActive = challengeAudioDuckingActive,
+                                challengeDuckPercent = challengeAudioDuckPercent,
+                                rampGain = playbackRampGain,
+                                alarmVolume = alarm.volume
+                            )
+                            mp.setVolume(initialGain, initialGain)
+                            mp.start()
+                            updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
+                            recordIncidentAsync(
+                                type = AlarmIncidentEvent.TYPE_AUDIO,
+                                status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                                reasonCode = "MEDIA_PLAYER_STARTED",
+                                source = "AlarmService",
+                                alarmId = startGen.alarmId,
+                                fireId = startGen.fireId,
+                                scheduledAt = startGen.scheduledAt
+                            )
+                            if (fadeInMs > 0) {
+                                volumeJob = serviceScope.launch(Dispatchers.Main.immediate) {
+                                    val steps = 50
+                                    val stepDelay = fadeInMs / steps
+                                    for (i in 1..steps) {
+                                        delay(stepDelay)
+                                        if (!playbackAuthority.shouldProcessCallback(currentGeneration(), attemptToken)) break
+                                        val volume = i.toFloat() / steps
+                                        playbackRampGain = volume
+                                        applyPlaybackGain()
+                                    }
+                                }
+                            }
+                        },
+                        currentPlaybackSupplier = { alarmPlayback },
+                        publishPlaybackConsumer = { alarmPlayback = it },
+                        clearPlaybackConsumer = { alarmPlayback = null },
+                        triggerFallbackAction = { fallbackToken ->
+                            serviceScope.launch(Dispatchers.Main.immediate) {
+                                startDefaultFallbackAsync(alarm, startGen, fallbackToken)
+                            }
+                        }
+                    )
                 }
-
-                // For a fade-in we start at 0 so the first sample isn't the loud
-                // attack of the ringtone; otherwise start at full so the user
-                // hears the alarm immediately at the configured level.
-                // v1.11.2: callMutedAudio overrides both — a ringing call at
-                // alarm fire-time keeps audio at 0 until the call ends.
-                playbackRampGain = if (fadeInMs > 0) 0f else 1f
-                val initialGain = alarmPlaybackGain(
-                    callMuted = callMutedAudio,
-                    challengeDuckingActive = challengeAudioDuckingActive,
-                    challengeDuckPercent = challengeAudioDuckPercent,
-                    rampGain = playbackRampGain,
-                    alarmVolume = alarm.volume
-                )
-                setVolume(initialGain, initialGain)
-                start()
-                updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
-            }
-            recordIncidentAsync(
-                type = AlarmIncidentEvent.TYPE_AUDIO,
-                status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                reasonCode = "MEDIA_PLAYER_STARTED",
-                source = "AlarmService"
-            )
-
-            if (fadeInMs > 0) {
-                volumeJob = serviceScope.launch {
-                    val steps = 50
-                    val stepDelay = fadeInMs / steps
-                    for (i in 1..steps) {
-                        delay(stepDelay)
-                        // v1.11.2: the call observer takes priority; don't ramp
-                        // volume during a call (it'll be restored on IDLE).
-                        val volume = i.toFloat() / steps
-                        playbackRampGain = volume
-                        applyPlaybackGain()
-                    }
+                setOnErrorListener { mp, _, _ ->
+                    AlarmPlayerCallbackSeam.handleOnError(
+                        authority = playbackAuthority,
+                        currentGenSupplier = { currentGeneration() },
+                        holder = holder,
+                        currentPlaybackSupplier = { alarmPlayback },
+                        clearPlaybackConsumer = { alarmPlayback = null },
+                        triggerFallbackAction = { fallbackToken ->
+                            serviceScope.launch(Dispatchers.Main.immediate) {
+                                startDefaultFallbackAsync(alarm, startGen, fallbackToken)
+                            }
+                        }
+                    )
+                    true
                 }
+                prepareAsync()
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to start configured alarm sound; falling back to default tone", e)
@@ -1792,55 +2023,126 @@ class AlarmService : Service() {
                 type = AlarmIncidentEvent.TYPE_AUDIO,
                 status = AlarmIncidentEvent.STATUS_FAILED,
                 reasonCode = "MEDIA_PLAYER_FAILED_${e.javaClass.simpleName}",
-                source = "AlarmService"
+                source = "AlarmService",
+                alarmId = startGen.alarmId,
+                fireId = startGen.fireId,
+                scheduledAt = startGen.scheduledAt
             )
-            try { alarmPlayback?.stopAndRelease() } catch (_: Exception) {}
-            alarmPlayback = null
-            // Fallback to default alarm sound
-            try {
-                val fallbackUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-                    ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-                if (fallbackUri != null) {
-                    val player = MediaPlayer()
-                    val playback = MediaPlayerAlarmPlaybackPlayer(player)
-                    alarmPlayback = playback
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                        forcedSpeakerDevice()?.let { runCatching { player.setPreferredDevice(it) } }
-                    }
-                    player.apply {
-                        setAudioAttributes(AlarmAudioRouting.alarmSonificationAttributes())
-                        setDataSource(applicationContext, fallbackUri)
-                        isLooping = true
-                        prepare()
-                        // v1.11.2: honour an active call right out of the gate.
-                        playbackRampGain = 1f
-                        val gain = alarmPlaybackGain(
-                            callMuted = callMutedAudio,
-                            challengeDuckingActive = challengeAudioDuckingActive,
-                            challengeDuckPercent = challengeAudioDuckPercent,
-                            rampGain = playbackRampGain,
-                            alarmVolume = alarm.volume
-                        )
-                        setVolume(gain, gain)
-                        start()
-                        updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
-                    }
-                    recordIncidentAsync(
-                        type = AlarmIncidentEvent.TYPE_AUDIO,
-                        status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                        reasonCode = "DEFAULT_FALLBACK_STARTED",
-                        source = "AlarmService"
-                    )
+            try { configuredPlayback?.stopAndRelease() } catch (_: Exception) {}
+            val handoff = playbackAuthority.tryClaimFallbackHandoff(currentGeneration(), attemptToken)
+            if (handoff != null) {
+                if (playbackAuthority.shouldReleaseGlobalPlayback(currentGeneration(), attemptToken, alarmPlayback, configuredPlayback)) {
+                    alarmPlayback = null
                 }
-            } catch (fallbackError: Exception) {
-                // Last resort - alarm fires silently but notification is still shown
-                recordIncidentAsync(
-                    type = AlarmIncidentEvent.TYPE_AUDIO,
-                    status = AlarmIncidentEvent.STATUS_FAILED,
-                    reasonCode = "DEFAULT_FALLBACK_FAILED_${fallbackError.javaClass.simpleName}",
-                    source = "AlarmService"
-                )
+                val fallbackToken = playbackAuthority.tryConsumeFallbackHandoffAndActivate(currentGeneration(), handoff)
+                if (fallbackToken != null) {
+                    serviceScope.launch(Dispatchers.Main.immediate) {
+                        startDefaultFallbackAsync(alarm, startGen, fallbackToken)
+                    }
+                }
             }
+        }
+    }
+
+    private fun startDefaultFallbackAsync(
+        alarm: Alarm,
+        startGen: AlarmGeneration,
+        fallbackToken: PlaybackAttemptToken
+    ) {
+        if (!playbackAuthority.shouldProcessCallback(currentGeneration(), fallbackToken)) return
+        var fallbackPlayback: AlarmPlaybackPlayer? = null
+        var fallbackHolder: PlayerCallbackStateHolder? = null
+        try {
+            val fallbackUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            if (fallbackUri != null) {
+                val player = MediaPlayer()
+                val playback = MediaPlayerAlarmPlaybackPlayer(player)
+                fallbackPlayback = playback
+                val holder = PlayerCallbackStateHolder(fallbackToken, playback, isDefaultFallbackStage = true)
+                fallbackHolder = holder
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    forcedSpeakerDevice()?.let { runCatching { player.setPreferredDevice(it) } }
+                }
+                player.apply {
+                    setAudioAttributes(AlarmAudioRouting.alarmSonificationAttributes())
+                    setDataSource(applicationContext, fallbackUri)
+                    isLooping = true
+                    setOnPreparedListener { mp ->
+                        AlarmPlayerCallbackSeam.handleOnPrepared(
+                            authority = playbackAuthority,
+                            currentGenSupplier = { currentGeneration() },
+                            holder = holder,
+                            mediaPlayerStartAction = {
+                                playbackRampGain = 1f
+                                val gain = alarmPlaybackGain(
+                                    callMuted = callMutedAudio,
+                                    challengeDuckingActive = challengeAudioDuckingActive,
+                                    challengeDuckPercent = challengeAudioDuckPercent,
+                                    rampGain = playbackRampGain,
+                                    alarmVolume = alarm.volume
+                                )
+                                mp.setVolume(gain, gain)
+                                mp.start()
+                                updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
+                                recordIncidentAsync(
+                                    type = AlarmIncidentEvent.TYPE_AUDIO,
+                                    status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                                    reasonCode = "DEFAULT_FALLBACK_STARTED",
+                                    source = "AlarmService",
+                                    alarmId = startGen.alarmId,
+                                    fireId = startGen.fireId,
+                                    scheduledAt = startGen.scheduledAt
+                                )
+                            },
+                            currentPlaybackSupplier = { alarmPlayback },
+                            publishPlaybackConsumer = { alarmPlayback = it },
+                            clearPlaybackConsumer = { alarmPlayback = null },
+                            triggerFallbackAction = {}
+                        )
+                    }
+                    setOnErrorListener { mp, _, _ ->
+                        AlarmPlayerCallbackSeam.handleOnError(
+                            authority = playbackAuthority,
+                            currentGenSupplier = { currentGeneration() },
+                            holder = holder,
+                            currentPlaybackSupplier = { alarmPlayback },
+                            clearPlaybackConsumer = { alarmPlayback = null },
+                            triggerFallbackAction = {}
+                        )
+                        recordIncidentAsync(
+                            type = AlarmIncidentEvent.TYPE_AUDIO,
+                            status = AlarmIncidentEvent.STATUS_FAILED,
+                            reasonCode = "DEFAULT_FALLBACK_FAILED_ON_ERROR",
+                            source = "AlarmService",
+                            alarmId = startGen.alarmId,
+                            fireId = startGen.fireId,
+                            scheduledAt = startGen.scheduledAt
+                        )
+                        true
+                    }
+                    prepareAsync()
+                }
+            }
+        } catch (fallbackError: Exception) {
+            Log.w(TAG, "Failed to initialize default fallback sound", fallbackError)
+            if (fallbackHolder != null) {
+                fallbackHolder.markTerminalAndRelease()
+            } else {
+                try { fallbackPlayback?.stopAndRelease() } catch (_: Exception) {}
+            }
+            if (playbackAuthority.shouldReleaseGlobalPlayback(currentGeneration(), fallbackToken, alarmPlayback, fallbackPlayback)) {
+                alarmPlayback = null
+            }
+            recordIncidentAsync(
+                type = AlarmIncidentEvent.TYPE_AUDIO,
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "DEFAULT_FALLBACK_FAILED_${fallbackError.javaClass.simpleName}",
+                source = "AlarmService",
+                alarmId = startGen.alarmId,
+                fireId = startGen.fireId,
+                scheduledAt = startGen.scheduledAt
+            )
         }
     }
 
@@ -1946,8 +2248,39 @@ class AlarmService : Service() {
         return AlarmAudioRouting.alarmSonificationAttributes()
     }
 
+    private suspend fun performOwnerGuardedTeardown(acceptedGen: AlarmGeneration): Boolean {
+        return withContext(Dispatchers.Main.immediate) {
+            if (currentGeneration()?.matches(acceptedGen) != true) {
+                Log.i(TAG, "Rejecting owner-guarded teardown for $acceptedGen: active generation is ${currentGeneration()}")
+                recordIncidentAsync(
+                    type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                    status = AlarmIncidentEvent.STATUS_SKIPPED,
+                    reasonCode = "STALE_TEARDOWN_GENERATION_MISMATCH",
+                    source = "AlarmService",
+                    alarmId = acceptedGen.alarmId,
+                    fireId = acceptedGen.fireId,
+                    scheduledAt = acceptedGen.scheduledAt
+                )
+                return@withContext false
+            }
+
+            SnoozeCountdownReceiver.cancel(this@AlarmService)
+            autoSilenceJob?.cancel()
+            autoSilenceJob = null
+            backupSoundJob?.cancel()
+            backupSoundJob = null
+            flashlightJob?.cancel()
+            flashlightJob = null
+            volumeJob?.cancel()
+            volumeJob = null
+            stopAlarmPlayback(acceptedGen)
+            true
+        }
+    }
+
     private suspend fun snoozeAlarm(
         alarmId: Long,
+        acceptedGen: AlarmGeneration,
         customMinutes: Int? = null,
         snoozeAtMillis: Long? = null
     ) {
@@ -1963,232 +2296,270 @@ class AlarmService : Service() {
         // by tapping Snooze past the cap, so check before anything is torn
         // down: the alarm has to keep ringing exactly as it was.
         val capped = repository.getById(alarmId)?.sanitized()
+
         if (capped != null &&
             SnoozeCapPolicy.outcomeFor(capped, currentSnoozeCount) == SnoozeCapOutcome.REFUSE
         ) {
-            recordIncident(
-                type = AlarmIncidentEvent.TYPE_USER_ACTION,
-                status = AlarmIncidentEvent.STATUS_SKIPPED,
-                reasonCode = "SNOOZE_CAP_REACHED",
-                source = "AlarmService",
-                alarmId = capped.id
-            )
-            refreshFiringNotification(capped)
-            return
-        }
-        SnoozeCountdownReceiver.cancel(this)
-        autoSilenceJob?.cancel()
-        backupSoundJob?.cancel()
-        flashlightJob?.cancel()
-        volumeJob?.cancel()
-        stopAlarmPlayback()
-        val alarm = repository.getById(alarmId)?.sanitized()
-        if (alarm != null) {
-            val webhookScheduledAt = currentScheduledAt
-            val webhookFireId = currentFireId
-            // Snoozing means the user interacted with the alarm, so cancel any pending
-            // Guardian Angel call/SMS — they're plainly awake enough to hit snooze.
-            // The next fire after snooze will re-arm Guardian if still configured.
-            if (alarm.guardianEnabled) {
-                WorkManager.getInstance(applicationContext)
-                    .cancelUniqueWork("guardian_${alarm.id}")
-            }
-            val nextSnoozeCount = currentSnoozeCount + 1
-            // v1.6.3: Track which event was actually persisted so the webhook
-            // emits the matching event name. The previous code recorded
-            // ACTION_DISMISSED when the snooze cap was hit but still fired the
-            // "snoozed" webhook — Tasker integrations got the wrong event.
-            val webhookEvent: WebhookEvent
-            if (SnoozeCapPolicy.outcomeFor(alarm, currentSnoozeCount) ==
-                SnoozeCapOutcome.AUTO_DISMISS
-            ) {
-                // Max snoozes reached - treat as dismiss
-                currentSnoozeCount = alarm.maxSnoozeCount
-                recordEvent(alarm, AlarmEvent.ACTION_DISMISSED)
+            if (currentGeneration()?.matches(acceptedGen) == true) {
                 recordIncident(
                     type = AlarmIncidentEvent.TYPE_USER_ACTION,
-                    status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                    reasonCode = "MAX_SNOOZE_DISMISSED",
+                    status = AlarmIncidentEvent.STATUS_SKIPPED,
+                    reasonCode = "SNOOZE_CAP_REACHED",
                     source = "AlarmService",
-                    alarmId = alarm.id
+                    alarmId = capped.id
                 )
-                // A user who snoozed to the cap is the strongest still-asleep
-                // signal there is — the cap-exhaustion auto-dismiss must not
-                // skip the wake-confirmation follow-up a real dismiss gets.
-                if (AlarmPostDismissController.shouldScheduleWakeConfirmation(alarm)) {
-                    scheduleWakeConfirmation(
-                        alarm = alarm,
-                        fireId = currentFireId,
-                        scheduledAt = currentScheduledAt
-                    )
+                refreshFiringNotification(capped)
+            }
+            return
+        }
+
+        if (!performOwnerGuardedTeardown(acceptedGen)) {
+            return
+        }
+
+        val alarm = repository.getById(alarmId)?.sanitized()
+
+        withContext(Dispatchers.Main.immediate) {
+            if (currentGeneration()?.matches(acceptedGen) != true) {
+                Log.i(TAG, "Aborting post-repository snoozeAlarm for $acceptedGen: active generation is ${currentGeneration()}")
+                return@withContext
+            }
+
+            if (alarm != null) {
+                val webhookScheduledAt = acceptedGen.scheduledAt
+                val webhookFireId = acceptedGen.fireId
+                // Snoozing means the user interacted with the alarm, so cancel any pending
+                // Guardian Angel call/SMS — they're plainly awake enough to hit snooze.
+                // The next fire after snooze will re-arm Guardian if still configured.
+                if (alarm.guardianEnabled) {
+                    WorkManager.getInstance(applicationContext)
+                        .cancelUniqueWork("guardian_${alarm.id}")
                 }
+                val nextSnoozeCount = currentSnoozeCount + 1
+                // v1.6.3: Track which event was actually persisted so the webhook
+                // emits the matching event name. The previous code recorded
+                // ACTION_DISMISSED when the snooze cap was hit but still fired the
+                // "snoozed" webhook — Tasker integrations got the wrong event.
+                val webhookEvent: WebhookEvent
+                if (SnoozeCapPolicy.outcomeFor(alarm, currentSnoozeCount) ==
+                    SnoozeCapOutcome.AUTO_DISMISS
+                ) {
+                    // Max snoozes reached - treat as dismiss
+                    currentSnoozeCount = alarm.maxSnoozeCount
+                    recordEventAsync(
+                        alarm = alarm,
+                        scheduledAt = acceptedGen.scheduledAt,
+                        firedAt = alarmFiredAt,
+                        action = AlarmEvent.ACTION_DISMISSED,
+                        snoozeCount = currentSnoozeCount
+                    )
+                    recordIncidentAsync(
+                        type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                        status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                        reasonCode = "MAX_SNOOZE_DISMISSED",
+                        source = "AlarmService",
+                        alarmId = alarm.id,
+                        fireId = acceptedGen.fireId,
+                        scheduledAt = acceptedGen.scheduledAt
+                    )
+                    // A user who snoozed to the cap is the strongest still-asleep
+                    // signal there is — the cap-exhaustion auto-dismiss must not
+                    // skip the wake-confirmation follow-up a real dismiss gets.
+                    if (AlarmPostDismissController.shouldScheduleWakeConfirmation(alarm)) {
+                        scheduleWakeConfirmation(
+                            alarm = alarm,
+                            fireId = acceptedGen.fireId,
+                            scheduledAt = acceptedGen.scheduledAt
+                        )
+                    }
+                    clearAlarmRuntimeState(alarmId)
+                    currentSnoozeCount = 0
+                    currentAlarmId = -1
+                    updateActiveAlarm(null)
+                    alarmScheduler.handleAlarmFired(alarmId, acceptedGen.scheduledAt)
+                    webhookEvent = WebhookEvent.AlarmDismissed
+                } else {
+                    currentSnoozeCount = nextSnoozeCount
+                    persistSnoozeCount(alarmId, currentSnoozeCount)
+                    val effectiveSnooze = if (alarm.progressiveSnooze && customMinutes == null && snoozeAtMillis == null) {
+                        (alarm.snoozeDurationMinutes - currentSnoozeCount).coerceAtLeast(1)
+                    } else customMinutes
+                    val snoozeStartedAt = System.currentTimeMillis()
+                    val defaultSnoozeEndAt = snoozeStartedAt +
+                        (effectiveSnooze ?: alarm.snoozeDurationMinutes)
+                            .coerceAtLeast(1) * 60_000L
+                    val snoozeEndAt = (snoozeAtMillis ?: defaultSnoozeEndAt)
+                        .coerceAtLeast(snoozeStartedAt + 1_000L)
+                    if (alarmScheduler.scheduleSnoozeAt(alarm, snoozeEndAt)) {
+                        SnoozeCountdownReceiver.schedule(
+                            context = this@AlarmService,
+                            startAtMillis = snoozeStartedAt,
+                            endAtMillis = snoozeEndAt
+                        )
+                        updateActiveAlarm(ActiveAlarmSnapshot(
+                            alarmId = alarm.id,
+                            scheduledAt = acceptedGen.scheduledAt,
+                            fireId = acceptedGen.fireId,
+                            firedAt = alarmFiredAt,
+                            state = "SNOOZED",
+                            refireAt = snoozeEndAt
+                        ))
+                    }
+                    recordEventAsync(
+                        alarm = alarm,
+                        scheduledAt = acceptedGen.scheduledAt,
+                        firedAt = alarmFiredAt,
+                        action = AlarmEvent.ACTION_SNOOZED,
+                        snoozeCount = currentSnoozeCount
+                    )
+                    recordIncidentAsync(
+                        type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                        status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                        reasonCode = "SNOOZED",
+                        source = "AlarmService",
+                        alarmId = alarm.id,
+                        fireId = acceptedGen.fireId,
+                        scheduledAt = acceptedGen.scheduledAt
+                    )
+                    webhookEvent = WebhookEvent.AlarmSnoozed
+                }
+                webhookService.fireAsync(
+                    event = webhookEvent,
+                    alarmId = alarm.id,
+                    label = alarm.label,
+                    timeFormatted = wireAlarmTime(alarm),
+                    scheduledForMillis = webhookScheduledAt.takeIf { it > 0L },
+                    fireId = webhookFireId
+                )
+                AlarmBroadcastContract.send(
+                    this@AlarmService, AlarmBroadcastContract.ACTION_ALARM_SNOOZED,
+                    alarmId = alarm.id, label = alarm.label,
+                    displayTime = wireAlarmTime(alarm), fireId = webhookFireId
+                )
+                wearNextAlarmBridge.publishAlarmIdle(alarm.id)
+            } else {
+                recordIncidentAsync(
+                    type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                    status = AlarmIncidentEvent.STATUS_FAILED,
+                    reasonCode = "SNOOZE_ALARM_ROW_MISSING",
+                    source = "AlarmService",
+                    alarmId = alarmId,
+                    fireId = acceptedGen.fireId,
+                    scheduledAt = acceptedGen.scheduledAt
+                )
                 clearAlarmRuntimeState(alarmId)
                 currentSnoozeCount = 0
                 currentAlarmId = -1
                 updateActiveAlarm(null)
-                alarmScheduler.handleAlarmFired(alarmId, currentScheduledAt)
-                webhookEvent = WebhookEvent.AlarmDismissed
-            } else {
-                currentSnoozeCount = nextSnoozeCount
-                persistSnoozeCount(alarmId, currentSnoozeCount)
-                val effectiveSnooze = if (alarm.progressiveSnooze && customMinutes == null && snoozeAtMillis == null) {
-                    (alarm.snoozeDurationMinutes - currentSnoozeCount).coerceAtLeast(1)
-                } else customMinutes
-                val snoozeStartedAt = System.currentTimeMillis()
-                val defaultSnoozeEndAt = snoozeStartedAt +
-                    (effectiveSnooze ?: alarm.snoozeDurationMinutes)
-                        .coerceAtLeast(1) * 60_000L
-                val snoozeEndAt = (snoozeAtMillis ?: defaultSnoozeEndAt)
-                    .coerceAtLeast(snoozeStartedAt + 1_000L)
-                if (alarmScheduler.scheduleSnoozeAt(alarm, snoozeEndAt)) {
-                    SnoozeCountdownReceiver.schedule(
-                        context = this@AlarmService,
-                        startAtMillis = snoozeStartedAt,
-                        endAtMillis = snoozeEndAt
-                    )
-                    updateActiveAlarm(ActiveAlarmSnapshot(
-                        alarmId = alarm.id,
-                        scheduledAt = currentScheduledAt,
-                        fireId = currentFireId,
-                        firedAt = alarmFiredAt,
-                        state = "SNOOZED",
-                        refireAt = snoozeEndAt
-                    ))
-                }
-                recordEvent(alarm, AlarmEvent.ACTION_SNOOZED)
-                recordIncident(
-                    type = AlarmIncidentEvent.TYPE_USER_ACTION,
-                    status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                    reasonCode = "SNOOZED",
-                    source = "AlarmService",
-                    alarmId = alarm.id
-                )
-                webhookEvent = WebhookEvent.AlarmSnoozed
             }
-            webhookService.fireAsync(
-                event = webhookEvent,
-                alarmId = alarm.id,
-                label = alarm.label,
-                timeFormatted = wireAlarmTime(alarm),
-                scheduledForMillis = webhookScheduledAt.takeIf { it > 0L },
-                fireId = webhookFireId
-            )
-            AlarmBroadcastContract.send(
-                this, AlarmBroadcastContract.ACTION_ALARM_SNOOZED,
-                alarmId = alarm.id, label = alarm.label,
-                displayTime = wireAlarmTime(alarm), fireId = webhookFireId
-            )
-            wearNextAlarmBridge.publishAlarmIdle(alarm.id)
-        } else {
-            recordIncident(
-                type = AlarmIncidentEvent.TYPE_USER_ACTION,
-                status = AlarmIncidentEvent.STATUS_FAILED,
-                reasonCode = "SNOOZE_ALARM_ROW_MISSING",
-                source = "AlarmService",
-                alarmId = alarmId
-            )
-            clearAlarmRuntimeState(alarmId)
-            currentSnoozeCount = 0
-            currentAlarmId = -1
-            updateActiveAlarm(null)
+            if (isForeground.compareAndSet(true, false)) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            }
+            stopSelf()
         }
-        if (isForeground.compareAndSet(true, false)) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        }
-        stopSelf()
     }
 
     private suspend fun dismissAlarm(
         alarmId: Long,
+        acceptedGen: AlarmGeneration,
         challengeRetryCount: Int = 0,
         challengeSolveTimeMs: Long = 0L
     ) {
-        SnoozeCountdownReceiver.cancel(this)
-        autoSilenceJob?.cancel()
-        backupSoundJob?.cancel()
-        flashlightJob?.cancel()
-        volumeJob?.cancel()
-        stopAlarmPlayback()
+        if (!performOwnerGuardedTeardown(acceptedGen)) {
+            return
+        }
+
         val alarm = repository.getById(alarmId)?.sanitized()
-        if (alarm != null) {
-            val wakeConfirmFireId = currentFireId.ifBlank {
-                AlarmIncidentEvent.fireIdFor(alarm.id, currentScheduledAt)
-            }
-            val wakeConfirmScheduledAt = currentScheduledAt
-            recordEvent(
-                alarm = alarm,
-                action = AlarmEvent.ACTION_DISMISSED,
-                challengeRetryCount = challengeRetryCount,
-                challengeSolveTimeMs = challengeSolveTimeMs
-            )
-            recordIncident(
-                type = AlarmIncidentEvent.TYPE_USER_ACTION,
-                status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                reasonCode = "DISMISSED",
-                source = "AlarmService",
-                alarmId = alarm.id
-            )
-            clearAlarmRuntimeState(alarmId)
-            currentSnoozeCount = 0
-            currentAlarmId = -1
-            updateActiveAlarm(null)
 
-            // F8: Webhook on dismiss (fire-and-forget on its own scope)
-            webhookService.fireAsync(
-                event = WebhookEvent.AlarmDismissed,
-                alarmId = alarm.id,
-                label = alarm.label,
-                timeFormatted = wireAlarmTime(alarm),
-                scheduledForMillis = wakeConfirmScheduledAt.takeIf { it > 0L },
-                fireId = wakeConfirmFireId
-            )
-            AlarmBroadcastContract.send(
-                this, AlarmBroadcastContract.ACTION_ALARM_DISMISSED,
-                alarmId = alarm.id, label = alarm.label,
-                displayTime = wireAlarmTime(alarm), fireId = wakeConfirmFireId
-            )
-
-            // v1.15.1: Per-alarm dismiss action (AlarmKit pattern)
-            dismissActionExecutor.executeAsync(alarm)
-
-            // F11: TTS morning announcement
-            if (AlarmPostDismissController.shouldSpeakMorningAnnouncement(alarm)) {
-                speakMorningAnnouncement()
+        withContext(Dispatchers.Main.immediate) {
+            if (currentGeneration()?.matches(acceptedGen) != true) {
+                Log.i(TAG, "Aborting post-repository dismissAlarm for $acceptedGen: active generation is ${currentGeneration()}")
+                return@withContext
             }
 
-            // F12: Morning briefing screen
-            showMorningBriefing(alarm)
-
-            // F5: Post-alarm wake confirmation
-            if (AlarmPostDismissController.shouldScheduleWakeConfirmation(alarm)) {
-                scheduleWakeConfirmation(
+            if (alarm != null) {
+                val wakeConfirmFireId = acceptedGen.fireId
+                val wakeConfirmScheduledAt = acceptedGen.scheduledAt
+                recordEventAsync(
                     alarm = alarm,
-                    fireId = wakeConfirmFireId,
-                    scheduledAt = wakeConfirmScheduledAt
+                    scheduledAt = acceptedGen.scheduledAt,
+                    firedAt = alarmFiredAt,
+                    action = AlarmEvent.ACTION_DISMISSED,
+                    snoozeCount = currentSnoozeCount,
+                    challengeRetryCount = challengeRetryCount,
+                    challengeSolveTimeMs = challengeSolveTimeMs
                 )
-            }
+                recordIncidentAsync(
+                    type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                    status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                    reasonCode = "DISMISSED",
+                    source = "AlarmService",
+                    alarmId = alarm.id,
+                    fireId = acceptedGen.fireId,
+                    scheduledAt = acceptedGen.scheduledAt
+                )
+                clearAlarmRuntimeState(alarmId)
+                currentSnoozeCount = 0
+                currentAlarmId = -1
+                updateActiveAlarm(null)
 
-            // v1.2.0: Cancel guardian if active (alarm was dismissed in time)
-            WorkManager.getInstance(applicationContext).cancelUniqueWork("guardian_${alarm.id}")
-        } else {
-            recordIncident(
-                type = AlarmIncidentEvent.TYPE_USER_ACTION,
-                status = AlarmIncidentEvent.STATUS_FAILED,
-                reasonCode = "DISMISS_ALARM_ROW_MISSING",
-                source = "AlarmService",
-                alarmId = alarmId
-            )
-            clearAlarmRuntimeState(alarmId)
-            currentSnoozeCount = 0
-            currentAlarmId = -1
-            updateActiveAlarm(null)
+                // F8: Webhook on dismiss (fire-and-forget on its own scope)
+                webhookService.fireAsync(
+                    event = WebhookEvent.AlarmDismissed,
+                    alarmId = alarm.id,
+                    label = alarm.label,
+                    timeFormatted = wireAlarmTime(alarm),
+                    scheduledForMillis = wakeConfirmScheduledAt.takeIf { it > 0L },
+                    fireId = wakeConfirmFireId
+                )
+                AlarmBroadcastContract.send(
+                    this@AlarmService, AlarmBroadcastContract.ACTION_ALARM_DISMISSED,
+                    alarmId = alarm.id, label = alarm.label,
+                    displayTime = wireAlarmTime(alarm), fireId = wakeConfirmFireId
+                )
+
+                // v1.15.1: Per-alarm dismiss action (AlarmKit pattern)
+                dismissActionExecutor.executeAsync(alarm)
+
+                // F11: TTS morning announcement
+                if (AlarmPostDismissController.shouldSpeakMorningAnnouncement(alarm)) {
+                    speakMorningAnnouncement()
+                }
+
+                // F12: Morning briefing screen
+                showMorningBriefing(alarm)
+
+                // F5: Post-alarm wake confirmation
+                if (AlarmPostDismissController.shouldScheduleWakeConfirmation(alarm)) {
+                    scheduleWakeConfirmation(
+                        alarm = alarm,
+                        fireId = wakeConfirmFireId,
+                        scheduledAt = wakeConfirmScheduledAt
+                    )
+                }
+
+                // v1.2.0: Cancel guardian if active (alarm was dismissed in time)
+                WorkManager.getInstance(applicationContext).cancelUniqueWork("guardian_${alarm.id}")
+            } else {
+                recordIncident(
+                    type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                    status = AlarmIncidentEvent.STATUS_FAILED,
+                    reasonCode = "DISMISS_ALARM_ROW_MISSING",
+                    source = "AlarmService",
+                    alarmId = alarmId
+                )
+                clearAlarmRuntimeState(alarmId)
+                currentSnoozeCount = 0
+                currentAlarmId = -1
+                updateActiveAlarm(null)
+            }
+            alarmScheduler.handleAlarmFired(alarmId, acceptedGen.scheduledAt)
+            wearNextAlarmBridge.publishAlarmIdle(alarmId)
+            if (isForeground.compareAndSet(true, false)) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            }
+            stopSelf()
         }
-        alarmScheduler.handleAlarmFired(alarmId, currentScheduledAt)
-        wearNextAlarmBridge.publishAlarmIdle(alarmId)
-        if (isForeground.compareAndSet(true, false)) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        }
-        stopSelf()
     }
 
     // F11: TTS morning announcement
@@ -2422,6 +2793,28 @@ class AlarmService : Service() {
         }
     }
 
+    private fun recordEventAsync(
+        alarm: Alarm,
+        scheduledAt: Long,
+        firedAt: Long,
+        action: String,
+        snoozeCount: Int,
+        challengeRetryCount: Int = 0,
+        challengeSolveTimeMs: Long = 0L
+    ) {
+        val event = AlarmFireDismissContract.alarmEvent(
+            alarm = alarm,
+            scheduledAt = scheduledAt,
+            firedAt = firedAt,
+            action = action,
+            actionAt = System.currentTimeMillis(),
+            challengeRetryCount = challengeRetryCount,
+            challengeSolveTimeMs = challengeSolveTimeMs,
+            snoozeCount = snoozeCount
+        )
+        eventRepository.recordAsync(event)
+    }
+
     private suspend fun recordEvent(
         alarm: Alarm,
         action: String,
@@ -2548,7 +2941,8 @@ class AlarmService : Service() {
         } catch (_: Exception) {}
     }
 
-    private fun stopAlarmPlayback() {
+    private fun stopAlarmPlayback(targetGen: AlarmGeneration? = null) {
+        invalidatePlaybackTokens()
         OnCallDndOverride.end(this)
         volumeJob?.cancel()
         volumeJob = null
@@ -2557,7 +2951,7 @@ class AlarmService : Service() {
         hapticOnlyJob?.cancel()
         hapticOnlyJob = null
         releaseAlarmMediaSession()
-        restoreBackupSoundVolume()
+        restoreBackupSoundVolume(targetGen)
         flashlightJob?.cancel()
         flashlightJob = null
         try {
@@ -2572,7 +2966,6 @@ class AlarmService : Service() {
         vibrator = null
         unregisterCallObserver()
         callMutedAudio = false
-        forceBuiltInSpeakerForFallback = false
         challengeAudioDuckingActive = false
         challengeAudioDuckPercent = 35
         playbackRampGain = 1f
@@ -2677,10 +3070,11 @@ class AlarmService : Service() {
     }
 
     override fun onDestroy() {
+        val destroyGen = currentGeneration()
         autoSilenceJob?.cancel()
         backupSoundJob?.cancel()
         flashlightJob?.cancel()
-        stopAlarmPlayback()
+        stopAlarmPlayback(destroyGen)
         wakeLock?.let {
             if (it.isHeld) it.release()
         }
