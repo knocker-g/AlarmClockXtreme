@@ -1,12 +1,20 @@
 package com.sysadmindoc.alarmclock.service
 
+import java.util.concurrent.atomic.AtomicLong
+
 internal data class PlaybackAttemptToken(
     val generation: AlarmGeneration,
-    val attemptSequence: Long
+    val attemptSequence: Long,
+    val authorityId: Long = 0L
 )
 
 internal class AlarmPlaybackAttemptAuthority {
 
+    companion object {
+        private val authorityIdGenerator = AtomicLong(0L)
+    }
+
+    val authorityId: Long = authorityIdGenerator.incrementAndGet()
     private var sequenceCounter: Long = 0L
     private var activeAttemptToken: PlaybackAttemptToken? = null
     private var activeFallbackClaimToken: PlaybackAttemptToken? = null
@@ -28,7 +36,7 @@ internal class AlarmPlaybackAttemptAuthority {
     @Synchronized
     fun mintNextToken(generation: AlarmGeneration): PlaybackAttemptToken {
         sequenceCounter++
-        val newToken = PlaybackAttemptToken(generation, sequenceCounter)
+        val newToken = PlaybackAttemptToken(generation, sequenceCounter, authorityId)
         activeAttemptToken = newToken
         activeFallbackClaimToken = null
         return newToken
@@ -114,27 +122,43 @@ internal class AlarmPlaybackAttemptAuthority {
     }
 
     /**
-     * Atomically validates AND consumes a fallback handoff claim.
+     * Atomically validates AND consumes a fallback handoff claim,
+     * AND mints/activates the new fallback attempt token in a single atomic operation.
+     *
      * Succeeds ONLY IF:
      * 1. currentGen matches handoffToken.generation 100%.
      * 2. activeFallbackClaimToken == handoffToken.
      *
-     * Clears activeFallbackClaimToken = null upon consumption and returns true;
-     * returns false if denied or superseded.
+     * Clears activeFallbackClaimToken = null and activates new fallback token upon consumption;
+     * returns new fallback token if successful, or null if denied or superseded.
+     */
+    @Synchronized
+    fun tryConsumeFallbackHandoffAndActivate(
+        currentGen: AlarmGeneration?,
+        handoffToken: PlaybackAttemptToken
+    ): PlaybackAttemptToken? {
+        if (currentGen == null || !currentGen.matches(handoffToken.generation)) {
+            return null
+        }
+        if (activeFallbackClaimToken != handoffToken) {
+            return null
+        }
+        activeFallbackClaimToken = null
+        sequenceCounter++
+        val fallbackToken = PlaybackAttemptToken(handoffToken.generation, sequenceCounter, authorityId)
+        activeAttemptToken = fallbackToken
+        return fallbackToken
+    }
+
+    /**
+     * Helper delegating to tryConsumeFallbackHandoffAndActivate for boolean checks.
      */
     @Synchronized
     fun tryConsumeFallbackHandoff(
         currentGen: AlarmGeneration?,
         handoffToken: PlaybackAttemptToken
     ): Boolean {
-        if (currentGen == null || !currentGen.matches(handoffToken.generation)) {
-            return false
-        }
-        if (activeFallbackClaimToken != handoffToken) {
-            return false
-        }
-        activeFallbackClaimToken = null
-        return true
+        return tryConsumeFallbackHandoffAndActivate(currentGen, handoffToken) != null
     }
 
     /**
@@ -167,8 +191,8 @@ internal class AlarmPlaybackAttemptAuthority {
 }
 
 /**
-     * Global decision helpers delegating to global default or instance-bound authority.
-     */
+ * Global decision helpers delegating to global default or instance-bound authority.
+ */
 internal object AlarmServiceCallbackPolicy {
     val defaultAuthority = AlarmPlaybackAttemptAuthority()
 
@@ -198,6 +222,11 @@ internal object AlarmServiceCallbackPolicy {
         currentGen: AlarmGeneration?,
         handoffToken: PlaybackAttemptToken
     ) = defaultAuthority.tryConsumeFallbackHandoff(currentGen, handoffToken)
+
+    fun tryConsumeFallbackHandoffAndActivate(
+        currentGen: AlarmGeneration?,
+        handoffToken: PlaybackAttemptToken
+    ) = defaultAuthority.tryConsumeFallbackHandoffAndActivate(currentGen, handoffToken)
 
     fun shouldReleaseGlobalPlayback(
         currentGen: AlarmGeneration?,

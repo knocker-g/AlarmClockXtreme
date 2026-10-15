@@ -1586,7 +1586,8 @@ class AlarmService : Service() {
         alarm: Alarm,
         handoffToken: PlaybackAttemptToken
     ) {
-        if (!playbackAuthority.tryConsumeFallbackHandoff(currentGeneration(), handoffToken)) return
+        val fallbackToken = playbackAuthority.tryConsumeFallbackHandoffAndActivate(currentGeneration(), handoffToken)
+            ?: return
         cancelPlaybackWatchdog()
         forceBuiltInSpeakerForFallback = true
         val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager
@@ -1605,9 +1606,9 @@ class AlarmService : Service() {
                     status = AlarmIncidentEvent.STATUS_FAILED,
                     reasonCode = "MEDIA3_FALLBACK_VOLUME_FAILED_${error.javaClass.simpleName}",
                     source = "AlarmService",
-                    alarmId = handoffToken.generation.alarmId,
-                    fireId = handoffToken.generation.fireId,
-                    scheduledAt = handoffToken.generation.scheduledAt
+                    alarmId = fallbackToken.generation.alarmId,
+                    fireId = fallbackToken.generation.fireId,
+                    scheduledAt = fallbackToken.generation.scheduledAt
                 )
             }
         }
@@ -1616,24 +1617,25 @@ class AlarmService : Service() {
             status = AlarmIncidentEvent.STATUS_FAILED,
             reasonCode = "MEDIA3_FALLBACK_ROUTING_FORCED",
             source = "AlarmService",
-            alarmId = handoffToken.generation.alarmId,
-            fireId = handoffToken.generation.fireId,
-            scheduledAt = handoffToken.generation.scheduledAt
+            alarmId = fallbackToken.generation.alarmId,
+            fireId = fallbackToken.generation.fireId,
+            scheduledAt = fallbackToken.generation.scheduledAt
         )
-        startMedia3DefaultFallbackInternal(alarm, handoffToken)
+        startMedia3DefaultFallbackInternal(alarm, fallbackToken)
     }
 
     private fun startMedia3DefaultFallback(
         alarm: Alarm,
         handoffToken: PlaybackAttemptToken
     ) {
-        if (!playbackAuthority.tryConsumeFallbackHandoff(currentGeneration(), handoffToken)) return
-        startMedia3DefaultFallbackInternal(alarm, handoffToken)
+        val fallbackToken = playbackAuthority.tryConsumeFallbackHandoffAndActivate(currentGeneration(), handoffToken)
+            ?: return
+        startMedia3DefaultFallbackInternal(alarm, fallbackToken)
     }
 
     private fun startMedia3DefaultFallbackInternal(
         alarm: Alarm,
-        handoffToken: PlaybackAttemptToken
+        fallbackToken: PlaybackAttemptToken
     ) {
         cancelPlaybackWatchdog()
         recordIncidentAsync(
@@ -1641,17 +1643,32 @@ class AlarmService : Service() {
             status = AlarmIncidentEvent.STATUS_REQUESTED,
             reasonCode = "MEDIA3_DEFAULT_FALLBACK_TO_LEGACY",
             source = "AlarmService",
-            alarmId = handoffToken.generation.alarmId,
-            fireId = handoffToken.generation.fireId,
-            scheduledAt = handoffToken.generation.scheduledAt
+            alarmId = fallbackToken.generation.alarmId,
+            fireId = fallbackToken.generation.fireId,
+            scheduledAt = fallbackToken.generation.scheduledAt
         )
         startMediaPlayerAudioInternal(
             alarm.copy(
                 internetRadioUrl = "",
                 spotifyUri = ""
             ),
-            handoffToken.generation
+            fallbackToken.generation,
+            preActivatedToken = fallbackToken
         )
+    }
+
+    private fun startAudioWithToken(
+        alarm: Alarm,
+        token: PlaybackAttemptToken
+    ) {
+        if (!playbackAuthority.shouldProcessCallback(currentGeneration(), token)) return
+        val pooledAlarm = alarm.ringtonePool.split(",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .takeIf { it.isNotEmpty() }
+            ?.let { pool -> alarm.copy(ringtoneUri = pool.random()) }
+            ?: alarm
+        startMediaPlayerAudioInternal(pooledAlarm, token.generation, preActivatedToken = token)
     }
 
     @AndroidXOptIn(UnstableApi::class)
@@ -1736,8 +1753,12 @@ class AlarmService : Service() {
         audioManager.setStreamVolume(AudioManager.STREAM_ALARM, targetVol, 0)
     }
 
-    private fun startMediaPlayerAudioInternal(alarm: Alarm, startGen: AlarmGeneration) {
-        val attemptToken = nextPlaybackToken(startGen)
+    private fun startMediaPlayerAudioInternal(
+        alarm: Alarm,
+        startGen: AlarmGeneration,
+        preActivatedToken: PlaybackAttemptToken? = null
+    ) {
+        val attemptToken = preActivatedToken ?: nextPlaybackToken(startGen)
         // v1.2.0: Internet radio stream. Defensive: only accept http(s) URLs so a
         // malformed setting can't crash MediaPlayer with an unknown scheme.
         val radioUrl = alarm.internetRadioUrl.trim()
@@ -1799,8 +1820,11 @@ class AlarmService : Service() {
                             scheduledAt = startGen.scheduledAt
                         )
                         if (handoff != null) {
-                            serviceScope.launch {
-                                startAudio(alarm.copy(internetRadioUrl = ""), startGen)
+                            val fallbackToken = playbackAuthority.tryConsumeFallbackHandoffAndActivate(currentGeneration(), handoff)
+                            if (fallbackToken != null) {
+                                serviceScope.launch {
+                                    startAudioWithToken(alarm.copy(internetRadioUrl = ""), fallbackToken)
+                                }
                             }
                         }
                         true

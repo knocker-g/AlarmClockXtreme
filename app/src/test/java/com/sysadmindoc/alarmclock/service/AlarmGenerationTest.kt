@@ -256,10 +256,11 @@ class AlarmGenerationTest {
         assertEquals(ActionAdmissionDecision.REJECT_RESTART_NO_EVIDENCE, decisionNoEvidence)
     }
 
-    // --- Production Callback & Playback Attempt Authority Tests ---
+    // --- Required 8 Focused Authority & Fallback Activation Tests ---
 
     @Test
-    fun authorityInstancesAreIsolatedAndIndependent() {
+    fun authorityTokensAreRejectedCrossAuthorityEvenWithIdenticalGenerationAndSequence() {
+        // Test Scenario 1: Tokens minted by different Authorities are rejected cross-authority
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
 
         val auth1 = AlarmPlaybackAttemptAuthority()
@@ -268,169 +269,156 @@ class AlarmGenerationTest {
         val token1 = auth1.mintNextToken(genA)
         val token2 = auth2.mintNextToken(genA)
 
-        // Auth 1 active token is token1; Auth 2 active token is token2
-        assertEquals(token1, auth1.activeAttemptToken())
-        assertEquals(token2, auth2.activeAttemptToken())
+        // Same generation, same attemptSequence=1, but different authorityId!
+        assertEquals(token1.generation, token2.generation)
+        assertEquals(token1.attemptSequence, token2.attemptSequence)
+        assertFalse(token1.authorityId == token2.authorityId)
 
-        // Invalidating Auth 1 does NOT invalidate Auth 2
-        auth1.invalidateTokens()
-        assertNull(auth1.activeAttemptToken())
-        assertEquals(token2, auth2.activeAttemptToken())
-
-        // Auth 1 rejects token2, Auth 2 accepts token2
+        // Auth 1 accepts token1, REJECTS token2 while both authorities are concurrently active
+        assertTrue(auth1.shouldProcessCallback(genA, token1))
         assertFalse(auth1.shouldProcessCallback(genA, token2))
+
+        // Auth 2 accepts token2, REJECTS token1
         assertTrue(auth2.shouldProcessCallback(genA, token2))
+        assertFalse(auth2.shouldProcessCallback(genA, token1))
     }
 
     @Test
-    fun callbackPolicyRejectsMismatchedGenerationOrAttemptToken() {
+    fun claimAndConsumeAreOneShotAndRejectDuplicates() {
+        // Test Scenario 2: Double claim and double consume rejection
+        val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-        val genB = AlarmGeneration(42L, 2000L, "fire-42-b")
+        val tokenA = auth.mintNextToken(genA)
 
-        val tokenA1 = AlarmServiceCallbackPolicy.mintNextToken(genA)
-        val playerA = FakeAlarmPlaybackPlayer()
-
-        AlarmServiceCallbackPolicy.mintNextToken(genB)
-        val playerB = FakeAlarmPlaybackPlayer()
-
-        // Test 5: Different Generation callback -> Denied
-        assertFalse(
-            AlarmServiceCallbackPolicy.shouldProcessCallback(
-                currentGen = genB,
-                callbackToken = tokenA1,
-                currentPlayback = playerB,
-                callbackPlayback = playerA
-            )
-        )
-
-        // Test 4: Same Generation, different Player / Attempt Token -> Denied
-        AlarmServiceCallbackPolicy.mintNextToken(genA)
-        assertFalse(
-            AlarmServiceCallbackPolicy.shouldProcessCallback(
-                currentGen = genA,
-                callbackToken = tokenA1,
-                currentPlayback = playerB,
-                callbackPlayback = playerA
-            )
-        )
-    }
-
-    @Test
-    fun callbackPolicyHandlesLegitimateFailureHandoffAndDoubleClaim() {
-        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-        val tokenA = AlarmServiceCallbackPolicy.mintNextToken(genA)
-
-        // Test 1: Legitimate Media3 failure -> Single Claim -> Fallback succeeds
-        val handoff1 = AlarmServiceCallbackPolicy.tryClaimFallbackHandoff(
-            currentGen = genA,
-            failingToken = tokenA
-        )
+        // First claim succeeds
+        val handoff1 = auth.tryClaimFallbackHandoff(genA, tokenA)
         assertNotNull(handoff1)
-        assertEquals(tokenA, handoff1)
 
-        // Test 2: Double claim for same token -> Second claim denied
-        val handoff2 = AlarmServiceCallbackPolicy.tryClaimFallbackHandoff(
-            currentGen = genA,
-            failingToken = tokenA
-        )
+        // Second claim for same token fails (double claim)
+        val handoff2 = auth.tryClaimFallbackHandoff(genA, tokenA)
         assertNull(handoff2)
 
-        // Test 6: Player released after valid claim -> Fallback handoff stays valid and can be consumed
-        val isFallbackAllowed = AlarmServiceCallbackPolicy.tryConsumeFallbackHandoff(
-            currentGen = genA,
-            handoffToken = handoff1!!
-        )
-        assertTrue(isFallbackAllowed)
+        // First consume succeeds
+        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff1!!)
+        assertNotNull(fallbackToken)
 
-        // Second consumption fails (already consumed)
-        assertFalse(
-            AlarmServiceCallbackPolicy.tryConsumeFallbackHandoff(
-                currentGen = genA,
-                handoffToken = handoff1
-            )
-        )
+        // Second consume fails (double consume)
+        val secondConsumeToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff1)
+        assertNull(secondConsumeToken)
     }
 
     @Test
-    fun callbackPolicyRejectsFallbackIfReplacedBeforeExecution() {
+    fun newAttemptBeforeCommitRejectsFallbackClaimAndConsume() {
+        // Test Scenario 3: Commit前に新Attemptへ切替 → 旧Fallback拒否
+        val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-        val tokenA = AlarmServiceCallbackPolicy.mintNextToken(genA)
+        val tokenA = auth.mintNextToken(genA)
 
-        // Test 1: Claim handoff
-        val handoff = AlarmServiceCallbackPolicy.tryClaimFallbackHandoff(
-            currentGen = genA,
-            failingToken = tokenA
-        )
+        // Player B or new attempt started BEFORE claim or commit
+        val tokenB = auth.mintNextToken(genA)
+
+        // Claim for old tokenA rejected because tokenB is now active
+        val claim = auth.tryClaimFallbackHandoff(genA, tokenA)
+        assertNull(claim)
+    }
+
+    @Test
+    fun newAttemptBetweenCommitAndActivationRejectsOldFallbackSideEffects() {
+        // Test Scenario 4: Commit後・Activation前に新Attemptへ切替 → 旧Fallbackの副作用拒否
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
+
+        // Claim handoff
+        val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
         assertNotNull(handoff)
 
-        // Test 3: Claimed handoff but another Player B installed before fallback executes
-        AlarmServiceCallbackPolicy.mintNextToken(genA) // New attempt tokenB for same generation
+        // A new attempt is minted BEFORE fallback consume+activate runs
+        val tokenB = auth.mintNextToken(genA)
 
-        val isFallbackAllowed = AlarmServiceCallbackPolicy.tryConsumeFallbackHandoff(
-            currentGen = genA,
-            handoffToken = handoff!!
-        )
-        assertFalse(isFallbackAllowed)
+        // Consume and activate for old handoff is rejected!
+        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
+        assertNull(fallbackToken)
+
+        // Active token remains tokenB!
+        assertEquals(tokenB, auth.activeAttemptToken())
     }
 
     @Test
-    fun callbackPolicyHandlesWatchdogSpotifySetupFailureAndInvalidation() {
+    fun legitimateFallbackActivationSucceeds() {
+        // Test Scenario 5: 正当なFallback Activation成功
+        val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
-        val tokenA1 = AlarmServiceCallbackPolicy.mintNextToken(genA)
-        val playerA = FakeAlarmPlaybackPlayer()
+        val tokenA = auth.mintNextToken(genA)
 
-        AlarmServiceCallbackPolicy.mintNextToken(genA)
-        val playerB = FakeAlarmPlaybackPlayer()
+        val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
+        assertNotNull(handoff)
 
-        // Test 7: Watchdog old owner cancellation / callback -> Denied
-        assertFalse(
-            AlarmServiceCallbackPolicy.shouldProcessCallback(
-                currentGen = genA,
-                callbackToken = tokenA1,
-                currentPlayback = playerB,
-                callbackPlayback = playerA
-            )
-        )
+        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
+        assertNotNull(fallbackToken)
 
-        // Test 8: Spotify no-player fallback uses attempt token and succeeds
-        val spotifyToken = AlarmServiceCallbackPolicy.mintNextToken(genA)
-        val spotifyCallbackAllowed = AlarmServiceCallbackPolicy.shouldProcessCallback(
-            currentGen = genA,
-            callbackToken = spotifyToken,
-            currentPlayback = null,
-            callbackPlayback = null
-        )
-        assertTrue(spotifyCallbackAllowed)
+        // Fallback token is now active and authorized
+        assertEquals(fallbackToken, auth.activeAttemptToken())
+        assertTrue(auth.shouldProcessCallback(genA, fallbackToken!!))
+    }
 
-        val spotifyHandoff = AlarmServiceCallbackPolicy.tryClaimFallbackHandoff(
-            currentGen = genA,
-            failingToken = spotifyToken
-        )
-        assertNotNull(spotifyHandoff)
+    @Test
+    fun staleLegacyRadioFallbackIsExpiredAndRejected() {
+        // Test Scenario 6: Legacy Radioの遅延Fallback失効
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenRadio = auth.mintNextToken(genA)
 
-        // Test 9: Player creation/setup exception -> Claim succeeds iff activeToken matches
-        val setupExceptionHandoffStale = AlarmServiceCallbackPolicy.tryClaimFallbackHandoff(
-            currentGen = genA,
-            failingToken = tokenA1
-        )
-        assertNull(setupExceptionHandoffStale)
+        val handoff = auth.tryClaimFallbackHandoff(genA, tokenRadio)
+        assertNotNull(handoff)
 
-        // Test 10: Dismiss / Snooze / New START -> Token invalidation
-        AlarmServiceCallbackPolicy.invalidateTokens()
+        // Radio error claims fallback, but user dismisses or new alarm starts before fallback coroutine runs
+        auth.invalidateTokens()
 
-        val postDismissCallbackAllowed = AlarmServiceCallbackPolicy.shouldProcessCallback(
-            currentGen = null,
-            callbackToken = spotifyToken,
-            currentPlayback = null,
-            callbackPlayback = null
-        )
-        assertFalse(postDismissCallbackAllowed)
+        // Fallback activation is rejected after invalidation
+        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
+        assertNull(fallbackToken)
+    }
 
-        val postDismissHandoffAllowed = AlarmServiceCallbackPolicy.tryClaimFallbackHandoff(
-            currentGen = genA,
-            failingToken = spotifyToken
-        )
-        assertNull(postDismissHandoffAllowed)
+    @Test
+    fun legitimateLegacyRadioFallbackSucceeds() {
+        // Test Scenario 7: 正当なLegacy Radio Fallback成功
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenRadio = auth.mintNextToken(genA)
+
+        val handoff = auth.tryClaimFallbackHandoff(genA, tokenRadio)
+        assertNotNull(handoff)
+
+        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
+        assertNotNull(fallbackToken)
+
+        // Fallback player callbacks are accepted under fallbackToken
+        val player = FakeAlarmPlaybackPlayer()
+        assertTrue(auth.shouldProcessCallback(genA, fallbackToken!!, currentPlayback = player, callbackPlayback = player))
+    }
+
+    @Test
+    fun oldAttemptWatchdogReleaseAndVolumeMutationsAreRejected() {
+        // Test Scenario 8: 旧AttemptのWatchdogキャンセル・Player解放・音量変更拒否
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+
+        val token1 = auth.mintNextToken(genA)
+        val player1 = FakeAlarmPlaybackPlayer()
+
+        // Player 2 arrives
+        val token2 = auth.mintNextToken(genA)
+        val player2 = FakeAlarmPlaybackPlayer()
+
+        // Old player1 callback / watchdog tries to process callbacks -> REJECTED
+        assertFalse(auth.shouldProcessCallback(genA, token1, currentPlayback = player2, callbackPlayback = player1))
+
+        // Old player1 tries to release global playback -> REJECTED
+        assertFalse(auth.shouldReleaseGlobalPlayback(genA, token1, currentPlayback = player2, targetPlayback = player1))
+
+        // Old player1 tries to claim fallback -> REJECTED
+        assertNull(auth.tryClaimFallbackHandoff(genA, token1))
     }
 
     @Test
