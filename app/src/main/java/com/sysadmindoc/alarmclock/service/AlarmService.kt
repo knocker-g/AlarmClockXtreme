@@ -195,8 +195,6 @@ class AlarmService : Service() {
     // Fires the guaranteed default tone if the Media3 player never actually
     // starts (stuck buffering with no onPlayerError) so the alarm can't ring silently.
     private var playbackWatchdogJob: Job? = null
-    @Volatile
-    private var forceBuiltInSpeakerForFallback: Boolean = false
     private var currentAlarmId: Long = -1
     @Volatile
     private var currentAlarmVolume: Int = 100
@@ -2777,7 +2775,6 @@ class AlarmService : Service() {
         vibrator = null
         unregisterCallObserver()
         callMutedAudio = false
-        forceBuiltInSpeakerForFallback = false
         challengeAudioDuckingActive = false
         challengeAudioDuckPercent = 35
         playbackRampGain = 1f

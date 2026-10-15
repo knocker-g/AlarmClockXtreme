@@ -441,6 +441,190 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun newAttemptBeforeCommitRejectsFallbackClaimAndConsume() {
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
+
+        // New attempt started BEFORE claim or commit
+        auth.mintNextToken(genA)
+
+        // Claim for old tokenA rejected because new token is now active
+        val claim = auth.tryClaimFallbackHandoff(genA, tokenA)
+        assertNull(claim)
+    }
+
+    @Test
+    fun postTokenActivationSupersessionRejectsPlayerPublicationAndAllSideEffects() {
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
+
+        val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
+        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
+        assertNotNull(fallbackToken)
+
+        // AFTER fallbackToken is minted/activated, a superseding attempt tokenB is minted
+        val tokenB = auth.mintNextToken(genA)
+
+        var playerPublished = false
+        val publishSuccess = auth.publishPlaybackIfActive(genA, fallbackToken!!) {
+            playerPublished = true
+        }
+        assertFalse(publishSuccess)
+        assertFalse(playerPublished)
+
+        var watchdogCancelled = false
+        val watchdogSuccess = auth.cancelWatchdogIfActive(genA, fallbackToken) {
+            watchdogCancelled = true
+        }
+        assertFalse(watchdogSuccess)
+        assertFalse(watchdogCancelled)
+
+        var audioMutated = false
+        val audioSuccess = auth.shouldMutateAudio(genA, fallbackToken)
+        if (audioSuccess) {
+            audioMutated = true
+        }
+        assertFalse(audioSuccess)
+        assertFalse(audioMutated)
+
+        assertEquals(tokenB, auth.activeAttemptToken())
+    }
+
+    @Test
+    fun attemptBoundRoutingTokenIsClearedOnNewAttempt() {
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
+
+        val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
+        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
+        assertNotNull(fallbackToken)
+
+        assertTrue(auth.setRoutingAttemptToken(fallbackToken!!))
+        assertTrue(auth.isRoutingActive(fallbackToken))
+
+        val tokenB = auth.mintNextToken(genA)
+
+        assertFalse(auth.isRoutingActive(fallbackToken))
+        assertFalse(auth.isRoutingActive(tokenB))
+    }
+
+    @Test
+    fun postTokenActivationSupersessionRejectsOldWatchdogCancellationAndPreservesNewAttemptWatchdog() {
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
+
+        val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
+        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
+        assertNotNull(fallbackToken)
+
+        auth.mintNextToken(genA)
+
+        var cancelledWatchdog = false
+        val cancelResult = auth.cancelWatchdogIfActive(genA, fallbackToken!!) {
+            cancelledWatchdog = true
+        }
+        assertFalse(cancelResult)
+        assertFalse(cancelledWatchdog)
+
+        val mutateResult = auth.shouldMutateAudio(genA, fallbackToken)
+        assertFalse(mutateResult)
+    }
+
+    @Test
+    fun legitimateFallbackTokenSuccessfullyPublishesPlayerAndExecutesSideEffects() {
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
+
+        val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
+        assertNotNull(handoff)
+
+        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
+        assertNotNull(fallbackToken)
+
+        var publishedPlayer: AlarmPlaybackPlayer? = null
+        val fakePlayer = FakeAlarmPlaybackPlayer()
+
+        val publishSuccess = auth.publishPlaybackIfActive(genA, fallbackToken!!) {
+            publishedPlayer = fakePlayer
+        }
+
+        assertTrue(publishSuccess)
+        assertEquals(fakePlayer, publishedPlayer)
+        assertEquals(fallbackToken, auth.activeAttemptToken())
+    }
+
+    @Test
+    fun staleLegacyRadioFallbackIsExpiredAndRejected() {
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenRadio = auth.mintNextToken(genA)
+
+        val handoff = auth.tryClaimFallbackHandoff(genA, tokenRadio)
+        assertNotNull(handoff)
+
+        auth.invalidateTokens()
+
+        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
+        assertNull(fallbackToken)
+    }
+
+    @Test
+    fun legitimateLegacyRadioFallbackSucceeds() {
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenRadio = auth.mintNextToken(genA)
+
+        val handoff = auth.tryClaimFallbackHandoff(genA, tokenRadio)
+        assertNotNull(handoff)
+
+        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
+        assertNotNull(fallbackToken)
+
+        val player = FakeAlarmPlaybackPlayer()
+        assertTrue(auth.shouldProcessCallback(genA, fallbackToken!!, currentPlayback = player, callbackPlayback = player))
+    }
+
+    @Test
+    fun dismissSnoozeAndNewStartInvalidatePostActivationFallback() {
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val tokenA = auth.mintNextToken(genA)
+
+        val handoff = auth.tryClaimFallbackHandoff(genA, tokenA)
+        val fallbackToken = auth.tryConsumeFallbackHandoffAndActivate(genA, handoff!!)
+
+        auth.invalidateTokens()
+
+        var sideEffectExecuted = false
+        val executed = auth.executeIfActive(genA, fallbackToken!!) {
+            sideEffectExecuted = true
+        }
+        assertFalse(executed)
+        assertFalse(sideEffectExecuted)
+    }
+
+    @Test
+    fun oldAttemptWatchdogReleaseAndVolumeMutationsAreRejected() {
+        val auth = AlarmPlaybackAttemptAuthority()
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+
+        val token1 = auth.mintNextToken(genA)
+        val player1 = FakeAlarmPlaybackPlayer()
+
+        val token2 = auth.mintNextToken(genA)
+        val player2 = FakeAlarmPlaybackPlayer()
+
+        assertFalse(auth.shouldProcessCallback(genA, token1, currentPlayback = player2, callbackPlayback = player1))
+        assertFalse(auth.shouldReleaseGlobalPlayback(genA, token1, currentPlayback = player2, targetPlayback = player1))
+        assertNull(auth.tryClaimFallbackHandoff(genA, token1))
+    }
+
+    @Test
     fun callbackPolicyHandlesAtomicConcurrentClaimsOnMainLooper() {
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val tokenA = AlarmServiceCallbackPolicy.mintNextToken(genA)
