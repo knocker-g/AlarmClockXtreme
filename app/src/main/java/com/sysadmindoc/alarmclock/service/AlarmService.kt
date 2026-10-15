@@ -1908,6 +1908,7 @@ class AlarmService : Service() {
                 return
             }
             configuredPlayback = playback
+            val holder = PlayerCallbackStateHolder(attemptToken, playback, isDefaultFallbackStage = false)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 forcedSpeakerDevice()?.let { runCatching { player.setPreferredDevice(it) } }
             }
@@ -1923,11 +1924,11 @@ class AlarmService : Service() {
                     }
                 }
                 setOnPreparedListener { mp ->
-                    runCatching {
-                        val published = playbackAuthority.publishPlaybackIfActive(currentGeneration(), attemptToken) {
-                            alarmPlayback = playback
-                        }
-                        if (published) {
+                    AlarmPlayerCallbackSeam.handleOnPrepared(
+                        authority = playbackAuthority,
+                        currentGenSupplier = { currentGeneration() },
+                        holder = holder,
+                        mediaPlayerStartAction = {
                             seekToRandomPoolOffset(alarm, playback)
                             if (alarm.overrideSystemVolume) {
                                 if (playbackAuthority.shouldMutateAudio(currentGeneration(), attemptToken)) {
@@ -1970,40 +1971,30 @@ class AlarmService : Service() {
                                     }
                                 }
                             }
-                        } else {
-                            try { playback.stopAndRelease() } catch (_: Exception) {}
-                        }
-                    }.onFailure { prepError ->
-                        Log.w(TAG, "Failed during onPrepared for configured alarm sound", prepError)
-                        try { playback.stopAndRelease() } catch (_: Exception) {}
-                        if (playbackAuthority.shouldReleaseGlobalPlayback(currentGeneration(), attemptToken, alarmPlayback, playback)) {
-                            alarmPlayback = null
-                        }
-                        val handoff = playbackAuthority.tryClaimFallbackHandoff(currentGeneration(), attemptToken)
-                        if (handoff != null) {
-                            val fallbackToken = playbackAuthority.tryConsumeFallbackHandoffAndActivate(currentGeneration(), handoff)
-                            if (fallbackToken != null) {
-                                serviceScope.launch(Dispatchers.Main.immediate) {
-                                    startDefaultFallbackAsync(alarm, startGen, fallbackToken)
-                                }
-                            }
-                        }
-                    }
-                }
-                setOnErrorListener { mp, _, _ ->
-                    try { playback.stopAndRelease() } catch (_: Exception) {}
-                    if (playbackAuthority.shouldReleaseGlobalPlayback(currentGeneration(), attemptToken, alarmPlayback, playback)) {
-                        alarmPlayback = null
-                    }
-                    val handoff = playbackAuthority.tryClaimFallbackHandoff(currentGeneration(), attemptToken)
-                    if (handoff != null) {
-                        val fallbackToken = playbackAuthority.tryConsumeFallbackHandoffAndActivate(currentGeneration(), handoff)
-                        if (fallbackToken != null) {
+                        },
+                        currentPlaybackSupplier = { alarmPlayback },
+                        publishPlaybackConsumer = { alarmPlayback = it },
+                        clearPlaybackConsumer = { alarmPlayback = null },
+                        triggerFallbackAction = { fallbackToken ->
                             serviceScope.launch(Dispatchers.Main.immediate) {
                                 startDefaultFallbackAsync(alarm, startGen, fallbackToken)
                             }
                         }
-                    }
+                    )
+                }
+                setOnErrorListener { mp, _, _ ->
+                    AlarmPlayerCallbackSeam.handleOnError(
+                        authority = playbackAuthority,
+                        currentGenSupplier = { currentGeneration() },
+                        holder = holder,
+                        currentPlaybackSupplier = { alarmPlayback },
+                        clearPlaybackConsumer = { alarmPlayback = null },
+                        triggerFallbackAction = { fallbackToken ->
+                            serviceScope.launch(Dispatchers.Main.immediate) {
+                                startDefaultFallbackAsync(alarm, startGen, fallbackToken)
+                            }
+                        }
+                    )
                     true
                 }
                 prepareAsync()
@@ -2042,6 +2033,7 @@ class AlarmService : Service() {
     ) {
         if (!playbackAuthority.shouldProcessCallback(currentGeneration(), fallbackToken)) return
         var fallbackPlayback: AlarmPlaybackPlayer? = null
+        var fallbackHolder: PlayerCallbackStateHolder? = null
         try {
             val fallbackUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
                 ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
@@ -2049,6 +2041,8 @@ class AlarmService : Service() {
                 val player = MediaPlayer()
                 val playback = MediaPlayerAlarmPlaybackPlayer(player)
                 fallbackPlayback = playback
+                val holder = PlayerCallbackStateHolder(fallbackToken, playback, isDefaultFallbackStage = true)
+                fallbackHolder = holder
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     forcedSpeakerDevice()?.let { runCatching { player.setPreferredDevice(it) } }
                 }
@@ -2057,11 +2051,11 @@ class AlarmService : Service() {
                     setDataSource(applicationContext, fallbackUri)
                     isLooping = true
                     setOnPreparedListener { mp ->
-                        runCatching {
-                            val published = playbackAuthority.publishPlaybackIfActive(currentGeneration(), fallbackToken) {
-                                alarmPlayback = playback
-                            }
-                            if (published) {
+                        AlarmPlayerCallbackSeam.handleOnPrepared(
+                            authority = playbackAuthority,
+                            currentGenSupplier = { currentGeneration() },
+                            holder = holder,
+                            mediaPlayerStartAction = {
                                 playbackRampGain = 1f
                                 val gain = alarmPlaybackGain(
                                     callMuted = callMutedAudio,
@@ -2082,22 +2076,22 @@ class AlarmService : Service() {
                                     fireId = startGen.fireId,
                                     scheduledAt = startGen.scheduledAt
                                 )
-                            } else {
-                                try { playback.stopAndRelease() } catch (_: Exception) {}
-                            }
-                        }.onFailure { prepError ->
-                            Log.w(TAG, "Failed during onPrepared for default fallback sound", prepError)
-                            try { playback.stopAndRelease() } catch (_: Exception) {}
-                            if (playbackAuthority.shouldReleaseGlobalPlayback(currentGeneration(), fallbackToken, alarmPlayback, playback)) {
-                                alarmPlayback = null
-                            }
-                        }
+                            },
+                            currentPlaybackSupplier = { alarmPlayback },
+                            publishPlaybackConsumer = { alarmPlayback = it },
+                            clearPlaybackConsumer = { alarmPlayback = null },
+                            triggerFallbackAction = {}
+                        )
                     }
                     setOnErrorListener { mp, _, _ ->
-                        try { playback.stopAndRelease() } catch (_: Exception) {}
-                        if (playbackAuthority.shouldReleaseGlobalPlayback(currentGeneration(), fallbackToken, alarmPlayback, playback)) {
-                            alarmPlayback = null
-                        }
+                        AlarmPlayerCallbackSeam.handleOnError(
+                            authority = playbackAuthority,
+                            currentGenSupplier = { currentGeneration() },
+                            holder = holder,
+                            currentPlaybackSupplier = { alarmPlayback },
+                            clearPlaybackConsumer = { alarmPlayback = null },
+                            triggerFallbackAction = {}
+                        )
                         recordIncidentAsync(
                             type = AlarmIncidentEvent.TYPE_AUDIO,
                             status = AlarmIncidentEvent.STATUS_FAILED,
@@ -2114,7 +2108,11 @@ class AlarmService : Service() {
             }
         } catch (fallbackError: Exception) {
             Log.w(TAG, "Failed to initialize default fallback sound", fallbackError)
-            try { fallbackPlayback?.stopAndRelease() } catch (_: Exception) {}
+            if (fallbackHolder != null) {
+                fallbackHolder.markTerminalAndRelease()
+            } else {
+                try { fallbackPlayback?.stopAndRelease() } catch (_: Exception) {}
+            }
             if (playbackAuthority.shouldReleaseGlobalPlayback(currentGeneration(), fallbackToken, alarmPlayback, fallbackPlayback)) {
                 alarmPlayback = null
             }

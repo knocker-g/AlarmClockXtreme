@@ -1,6 +1,7 @@
 package com.sysadmindoc.alarmclock.service
 
 import android.os.Looper
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 internal data class PlaybackAttemptToken(
@@ -8,6 +9,111 @@ internal data class PlaybackAttemptToken(
     val attemptSequence: Long,
     val authorityId: Long = 0L
 )
+
+internal class PlayerCallbackStateHolder(
+    val token: PlaybackAttemptToken,
+    val player: AlarmPlaybackPlayer,
+    val isDefaultFallbackStage: Boolean = false
+) {
+    private val started = AtomicBoolean(false)
+    private val terminal = AtomicBoolean(false)
+
+    /**
+     * Attempts to mark the player as started.
+     * Returns true ONLY if the player has not entered a terminal state and was not previously started.
+     */
+    fun markStarted(): Boolean {
+        if (terminal.get()) return false
+        return started.compareAndSet(false, true)
+    }
+
+    fun isStarted(): Boolean = started.get()
+
+    /**
+     * Atomically transitions the player into a terminal/released state and stops the player.
+     * Returns true ONLY on the first terminal transition call for this holder instance.
+     */
+    fun markTerminalAndRelease(): Boolean {
+        if (terminal.compareAndSet(false, true)) {
+            try { player.stopAndRelease() } catch (_: Exception) {}
+            return true
+        }
+        return false
+    }
+
+    fun isTerminal(): Boolean = terminal.get()
+}
+
+internal object AlarmPlayerCallbackSeam {
+
+    fun handleOnPrepared(
+        authority: AlarmPlaybackAttemptAuthority,
+        currentGenSupplier: () -> AlarmGeneration?,
+        holder: PlayerCallbackStateHolder,
+        mediaPlayerStartAction: () -> Unit,
+        currentPlaybackSupplier: () -> AlarmPlaybackPlayer?,
+        publishPlaybackConsumer: (AlarmPlaybackPlayer) -> Unit,
+        clearPlaybackConsumer: () -> Unit,
+        triggerFallbackAction: (PlaybackAttemptToken) -> Unit
+    ): Boolean {
+        if (holder.isTerminal()) {
+            return false
+        }
+        return runCatching {
+            var published = false
+            authority.publishPlaybackIfActive(currentGenSupplier(), holder.token) {
+                publishPlaybackConsumer(holder.player)
+                published = true
+            }
+            if (published && holder.markStarted()) {
+                mediaPlayerStartAction()
+                true
+            } else {
+                holder.markTerminalAndRelease()
+                false
+            }
+        }.getOrElse { _ ->
+            holder.markTerminalAndRelease()
+            if (authority.shouldReleaseGlobalPlayback(currentGenSupplier(), holder.token, currentPlaybackSupplier(), holder.player)) {
+                clearPlaybackConsumer()
+            }
+            if (!holder.isDefaultFallbackStage) {
+                val handoff = authority.tryClaimFallbackHandoff(currentGenSupplier(), holder.token)
+                if (handoff != null) {
+                    val fallbackToken = authority.tryConsumeFallbackHandoffAndActivate(currentGenSupplier(), handoff)
+                    if (fallbackToken != null) {
+                        triggerFallbackAction(fallbackToken)
+                    }
+                }
+            }
+            false
+        }
+    }
+
+    fun handleOnError(
+        authority: AlarmPlaybackAttemptAuthority,
+        currentGenSupplier: () -> AlarmGeneration?,
+        holder: PlayerCallbackStateHolder,
+        currentPlaybackSupplier: () -> AlarmPlaybackPlayer?,
+        clearPlaybackConsumer: () -> Unit,
+        triggerFallbackAction: (PlaybackAttemptToken) -> Unit
+    ): Boolean {
+        holder.markTerminalAndRelease()
+        if (authority.shouldReleaseGlobalPlayback(currentGenSupplier(), holder.token, currentPlaybackSupplier(), holder.player)) {
+            clearPlaybackConsumer()
+        }
+        if (!holder.isDefaultFallbackStage) {
+            val handoff = authority.tryClaimFallbackHandoff(currentGenSupplier(), holder.token)
+            if (handoff != null) {
+                val fallbackToken = authority.tryConsumeFallbackHandoffAndActivate(currentGenSupplier(), handoff)
+                if (fallbackToken != null) {
+                    triggerFallbackAction(fallbackToken)
+                }
+            }
+        }
+        return true
+    }
+}
 
 internal class AlarmPlaybackAttemptAuthority {
 
