@@ -1098,7 +1098,19 @@ class AlarmService : Service() {
 
     private fun updateActiveAlarm(snapshot: ActiveAlarmSnapshot?, targetGen: AlarmGeneration? = null) {
         activeAlarm.set(snapshot)
-        preferencesManager.enqueueActiveAlarmUpdate(snapshot, targetGen)
+        val enqueued = preferencesManager.enqueueActiveAlarmUpdate(snapshot, targetGen)
+        if (!enqueued) {
+            Log.w(TAG, "Failed to enqueue active alarm update to PreferencesManager")
+            recordIncidentAsync(
+                type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "ACTIVE_ALARM_PERSISTENCE_ENQUEUE_FAILED",
+                source = "AlarmService",
+                alarmId = snapshot?.alarmId ?: targetGen?.alarmId ?: -1L,
+                fireId = snapshot?.fireId ?: targetGen?.fireId ?: "",
+                scheduledAt = snapshot?.scheduledAt ?: targetGen?.scheduledAt ?: 0L
+            )
+        }
     }
 
     private fun restoreBackupSoundVolume(targetGen: AlarmGeneration? = null) {
