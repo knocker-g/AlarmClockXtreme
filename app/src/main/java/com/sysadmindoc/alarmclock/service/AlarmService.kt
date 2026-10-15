@@ -2346,13 +2346,21 @@ class AlarmService : Service() {
                 ) {
                     // Max snoozes reached - treat as dismiss
                     currentSnoozeCount = alarm.maxSnoozeCount
-                    recordEvent(alarm, AlarmEvent.ACTION_DISMISSED)
-                    recordIncident(
+                    recordEventAsync(
+                        alarm = alarm,
+                        scheduledAt = acceptedGen.scheduledAt,
+                        firedAt = alarmFiredAt,
+                        action = AlarmEvent.ACTION_DISMISSED,
+                        snoozeCount = currentSnoozeCount
+                    )
+                    recordIncidentAsync(
                         type = AlarmIncidentEvent.TYPE_USER_ACTION,
                         status = AlarmIncidentEvent.STATUS_SUCCEEDED,
                         reasonCode = "MAX_SNOOZE_DISMISSED",
                         source = "AlarmService",
-                        alarmId = alarm.id
+                        alarmId = alarm.id,
+                        fireId = acceptedGen.fireId,
+                        scheduledAt = acceptedGen.scheduledAt
                     )
                     // A user who snoozed to the cap is the strongest still-asleep
                     // signal there is — the cap-exhaustion auto-dismiss must not
@@ -2397,13 +2405,21 @@ class AlarmService : Service() {
                             refireAt = snoozeEndAt
                         ))
                     }
-                    recordEvent(alarm, AlarmEvent.ACTION_SNOOZED)
-                    recordIncident(
+                    recordEventAsync(
+                        alarm = alarm,
+                        scheduledAt = acceptedGen.scheduledAt,
+                        firedAt = alarmFiredAt,
+                        action = AlarmEvent.ACTION_SNOOZED,
+                        snoozeCount = currentSnoozeCount
+                    )
+                    recordIncidentAsync(
                         type = AlarmIncidentEvent.TYPE_USER_ACTION,
                         status = AlarmIncidentEvent.STATUS_SUCCEEDED,
                         reasonCode = "SNOOZED",
                         source = "AlarmService",
-                        alarmId = alarm.id
+                        alarmId = alarm.id,
+                        fireId = acceptedGen.fireId,
+                        scheduledAt = acceptedGen.scheduledAt
                     )
                     webhookEvent = WebhookEvent.AlarmSnoozed
                 }
@@ -2422,12 +2438,14 @@ class AlarmService : Service() {
                 )
                 wearNextAlarmBridge.publishAlarmIdle(alarm.id)
             } else {
-                recordIncident(
+                recordIncidentAsync(
                     type = AlarmIncidentEvent.TYPE_USER_ACTION,
                     status = AlarmIncidentEvent.STATUS_FAILED,
                     reasonCode = "SNOOZE_ALARM_ROW_MISSING",
                     source = "AlarmService",
-                    alarmId = alarmId
+                    alarmId = alarmId,
+                    fireId = acceptedGen.fireId,
+                    scheduledAt = acceptedGen.scheduledAt
                 )
                 clearAlarmRuntimeState(alarmId)
                 currentSnoozeCount = 0
@@ -2462,18 +2480,23 @@ class AlarmService : Service() {
             if (alarm != null) {
                 val wakeConfirmFireId = acceptedGen.fireId
                 val wakeConfirmScheduledAt = acceptedGen.scheduledAt
-                recordEvent(
+                recordEventAsync(
                     alarm = alarm,
+                    scheduledAt = acceptedGen.scheduledAt,
+                    firedAt = alarmFiredAt,
                     action = AlarmEvent.ACTION_DISMISSED,
+                    snoozeCount = currentSnoozeCount,
                     challengeRetryCount = challengeRetryCount,
                     challengeSolveTimeMs = challengeSolveTimeMs
                 )
-                recordIncident(
+                recordIncidentAsync(
                     type = AlarmIncidentEvent.TYPE_USER_ACTION,
                     status = AlarmIncidentEvent.STATUS_SUCCEEDED,
                     reasonCode = "DISMISSED",
                     source = "AlarmService",
-                    alarmId = alarm.id
+                    alarmId = alarm.id,
+                    fireId = acceptedGen.fireId,
+                    scheduledAt = acceptedGen.scheduledAt
                 )
                 clearAlarmRuntimeState(alarmId)
                 currentSnoozeCount = 0
@@ -2767,6 +2790,34 @@ class AlarmService : Service() {
             alarmScheduler.handleAlarmFired(alarmId, scheduledAt)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to finalize preempted alarm $alarmId", e)
+        }
+    }
+
+    private fun recordEventAsync(
+        alarm: Alarm,
+        scheduledAt: Long,
+        firedAt: Long,
+        action: String,
+        snoozeCount: Int,
+        challengeRetryCount: Int = 0,
+        challengeSolveTimeMs: Long = 0L
+    ) {
+        val event = AlarmFireDismissContract.alarmEvent(
+            alarm = alarm,
+            scheduledAt = scheduledAt,
+            firedAt = firedAt,
+            action = action,
+            actionAt = System.currentTimeMillis(),
+            challengeRetryCount = challengeRetryCount,
+            challengeSolveTimeMs = challengeSolveTimeMs,
+            snoozeCount = snoozeCount
+        )
+        serviceScope.launch(Dispatchers.IO) {
+            runCatching {
+                eventRepository.record(event)
+            }.onFailure { error ->
+                Log.w(TAG, "Failed to record AlarmEvent async", error)
+            }
         }
     }
 
