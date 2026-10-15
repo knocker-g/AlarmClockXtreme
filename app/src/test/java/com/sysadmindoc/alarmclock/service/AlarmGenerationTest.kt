@@ -946,6 +946,20 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun playerOperationsNoOpAfterRelease() {
+        val mediaPlayer = android.media.MediaPlayer()
+        val player = MediaPlayerAlarmPlaybackPlayer(mediaPlayer)
+
+        player.stopAndRelease()
+        assertTrue(player.isReleased())
+
+        // Operations after release safely no-op without error
+        player.setVolume(0.5f, 0.5f)
+        player.seekTo(100L)
+        assertEquals(0L, player.durationMs())
+    }
+
+    @Test
     fun controllableFakePlayerReleaseIsIdempotentThroughHolder() {
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")

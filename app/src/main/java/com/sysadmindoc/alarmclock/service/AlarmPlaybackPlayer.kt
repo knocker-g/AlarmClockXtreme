@@ -91,7 +91,7 @@ internal class MediaPlayerAlarmPlaybackPlayer(
 
     override fun setVolume(left: Float, right: Float) {
         if (released.get()) return
-        try { player.setVolume(left, right) } catch (_: Exception) {}
+        player.setVolume(left, right)
     }
 
     override fun durationMs(): Long {
@@ -101,7 +101,7 @@ internal class MediaPlayerAlarmPlaybackPlayer(
 
     override fun seekTo(positionMs: Long) {
         if (released.get()) return
-        try { player.seekTo(positionMs.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()) } catch (_: Exception) {}
+        player.seekTo(positionMs.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt())
     }
 
     override fun stopAndRelease() {
@@ -131,7 +131,7 @@ internal class Media3AlarmPlaybackPlayer(
     override fun setVolume(left: Float, right: Float) {
         if (released.get()) return
         PlaybackMainThread.run {
-            try { player.volume = minOf(left, right).coerceIn(0f, 1f) } catch (_: Exception) {}
+            player.volume = minOf(left, right).coerceIn(0f, 1f)
         }
     }
 
@@ -143,7 +143,7 @@ internal class Media3AlarmPlaybackPlayer(
     override fun seekTo(positionMs: Long) {
         if (released.get()) return
         PlaybackMainThread.run {
-            try { player.seekTo(positionMs.coerceAtLeast(0L)) } catch (_: Exception) {}
+            player.seekTo(positionMs.coerceAtLeast(0L))
         }
     }
 
