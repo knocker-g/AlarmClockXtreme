@@ -2248,26 +2248,42 @@ class AlarmService : Service() {
         return AlarmAudioRouting.alarmSonificationAttributes()
     }
 
+    private suspend fun performOwnerGuardedTeardown(acceptedGen: AlarmGeneration): Boolean {
+        return withContext(Dispatchers.Main.immediate) {
+            if (currentGeneration()?.matches(acceptedGen) != true) {
+                Log.i(TAG, "Rejecting owner-guarded teardown for $acceptedGen: active generation is ${currentGeneration()}")
+                recordIncidentAsync(
+                    type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                    status = AlarmIncidentEvent.STATUS_SKIPPED,
+                    reasonCode = "STALE_TEARDOWN_GENERATION_MISMATCH",
+                    source = "AlarmService",
+                    alarmId = acceptedGen.alarmId,
+                    fireId = acceptedGen.fireId,
+                    scheduledAt = acceptedGen.scheduledAt
+                )
+                return@withContext false
+            }
+
+            SnoozeCountdownReceiver.cancel(this@AlarmService)
+            autoSilenceJob?.cancel()
+            autoSilenceJob = null
+            backupSoundJob?.cancel()
+            backupSoundJob = null
+            flashlightJob?.cancel()
+            flashlightJob = null
+            volumeJob?.cancel()
+            volumeJob = null
+            stopAlarmPlayback(acceptedGen)
+            true
+        }
+    }
+
     private suspend fun snoozeAlarm(
         alarmId: Long,
         acceptedGen: AlarmGeneration,
         customMinutes: Int? = null,
         snoozeAtMillis: Long? = null
     ) {
-        if (currentGeneration()?.matches(acceptedGen) != true) {
-            Log.i(TAG, "Rejecting stale snoozeAlarm for $acceptedGen: active generation is ${currentGeneration()}")
-            recordIncidentAsync(
-                type = AlarmIncidentEvent.TYPE_USER_ACTION,
-                status = AlarmIncidentEvent.STATUS_SKIPPED,
-                reasonCode = "STALE_SNOOZE_GENERATION_MISMATCH",
-                source = "AlarmService",
-                alarmId = acceptedGen.alarmId,
-                fireId = acceptedGen.fireId,
-                scheduledAt = acceptedGen.scheduledAt
-            )
-            return
-        }
-
         // v1.11.3 (ALA-88): Block re-snooze if the session is already SNOOZED.
         // Prevents redundant scheduling and potential races or cap-exhaustion bugs.
         val snapshot = activeAlarm.get()
@@ -2280,20 +2296,6 @@ class AlarmService : Service() {
         // by tapping Snooze past the cap, so check before anything is torn
         // down: the alarm has to keep ringing exactly as it was.
         val capped = repository.getById(alarmId)?.sanitized()
-
-        if (currentGeneration()?.matches(acceptedGen) != true) {
-            Log.i(TAG, "Rejecting stale snoozeAlarm post-repository fetch for $acceptedGen: active generation is ${currentGeneration()}")
-            recordIncidentAsync(
-                type = AlarmIncidentEvent.TYPE_USER_ACTION,
-                status = AlarmIncidentEvent.STATUS_SKIPPED,
-                reasonCode = "STALE_SNOOZE_POST_SUSPEND_MISMATCH",
-                source = "AlarmService",
-                alarmId = acceptedGen.alarmId,
-                fireId = acceptedGen.fireId,
-                scheduledAt = acceptedGen.scheduledAt
-            )
-            return
-        }
 
         if (capped != null &&
             SnoozeCapPolicy.outcomeFor(capped, currentSnoozeCount) == SnoozeCapOutcome.REFUSE
@@ -2308,12 +2310,11 @@ class AlarmService : Service() {
             refreshFiringNotification(capped)
             return
         }
-        SnoozeCountdownReceiver.cancel(this)
-        autoSilenceJob?.cancel()
-        backupSoundJob?.cancel()
-        flashlightJob?.cancel()
-        volumeJob?.cancel()
-        stopAlarmPlayback(acceptedGen)
+
+        if (!performOwnerGuardedTeardown(acceptedGen)) {
+            return
+        }
+
         val alarm = repository.getById(alarmId)?.sanitized()
         if (alarm != null) {
             val webhookScheduledAt = currentScheduledAt
@@ -2436,26 +2437,10 @@ class AlarmService : Service() {
         challengeRetryCount: Int = 0,
         challengeSolveTimeMs: Long = 0L
     ) {
-        if (currentGeneration()?.matches(acceptedGen) != true) {
-            Log.i(TAG, "Rejecting stale dismissAlarm for $acceptedGen: active generation is ${currentGeneration()}")
-            recordIncidentAsync(
-                type = AlarmIncidentEvent.TYPE_USER_ACTION,
-                status = AlarmIncidentEvent.STATUS_SKIPPED,
-                reasonCode = "STALE_DISMISS_GENERATION_MISMATCH",
-                source = "AlarmService",
-                alarmId = acceptedGen.alarmId,
-                fireId = acceptedGen.fireId,
-                scheduledAt = acceptedGen.scheduledAt
-            )
+        if (!performOwnerGuardedTeardown(acceptedGen)) {
             return
         }
 
-        SnoozeCountdownReceiver.cancel(this)
-        autoSilenceJob?.cancel()
-        backupSoundJob?.cancel()
-        flashlightJob?.cancel()
-        volumeJob?.cancel()
-        stopAlarmPlayback(acceptedGen)
         val alarm = repository.getById(alarmId)?.sanitized()
         if (alarm != null) {
             val wakeConfirmFireId = currentFireId.ifBlank {

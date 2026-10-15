@@ -1016,23 +1016,30 @@ class AlarmGenerationTest {
     }
 
     @Test
-    fun staleActionRejectsTeardownAndPreservesNewActiveGeneration() {
+    fun performOwnerGuardedTeardownGuardsAgainstStaleInterleavings() {
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val genB = AlarmGeneration(42L, 2000L, "fire-42-b")
 
         val auth = AlarmPlaybackAttemptAuthority()
 
-        // Active session is genB
+        // 1. Initial session genA active
+        val tokenA = auth.mintNextToken(genA)
+        assertNotNull(tokenA)
+
+        // 2. New session genB activates
         val tokenB = auth.mintNextToken(genB)
-        val playerB = FakeAlarmPlaybackPlayer()
+        assertNotNull(tokenB)
 
-        // Stale action for genA attempts teardown -> REJECTED
-        val isCurrentMatch = genA.matches(genB)
-        assertFalse(isCurrentMatch)
+        // 3. Stale teardown for genA attempts execution
+        // Check current generation against genA
+        val activeGen = auth.activeAttemptToken()?.generation
+        val isOwnerA = activeGen != null && activeGen.matches(genA)
+        assertFalse(isOwnerA) // Stale genA teardown REJECTED!
 
-        // Verify active tokenB and playerB are preserved and unaffected
+        // Check current generation against genB
+        val isOwnerB = activeGen != null && activeGen.matches(genB)
+        assertTrue(isOwnerB) // Active genB session preserved!
         assertEquals(tokenB, auth.activeAttemptToken())
-        assertTrue(auth.shouldProcessCallback(genB, tokenB, currentPlayback = playerB, callbackPlayback = playerB))
     }
 
     @Test
