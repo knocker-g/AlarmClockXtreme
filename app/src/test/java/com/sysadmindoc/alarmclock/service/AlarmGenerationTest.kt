@@ -353,7 +353,8 @@ class AlarmGenerationTest {
         assertFalse(watchdogCancelled)
 
         var audioMutated = false
-        val audioSuccess = auth.mutateAudioIfActive(genA, fallbackToken) {
+        val audioSuccess = auth.shouldMutateAudio(genA, fallbackToken)
+        if (audioSuccess) {
             audioMutated = true
         }
         assertFalse(audioSuccess)
@@ -409,12 +410,8 @@ class AlarmGenerationTest {
         assertFalse(cancelledWatchdog)
 
         // Old fallbackToken attempts to mutate audio -> REJECTED
-        var mutatedVolume = false
-        val mutateResult = auth.mutateAudioIfActive(genA, fallbackToken) {
-            mutatedVolume = true
-        }
+        val mutateResult = auth.shouldMutateAudio(genA, fallbackToken)
         assertFalse(mutateResult)
-        assertFalse(mutatedVolume)
     }
 
     @Test

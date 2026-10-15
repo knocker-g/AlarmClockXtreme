@@ -1602,7 +1602,7 @@ class AlarmService : Service() {
             runCatching {
                 backupSoundOriginalAlarmVolume = backupSoundOriginalAlarmVolume
                     ?: audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
-                playbackAuthority.mutateAudioIfActive(currentGeneration(), fallbackToken) {
+                if (playbackAuthority.shouldMutateAudio(currentGeneration(), fallbackToken)) {
                     audioManager.setStreamVolume(
                         AudioManager.STREAM_ALARM,
                         audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM),

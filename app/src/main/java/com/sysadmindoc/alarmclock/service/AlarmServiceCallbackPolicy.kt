@@ -175,22 +175,18 @@ internal class AlarmPlaybackAttemptAuthority {
     }
 
     /**
-     * Atomically checks active authority AND mutates audio settings inside the synchronized block.
+     * Determines whether audio mutations (e.g. system volume overrides) are authorized for token.
+     * Does NOT execute Android Binder IPC calls inside the monitor lock!
      */
     @Synchronized
-    fun mutateAudioIfActive(
+    fun shouldMutateAudio(
         currentGen: AlarmGeneration?,
-        token: PlaybackAttemptToken,
-        mutateAction: () -> Unit
+        token: PlaybackAttemptToken
     ): Boolean {
         if (currentGen == null || !currentGen.matches(token.generation)) {
             return false
         }
-        if (activeAttemptToken != token) {
-            return false
-        }
-        mutateAction()
-        return true
+        return activeAttemptToken == token
     }
 
     /**
@@ -331,11 +327,10 @@ internal object AlarmServiceCallbackPolicy {
         cancelAction: () -> Unit
     ) = defaultAuthority.cancelWatchdogIfActive(currentGen, ownerToken, cancelAction)
 
-    fun mutateAudioIfActive(
+    fun shouldMutateAudio(
         currentGen: AlarmGeneration?,
-        token: PlaybackAttemptToken,
-        mutateAction: () -> Unit
-    ) = defaultAuthority.mutateAudioIfActive(currentGen, token, mutateAction)
+        token: PlaybackAttemptToken
+    ) = defaultAuthority.shouldMutateAudio(currentGen, token)
 
     fun tryClaimFallbackHandoff(
         currentGen: AlarmGeneration?,
