@@ -995,36 +995,24 @@ class AlarmGenerationTest {
     }
 
     @Test
-    fun productionWiredRestoreVolumeOwnershipRejectsMismatchedGenerationAndSucceedsForMatching() {
+    fun failClosedBackupVolumeRestorePolicyEnforcesFailClosedOwnershipContract() {
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val genB = AlarmGeneration(42L, 2000L, "fire-42-b")
 
-        var originalVolume: Int? = 5
-        var originalGen: AlarmGeneration? = genA
+        // Fail-Closed: Mismatched generations -> REJECTED (false)
+        assertFalse(AlarmServiceCallbackPolicy.shouldRestoreBackupVolume(backupGen = genA, targetGen = genB))
 
-        // Helper function matching production restoreBackupSoundVolume(targetGen)
-        fun restoreVolume(targetGen: AlarmGeneration?): Boolean {
-            originalVolume ?: return false
-            val backupGen = originalGen
-            if (targetGen != null && backupGen != null && !backupGen.matches(targetGen)) {
-                return false // Mismatched generation -> REJECTED!
-            }
-            originalVolume = null
-            originalGen = null
-            return true
-        }
+        // Fail-Closed: Null targetGen -> REJECTED (false)
+        assertFalse(AlarmServiceCallbackPolicy.shouldRestoreBackupVolume(backupGen = genA, targetGen = null))
 
-        // 1. Mismatched teardown for genB -> REJECTED!
-        val restoredGenB = restoreVolume(genB)
-        assertFalse(restoredGenB)
-        assertEquals(5, originalVolume)
-        assertEquals(genA, originalGen)
+        // Fail-Closed: Null backupGen -> REJECTED (false)
+        assertFalse(AlarmServiceCallbackPolicy.shouldRestoreBackupVolume(backupGen = null, targetGen = genA))
 
-        // 2. Matching teardown for genA -> SUCCEEDED!
-        val restoredGenA = restoreVolume(genA)
-        assertTrue(restoredGenA)
-        assertNull(originalVolume)
-        assertNull(originalGen)
+        // Fail-Closed: Both null -> REJECTED (false)
+        assertFalse(AlarmServiceCallbackPolicy.shouldRestoreBackupVolume(backupGen = null, targetGen = null))
+
+        // Matching non-null generations -> ACCEPTED (true)
+        assertTrue(AlarmServiceCallbackPolicy.shouldRestoreBackupVolume(backupGen = genA, targetGen = genA))
     }
 
     @Test

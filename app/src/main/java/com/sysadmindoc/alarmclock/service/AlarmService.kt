@@ -1105,7 +1105,7 @@ class AlarmService : Service() {
     private fun restoreBackupSoundVolume(targetGen: AlarmGeneration? = null) {
         val originalVolume = backupSoundOriginalAlarmVolume ?: return
         val backupGen = backupSoundOriginalGeneration
-        if (targetGen != null && backupGen != null && !backupGen.matches(targetGen)) {
+        if (!playbackAuthority.shouldRestoreBackupVolume(backupGen, targetGen)) {
             return
         }
         backupSoundOriginalAlarmVolume = null

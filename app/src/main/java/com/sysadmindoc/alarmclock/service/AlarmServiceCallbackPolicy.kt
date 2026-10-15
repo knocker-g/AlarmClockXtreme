@@ -317,6 +317,20 @@ internal class AlarmPlaybackAttemptAuthority {
     }
 
     /**
+     * Fail-closed ownership check for backup sound volume restoration.
+     * Returns true ONLY IF both backupGen and targetGen are non-null AND match.
+     */
+    fun shouldRestoreBackupVolume(
+        backupGen: AlarmGeneration?,
+        targetGen: AlarmGeneration?
+    ): Boolean {
+        if (backupGen == null || targetGen == null) {
+            return false
+        }
+        return backupGen.matches(targetGen)
+    }
+
+    /**
      * Atomically claims fallback handoff authority upon player or watchdog failure.
      * Succeeds ONLY IF:
      * 1. currentGen matches failingToken.generation 100%.
@@ -460,6 +474,11 @@ internal object AlarmServiceCallbackPolicy {
         currentGen: AlarmGeneration?,
         token: PlaybackAttemptToken
     ) = defaultAuthority.shouldMutateAudio(currentGen, token)
+
+    fun shouldRestoreBackupVolume(
+        backupGen: AlarmGeneration?,
+        targetGen: AlarmGeneration?
+    ) = defaultAuthority.shouldRestoreBackupVolume(backupGen, targetGen)
 
     fun tryClaimFallbackHandoff(
         currentGen: AlarmGeneration?,
