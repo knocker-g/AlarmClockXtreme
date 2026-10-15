@@ -1174,6 +1174,31 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun activeAlarmWriterPolicyAcceptsNonNullSnapshotUpdates() {
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val genB = AlarmGeneration(99L, 2000L, "fire-99-b")
+
+        val snapshotB = AlarmService.Companion.ActiveAlarmSnapshot(
+            alarmId = genB.alarmId,
+            scheduledAt = genB.scheduledAt,
+            fireId = genB.fireId,
+            firedAt = 2000L,
+            state = "FIRING"
+        )
+
+        // Snapshot update for genB when stored is genA -> ACCEPTED (allows starting new active alarm)
+        assertTrue(
+            com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmWriterPolicy.shouldExecuteUpdate(
+                storedId = genA.alarmId,
+                storedScheduledAt = genA.scheduledAt,
+                storedFireId = genA.fireId,
+                requestSnapshot = snapshotB,
+                targetGen = genB
+            )
+        )
+    }
+
+    @Test
     fun controllableFakePlayerReleaseIsIdempotentThroughHolder() {
         val auth = AlarmPlaybackAttemptAuthority()
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
