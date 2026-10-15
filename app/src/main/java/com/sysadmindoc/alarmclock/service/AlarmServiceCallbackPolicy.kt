@@ -5,14 +5,14 @@ internal data class PlaybackAttemptToken(
     val attemptSequence: Long
 )
 
-internal object AlarmServiceCallbackPolicy {
+internal class AlarmPlaybackAttemptAuthority {
 
     private var sequenceCounter: Long = 0L
     private var activeAttemptToken: PlaybackAttemptToken? = null
     private var activeFallbackClaimToken: PlaybackAttemptToken? = null
 
     /**
-     * Resets policy state for unit testing or service reset.
+     * Resets authority state for testing or instance initialization.
      */
     @Synchronized
     fun resetState() {
@@ -164,4 +164,45 @@ internal object AlarmServiceCallbackPolicy {
         }
         return true
     }
+}
+
+/**
+     * Global decision helpers delegating to global default or instance-bound authority.
+     */
+internal object AlarmServiceCallbackPolicy {
+    val defaultAuthority = AlarmPlaybackAttemptAuthority()
+
+    fun resetState() = defaultAuthority.resetState()
+
+    fun mintNextToken(generation: AlarmGeneration) = defaultAuthority.mintNextToken(generation)
+
+    fun invalidateTokens() = defaultAuthority.invalidateTokens()
+
+    fun activeAttemptToken() = defaultAuthority.activeAttemptToken()
+
+    fun activeFallbackClaimToken() = defaultAuthority.activeFallbackClaimToken()
+
+    fun shouldProcessCallback(
+        currentGen: AlarmGeneration?,
+        callbackToken: PlaybackAttemptToken,
+        currentPlayback: AlarmPlaybackPlayer? = null,
+        callbackPlayback: AlarmPlaybackPlayer? = null
+    ) = defaultAuthority.shouldProcessCallback(currentGen, callbackToken, currentPlayback, callbackPlayback)
+
+    fun tryClaimFallbackHandoff(
+        currentGen: AlarmGeneration?,
+        failingToken: PlaybackAttemptToken
+    ) = defaultAuthority.tryClaimFallbackHandoff(currentGen, failingToken)
+
+    fun tryConsumeFallbackHandoff(
+        currentGen: AlarmGeneration?,
+        handoffToken: PlaybackAttemptToken
+    ) = defaultAuthority.tryConsumeFallbackHandoff(currentGen, handoffToken)
+
+    fun shouldReleaseGlobalPlayback(
+        currentGen: AlarmGeneration?,
+        callbackToken: PlaybackAttemptToken,
+        currentPlayback: AlarmPlaybackPlayer?,
+        targetPlayback: AlarmPlaybackPlayer?
+    ) = defaultAuthority.shouldReleaseGlobalPlayback(currentGen, callbackToken, currentPlayback, targetPlayback)
 }

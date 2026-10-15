@@ -259,6 +259,30 @@ class AlarmGenerationTest {
     // --- Production Callback & Playback Attempt Authority Tests ---
 
     @Test
+    fun authorityInstancesAreIsolatedAndIndependent() {
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+
+        val auth1 = AlarmPlaybackAttemptAuthority()
+        val auth2 = AlarmPlaybackAttemptAuthority()
+
+        val token1 = auth1.mintNextToken(genA)
+        val token2 = auth2.mintNextToken(genA)
+
+        // Auth 1 active token is token1; Auth 2 active token is token2
+        assertEquals(token1, auth1.activeAttemptToken())
+        assertEquals(token2, auth2.activeAttemptToken())
+
+        // Invalidating Auth 1 does NOT invalidate Auth 2
+        auth1.invalidateTokens()
+        assertNull(auth1.activeAttemptToken())
+        assertEquals(token2, auth2.activeAttemptToken())
+
+        // Auth 1 rejects token2, Auth 2 accepts token2
+        assertFalse(auth1.shouldProcessCallback(genA, token2))
+        assertTrue(auth2.shouldProcessCallback(genA, token2))
+    }
+
+    @Test
     fun callbackPolicyRejectsMismatchedGenerationOrAttemptToken() {
         val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
         val genB = AlarmGeneration(42L, 2000L, "fire-42-b")
@@ -266,7 +290,7 @@ class AlarmGenerationTest {
         val tokenA1 = AlarmServiceCallbackPolicy.mintNextToken(genA)
         val playerA = FakeAlarmPlaybackPlayer()
 
-        val tokenB1 = AlarmServiceCallbackPolicy.mintNextToken(genB)
+        AlarmServiceCallbackPolicy.mintNextToken(genB)
         val playerB = FakeAlarmPlaybackPlayer()
 
         // Test 5: Different Generation callback -> Denied
@@ -280,7 +304,7 @@ class AlarmGenerationTest {
         )
 
         // Test 4: Same Generation, different Player / Attempt Token -> Denied
-        val tokenA2 = AlarmServiceCallbackPolicy.mintNextToken(genA)
+        AlarmServiceCallbackPolicy.mintNextToken(genA)
         assertFalse(
             AlarmServiceCallbackPolicy.shouldProcessCallback(
                 currentGen = genA,
@@ -340,7 +364,7 @@ class AlarmGenerationTest {
         assertNotNull(handoff)
 
         // Test 3: Claimed handoff but another Player B installed before fallback executes
-        val tokenB = AlarmServiceCallbackPolicy.mintNextToken(genA) // New attempt tokenB for same generation
+        AlarmServiceCallbackPolicy.mintNextToken(genA) // New attempt tokenB for same generation
 
         val isFallbackAllowed = AlarmServiceCallbackPolicy.tryConsumeFallbackHandoff(
             currentGen = genA,
@@ -355,7 +379,7 @@ class AlarmGenerationTest {
         val tokenA1 = AlarmServiceCallbackPolicy.mintNextToken(genA)
         val playerA = FakeAlarmPlaybackPlayer()
 
-        val tokenA2 = AlarmServiceCallbackPolicy.mintNextToken(genA)
+        AlarmServiceCallbackPolicy.mintNextToken(genA)
         val playerB = FakeAlarmPlaybackPlayer()
 
         // Test 7: Watchdog old owner cancellation / callback -> Denied
