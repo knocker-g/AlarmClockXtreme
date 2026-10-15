@@ -535,9 +535,9 @@ class PreferencesManager @Inject constructor(
                 activeAlarmState = snapshot?.state ?: "",
                 activeAlarmRefireAt = snapshot?.refireAt ?: 0L
             )
+            prefs.applySettings(newSettings)
             cachedSettings = newSettings
             hasLoadedSettings = true
-            prefs.applySettings(newSettings)
         }
     }
 
@@ -545,9 +545,9 @@ class PreferencesManager @Inject constructor(
         context.dataStore.edit { prefs ->
             val old = prefs.toSettings().sanitized()
             val new = transform(old).sanitized()
+            prefs.applySettings(new)
             cachedSettings = new
             hasLoadedSettings = true
-            prefs.applySettings(new)
         }
     }
 

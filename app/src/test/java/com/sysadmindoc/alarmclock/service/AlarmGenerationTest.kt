@@ -6,6 +6,8 @@ import android.os.HandlerThread
 import android.os.Looper
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -1196,6 +1198,68 @@ class AlarmGenerationTest {
                 targetGen = genB
             )
         )
+    }
+
+    @Test
+    fun realPreferencesManagerPipelineProcessesChannelEnqueueAndGuardsDataStore() = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val pm = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val snapshotA = AlarmService.Companion.ActiveAlarmSnapshot(
+            alarmId = genA.alarmId,
+            scheduledAt = genA.scheduledAt,
+            fireId = genA.fireId,
+            firedAt = 1000L,
+            state = "FIRING"
+        )
+
+        val genB = AlarmGeneration(99L, 2000L, "fire-99-b")
+        val snapshotB = AlarmService.Companion.ActiveAlarmSnapshot(
+            alarmId = genB.alarmId,
+            scheduledAt = genB.scheduledAt,
+            fireId = genB.fireId,
+            firedAt = 2000L,
+            state = "FIRING"
+        )
+
+        // 1. Enqueue START genA -> Enqueued & committed
+        assertTrue(pm.enqueueActiveAlarmUpdate(snapshotA, genA))
+
+        // Wait for DataStore pipeline commit
+        kotlinx.coroutines.withTimeoutOrNull(2000L) {
+            while (pm.getCachedSettings().activeAlarmId != 42L) {
+                delay(50L)
+            }
+        }
+        assertEquals(42L, pm.getCachedSettings().activeAlarmId)
+
+        // 2. Enqueue START genB -> Enqueued & committed (overwrites genA)
+        assertTrue(pm.enqueueActiveAlarmUpdate(snapshotB, genB))
+
+        kotlinx.coroutines.withTimeoutOrNull(2000L) {
+            while (pm.getCachedSettings().activeAlarmId != 99L) {
+                delay(50L)
+            }
+        }
+        assertEquals(99L, pm.getCachedSettings().activeAlarmId)
+
+        // 3. Stale clear for old genA -> Enqueued but REJECTED by conditional clear guard
+        assertTrue(pm.enqueueActiveAlarmUpdate(null, targetGen = genA))
+
+        delay(300L) // Wait to verify channel consumer processes stale clear
+        // DataStore MUST still hold active genB (99L)!
+        assertEquals(99L, pm.getCachedSettings().activeAlarmId)
+
+        // 4. Valid clear for active genB -> ACCEPTED & committed
+        assertTrue(pm.enqueueActiveAlarmUpdate(null, targetGen = genB))
+
+        kotlinx.coroutines.withTimeoutOrNull(2000L) {
+            while (pm.getCachedSettings().activeAlarmId != null) {
+                delay(50L)
+            }
+        }
+        assertNull(pm.getCachedSettings().activeAlarmId)
     }
 
     @Test
