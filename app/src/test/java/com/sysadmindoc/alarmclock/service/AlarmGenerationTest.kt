@@ -1402,6 +1402,41 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun realAlarmServiceOnStartCommandAdmitsRestartSnoozeAndDismissFromPersistedDataStore() = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val pm = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val snapshotA = AlarmService.Companion.ActiveAlarmSnapshot(
+            alarmId = genA.alarmId,
+            scheduledAt = genA.scheduledAt,
+            fireId = genA.fireId,
+            firedAt = 1000L,
+            state = "FIRING"
+        )
+
+        // 1. Persist active alarm genA to DataStore
+        val ackA = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        assertTrue(pm.enqueueActiveAlarmUpdate(snapshotA, genA, ackA))
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackA.await())
+
+        // 2. Start AlarmService on cold restart
+        val controller = org.robolectric.Robolectric.buildService(AlarmService::class.java)
+        val service = controller.create().get()
+
+        val snoozeIntent = Intent(service, AlarmService::class.java).apply {
+            action = AlarmService.ACTION_SNOOZE
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, genA.alarmId)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, genA.scheduledAt)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, genA.fireId)
+        }
+
+        // Service is restarted (currentAlarmId = -1), reads persisted genA from DataStore -> ADMIT_RESTART
+        val startResult = service.onStartCommand(snoozeIntent, 0, 1)
+        assertEquals(android.app.Service.START_NOT_STICKY, startResult)
+    }
+
+    @Test
     fun realDataStoreCommitFailureInjectionReturnsFailedCommitAndPreservesCache() = runBlocking {
         val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
         val pm = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
