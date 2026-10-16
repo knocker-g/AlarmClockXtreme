@@ -459,6 +459,74 @@ class AlarmService : Service() {
                         return START_NOT_STICKY
                     }
                     ActionAdmissionDecision.REJECT_RESTART_NO_EVIDENCE -> {
+                        if (!preferencesManager.isSettingsLoaded) {
+                            serviceScope.launch {
+                                try {
+                                    val loadedSettings = preferencesManager.getCurrentSettings()
+                                    val savedId = loadedSettings.activeAlarmId
+                                    val loadedActive = if (savedId != null && savedId > 0L && loadedSettings.activeAlarmScheduledAt > 0L && loadedSettings.activeAlarmFireId.isNotBlank()) {
+                                        val gen = AlarmGeneration(savedId, loadedSettings.activeAlarmScheduledAt, loadedSettings.activeAlarmFireId)
+                                        if (AlarmServiceCallbackPolicy.defaultTracker.isFinalized(gen)) null
+                                        else ActiveAlarmSnapshot(
+                                            alarmId = savedId,
+                                            scheduledAt = loadedSettings.activeAlarmScheduledAt,
+                                            fireId = loadedSettings.activeAlarmFireId,
+                                            firedAt = loadedSettings.activeAlarmFiredAt,
+                                            state = loadedSettings.activeAlarmState,
+                                            refireAt = loadedSettings.activeAlarmRefireAt
+                                        )
+                                    } else null
+
+                                    val asyncDecision = AlarmServiceAdmissionPolicy.classifyAction(
+                                        current = null,
+                                        incoming = incomingGen,
+                                        isRestart = true,
+                                        activeEvidence = loadedActive
+                                    )
+
+                                    withContext(Dispatchers.Main.immediate) {
+                                        if (currentGeneration() != null) {
+                                            Log.i(TAG, "Aborting cold-start restart snooze for $incomingGen: generation changed")
+                                            return@withContext
+                                        }
+                                        if (asyncDecision == ActionAdmissionDecision.ADMIT_RESTART && loadedActive != null && incomingGen != null) {
+                                            val alarmId = incomingGen.alarmId
+                                            currentAlarmId = loadedActive.alarmId
+                                            currentScheduledAt = loadedActive.scheduledAt
+                                            currentFireId = loadedActive.fireId
+                                            currentSnoozeCount = readPersistedSnoozeCount(alarmId)
+                                            val intentFiredAt = intent.getLongExtra(EXTRA_FIRED_AT, 0L)
+                                            alarmFiredAt = if (intentFiredAt > 0L) intentFiredAt else loadedActive.firedAt
+
+                                            val customMinutes = intent.getIntExtra(EXTRA_CUSTOM_SNOOZE_MINUTES, -1)
+                                                .takeIf { it > 0 }
+                                                ?.coerceIn(MIN_CUSTOM_SNOOZE_MINUTES, MAX_CUSTOM_SNOOZE_MINUTES)
+                                            val snoozeAtMillis = intent.getLongExtra(EXTRA_SNOOZE_UNTIL_MILLIS, -1L)
+                                                .takeIf { it > System.currentTimeMillis() }
+
+                                            if (snoozeActionInFlight.compareAndSet(false, true)) {
+                                                try {
+                                                    snoozeAlarm(alarmId, incomingGen, customMinutes, snoozeAtMillis)
+                                                } finally {
+                                                    snoozeActionInFlight.set(false)
+                                                }
+                                            }
+                                        } else {
+                                            Log.w(TAG, "Rejecting ACTION_SNOOZE on cold-start restarted service after DataStore read for $incomingGen")
+                                            recordIncidentAsync(
+                                                type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                                                status = AlarmIncidentEvent.STATUS_FAILED,
+                                                reasonCode = "RESTART_SNOOZE_REJECTED_NO_ACTIVE_EVIDENCE",
+                                                source = "AlarmService"
+                                            )
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Failed cold-start restart snooze for $incomingGen", e)
+                                }
+                            }
+                            return START_STICKY
+                        }
                         Log.w(TAG, "Rejecting ACTION_SNOOZE on restarted service for $incomingGen: no matching persisted active evidence.")
                         recordIncidentAsync(
                             type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
@@ -569,6 +637,71 @@ class AlarmService : Service() {
                         return START_NOT_STICKY
                     }
                     ActionAdmissionDecision.REJECT_RESTART_NO_EVIDENCE -> {
+                        if (!preferencesManager.isSettingsLoaded) {
+                            serviceScope.launch {
+                                try {
+                                    val loadedSettings = preferencesManager.getCurrentSettings()
+                                    val savedId = loadedSettings.activeAlarmId
+                                    val loadedActive = if (savedId != null && savedId > 0L && loadedSettings.activeAlarmScheduledAt > 0L && loadedSettings.activeAlarmFireId.isNotBlank()) {
+                                        val gen = AlarmGeneration(savedId, loadedSettings.activeAlarmScheduledAt, loadedSettings.activeAlarmFireId)
+                                        if (AlarmServiceCallbackPolicy.defaultTracker.isFinalized(gen)) null
+                                        else ActiveAlarmSnapshot(
+                                            alarmId = savedId,
+                                            scheduledAt = loadedSettings.activeAlarmScheduledAt,
+                                            fireId = loadedSettings.activeAlarmFireId,
+                                            firedAt = loadedSettings.activeAlarmFiredAt,
+                                            state = loadedSettings.activeAlarmState,
+                                            refireAt = loadedSettings.activeAlarmRefireAt
+                                        )
+                                    } else null
+
+                                    val asyncDecision = AlarmServiceAdmissionPolicy.classifyAction(
+                                        current = null,
+                                        incoming = incomingGen,
+                                        isRestart = true,
+                                        activeEvidence = loadedActive
+                                    )
+
+                                    withContext(Dispatchers.Main.immediate) {
+                                        if (currentGeneration() != null) {
+                                            Log.i(TAG, "Aborting cold-start restart dismiss for $incomingGen: generation changed")
+                                            return@withContext
+                                        }
+                                        if (asyncDecision == ActionAdmissionDecision.ADMIT_RESTART && loadedActive != null && incomingGen != null) {
+                                            val acceptedGen = incomingGen
+                                            val alarmId = acceptedGen.alarmId
+                                            currentAlarmId = loadedActive.alarmId
+                                            currentScheduledAt = loadedActive.scheduledAt
+                                            currentFireId = loadedActive.fireId
+                                            currentSnoozeCount = readPersistedSnoozeCount(alarmId)
+                                            val intentFiredAt = intent.getLongExtra(EXTRA_FIRED_AT, 0L)
+                                            alarmFiredAt = if (intentFiredAt > 0L) intentFiredAt else loadedActive.firedAt
+
+                                            val challengeRetryCount = intent.getIntExtra(EXTRA_CHALLENGE_RETRY_COUNT, 0).coerceAtLeast(0)
+                                            val challengeSolveTimeMs = intent.getLongExtra(EXTRA_CHALLENGE_SOLVE_TIME_MS, 0L).coerceAtLeast(0L)
+
+                                            dismissAlarm(
+                                                alarmId = alarmId,
+                                                acceptedGen = acceptedGen,
+                                                challengeRetryCount = challengeRetryCount,
+                                                challengeSolveTimeMs = challengeSolveTimeMs
+                                            )
+                                        } else {
+                                            Log.w(TAG, "Rejecting ACTION_DISMISS on cold-start restarted service after DataStore read for $incomingGen")
+                                            recordIncidentAsync(
+                                                type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                                                status = AlarmIncidentEvent.STATUS_FAILED,
+                                                reasonCode = "RESTART_DISMISS_REJECTED_NO_ACTIVE_EVIDENCE",
+                                                source = "AlarmService"
+                                            )
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Failed cold-start restart dismiss for $incomingGen", e)
+                                }
+                            }
+                            return START_STICKY
+                        }
                         Log.w(TAG, "Rejecting ACTION_DISMISS on restarted service for $incomingGen: no matching persisted active evidence.")
                         recordIncidentAsync(
                             type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,

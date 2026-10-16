@@ -454,6 +454,8 @@ class PreferencesManager @Inject constructor(
      */
     fun getCachedSettings(): AppSettings = cachedSettings
 
+    val isSettingsLoaded: Boolean get() = hasLoadedSettings
+
     /** Privacy-sensitive public surfaces fail closed during cold process start,
      *  before DataStore has emitted the user's persisted preference. */
     fun shouldHideLabelsOnPublicSurfaces(): Boolean {

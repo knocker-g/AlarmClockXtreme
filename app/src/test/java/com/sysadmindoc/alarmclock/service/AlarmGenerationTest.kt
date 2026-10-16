@@ -1342,6 +1342,66 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun reproduceColdStartAdmissionRejectionWhenSettingsNotLoaded() {
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+
+        val current: AlarmGeneration? = null
+        val activeSnapshot: AlarmService.Companion.ActiveAlarmSnapshot? = null
+        val isRestart = true
+
+        val decision = AlarmServiceAdmissionPolicy.classifyAction(
+            current = current,
+            incoming = genA,
+            isRestart = isRestart,
+            activeEvidence = activeSnapshot
+        )
+
+        // Without waiting for DataStore load, classifyAction returns REJECT_RESTART_NO_EVIDENCE!
+        assertEquals(ActionAdmissionDecision.REJECT_RESTART_NO_EVIDENCE, decision)
+    }
+
+    @Test
+    fun coldStartRestartAdmissionAwaitsDataStoreDiskReadAndAdmitsMatchingGen() = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val pm = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+
+        val genA = AlarmGeneration(42L, 1000L, "fire-42-a")
+        val snapshotA = AlarmService.Companion.ActiveAlarmSnapshot(
+            alarmId = genA.alarmId,
+            scheduledAt = genA.scheduledAt,
+            fireId = genA.fireId,
+            firedAt = 1000L,
+            state = "FIRING"
+        )
+
+        // 1. Enqueue active alarm update genA to DataStore disk
+        val ackA = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        assertTrue(pm.enqueueActiveAlarmUpdate(snapshotA, genA, ackA))
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackA.await())
+
+        // 2. Cold-start read directly from DataStore disk via getCurrentSettings()
+        val loadedSettings = pm.getCurrentSettings()
+        val loadedActive = AlarmService.Companion.ActiveAlarmSnapshot(
+            alarmId = loadedSettings.activeAlarmId!!,
+            scheduledAt = loadedSettings.activeAlarmScheduledAt,
+            fireId = loadedSettings.activeAlarmFireId,
+            firedAt = loadedSettings.activeAlarmFiredAt,
+            state = loadedSettings.activeAlarmState,
+            refireAt = loadedSettings.activeAlarmRefireAt
+        )
+
+        // 3. Classify restart action with loaded DataStore disk evidence -> ADMIT_RESTART!
+        val asyncDecision = AlarmServiceAdmissionPolicy.classifyAction(
+            current = null,
+            incoming = genA,
+            isRestart = true,
+            activeEvidence = loadedActive
+        )
+
+        assertEquals(ActionAdmissionDecision.ADMIT_RESTART, asyncDecision)
+    }
+
+    @Test
     fun realDataStoreCommitFailureInjectionReturnsFailedCommitAndPreservesCache() = runBlocking {
         val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
         val pm = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
