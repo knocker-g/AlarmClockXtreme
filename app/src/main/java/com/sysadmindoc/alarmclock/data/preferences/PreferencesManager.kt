@@ -439,6 +439,7 @@ class PreferencesManager @Inject constructor(
         }
         .map { it.toSettings().sanitized() }
         .onEach {
+            testInitialLoadLatch?.await()
             cachedSettings = it
             hasLoadedSettings = true
         }
@@ -530,6 +531,13 @@ class PreferencesManager @Inject constructor(
         }
     }
 
+    companion object {
+        @VisibleForTesting
+        internal var defaultInitialLoadLatch: CompletableDeferred<Unit>? = null
+    }
+
+    @VisibleForTesting
+    internal var testInitialLoadLatch: CompletableDeferred<Unit>? = defaultInitialLoadLatch
     @VisibleForTesting
     internal var testFaultInjector: (() -> Unit)? = null
 
