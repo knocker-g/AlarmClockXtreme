@@ -27,6 +27,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.annotation.VisibleForTesting
 import androidx.core.app.NotificationCompat
 import androidx.work.*
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
@@ -196,7 +197,8 @@ class AlarmService : Service() {
     // Fires the guaranteed default tone if the Media3 player never actually
     // starts (stuck buffering with no onPlayerError) so the alarm can't ring silently.
     private var playbackWatchdogJob: Job? = null
-    private var currentAlarmId: Long = -1
+    @VisibleForTesting
+    internal var currentAlarmId: Long = -1
     @Volatile
     private var currentAlarmVolume: Int = 100
     private var currentFireId: String = ""
@@ -213,6 +215,8 @@ class AlarmService : Service() {
     private var currentWakeConfirmRefireCount: Int = 0
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val preemptionPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @VisibleForTesting
+    internal var testColdStartAdmissionCompletionLatch: CompletableDeferred<Unit>? = null
     private var wakeLock: PowerManager.WakeLock? = null
     // v1.9.1: AtomicBoolean (was @Volatile Boolean). Multiple coroutines on
     // serviceScope's IO dispatcher can race the foreground stop path — e.g.
@@ -523,6 +527,8 @@ class AlarmService : Service() {
                                     }
                                 } catch (e: Exception) {
                                     Log.e(TAG, "Failed cold-start restart snooze for $incomingGen", e)
+                                } finally {
+                                    testColdStartAdmissionCompletionLatch?.complete(Unit)
                                 }
                             }
                             return START_STICKY
@@ -698,6 +704,8 @@ class AlarmService : Service() {
                                     }
                                 } catch (e: Exception) {
                                     Log.e(TAG, "Failed cold-start restart dismiss for $incomingGen", e)
+                                } finally {
+                                    testColdStartAdmissionCompletionLatch?.complete(Unit)
                                 }
                             }
                             return START_STICKY
