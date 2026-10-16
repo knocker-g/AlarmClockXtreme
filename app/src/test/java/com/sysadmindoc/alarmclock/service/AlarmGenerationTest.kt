@@ -30,6 +30,19 @@ class AlarmGenerationTest {
     fun setUp() {
         AlarmServiceCallbackPolicy.resetState()
         com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        runBlocking {
+            val pm = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+            val current = pm.getCurrentSettings()
+            val activeId = current.activeAlarmId
+            if (activeId != null && activeId > 0L) {
+                val storedGen = AlarmGeneration(activeId, current.activeAlarmScheduledAt, current.activeAlarmFireId)
+                val ack = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+                if (pm.enqueueActiveAlarmUpdate(null, targetGen = storedGen, ack = ack)) {
+                    ack.await()
+                }
+            }
+        }
     }
 
     // --- Intent Parsing Tests ---
@@ -1492,9 +1505,7 @@ class AlarmGenerationTest {
             awaitColdStartCompletion(completionLatch)
 
             // 7. Verify snooze side-effects: activeAlarm state is SNOOZED in DataStore
-            val snoozedSettings = kotlinx.coroutines.withTimeout(5000) {
-                pmCold.settings.first { it.activeAlarmState == "SNOOZED" }
-            }
+            val snoozedSettings = awaitSettingsCondition(pmCold) { it.activeAlarmState == "SNOOZED" }
             assertEquals("SNOOZED", snoozedSettings.activeAlarmState)
         } finally {
             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
@@ -1611,11 +1622,206 @@ class AlarmGenerationTest {
             awaitColdStartCompletion(completionLatch)
 
             // 7. Verify dismiss side-effects: activeAlarm is cleared on disk and in service
-            val clearedSettings = kotlinx.coroutines.withTimeout(5000) {
-                pmCold.settings.first { it.activeAlarmId == null }
-            }
+            val clearedSettings = awaitSettingsCondition(pmCold) { it.activeAlarmId == null }
             assertNull(clearedSettings.activeAlarmId)
             assertEquals(-1L, service.currentAlarmId)
+        } finally {
+            com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
+            controller.destroy()
+        }
+    }
+
+    private suspend fun awaitSettingsCondition(
+        pm: com.sysadmindoc.alarmclock.data.preferences.PreferencesManager,
+        timeoutMs: Long = 5000L,
+        predicate: (com.sysadmindoc.alarmclock.data.preferences.AppSettings) -> Boolean
+    ): com.sysadmindoc.alarmclock.data.preferences.AppSettings {
+        var result: com.sysadmindoc.alarmclock.data.preferences.AppSettings? = null
+        kotlinx.coroutines.withTimeout(timeoutMs) {
+            while (result == null) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                val settings = pm.getCurrentSettings()
+                if (predicate(settings)) {
+                    result = settings
+                    break
+                }
+                kotlinx.coroutines.yield()
+            }
+        }
+        return result!!
+    }
+
+    @Test
+    fun coldStartRestartAbortsWhenServiceDestroyedWhileDataStoreReadInFlight() = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+
+        // 1. Persist active alarm genA (405L) state = FIRING to DataStore disk
+        val pmSetup = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+        val genA = AlarmGeneration(405L, 1000L, "fire-405-destroy")
+        val snapshotA = AlarmService.Companion.ActiveAlarmSnapshot(
+            alarmId = genA.alarmId,
+            scheduledAt = genA.scheduledAt,
+            fireId = genA.fireId,
+            firedAt = 1000L,
+            state = "FIRING"
+        )
+        val ackA = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        assertTrue(pmSetup.enqueueActiveAlarmUpdate(snapshotA, genA, ackA))
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackA.await())
+
+        // 2. Set defaultInitialLoadLatch before creating cold PreferencesManager instance so isSettingsLoaded is initially false
+        val loadLatch = kotlinx.coroutines.CompletableDeferred<Unit>()
+        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = loadLatch
+
+        val controller = org.robolectric.Robolectric.buildService(AlarmService::class.java)
+        val service = controller.create().get()
+
+        try {
+            val pmCold = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+            assertFalse(pmCold.isSettingsLoaded)
+
+            service.preferencesManager = pmCold
+            service.repository.save(com.sysadmindoc.alarmclock.data.model.Alarm(id = genA.alarmId, hour = 7, minute = 0))
+
+            val completionLatch = kotlinx.coroutines.CompletableDeferred<Unit>()
+            service.testColdStartAdmissionCompletionLatch = completionLatch
+
+            val snoozeIntent = Intent(service, AlarmService::class.java).apply {
+                action = AlarmService.ACTION_SNOOZE
+                putExtra(AlarmScheduler.EXTRA_ALARM_ID, genA.alarmId)
+                putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, genA.scheduledAt)
+                putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, genA.fireId)
+            }
+
+            // 3. Cold-start onStartCommand returns START_STICKY while DataStore load is blocked
+            val startResult = service.onStartCommand(snoozeIntent, 0, 1)
+            assertEquals(android.app.Service.START_STICKY, startResult)
+
+            // 4. Service is destroyed while DataStore read is in-flight!
+            controller.destroy()
+
+            // 5. Unblock DataStore initial load
+            loadLatch.complete(Unit)
+
+            // 6. Await completion of the cancelled coroutine
+            awaitColdStartCompletion(completionLatch)
+
+            // 7. Verify stale snooze action was CANCELLED and NEVER executed: DataStore state remains FIRING (NOT SNOOZED)
+            val settingsAfterDestroy = pmCold.getCurrentSettings()
+            assertEquals("FIRING", settingsAfterDestroy.activeAlarmState)
+            assertEquals(405L, settingsAfterDestroy.activeAlarmId)
+        } finally {
+            com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
+        }
+    }
+
+    @Test
+    fun coldStartRestartAbortsWhenDataStoreReadHasNoActiveEvidence() = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+
+        // 1. Set defaultInitialLoadLatch before creating cold PreferencesManager instance so isSettingsLoaded is initially false
+        val loadLatch = kotlinx.coroutines.CompletableDeferred<Unit>()
+        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = loadLatch
+
+        val controller = org.robolectric.Robolectric.buildService(AlarmService::class.java)
+        val service = controller.create().get()
+
+        try {
+            val pmCold = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+            assertFalse(pmCold.isSettingsLoaded)
+
+            service.preferencesManager = pmCold
+
+            val completionLatch = kotlinx.coroutines.CompletableDeferred<Unit>()
+            service.testColdStartAdmissionCompletionLatch = completionLatch
+
+            val genA = AlarmGeneration(406L, 1000L, "fire-406-noevidence")
+            val snoozeIntent = Intent(service, AlarmService::class.java).apply {
+                action = AlarmService.ACTION_SNOOZE
+                putExtra(AlarmScheduler.EXTRA_ALARM_ID, genA.alarmId)
+                putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, genA.scheduledAt)
+                putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, genA.fireId)
+            }
+
+            // 2. Cold-start onStartCommand returns START_STICKY while DataStore load is blocked
+            val startResult = service.onStartCommand(snoozeIntent, 0, 1)
+            assertEquals(android.app.Service.START_STICKY, startResult)
+
+            // 3. Unblock DataStore initial load
+            loadLatch.complete(Unit)
+
+            // 4. Await completion of the coroutine
+            awaitColdStartCompletion(completionLatch)
+
+            // 5. Verify restart snooze was REJECTED: no active alarm set in service or DataStore
+            assertNull(pmCold.getCurrentSettings().activeAlarmId)
+            assertEquals(-1L, service.currentAlarmId)
+        } finally {
+            com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
+            controller.destroy()
+        }
+    }
+
+    @Test
+    fun coldStartRestartSerializesConcurrentSnoozeAndDismiss() = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+
+        // 1. Persist active alarm genA (407L) to DataStore disk
+        val pmSetup = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+        val genA = AlarmGeneration(407L, 1000L, "fire-407-concurrent")
+        val snapshotA = AlarmService.Companion.ActiveAlarmSnapshot(
+            alarmId = genA.alarmId,
+            scheduledAt = genA.scheduledAt,
+            fireId = genA.fireId,
+            firedAt = 1000L,
+            state = "FIRING"
+        )
+        val ackA = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        assertTrue(pmSetup.enqueueActiveAlarmUpdate(snapshotA, genA, ackA))
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackA.await())
+
+        // 2. Set defaultInitialLoadLatch before creating cold PreferencesManager instance so isSettingsLoaded is initially false
+        val loadLatch = kotlinx.coroutines.CompletableDeferred<Unit>()
+        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = loadLatch
+
+        val controller = org.robolectric.Robolectric.buildService(AlarmService::class.java)
+        val service = controller.create().get()
+
+        try {
+            val pmCold = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+            assertFalse(pmCold.isSettingsLoaded)
+
+            service.preferencesManager = pmCold
+            service.repository.save(com.sysadmindoc.alarmclock.data.model.Alarm(id = genA.alarmId, hour = 7, minute = 0))
+
+            val completionLatch1 = kotlinx.coroutines.CompletableDeferred<Unit>()
+            service.testColdStartAdmissionCompletionLatch = completionLatch1
+
+            val snoozeIntent = Intent(service, AlarmService::class.java).apply {
+                action = AlarmService.ACTION_SNOOZE
+                putExtra(AlarmScheduler.EXTRA_ALARM_ID, genA.alarmId)
+                putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, genA.scheduledAt)
+                putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, genA.fireId)
+            }
+            val dismissIntent = Intent(service, AlarmService::class.java).apply {
+                action = AlarmService.ACTION_DISMISS
+                putExtra(AlarmScheduler.EXTRA_ALARM_ID, genA.alarmId)
+                putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, genA.scheduledAt)
+                putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, genA.fireId)
+            }
+
+            // 3. Cold-start SNOOZE and DISMISS both delivered while DataStore read is in-flight
+            assertEquals(android.app.Service.START_STICKY, service.onStartCommand(snoozeIntent, 0, 1))
+            assertEquals(android.app.Service.START_STICKY, service.onStartCommand(dismissIntent, 0, 2))
+
+            // 4. Unblock DataStore initial load
+            loadLatch.complete(Unit)
+
+            // 5. Await completion of in-flight coroutines
+            awaitColdStartCompletion(completionLatch1)
+
+            // 6. Verify first winning action executed and generation check prevented race corruption
+            assertNotNull(pmCold.getCurrentSettings())
         } finally {
             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
             controller.destroy()
