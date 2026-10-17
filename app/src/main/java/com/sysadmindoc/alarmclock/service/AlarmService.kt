@@ -226,6 +226,8 @@ class AlarmService : Service() {
     @VisibleForTesting
     internal var testOnStopSelfCalled: (() -> Unit)? = null
     @VisibleForTesting
+    internal var testOnDismissRetryFinishedCallback: (() -> Unit)? = null
+    @VisibleForTesting
     internal val testColdStartSnoozeCount = java.util.concurrent.atomic.AtomicInteger(0)
     @VisibleForTesting
     internal val testColdStartDismissCount = java.util.concurrent.atomic.AtomicInteger(0)
@@ -2713,7 +2715,7 @@ class AlarmService : Service() {
                         Log.i(TAG, "Active alarm clear rejected for $acceptedGen: DataStore holds newer active generation")
                     }
                     com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT -> {
-                        Log.w(TAG, "Failed to commit DataStore active alarm clear for $acceptedGen")
+                        Log.w(TAG, "Failed to commit DataStore active alarm clear for $acceptedGen: launching background retry")
                         recordIncidentAsync(
                             type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
                             status = AlarmIncidentEvent.STATUS_FAILED,
@@ -2723,6 +2725,7 @@ class AlarmService : Service() {
                             fireId = acceptedGen.fireId,
                             scheduledAt = acceptedGen.scheduledAt
                         )
+                        retryDismissTerminalClear(acceptedGen)
                     }
                 }
 
@@ -2783,6 +2786,73 @@ class AlarmService : Service() {
             }
             testOnStopSelfCalled?.invoke()
             stopSelf()
+        }
+    }
+
+    private fun retryDismissTerminalClear(acceptedGen: AlarmGeneration) {
+        preemptionPersistenceScope.launch {
+            try {
+                val maxAttempts = 3
+                var attempt = 0
+                var committed = false
+                while (attempt < maxAttempts && !committed) {
+                    attempt++
+                    delay(200L * attempt)
+                    val retryAck = CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+                    val enqueued = updateActiveAlarm(null, targetGen = acceptedGen, ack = retryAck)
+                    if (!enqueued) continue
+
+                    val result = try {
+                        withTimeout(2000L) {
+                            retryAck.await()
+                        }
+                    } catch (_: TimeoutCancellationException) {
+                        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT
+                    }
+
+                    when (result) {
+                        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED -> {
+                            Log.i(TAG, "Successfully committed DataStore active alarm clear on retry attempt $attempt for $acceptedGen")
+                            recordIncidentAsync(
+                                type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                                status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                                reasonCode = "DISMISS_PERSISTENCE_RETRY_SUCCEEDED",
+                                source = "AlarmService",
+                                alarmId = acceptedGen.alarmId,
+                                fireId = acceptedGen.fireId,
+                                scheduledAt = acceptedGen.scheduledAt
+                            )
+                            committed = true
+                        }
+                        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.REJECTED_STALE -> {
+                            Log.i(TAG, "Active alarm clear retry rejected for $acceptedGen: DataStore holds newer active generation")
+                            break
+                        }
+                        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT -> {
+                            Log.w(TAG, "DataStore active alarm clear retry attempt $attempt failed for $acceptedGen")
+                        }
+                    }
+                }
+
+                if (!committed) {
+                    Log.e(TAG, "Exhausted all $maxAttempts retries for DataStore active alarm clear for $acceptedGen")
+                    recordIncidentAsync(
+                        type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                        status = AlarmIncidentEvent.STATUS_FAILED,
+                        reasonCode = "DISMISS_PERSISTENCE_RETRY_EXHAUSTED",
+                        source = "AlarmService",
+                        alarmId = acceptedGen.alarmId,
+                        fireId = acceptedGen.fireId,
+                        scheduledAt = acceptedGen.scheduledAt
+                    )
+                }
+            } finally {
+                testOnDismissRetryFinishedCallback?.invoke()
+            }
         }
     }
 
