@@ -224,6 +224,8 @@ class AlarmService : Service() {
     @VisibleForTesting
     internal var testColdStartSnoozeReachedBarrierLatch: CompletableDeferred<Unit>? = null
     @VisibleForTesting
+    internal var testOnStopSelfCalled: (() -> Unit)? = null
+    @VisibleForTesting
     internal val testColdStartSnoozeCount = java.util.concurrent.atomic.AtomicInteger(0)
     @VisibleForTesting
     internal val testColdStartDismissCount = java.util.concurrent.atomic.AtomicInteger(0)
@@ -1266,9 +1268,13 @@ class AlarmService : Service() {
         }
     }
 
-    private fun updateActiveAlarm(snapshot: ActiveAlarmSnapshot?, targetGen: AlarmGeneration? = null) {
+    private fun updateActiveAlarm(
+        snapshot: ActiveAlarmSnapshot?,
+        targetGen: AlarmGeneration? = null,
+        ack: CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>? = null
+    ): Boolean {
         activeAlarm.set(snapshot)
-        val enqueued = preferencesManager.enqueueActiveAlarmUpdate(snapshot, targetGen)
+        val enqueued = preferencesManager.enqueueActiveAlarmUpdate(snapshot, targetGen, ack)
         if (!enqueued) {
             Log.w(TAG, "Failed to enqueue active alarm update to PreferencesManager")
             recordIncidentAsync(
@@ -1281,6 +1287,7 @@ class AlarmService : Service() {
                 scheduledAt = snapshot?.scheduledAt ?: targetGen?.scheduledAt ?: 0L
             )
         }
+        return enqueued
     }
 
     private fun restoreBackupSoundVolume(targetGen: AlarmGeneration? = null) {
@@ -2676,7 +2683,40 @@ class AlarmService : Service() {
                 clearAlarmRuntimeState(alarmId)
                 currentSnoozeCount = 0
                 currentAlarmId = -1
-                updateActiveAlarm(null, targetGen = acceptedGen)
+
+                val clearAck = CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+                val enqueued = updateActiveAlarm(null, targetGen = acceptedGen, ack = clearAck)
+
+                val clearResult = if (enqueued) {
+                    runCatching {
+                        withTimeout(3000L) {
+                            clearAck.await()
+                        }
+                    }.getOrElse { com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT }
+                } else {
+                    com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT
+                }
+
+                when (clearResult) {
+                    com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED -> {
+                        Log.i(TAG, "Successfully committed DataStore active alarm clear for $acceptedGen")
+                    }
+                    com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.REJECTED_STALE -> {
+                        Log.i(TAG, "Active alarm clear rejected for $acceptedGen: DataStore holds newer active generation")
+                    }
+                    com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT -> {
+                        Log.w(TAG, "Failed to commit DataStore active alarm clear for $acceptedGen")
+                        recordIncidentAsync(
+                            type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                            status = AlarmIncidentEvent.STATUS_FAILED,
+                            reasonCode = "DISMISS_PERSISTENCE_FAILED",
+                            source = "AlarmService",
+                            alarmId = acceptedGen.alarmId,
+                            fireId = acceptedGen.fireId,
+                            scheduledAt = acceptedGen.scheduledAt
+                        )
+                    }
+                }
 
                 // F8: Webhook on dismiss (fire-and-forget on its own scope)
                 webhookService.fireAsync(
@@ -2733,6 +2773,7 @@ class AlarmService : Service() {
             if (isForeground.compareAndSet(true, false)) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
             }
+            testOnStopSelfCalled?.invoke()
             stopSelf()
         }
     }
