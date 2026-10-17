@@ -220,9 +220,12 @@ class AlarmService : Service() {
     @VisibleForTesting
     internal var testColdStartAdmissionCompletionCallback: (() -> Unit)? = null
     @VisibleForTesting
+    internal var testColdStartSnoozeBeforeWithContextBarrier: CompletableDeferred<Unit>? = null
+    @VisibleForTesting
     internal val testColdStartSnoozeCount = java.util.concurrent.atomic.AtomicInteger(0)
     @VisibleForTesting
     internal val testColdStartDismissCount = java.util.concurrent.atomic.AtomicInteger(0)
+    private val coldStartClaimedGenerations = java.util.Collections.synchronizedSet(mutableSetOf<AlarmGeneration>())
     private var wakeLock: PowerManager.WakeLock? = null
     // v1.9.1: AtomicBoolean (was @Volatile Boolean). Multiple coroutines on
     // serviceScope's IO dispatcher can race the foreground stop path — e.g.
@@ -494,9 +497,15 @@ class AlarmService : Service() {
                                         activeEvidence = loadedActive
                                     )
 
+                                    testColdStartSnoozeBeforeWithContextBarrier?.await()
+
                                     withContext(Dispatchers.Main.immediate) {
                                         if (currentGeneration() != null) {
                                             Log.i(TAG, "Aborting cold-start restart snooze for $incomingGen: generation changed")
+                                            return@withContext
+                                        }
+                                        if (incomingGen != null && !coldStartClaimedGenerations.add(incomingGen)) {
+                                            Log.i(TAG, "Aborting cold-start restart snooze for $incomingGen: generation already claimed")
                                             return@withContext
                                         }
                                         if (asyncDecision == ActionAdmissionDecision.ADMIT_RESTART && loadedActive != null && incomingGen != null) {
@@ -679,6 +688,10 @@ class AlarmService : Service() {
                                     withContext(Dispatchers.Main.immediate) {
                                         if (currentGeneration() != null) {
                                             Log.i(TAG, "Aborting cold-start restart dismiss for $incomingGen: generation changed")
+                                            return@withContext
+                                        }
+                                        if (incomingGen != null && !coldStartClaimedGenerations.add(incomingGen)) {
+                                            Log.i(TAG, "Aborting cold-start restart dismiss for $incomingGen: generation already claimed")
                                             return@withContext
                                         }
                                         if (asyncDecision == ActionAdmissionDecision.ADMIT_RESTART && loadedActive != null && incomingGen != null) {
@@ -3231,6 +3244,7 @@ class AlarmService : Service() {
     }
 
     override fun onDestroy() {
+        coldStartClaimedGenerations.clear()
         val destroyGen = currentGeneration()
         autoSilenceJob?.cancel()
         backupSoundJob?.cancel()
