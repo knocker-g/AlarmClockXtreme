@@ -524,6 +524,7 @@ class AlarmService : Service() {
                                             currentAlarmId = loadedActive.alarmId
                                             currentScheduledAt = loadedActive.scheduledAt
                                             currentFireId = loadedActive.fireId
+                                            activeAlarm.set(loadedActive)
                                             currentSnoozeCount = readPersistedSnoozeCount(alarmId)
                                             val intentFiredAt = intent.getLongExtra(EXTRA_FIRED_AT, 0L)
                                             alarmFiredAt = if (intentFiredAt > 0L) intentFiredAt else loadedActive.firedAt
@@ -711,6 +712,7 @@ class AlarmService : Service() {
                                             currentAlarmId = loadedActive.alarmId
                                             currentScheduledAt = loadedActive.scheduledAt
                                             currentFireId = loadedActive.fireId
+                                            activeAlarm.set(loadedActive)
                                             currentSnoozeCount = readPersistedSnoozeCount(alarmId)
                                             val intentFiredAt = intent.getLongExtra(EXTRA_FIRED_AT, 0L)
                                             alarmFiredAt = if (intentFiredAt > 0L) intentFiredAt else loadedActive.firedAt
