@@ -2688,11 +2688,19 @@ class AlarmService : Service() {
                 val enqueued = updateActiveAlarm(null, targetGen = acceptedGen, ack = clearAck)
 
                 val clearResult = if (enqueued) {
-                    runCatching {
+                    try {
                         withTimeout(3000L) {
                             clearAck.await()
                         }
-                    }.getOrElse { com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT }
+                    } catch (_: TimeoutCancellationException) {
+                        Log.w(TAG, "DataStore active alarm clear timed out for $acceptedGen: commit outcome unconfirmed")
+                        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.w(TAG, "DataStore active alarm clear failed for $acceptedGen", e)
+                        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT
+                    }
                 } else {
                     com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT
                 }

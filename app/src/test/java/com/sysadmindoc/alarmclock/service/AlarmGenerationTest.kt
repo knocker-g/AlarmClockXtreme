@@ -2228,7 +2228,7 @@ class AlarmGenerationTest {
     }
 
     @Test
-    fun dismissAlarmHandlesDataStoreCommitFailure() = runBlocking {
+    fun dismissAlarmHandlesDataStoreCommitFailure(): Unit = runBlocking {
         val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
 
         val pmSetup = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
@@ -2277,8 +2277,12 @@ class AlarmGenerationTest {
             loadLatch.complete(Unit)
             awaitColdStartCompletion(completionLatch)
 
-            // Verify dismiss completed without crashing despite DataStore commit failure
+            // Direct Assertions for Commit Failure:
+            // 1. Service dismiss action was attempted
             assertEquals(1, service.testColdStartDismissCount.get())
+            // 2. DataStore persistent state remains uncorrupted (still holds genA 416L because commit failed!)
+            val persistentSettings = pmSetup.getCurrentSettings()
+            assertEquals(416L, persistentSettings.activeAlarmId)
         } finally {
             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
             val ackClear = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
@@ -2316,6 +2320,59 @@ class AlarmGenerationTest {
 
         // 4. DataStore MUST PRESERVE newer genB (417L)
         assertEquals(417L, pmSetup.getCurrentSettings().activeAlarmId)
+
+        // Cleanup
+        val ackClear = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        pmSetup.enqueueActiveAlarmUpdate(null, targetGen = genB, ack = ackClear)
+        ackClear.await()
+    }
+
+    @Test
+    fun dismissAlarmDelayedAckCommitDoesNotOverwriteNewerGeneration(): Unit = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+
+        // 1. Persist OLD genA (418L) to DataStore
+        val pmSetup = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+        val genA = AlarmGeneration(418L, 1000L, "fire-418-old")
+        val snapshotA = AlarmService.Companion.ActiveAlarmSnapshot(
+            alarmId = genA.alarmId,
+            scheduledAt = genA.scheduledAt,
+            fireId = genA.fireId,
+            firedAt = 1000L,
+            state = "FIRING"
+        )
+        val ackA = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        assertTrue(pmSetup.enqueueActiveAlarmUpdate(snapshotA, genA, ackA))
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackA.await())
+
+        // 2. Enqueue clear for genA with a 200ms delay in DataStore writer
+        val ackDelayed = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        pmSetup.testFaultInjector = {
+            Thread.sleep(200)
+        }
+        pmSetup.enqueueActiveAlarmUpdate(null, targetGen = genA, ack = ackDelayed)
+
+        // 3. BEFORE delayed clear completes, write NEWER genB (419L) to DataStore
+        val genB = AlarmGeneration(419L, 2000L, "fire-419-newer")
+        val snapshotB = AlarmService.Companion.ActiveAlarmSnapshot(
+            alarmId = genB.alarmId,
+            scheduledAt = genB.scheduledAt,
+            fireId = genB.fireId,
+            firedAt = 2000L,
+            state = "FIRING"
+        )
+        val ackB = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        pmSetup.enqueueActiveAlarmUpdate(snapshotB, genB, ackB)
+
+        // Remove fault injector
+        pmSetup.testFaultInjector = null
+
+        // 4. Await both acks
+        ackDelayed.await()
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackB.await())
+
+        // 5. DataStore MUST PRESERVE genB (419L)!
+        assertEquals(419L, pmSetup.getCurrentSettings().activeAlarmId)
 
         // Cleanup
         val ackClear = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
