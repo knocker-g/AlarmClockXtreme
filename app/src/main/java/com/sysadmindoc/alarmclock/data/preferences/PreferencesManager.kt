@@ -420,7 +420,13 @@ class PreferencesManager @Inject constructor(
         val YT_ENGINE_LAST_FAILURE_REASON = stringPreferencesKey("yt_engine_last_failure_reason")
     }
 
+    @VisibleForTesting
+    internal var testReadFaultInjector: (() -> Unit)? = null
+
     val settings: Flow<AppSettings> = context.dataStore.data
+        .onEach {
+            testReadFaultInjector?.invoke()
+        }
         .catch { e ->
             if (e is IOException) {
                 // v1.9.1: DataStore reports IOException on both transient I/O

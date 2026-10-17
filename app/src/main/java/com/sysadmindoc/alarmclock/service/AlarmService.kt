@@ -217,6 +217,8 @@ class AlarmService : Service() {
     private val preemptionPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @VisibleForTesting
     internal var testColdStartAdmissionCompletionLatch: CompletableDeferred<Unit>? = null
+    @VisibleForTesting
+    internal var testColdStartAdmissionCompletionCallback: (() -> Unit)? = null
     private var wakeLock: PowerManager.WakeLock? = null
     // v1.9.1: AtomicBoolean (was @Volatile Boolean). Multiple coroutines on
     // serviceScope's IO dispatcher can race the foreground stop path — e.g.
@@ -529,6 +531,7 @@ class AlarmService : Service() {
                                     Log.e(TAG, "Failed cold-start restart snooze for $incomingGen", e)
                                 } finally {
                                     testColdStartAdmissionCompletionLatch?.complete(Unit)
+                                    testColdStartAdmissionCompletionCallback?.invoke()
                                 }
                             }
                             return START_STICKY
@@ -706,6 +709,7 @@ class AlarmService : Service() {
                                     Log.e(TAG, "Failed cold-start restart dismiss for $incomingGen", e)
                                 } finally {
                                     testColdStartAdmissionCompletionLatch?.complete(Unit)
+                                    testColdStartAdmissionCompletionCallback?.invoke()
                                 }
                             }
                             return START_STICKY
