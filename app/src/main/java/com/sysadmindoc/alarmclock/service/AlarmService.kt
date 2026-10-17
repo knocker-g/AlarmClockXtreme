@@ -2795,11 +2795,12 @@ class AlarmService : Service() {
                 val maxAttempts = 3
                 var attempt = 0
                 var committed = false
+                var staleRejected = false
                 while (attempt < maxAttempts && !committed) {
                     attempt++
                     delay(200L * attempt)
                     val retryAck = CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
-                    val enqueued = updateActiveAlarm(null, targetGen = acceptedGen, ack = retryAck)
+                    val enqueued = preferencesManager.enqueueActiveAlarmUpdate(null, targetGen = acceptedGen, ack = retryAck)
                     if (!enqueued) continue
 
                     val result = try {
@@ -2830,6 +2831,7 @@ class AlarmService : Service() {
                         }
                         com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.REJECTED_STALE -> {
                             Log.i(TAG, "Active alarm clear retry rejected for $acceptedGen: DataStore holds newer active generation")
+                            staleRejected = true
                             break
                         }
                         com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT -> {
@@ -2838,7 +2840,7 @@ class AlarmService : Service() {
                     }
                 }
 
-                if (!committed) {
+                if (!committed && !staleRejected) {
                     Log.e(TAG, "Exhausted all $maxAttempts retries for DataStore active alarm clear for $acceptedGen")
                     recordIncidentAsync(
                         type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,

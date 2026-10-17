@@ -2658,19 +2658,20 @@ class AlarmGenerationTest {
             loadLatch.complete(Unit)
             awaitColdStartCompletion(completionLatch)
 
-            // 3. BEFORE retry attempt 1 executes on background scope, write NEWER genB (424L) to DataStore disk!
+            // 3. BEFORE retry attempt 1 executes on background scope, deliver START for NEWER genB (424L) to service!
             pmCold.testFaultInjector = null
             val genB = AlarmGeneration(424L, 2000L, "fire-424-newer-gen")
-            val snapshotB = AlarmService.Companion.ActiveAlarmSnapshot(
-                alarmId = genB.alarmId,
-                scheduledAt = genB.scheduledAt,
-                fireId = genB.fireId,
-                firedAt = 2000L,
-                state = "FIRING"
-            )
-            val ackB = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
-            assertTrue(pmSetup.enqueueActiveAlarmUpdate(snapshotB, genB, ackB))
-            assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackB.await())
+            service.repository.save(com.sysadmindoc.alarmclock.data.model.Alarm(id = genB.alarmId, hour = 8, minute = 0))
+            val startIntentB = Intent(service, AlarmService::class.java).apply {
+                action = AlarmService.ACTION_START_ALARM
+                putExtra(AlarmScheduler.EXTRA_ALARM_ID, genB.alarmId)
+                putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, genB.scheduledAt)
+                putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, genB.fireId)
+            }
+            service.onStartCommand(startIntentB, 0, 2)
+
+            // Verify in-memory active alarm is genB (424L)
+            assertEquals(424L, service.currentAlarmId)
 
             // 4. Await retry loop completion
             kotlinx.coroutines.withTimeout(5000) {
@@ -2680,8 +2681,9 @@ class AlarmGenerationTest {
                 }
             }
 
-            // 5. DataStore MUST PRESERVE newer genB (424L)!
+            // 5. DataStore MUST PRESERVE newer genB (424L) on disk AND in memory!
             assertEquals(424L, pmSetup.getCurrentSettings().activeAlarmId)
+            assertEquals(424L, service.currentAlarmId)
         } finally {
             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
             service.testOnDismissRetryFinishedCallback = null
