@@ -2381,6 +2381,156 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun coldStartRestartDismissFailureRecoveryEvidence(): Unit = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+
+        // --- CASE 1: Successful Commit (COMMITTED) ---
+        val pmSetup = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+        val genA = AlarmGeneration(420L, 1000L, "fire-420-success-commit")
+        val snapshotA = AlarmService.Companion.ActiveAlarmSnapshot(
+            alarmId = genA.alarmId,
+            scheduledAt = genA.scheduledAt,
+            fireId = genA.fireId,
+            firedAt = 1000L,
+            state = "FIRING"
+        )
+        val ackA = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        assertTrue(pmSetup.enqueueActiveAlarmUpdate(snapshotA, genA, ackA))
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackA.await())
+
+        // Service 1: Successfully dismisses genA
+        val loadLatch1 = kotlinx.coroutines.CompletableDeferred<Unit>()
+        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = loadLatch1
+
+        val controller1 = org.robolectric.Robolectric.buildService(AlarmService::class.java)
+        val service1 = controller1.create().get()
+
+        val completionLatch1 = kotlinx.coroutines.CompletableDeferred<Unit>()
+        service1.testColdStartAdmissionCompletionLatch = completionLatch1
+
+        val pmCold1 = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+        service1.preferencesManager = pmCold1
+        service1.repository.save(com.sysadmindoc.alarmclock.data.model.Alarm(id = genA.alarmId, hour = 7, minute = 0))
+
+        val dismissIntent1 = Intent(service1, AlarmService::class.java).apply {
+            action = AlarmService.ACTION_DISMISS
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, genA.alarmId)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, genA.scheduledAt)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, genA.fireId)
+        }
+        assertEquals(android.app.Service.START_STICKY, service1.onStartCommand(dismissIntent1, 0, 1))
+        loadLatch1.complete(Unit)
+        awaitColdStartCompletion(completionLatch1)
+        controller1.destroy()
+        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
+
+        // Process restart simulation for Case 1 (Successful Commit)
+        val loadLatchCase1 = kotlinx.coroutines.CompletableDeferred<Unit>()
+        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = loadLatchCase1
+
+        val controllerCase1 = org.robolectric.Robolectric.buildService(AlarmService::class.java)
+        val serviceCase1 = controllerCase1.create().get()
+
+        val completionLatchCase1 = kotlinx.coroutines.CompletableDeferred<Unit>()
+        serviceCase1.testColdStartAdmissionCompletionLatch = completionLatchCase1
+
+        val pmColdCase1 = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+        serviceCase1.preferencesManager = pmColdCase1
+
+        // Cold-start restart action for genA delivered to new process instance
+        serviceCase1.onStartCommand(dismissIntent1, 0, 1)
+        loadLatchCase1.complete(Unit)
+        awaitColdStartCompletion(completionLatchCase1)
+
+        // Evidence 1: On successful commit, cold-start restart for genA is REJECTED (count = 0)
+        assertEquals(0, serviceCase1.testColdStartDismissCount.get())
+        assertNull(pmColdCase1.getCurrentSettings().activeAlarmId)
+        controllerCase1.destroy()
+        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
+
+        // --- CASE 2: Commit Failure (FAILED_COMMIT) ---
+        val genB = AlarmGeneration(421L, 2000L, "fire-421-fail-commit")
+        val snapshotB = AlarmService.Companion.ActiveAlarmSnapshot(
+            alarmId = genB.alarmId,
+            scheduledAt = genB.scheduledAt,
+            fireId = genB.fireId,
+            firedAt = 2000L,
+            state = "FIRING"
+        )
+        val ackB = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        assertTrue(pmSetup.enqueueActiveAlarmUpdate(snapshotB, genB, ackB))
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackB.await())
+
+        // Service 2: Dismisses genB, but DataStore commit FAILS (simulated write failure)
+        val loadLatch2 = kotlinx.coroutines.CompletableDeferred<Unit>()
+        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = loadLatch2
+
+        val controller2 = org.robolectric.Robolectric.buildService(AlarmService::class.java)
+        val service2 = controller2.create().get()
+
+        val completionLatch2 = kotlinx.coroutines.CompletableDeferred<Unit>()
+        service2.testColdStartAdmissionCompletionLatch = completionLatch2
+
+        val pmCold2 = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+        pmCold2.testFaultInjector = {
+            throw java.io.IOException("Simulated DataStore write failure in dismiss")
+        }
+        service2.preferencesManager = pmCold2
+        service2.repository.save(com.sysadmindoc.alarmclock.data.model.Alarm(id = genB.alarmId, hour = 8, minute = 0))
+
+        val dismissIntent2 = Intent(service2, AlarmService::class.java).apply {
+            action = AlarmService.ACTION_DISMISS
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, genB.alarmId)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, genB.scheduledAt)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, genB.fireId)
+        }
+        assertEquals(android.app.Service.START_STICKY, service2.onStartCommand(dismissIntent2, 0, 1))
+        loadLatch2.complete(Unit)
+        awaitColdStartCompletion(completionLatch2)
+
+        // Initial dismiss completed on service2 (count = 1), but commit failed (FAILED_COMMIT)
+        assertEquals(1, service2.testColdStartDismissCount.get())
+        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
+        controller2.destroy()
+
+        // Process restart simulation for Case 2 (Commit Failure)
+        val loadLatchCase2 = kotlinx.coroutines.CompletableDeferred<Unit>()
+        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = loadLatchCase2
+
+        val controllerCase2 = org.robolectric.Robolectric.buildService(AlarmService::class.java)
+        val serviceCase2 = controllerCase2.create().get()
+
+        val completionLatchCase2 = kotlinx.coroutines.CompletableDeferred<Unit>()
+        serviceCase2.testColdStartAdmissionCompletionLatch = completionLatchCase2
+
+        val pmColdRestart = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+        serviceCase2.preferencesManager = pmColdRestart
+        serviceCase2.repository.save(com.sysadmindoc.alarmclock.data.model.Alarm(id = genB.alarmId, hour = 8, minute = 0))
+
+        // Cold-start restart action for genB delivered to new process instance
+        serviceCase2.onStartCommand(dismissIntent2, 0, 1)
+        loadLatchCase2.complete(Unit)
+        awaitColdStartCompletion(completionLatchCase2)
+
+        // Evidence 2: On commit failure, DataStore disk still held genB (421L), so restart recovery RE-ADMITTED genB (count = 1)!
+        val initialDismissCount = service2.testColdStartDismissCount.get()
+        val restartDismissCount = serviceCase2.testColdStartDismissCount.get()
+        val totalExecutionsAcrossProcesses = initialDismissCount + restartDismissCount
+
+        // Cleanup
+        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
+        val ackClear = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        pmSetup.enqueueActiveAlarmUpdate(null, targetGen = genB, ack = ackClear)
+        ackClear.await()
+        controllerCase2.destroy()
+
+        // Assert Evidence 2 findings: On commit failure, restart recovery re-admitted genB (1 + 1 = 2 executions across process restart)
+        assertEquals(1, initialDismissCount)
+        assertEquals(1, restartDismissCount)
+        assertEquals(2, totalExecutionsAcrossProcesses)
+    }
+
+    @Test
     fun coldStartRestartClaimDoesNotBlockDifferentGeneration() = runBlocking {
         val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
 
