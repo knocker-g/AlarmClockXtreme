@@ -219,6 +219,10 @@ class AlarmService : Service() {
     internal var testColdStartAdmissionCompletionLatch: CompletableDeferred<Unit>? = null
     @VisibleForTesting
     internal var testColdStartAdmissionCompletionCallback: (() -> Unit)? = null
+    @VisibleForTesting
+    internal val testColdStartSnoozeCount = java.util.concurrent.atomic.AtomicInteger(0)
+    @VisibleForTesting
+    internal val testColdStartDismissCount = java.util.concurrent.atomic.AtomicInteger(0)
     private var wakeLock: PowerManager.WakeLock? = null
     // v1.9.1: AtomicBoolean (was @Volatile Boolean). Multiple coroutines on
     // serviceScope's IO dispatcher can race the foreground stop path — e.g.
@@ -512,6 +516,7 @@ class AlarmService : Service() {
 
                                             if (snoozeActionInFlight.compareAndSet(false, true)) {
                                                 try {
+                                                    testColdStartSnoozeCount.incrementAndGet()
                                                     snoozeAlarm(alarmId, incomingGen, customMinutes, snoozeAtMillis)
                                                 } finally {
                                                     snoozeActionInFlight.set(false)
@@ -689,6 +694,7 @@ class AlarmService : Service() {
                                             val challengeRetryCount = intent.getIntExtra(EXTRA_CHALLENGE_RETRY_COUNT, 0).coerceAtLeast(0)
                                             val challengeSolveTimeMs = intent.getLongExtra(EXTRA_CHALLENGE_SOLVE_TIME_MS, 0L).coerceAtLeast(0L)
 
+                                            testColdStartDismissCount.incrementAndGet()
                                             dismissAlarm(
                                                 alarmId = alarmId,
                                                 acceptedGen = acceptedGen,
