@@ -222,6 +222,8 @@ class AlarmService : Service() {
     @VisibleForTesting
     internal var testColdStartSnoozeBeforeWithContextBarrier: CompletableDeferred<Unit>? = null
     @VisibleForTesting
+    internal var testColdStartSnoozeReachedBarrierLatch: CompletableDeferred<Unit>? = null
+    @VisibleForTesting
     internal val testColdStartSnoozeCount = java.util.concurrent.atomic.AtomicInteger(0)
     @VisibleForTesting
     internal val testColdStartDismissCount = java.util.concurrent.atomic.AtomicInteger(0)
@@ -497,6 +499,9 @@ class AlarmService : Service() {
                                         activeEvidence = loadedActive
                                     )
 
+                                    if (asyncDecision == ActionAdmissionDecision.ADMIT_RESTART) {
+                                        testColdStartSnoozeReachedBarrierLatch?.complete(Unit)
+                                    }
                                     testColdStartSnoozeBeforeWithContextBarrier?.await()
 
                                     withContext(Dispatchers.Main.immediate) {
@@ -504,11 +509,11 @@ class AlarmService : Service() {
                                             Log.i(TAG, "Aborting cold-start restart snooze for $incomingGen: generation changed")
                                             return@withContext
                                         }
-                                        if (incomingGen != null && !coldStartClaimedGenerations.add(incomingGen)) {
-                                            Log.i(TAG, "Aborting cold-start restart snooze for $incomingGen: generation already claimed")
-                                            return@withContext
-                                        }
                                         if (asyncDecision == ActionAdmissionDecision.ADMIT_RESTART && loadedActive != null && incomingGen != null) {
+                                            if (!coldStartClaimedGenerations.add(incomingGen)) {
+                                                Log.i(TAG, "Aborting cold-start restart snooze for $incomingGen: generation already claimed")
+                                                return@withContext
+                                            }
                                             val alarmId = incomingGen.alarmId
                                             currentAlarmId = loadedActive.alarmId
                                             currentScheduledAt = loadedActive.scheduledAt
@@ -690,11 +695,11 @@ class AlarmService : Service() {
                                             Log.i(TAG, "Aborting cold-start restart dismiss for $incomingGen: generation changed")
                                             return@withContext
                                         }
-                                        if (incomingGen != null && !coldStartClaimedGenerations.add(incomingGen)) {
-                                            Log.i(TAG, "Aborting cold-start restart dismiss for $incomingGen: generation already claimed")
-                                            return@withContext
-                                        }
                                         if (asyncDecision == ActionAdmissionDecision.ADMIT_RESTART && loadedActive != null && incomingGen != null) {
+                                            if (!coldStartClaimedGenerations.add(incomingGen)) {
+                                                Log.i(TAG, "Aborting cold-start restart dismiss for $incomingGen: generation already claimed")
+                                                return@withContext
+                                            }
                                             val acceptedGen = incomingGen
                                             val alarmId = acceptedGen.alarmId
                                             currentAlarmId = loadedActive.alarmId
