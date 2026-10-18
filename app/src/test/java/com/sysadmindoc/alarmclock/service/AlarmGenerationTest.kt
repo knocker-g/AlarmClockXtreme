@@ -2193,9 +2193,9 @@ class AlarmGenerationTest {
             val pmCold = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
             assertFalse(pmCold.isSettingsLoaded)
 
-            // Inject 300ms DataStore write delay
+            // Inject non-blocking DataStore write delay
             pmCold.testFaultInjector = {
-                Thread.sleep(300)
+                kotlinx.coroutines.runBlocking { kotlinx.coroutines.delay(50) }
             }
 
             service.preferencesManager = pmCold
@@ -2345,10 +2345,10 @@ class AlarmGenerationTest {
         assertTrue(pmSetup.enqueueActiveAlarmUpdate(snapshotA, genA, ackA))
         assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackA.await())
 
-        // 2. Enqueue clear for genA with a 200ms delay in DataStore writer
+        // 2. Enqueue clear for genA with a non-blocking delay in DataStore writer
         val ackDelayed = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
         pmSetup.testFaultInjector = {
-            Thread.sleep(200)
+            kotlinx.coroutines.runBlocking { kotlinx.coroutines.delay(50) }
         }
         pmSetup.enqueueActiveAlarmUpdate(null, targetGen = genA, ack = ackDelayed)
 
@@ -2845,15 +2845,16 @@ class AlarmGenerationTest {
             val pmCold = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
             assertFalse(pmCold.isSettingsLoaded)
 
-            // Inject 300ms DataStore write delay
+            // Inject non-blocking DataStore write delay
             pmCold.testFaultInjector = {
-                Thread.sleep(300)
+                kotlinx.coroutines.runBlocking { kotlinx.coroutines.delay(50) }
             }
 
             service.preferencesManager = pmCold
             service.repository.save(com.sysadmindoc.alarmclock.data.model.Alarm(id = genA.alarmId, hour = 7, minute = 0))
 
             service.testOnStopSelfCalled = {
+                pmCold.testFaultInjector = null
                 // Read DataStore disk settings at the EXACT moment stopSelf is called
                 activeAlarmStateAtStopSelf = kotlinx.coroutines.runBlocking { pmCold.getCurrentSettings().activeAlarmState }
             }
@@ -2915,9 +2916,9 @@ class AlarmGenerationTest {
             val pmCold = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
             assertFalse(pmCold.isSettingsLoaded)
 
-            // Inject 300ms DataStore write delay
+            // Inject non-blocking DataStore write delay
             pmCold.testFaultInjector = {
-                Thread.sleep(300)
+                kotlinx.coroutines.runBlocking { kotlinx.coroutines.delay(50) }
             }
 
             service.preferencesManager = pmCold
@@ -2925,6 +2926,7 @@ class AlarmGenerationTest {
             com.sysadmindoc.alarmclock.service.AlarmRuntimeState.setSnoozeCount(context, genA.alarmId, 1)
 
             service.testOnStopSelfCalled = {
+                pmCold.testFaultInjector = null
                 activeAlarmIdAtStopSelf = kotlinx.coroutines.runBlocking { pmCold.getCurrentSettings().activeAlarmId }
             }
 
