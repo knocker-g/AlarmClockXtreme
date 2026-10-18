@@ -2995,35 +2995,39 @@ class AlarmGenerationTest {
         service1.preferencesManager = pmCold1
         service1.repository.save(com.sysadmindoc.alarmclock.data.model.Alarm(id = genA.alarmId, hour = 7, minute = 0))
 
-        val snoozeIntent1 = Intent(service1, AlarmService::class.java).apply {
-            action = AlarmService.ACTION_SNOOZE
-            putExtra(AlarmScheduler.EXTRA_ALARM_ID, genA.alarmId)
-            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, genA.scheduledAt)
-            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, genA.fireId)
+        try {
+            val snoozeIntent1 = Intent(service1, AlarmService::class.java).apply {
+                action = AlarmService.ACTION_SNOOZE
+                putExtra(AlarmScheduler.EXTRA_ALARM_ID, genA.alarmId)
+                putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, genA.scheduledAt)
+                putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, genA.fireId)
+            }
+
+            assertEquals(android.app.Service.START_STICKY, service1.onStartCommand(snoozeIntent1, 0, 1))
+
+            loadLatch1.complete(Unit)
+            awaitColdStartCompletion(completionLatch1)
+
+            // Initial snooze completed on service1, but initial commit failed and launched retry
+            assertTrue(service1.testColdStartSnoozeCount.get() >= 1)
+
+            // Await background retry loop completion (attempt 1 succeeds)
+            kotlinx.coroutines.withTimeout(5000) {
+                retryFinishedChannel1.receive()
+            }
+
+            // Verify DataStore snooze state committed successfully during retry!
+            val settingsAfterRetry = pmCold1.getCurrentSettings()
+            assertEquals("SNOOZED", settingsAfterRetry.activeAlarmState)
+            val initialSnoozeCount = service1.testColdStartSnoozeCount.get()
+            assertEquals(1, initialSnoozeCount)
+        } finally {
+            loadLatch1.complete(Unit)
+            com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
+            service1.testOnSnoozeRetryFinishedCallback = null
+            pmCold1.testFaultInjector = null
+            controller1.destroy()
         }
-
-        assertEquals(android.app.Service.START_STICKY, service1.onStartCommand(snoozeIntent1, 0, 1))
-
-        loadLatch1.complete(Unit)
-        awaitColdStartCompletion(completionLatch1)
-
-        // Initial snooze completed on service1, but initial commit failed and launched retry
-        assertTrue(service1.testColdStartSnoozeCount.get() >= 1)
-
-        // Await background retry loop completion (attempt 1 succeeds)
-        kotlinx.coroutines.withTimeout(5000) {
-            retryFinishedChannel1.receive()
-        }
-
-        // Verify DataStore snooze state committed successfully during retry!
-        val settingsAfterRetry = pmCold1.getCurrentSettings()
-        assertEquals("SNOOZED", settingsAfterRetry.activeAlarmState)
-        val initialSnoozeCount = service1.testColdStartSnoozeCount.get()
-        assertEquals(1, initialSnoozeCount)
-
-        service1.testOnSnoozeRetryFinishedCallback = null
-        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
-        controller1.destroy()
 
         // 3. Process restart simulation: Cold-start recovery on new service instance
         val loadLatchRestart = kotlinx.coroutines.CompletableDeferred<Unit>()
@@ -3037,6 +3041,7 @@ class AlarmGenerationTest {
         serviceRestart.testColdStartSnoozeBeforeWithContextBarrier = kotlinx.coroutines.CompletableDeferred<Unit>().apply { complete(Unit) }
 
         var pmColdRestart: com.sysadmindoc.alarmclock.data.preferences.PreferencesManager? = null
+        var primaryException: Throwable? = null
         try {
             pmColdRestart = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
             serviceRestart.preferencesManager = pmColdRestart
@@ -3060,16 +3065,43 @@ class AlarmGenerationTest {
             // On restart, cold-start recovery sees activeAlarmState == SNOOZED, restores snooze cleanly without re-firing
             val settingsOnRestart = pmColdRestart.getCurrentSettings()
             assertEquals("SNOOZED", settingsOnRestart.activeAlarmState)
+        } catch (t: Throwable) {
+            primaryException = t
+            throw t
         } finally {
             loadLatchRestart.complete(Unit)
             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
             pmSetup.testFaultInjector = null
             pmCold1.testFaultInjector = null
             pmColdRestart?.testFaultInjector = null
-            val ackClear = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
-            pmSetup.enqueueActiveAlarmUpdate(null, targetGen = genA, ack = ackClear)
-            kotlinx.coroutines.withTimeoutOrNull(3000L) { ackClear.await() }
-            controllerRestart.destroy()
+
+            var cleanupException: Throwable? = null
+            try {
+                val ackClear = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+                val enqueued = pmSetup.enqueueActiveAlarmUpdate(null, targetGen = genA, ack = ackClear)
+                if (!enqueued) {
+                    cleanupException = IllegalStateException("Cleanup DataStore clear failed: enqueue returned false")
+                } else {
+                    val clearResult = kotlinx.coroutines.withTimeoutOrNull(3000L) { ackClear.await() }
+                    if (clearResult == null) {
+                        cleanupException = java.util.concurrent.TimeoutException("Cleanup DataStore clear timed out after 3000ms")
+                    } else if (clearResult != com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED) {
+                        cleanupException = IllegalStateException("Cleanup DataStore clear failed with result: $clearResult")
+                    }
+                }
+            } catch (t: Throwable) {
+                cleanupException = t
+            } finally {
+                controllerRestart.destroy()
+            }
+
+            if (cleanupException != null) {
+                if (primaryException != null) {
+                    primaryException.addSuppressed(cleanupException)
+                } else {
+                    throw cleanupException
+                }
+            }
         }
     }
 
