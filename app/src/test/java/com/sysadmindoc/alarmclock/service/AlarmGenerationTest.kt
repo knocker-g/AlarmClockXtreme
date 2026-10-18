@@ -1433,6 +1433,10 @@ class AlarmGenerationTest {
         val controller = org.robolectric.Robolectric.buildService(AlarmService::class.java)
         val service = controller.create().get()
 
+        // Explicitly arrange loaded settings on preferencesManager before onStartCommand
+        service.preferencesManager.getCurrentSettings()
+        assertTrue(service.preferencesManager.isSettingsLoaded)
+
         val snoozeIntent = Intent(service, AlarmService::class.java).apply {
             action = AlarmService.ACTION_SNOOZE
             putExtra(AlarmScheduler.EXTRA_ALARM_ID, genA.alarmId)
