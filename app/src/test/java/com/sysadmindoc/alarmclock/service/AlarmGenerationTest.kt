@@ -3036,30 +3036,41 @@ class AlarmGenerationTest {
         serviceRestart.testColdStartAdmissionCompletionLatch = completionLatchRestart
         serviceRestart.testColdStartSnoozeBeforeWithContextBarrier = kotlinx.coroutines.CompletableDeferred<Unit>().apply { complete(Unit) }
 
-        val pmColdRestart = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
-        serviceRestart.preferencesManager = pmColdRestart
-        serviceRestart.repository.save(com.sysadmindoc.alarmclock.data.model.Alarm(id = genA.alarmId, hour = 7, minute = 0))
+        var pmColdRestart: com.sysadmindoc.alarmclock.data.preferences.PreferencesManager? = null
+        try {
+            pmColdRestart = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+            serviceRestart.preferencesManager = pmColdRestart
+            serviceRestart.repository.save(com.sysadmindoc.alarmclock.data.model.Alarm(id = genA.alarmId, hour = 7, minute = 0))
 
-        val snoozeIntentRestart = Intent(serviceRestart, AlarmService::class.java).apply {
-            action = AlarmService.ACTION_SNOOZE
-            putExtra(AlarmScheduler.EXTRA_ALARM_ID, genA.alarmId)
-            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, genA.scheduledAt)
-            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, genA.fireId)
+            val snoozeIntentRestart = Intent(serviceRestart, AlarmService::class.java).apply {
+                action = AlarmService.ACTION_SNOOZE
+                putExtra(AlarmScheduler.EXTRA_ALARM_ID, genA.alarmId)
+                putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, genA.scheduledAt)
+                putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, genA.fireId)
+            }
+
+            val startResultRestart = serviceRestart.onStartCommand(snoozeIntentRestart, 0, 1)
+            assertEquals(android.app.Service.START_NOT_STICKY, startResultRestart)
+
+            loadLatchRestart.complete(Unit)
+            if (startResultRestart == android.app.Service.START_STICKY) {
+                awaitColdStartCompletion(completionLatchRestart)
+            }
+
+            // On restart, cold-start recovery sees activeAlarmState == SNOOZED, restores snooze cleanly without re-firing
+            val settingsOnRestart = pmColdRestart.getCurrentSettings()
+            assertEquals("SNOOZED", settingsOnRestart.activeAlarmState)
+        } finally {
+            loadLatchRestart.complete(Unit)
+            com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
+            pmSetup.testFaultInjector = null
+            pmCold1.testFaultInjector = null
+            pmColdRestart?.testFaultInjector = null
+            val ackClear = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+            pmSetup.enqueueActiveAlarmUpdate(null, targetGen = genA, ack = ackClear)
+            kotlinx.coroutines.withTimeoutOrNull(3000L) { ackClear.await() }
+            controllerRestart.destroy()
         }
-
-        serviceRestart.onStartCommand(snoozeIntentRestart, 0, 1)
-
-        // On restart, cold-start recovery sees activeAlarmState == SNOOZED, restores snooze cleanly without re-firing
-        val settingsOnRestart = pmColdRestart.getCurrentSettings()
-
-        // Cleanup
-        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
-        val ackClear = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
-        pmSetup.enqueueActiveAlarmUpdate(null, targetGen = genA, ack = ackClear)
-        ackClear.await()
-        controllerRestart.destroy()
-
-        assertEquals("SNOOZED", settingsOnRestart.activeAlarmState)
     }
 
     @Test
