@@ -29,6 +29,13 @@ class AlarmGenerationTest {
     @Before
     fun setUp() {
         AlarmServiceCallbackPolicy.resetState()
+        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch?.complete(Unit)
+        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
+    }
+
+    @org.junit.After
+    fun tearDown() {
+        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch?.complete(Unit)
         com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
     }
 
@@ -1495,6 +1502,7 @@ class AlarmGenerationTest {
             val snoozedSettings = awaitSettingsCondition(pmCold) { it.activeAlarmState == "SNOOZED" }
             assertEquals("SNOOZED", snoozedSettings.activeAlarmState)
         } finally {
+            loadLatch.complete(Unit)
             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
             controller.destroy()
         }
@@ -1551,6 +1559,7 @@ class AlarmGenerationTest {
             // 6. Verify preemption protection: genB (403L) remains active in service, old genA restart snooze was ABORTED!
             assertEquals(403L, service.currentAlarmId)
         } finally {
+            loadLatch.complete(Unit)
             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
             controller.destroy()
         }
@@ -1613,6 +1622,7 @@ class AlarmGenerationTest {
             assertNull(clearedSettings.activeAlarmId)
             assertEquals(-1L, service.currentAlarmId)
         } finally {
+            loadLatch.complete(Unit)
             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
             controller.destroy()
         }
@@ -1698,6 +1708,7 @@ class AlarmGenerationTest {
             assertEquals("FIRING", settingsAfterDestroy.activeAlarmState)
             assertEquals(405L, settingsAfterDestroy.activeAlarmId)
         } finally {
+            loadLatch.complete(Unit)
             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
         }
     }
@@ -1756,6 +1767,7 @@ class AlarmGenerationTest {
             assertNull(pmCold.getCurrentSettings().activeAlarmId)
             assertEquals(-1L, service.currentAlarmId)
         } finally {
+            loadLatch.complete(Unit)
             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
             controller.destroy()
         }
@@ -1845,6 +1857,7 @@ class AlarmGenerationTest {
                 assertNull(finalSettings.activeAlarmId)
             }
         } finally {
+            loadLatch.complete(Unit)
             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
             service.testColdStartAdmissionCompletionCallback = null
             val ackClear = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
@@ -1938,11 +1951,12 @@ class AlarmGenerationTest {
                 assertNull(finalSettings.activeAlarmId)
             }
         } finally {
+            loadLatch.complete(Unit)
             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
             service.testColdStartAdmissionCompletionCallback = null
             val ackClear = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
             pmSetup.enqueueActiveAlarmUpdate(null, targetGen = genA, ack = ackClear)
-            ackClear.await()
+            kotlinx.coroutines.withTimeoutOrNull(3000L) { ackClear.await() }
             controller.destroy()
         }
     }
@@ -2016,7 +2030,7 @@ class AlarmGenerationTest {
             kotlinx.coroutines.withTimeout(5000) {
                 while (completionChannel.tryReceive().isFailure) {
                     org.robolectric.shadows.ShadowLooper.idleMainLooper()
-                    kotlinx.coroutines.yield()
+                    kotlinx.coroutines.delay(10)
                 }
             }
 
@@ -2030,7 +2044,7 @@ class AlarmGenerationTest {
             kotlinx.coroutines.withTimeout(5000) {
                 while (completionChannel.tryReceive().isFailure) {
                     org.robolectric.shadows.ShadowLooper.idleMainLooper()
-                    kotlinx.coroutines.yield()
+                    kotlinx.coroutines.delay(10)
                 }
             }
 
@@ -2046,13 +2060,15 @@ class AlarmGenerationTest {
             val finalSettings = awaitSettingsCondition(pmCold) { it.activeAlarmId == null }
             assertNull(finalSettings.activeAlarmId)
         } finally {
+            loadLatch.complete(Unit)
+            snoozeBarrier.complete(Unit)
             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
             service.testColdStartAdmissionCompletionCallback = null
             service.testColdStartSnoozeBeforeWithContextBarrier = null
             service.testColdStartSnoozeReachedBarrierLatch = null
             val ackClear = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
             pmSetup.enqueueActiveAlarmUpdate(null, targetGen = genA, ack = ackClear)
-            ackClear.await()
+            kotlinx.coroutines.withTimeoutOrNull(3000L) { ackClear.await() }
             controller.destroy()
         }
     }
@@ -2155,7 +2171,7 @@ class AlarmGenerationTest {
             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
             val ackClear = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
             pmSetup.enqueueActiveAlarmUpdate(null, targetGen = genA, ack = ackClear)
-            ackClear.await()
+            kotlinx.coroutines.withTimeoutOrNull(3000L) { ackClear.await() }
             controller.destroy()
         }
     }
