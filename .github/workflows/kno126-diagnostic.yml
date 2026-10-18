@@ -7,6 +7,9 @@ on:
     types: [opened, synchronize]
     paths:
       - '.github/workflows/kno126-diagnostic.yml'
+      - 'app/src/main/java/com/sysadmindoc/alarmclock/data/preferences/PreferencesManager.kt'
+      - 'app/src/test/java/com/sysadmindoc/alarmclock/service/AlarmGenerationTest.kt'
+      - 'app/src/test/java/com/sysadmindoc/alarmclock/ui/timer/TimerAlarmServiceTest.kt'
 
 permissions:
   contents: read

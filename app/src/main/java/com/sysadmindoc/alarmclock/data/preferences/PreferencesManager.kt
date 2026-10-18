@@ -469,25 +469,15 @@ class PreferencesManager @Inject constructor(
         return !hasLoadedSettings || cachedSettings.hideAlarmLabelsOnPublicSurfaces
     }
 
-    // Application-lived repository scope so active alarm DataStore updates
-    // execute serially in strict FIFO order and survive component teardown (stopSelf / onDestroy).
-    private val activeAlarmWriterScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val activeAlarmChannel = Channel<ActiveAlarmUpdateRequest>(Channel.UNLIMITED)
-
-    init {
-        activeAlarmWriterScope.launch {
-            settings.collect {}
-        }
-        activeAlarmWriterScope.launch {
-            for (request in activeAlarmChannel) {
-                try {
-                    updateActiveAlarmInternal(request)
-                } catch (e: Exception) {
-                    Log.w("PreferencesManager", "Failed to persist active alarm update", e)
-                }
-            }
-        }
+    companion object {
+        @VisibleForTesting
+        internal var defaultInitialLoadLatch: CompletableDeferred<Unit>? = null
     }
+
+    @VisibleForTesting
+    internal var testInitialLoadLatch: CompletableDeferred<Unit>? = defaultInitialLoadLatch
+    @VisibleForTesting
+    internal var testFaultInjector: (() -> Unit)? = null
 
     internal enum class ActiveAlarmUpdateResult {
         COMMITTED,
@@ -500,20 +490,6 @@ class PreferencesManager @Inject constructor(
         val targetGen: AlarmGeneration? = null,
         val ack: CompletableDeferred<ActiveAlarmUpdateResult>? = null
     )
-
-    internal fun enqueueActiveAlarmUpdate(
-        snapshot: ActiveAlarmSnapshot?,
-        targetGen: AlarmGeneration? = null,
-        ack: CompletableDeferred<ActiveAlarmUpdateResult>? = null
-    ): Boolean {
-        val result = activeAlarmChannel.trySend(ActiveAlarmUpdateRequest(snapshot, targetGen, ack))
-        if (result.isFailure) {
-            Log.w("PreferencesManager", "Failed to enqueue active alarm update request (channel closed or full)")
-            ack?.complete(ActiveAlarmUpdateResult.FAILED_COMMIT)
-            return false
-        }
-        return true
-    }
 
     internal object ActiveAlarmWriterPolicy {
         fun shouldExecuteUpdate(
@@ -537,15 +513,39 @@ class PreferencesManager @Inject constructor(
         }
     }
 
-    companion object {
-        @VisibleForTesting
-        internal var defaultInitialLoadLatch: CompletableDeferred<Unit>? = null
+    // Application-lived repository scope so active alarm DataStore updates
+    // execute serially in strict FIFO order and survive component teardown (stopSelf / onDestroy).
+    private val activeAlarmWriterScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val activeAlarmChannel = Channel<ActiveAlarmUpdateRequest>(Channel.UNLIMITED)
+
+    init {
+        activeAlarmWriterScope.launch {
+            settings.collect {}
+        }
+        activeAlarmWriterScope.launch {
+            for (request in activeAlarmChannel) {
+                try {
+                    updateActiveAlarmInternal(request)
+                } catch (e: Exception) {
+                    Log.w("PreferencesManager", "Failed to persist active alarm update", e)
+                }
+            }
+        }
     }
 
-    @VisibleForTesting
-    internal var testInitialLoadLatch: CompletableDeferred<Unit>? = defaultInitialLoadLatch
-    @VisibleForTesting
-    internal var testFaultInjector: (() -> Unit)? = null
+    internal fun enqueueActiveAlarmUpdate(
+        snapshot: ActiveAlarmSnapshot?,
+        targetGen: AlarmGeneration? = null,
+        ack: CompletableDeferred<ActiveAlarmUpdateResult>? = null
+    ): Boolean {
+        val result = activeAlarmChannel.trySend(ActiveAlarmUpdateRequest(snapshot, targetGen, ack))
+        if (result.isFailure) {
+            Log.w("PreferencesManager", "Failed to enqueue active alarm update request (channel closed or full)")
+            ack?.complete(ActiveAlarmUpdateResult.FAILED_COMMIT)
+            return false
+        }
+        return true
+    }
 
     private suspend fun updateActiveAlarmInternal(request: ActiveAlarmUpdateRequest) {
         try {
