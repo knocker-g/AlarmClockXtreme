@@ -1632,7 +1632,7 @@ class AlarmGenerationTest {
                     result = settings
                     break
                 }
-                kotlinx.coroutines.yield()
+                kotlinx.coroutines.delay(10)
             }
         }
         return result!!
@@ -1820,11 +1820,11 @@ class AlarmGenerationTest {
             kotlinx.coroutines.withTimeout(5000) {
                 while (completionChannel.tryReceive().isFailure) {
                     org.robolectric.shadows.ShadowLooper.idleMainLooper()
-                    kotlinx.coroutines.yield()
+                    kotlinx.coroutines.delay(10)
                 }
                 while (completionChannel.tryReceive().isFailure) {
                     org.robolectric.shadows.ShadowLooper.idleMainLooper()
-                    kotlinx.coroutines.yield()
+                    kotlinx.coroutines.delay(10)
                 }
             }
 
@@ -2119,6 +2119,7 @@ class AlarmGenerationTest {
             val ackA = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
             assertTrue(pmSetup.enqueueActiveAlarmUpdate(snapshotA, genA, ackA))
             assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackA.await())
+            kotlinx.coroutines.delay(50)
 
             // 5. Deliver second cold-start SNOOZE intent for genA to the SAME AlarmService instance!
             val loadLatch2 = kotlinx.coroutines.CompletableDeferred<Unit>()
@@ -2202,8 +2203,9 @@ class AlarmGenerationTest {
             service.repository.save(com.sysadmindoc.alarmclock.data.model.Alarm(id = genA.alarmId, hour = 7, minute = 0))
 
             service.testOnStopSelfCalled = {
-                // Read DataStore settings at the EXACT moment stopSelf is called
-                activeAlarmIdAtStopSelf = pmCold.getCachedSettings().activeAlarmId
+                pmCold.testFaultInjector = null
+                // Read DataStore disk settings at the EXACT moment stopSelf is called
+                activeAlarmIdAtStopSelf = kotlinx.coroutines.runBlocking { pmCold.getCurrentSettings().activeAlarmId }
             }
 
             val dismissIntent = Intent(service, AlarmService::class.java).apply {
@@ -2496,6 +2498,7 @@ class AlarmGenerationTest {
 
         // Initial dismiss completed on service2 (count = 1), but commit failed (FAILED_COMMIT)
         assertEquals(1, service2.testColdStartDismissCount.get())
+        pmCold2.testFaultInjector = null
         com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
         controller2.destroy()
 
@@ -2758,7 +2761,7 @@ class AlarmGenerationTest {
         kotlinx.coroutines.withTimeout(5000) {
             while (retryFinishedChannel1.tryReceive().isFailure) {
                 org.robolectric.shadows.ShadowLooper.idleMainLooper()
-                kotlinx.coroutines.yield()
+                kotlinx.coroutines.delay(10)
             }
         }
 

@@ -12,6 +12,7 @@ import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import java.time.Duration
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -277,7 +278,16 @@ class TimerAlarmServiceTest {
 
     @Test
     fun `public label policy fails closed before preferences load`() {
-        assertTrue(PreferencesManager(context).shouldHideLabelsOnPublicSurfaces())
+        val loadLatch = kotlinx.coroutines.CompletableDeferred<Unit>()
+        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = loadLatch
+        try {
+            val pm = PreferencesManager(context)
+            assertFalse(pm.isSettingsLoaded)
+            assertTrue(pm.shouldHideLabelsOnPublicSurfaces())
+        } finally {
+            loadLatch.complete(Unit)
+            com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.defaultInitialLoadLatch = null
+        }
     }
 
     @Test
