@@ -15,6 +15,16 @@ import kotlinx.coroutines.CancellationException
 import javax.inject.Inject
 import javax.inject.Singleton
 
+sealed interface RoomSnapshotReadResult {
+    data class Success(
+        val meta: MetaDescriptor?,
+        val owners: List<OwnerDescriptor>,
+        val report: CoverageValidationReport
+    ) : RoomSnapshotReadResult
+
+    data class Failure(val details: String) : RoomSnapshotReadResult
+}
+
 @Singleton
 class AuthoritySnapshotReader @Inject constructor(
     private val database: AlarmDatabase
@@ -28,6 +38,22 @@ class AuthoritySnapshotReader @Inject constructor(
      * is UNINITIALIZED, INCOMPLETE, INVALID, COMPLETE, or READ_FAILED.
      */
     suspend fun readAndValidateSnapshot(): CoverageValidationReport {
+        val result = readAuthoritySnapshot()
+        return when (result) {
+            is RoomSnapshotReadResult.Success -> result.report
+            is RoomSnapshotReadResult.Failure -> CoverageValidationReport(
+                result = CoverageResult.READ_FAILED,
+                reasonCode = CoverageReasonCode.NONE,
+                details = result.details
+            )
+        }
+    }
+
+    /**
+     * Reads a consistent transactional snapshot of Alarms, Authorities, and Metadata
+     * from Room inside a single `withTransaction` block and returns [RoomSnapshotReadResult].
+     */
+    suspend fun readAuthoritySnapshot(): RoomSnapshotReadResult {
         val (alarms, authorities, metaRows) = try {
             database.withTransaction {
                 Triple(
@@ -39,11 +65,7 @@ class AuthoritySnapshotReader @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
-            return CoverageValidationReport(
-                result = CoverageResult.READ_FAILED,
-                reasonCode = CoverageReasonCode.NONE,
-                details = "Failed to read authority snapshot from Room database"
-            )
+            return RoomSnapshotReadResult.Failure("Failed to read authority snapshot from Room database")
         }
 
         // Evaluate metadata row counts according to Design LOCK v1.6 Rules
@@ -51,10 +73,14 @@ class AuthoritySnapshotReader @Inject constructor(
             0 -> null
             1 -> metaRows.single().toDescriptor()
             else -> {
-                return CoverageValidationReport(
-                    result = CoverageResult.INVALID,
-                    reasonCode = CoverageReasonCode.META_ID_INVALID,
-                    details = "Multiple schedule_authority_meta rows detected: ${metaRows.size}"
+                return RoomSnapshotReadResult.Success(
+                    meta = null,
+                    owners = authorities.map { it.toDescriptor() },
+                    report = CoverageValidationReport(
+                        result = CoverageResult.INVALID,
+                        reasonCode = CoverageReasonCode.META_ID_INVALID,
+                        details = "Multiple schedule_authority_meta rows detected: ${metaRows.size}"
+                    )
                 )
             }
         }
@@ -62,10 +88,16 @@ class AuthoritySnapshotReader @Inject constructor(
         val alarmDescriptors = alarms.map { it.toDescriptor() }
         val ownerDescriptors = authorities.map { it.toDescriptor() }
 
-        return AuthorityCoverageValidator.validate(
+        val validationReport = AuthorityCoverageValidator.validate(
             alarms = alarmDescriptors,
             owners = ownerDescriptors,
             meta = metaDescriptor
+        )
+
+        return RoomSnapshotReadResult.Success(
+            meta = metaDescriptor,
+            owners = ownerDescriptors,
+            report = validationReport
         )
     }
 

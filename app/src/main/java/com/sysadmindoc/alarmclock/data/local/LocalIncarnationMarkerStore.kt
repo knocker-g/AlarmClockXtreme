@@ -52,6 +52,9 @@ class LocalIncarnationMarkerStore @Inject constructor(
 
     private fun isCredentialStorageAccessible(): Boolean {
         return try {
+            if (androidx.core.content.ContextCompat.isDeviceProtectedStorage(context)) {
+                return false
+            }
             val userManager = context.getSystemService(Context.USER_SERVICE) as? android.os.UserManager
             if (userManager != null && !androidx.core.os.UserManagerCompat.isUserUnlocked(context)) {
                 return false

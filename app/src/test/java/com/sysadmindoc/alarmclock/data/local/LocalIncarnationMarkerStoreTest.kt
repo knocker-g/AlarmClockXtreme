@@ -277,6 +277,7 @@ class LocalIncarnationMarkerStoreTest {
         if (nonExistentDir.exists()) nonExistentDir.deleteRecursively()
 
         val mockContext = io.mockk.mockk<Context>()
+        io.mockk.every { mockContext.isDeviceProtectedStorage } returns false
         io.mockk.every { mockContext.noBackupFilesDir } returns nonExistentDir
         io.mockk.every { mockContext.getSystemService(Context.USER_SERVICE) } returns null
 
