@@ -64,14 +64,14 @@ object IncarnationEvidenceClassifier {
             }
         }
 
-        // PRESENT_VALID markers must have a non-blank ID and known completion state (COMPLETE or PREPARING)
+        // PRESENT_VALID markers must have a non-blank ID (UNKNOWN completion state is permitted as evidence of incomplete handshake)
         if (snapshot.roomState == MarkerState.PRESENT_VALID) {
-            if (snapshot.roomId.isNullOrBlank() || snapshot.roomCompletion == CompletionState.UNKNOWN) {
+            if (snapshot.roomId.isNullOrBlank()) {
                 return IncarnationClassificationOutcome.INCONSISTENT_INPUT
             }
         }
         if (snapshot.localState == MarkerState.PRESENT_VALID) {
-            if (snapshot.localId.isNullOrBlank() || snapshot.localCompletion == CompletionState.UNKNOWN) {
+            if (snapshot.localId.isNullOrBlank()) {
                 return IncarnationClassificationOutcome.INCONSISTENT_INPUT
             }
         }

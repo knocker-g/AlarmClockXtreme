@@ -72,7 +72,7 @@ class IncarnationEvidenceClassifierTest {
     }
 
     @Test
-    fun `inconsistent PRESENT_VALID marker with blank ID or UNKNOWN completion produces INCONSISTENT_INPUT`() {
+    fun `PRESENT_VALID marker with null or blank ID produces INCONSISTENT_INPUT`() {
         // PRESENT_VALID with null ID
         val roomNullId = validMatchedPairSnapshot.copy(roomId = null)
         assertEquals(
@@ -87,11 +87,76 @@ class IncarnationEvidenceClassifierTest {
             IncarnationEvidenceClassifier.classify(localBlankId)
         )
 
-        // PRESENT_VALID with UNKNOWN completion state
-        val roomUnknownCompletion = validMatchedPairSnapshot.copy(roomCompletion = CompletionState.UNKNOWN)
+        // PRESENT_VALID with blank ID AND UNKNOWN completion
+        val blankIdUnknownCompletion = validMatchedPairSnapshot.copy(
+            roomId = "   ",
+            roomCompletion = CompletionState.UNKNOWN
+        )
         assertEquals(
             IncarnationClassificationOutcome.INCONSISTENT_INPUT,
-            IncarnationEvidenceClassifier.classify(roomUnknownCompletion)
+            IncarnationEvidenceClassifier.classify(blankIdUnknownCompletion)
+        )
+    }
+
+    @Test
+    fun `matching IDs with UNKNOWN or PREPARING completion produces INCOMPLETE_HANDSHAKE`() {
+        // Room UNKNOWN completion
+        val roomUnknownSnapshot = validMatchedPairSnapshot.copy(
+            roomCompletion = CompletionState.UNKNOWN
+        )
+        assertEquals(
+            IncarnationClassificationOutcome.INCOMPLETE_HANDSHAKE,
+            IncarnationEvidenceClassifier.classify(roomUnknownSnapshot)
+        )
+
+        // Local UNKNOWN completion
+        val localUnknownSnapshot = validMatchedPairSnapshot.copy(
+            localCompletion = CompletionState.UNKNOWN
+        )
+        assertEquals(
+            IncarnationClassificationOutcome.INCOMPLETE_HANDSHAKE,
+            IncarnationEvidenceClassifier.classify(localUnknownSnapshot)
+        )
+
+        // Both UNKNOWN completion
+        val bothUnknownSnapshot = validMatchedPairSnapshot.copy(
+            roomCompletion = CompletionState.UNKNOWN,
+            localCompletion = CompletionState.UNKNOWN
+        )
+        assertEquals(
+            IncarnationClassificationOutcome.INCOMPLETE_HANDSHAKE,
+            IncarnationEvidenceClassifier.classify(bothUnknownSnapshot)
+        )
+
+        // Room PREPARING
+        val roomPreparingSnapshot = validMatchedPairSnapshot.copy(
+            roomCompletion = CompletionState.PREPARING
+        )
+        assertEquals(
+            IncarnationClassificationOutcome.INCOMPLETE_HANDSHAKE,
+            IncarnationEvidenceClassifier.classify(roomPreparingSnapshot)
+        )
+
+        // Local PREPARING
+        val localPreparingSnapshot = validMatchedPairSnapshot.copy(
+            localCompletion = CompletionState.PREPARING
+        )
+        assertEquals(
+            IncarnationClassificationOutcome.INCOMPLETE_HANDSHAKE,
+            IncarnationEvidenceClassifier.classify(localPreparingSnapshot)
+        )
+    }
+
+    @Test
+    fun `different IDs with UNKNOWN completion produces ID_MISMATCH`() {
+        val mismatchWithUnknownSnapshot = validMatchedPairSnapshot.copy(
+            roomId = "marker-id-1",
+            localId = "marker-id-2",
+            roomCompletion = CompletionState.UNKNOWN
+        )
+        assertEquals(
+            IncarnationClassificationOutcome.ID_MISMATCH,
+            IncarnationEvidenceClassifier.classify(mismatchWithUnknownSnapshot)
         )
     }
 
@@ -210,9 +275,8 @@ class IncarnationEvidenceClassifierTest {
 
         // 3. INCONSISTENT_INPUT outranks ID_MISMATCH / HANDSHAKE
         val inconsistentOverMismatch = validMatchedPairSnapshot.copy(
-            roomId = "id1",
-            localId = "id2",
-            roomCompletion = CompletionState.UNKNOWN // Inconsistent
+            roomId = "   ", // Blank ID -> INCONSISTENT_INPUT
+            localId = "id2"
         )
         assertEquals(
             IncarnationClassificationOutcome.INCONSISTENT_INPUT,
