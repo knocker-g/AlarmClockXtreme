@@ -27,7 +27,8 @@ enum class CoverageResult {
     UNINITIALIZED,
     INCOMPLETE,
     INVALID,
-    COMPLETE
+    COMPLETE,
+    READ_FAILED
 }
 
 enum class CoverageReasonCode {

@@ -26,4 +26,7 @@ interface ScheduleAuthorityDao {
 
     @Query("SELECT * FROM schedule_authority_meta WHERE id = :id")
     suspend fun getMetaById(id: Int = 1): ScheduleAuthorityMeta?
+
+    @Query("SELECT * FROM schedule_authority_meta ORDER BY id")
+    suspend fun getAllMeta(): List<ScheduleAuthorityMeta>
 }
