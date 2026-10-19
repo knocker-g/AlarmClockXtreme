@@ -35,5 +35,17 @@ data class DurableOperationIntent(
         val VALID_PHASES = setOf(PHASE_PENDING, PHASE_IN_FLIGHT, PHASE_COMPLETED, PHASE_ABORTED, PHASE_EXPIRED)
 
         fun isValidPhase(phase: String): Boolean = phase in VALID_PHASES
+
+        fun isUnresolvedPhase(phase: String): Boolean = phase in UNRESOLVED_PHASES
+
+        fun validateForInsert(intent: DurableOperationIntent) {
+            require(intent.operationToken.isNotBlank()) { "operationToken must not be blank" }
+            require(intent.alarmId > 0L) { "alarmId must be positive" }
+            require(intent.operationEpoch > 0L) { "operationEpoch must be positive" }
+            require(intent.incarnationId.isNotBlank()) { "incarnationId must not be blank" }
+            require(intent.operationKind.isNotBlank()) { "operationKind must not be blank" }
+            require(intent.intentRevision > 0L) { "intentRevision must be positive" }
+            require(isValidPhase(intent.phase)) { "Invalid operation phase: ${intent.phase}" }
+        }
     }
 }

@@ -11,7 +11,6 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -55,8 +54,8 @@ class DurableOperationIntentTest {
     }
 
     @Test
-    fun `insertIntent and getByToken stores and reads durable operation intent correctly`() = runBlocking {
-        intentDao.insertIntent(validIntent)
+    fun `insertValidatedIntent and getByToken stores and reads durable operation intent correctly`() = runBlocking {
+        intentDao.insertValidatedIntent(validIntent)
 
         val retrieved = intentDao.getIntentByToken("intent-token-100")
         assertNotNull(retrieved)
@@ -65,36 +64,72 @@ class DurableOperationIntentTest {
 
     @Test(expected = SQLiteConstraintException::class)
     fun `duplicate operationToken throws SQLiteConstraintException on ABORT strategy`(): Unit = runBlocking {
-        intentDao.insertIntent(validIntent)
+        intentDao.insertValidatedIntent(validIntent)
 
         val duplicateTokenIntent = validIntent.copy(
             operationEpoch = 2L,
             phase = DurableOperationIntent.PHASE_COMPLETED
         )
         // ABORT strategy prevents silent overwrite or deletion of existing token
-        intentDao.insertIntent(duplicateTokenIntent)
+        intentDao.insertValidatedIntent(duplicateTokenIntent)
+    }
+
+    @Test(expected = SQLiteConstraintException::class)
+    fun `same alarm with two unresolved operations throws SQLiteConstraintException`(): Unit = runBlocking {
+        val unresolved1 = validIntent.copy(operationToken = "tok-1", phase = DurableOperationIntent.PHASE_PENDING)
+        val unresolved2 = validIntent.copy(operationToken = "tok-2", phase = DurableOperationIntent.PHASE_IN_FLIGHT)
+
+        intentDao.insertValidatedIntent(unresolved1)
+        // Attempting to insert a second unresolved intent for alarmId = 42L fails closed
+        intentDao.insertValidatedIntent(unresolved2)
+    }
+
+    @Test
+    fun `two different alarms with unresolved operations succeeds`() = runBlocking {
+        val alarm42Intent = validIntent.copy(alarmId = 42L, operationToken = "tok-42", phase = DurableOperationIntent.PHASE_PENDING)
+        val alarm99Intent = validIntent.copy(alarmId = 99L, operationToken = "tok-99", phase = DurableOperationIntent.PHASE_PENDING)
+
+        intentDao.insertValidatedIntent(alarm42Intent)
+        intentDao.insertValidatedIntent(alarm99Intent)
+
+        assertEquals(1, intentDao.getUnresolvedIntentsByAlarmId(42L).size)
+        assertEquals(1, intentDao.getUnresolvedIntentsByAlarmId(99L).size)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `invalid phase at persistence boundary throws IllegalArgumentException`(): Unit = runBlocking {
+        val invalidPhaseIntent = validIntent.copy(phase = "UNKNOWN_PHASE")
+        intentDao.insertValidatedIntent(invalidPhaseIntent)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `blank operation token throws IllegalArgumentException`(): Unit = runBlocking {
+        val blankTokenIntent = validIntent.copy(operationToken = "   ")
+        intentDao.insertValidatedIntent(blankTokenIntent)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `nonpositive epoch throws IllegalArgumentException`(): Unit = runBlocking {
+        val zeroEpochIntent = validIntent.copy(operationEpoch = 0L)
+        intentDao.insertValidatedIntent(zeroEpochIntent)
     }
 
     @Test
     fun `getUnresolvedIntentsByAlarmId returns PENDING and IN_FLIGHT intents only`() = runBlocking {
         val pendingIntent = validIntent.copy(operationToken = "tok-pending", phase = DurableOperationIntent.PHASE_PENDING)
-        val inFlightIntent = validIntent.copy(operationToken = "tok-inflight", phase = DurableOperationIntent.PHASE_IN_FLIGHT)
         val completedIntent = validIntent.copy(operationToken = "tok-completed", phase = DurableOperationIntent.PHASE_COMPLETED)
         val abortedIntent = validIntent.copy(operationToken = "tok-aborted", phase = DurableOperationIntent.PHASE_ABORTED)
 
-        intentDao.insertIntent(pendingIntent)
-        intentDao.insertIntent(inFlightIntent)
-        intentDao.insertIntent(completedIntent)
-        intentDao.insertIntent(abortedIntent)
+        intentDao.insertValidatedIntent(pendingIntent)
+        intentDao.insertValidatedIntent(completedIntent)
+        intentDao.insertValidatedIntent(abortedIntent)
 
         val unresolved = intentDao.getUnresolvedIntentsByAlarmId(42L)
-        assertEquals(2, unresolved.size)
-        val unresolvedTokens = unresolved.map { it.operationToken }.toSet()
-        assertTrue(unresolvedTokens.contains("tok-pending"))
-        assertTrue(unresolvedTokens.contains("tok-inflight"))
+        assertEquals(1, unresolved.size)
+        assertEquals("tok-pending", unresolved.first().operationToken)
 
         val allIntents = intentDao.getIntentsByAlarmId(42L)
-        assertEquals(4, allIntents.size)
+        assertEquals(3, allIntents.size)
     }
 
     @Test
@@ -102,8 +137,8 @@ class DurableOperationIntentTest {
         val completed = validIntent.copy(operationToken = "tok-comp", phase = DurableOperationIntent.PHASE_COMPLETED)
         val expired = validIntent.copy(operationToken = "tok-exp", phase = DurableOperationIntent.PHASE_EXPIRED)
 
-        intentDao.insertIntent(completed)
-        intentDao.insertIntent(expired)
+        intentDao.insertValidatedIntent(completed)
+        intentDao.insertValidatedIntent(expired)
 
         val all = intentDao.getAllIntents()
         assertEquals(2, all.size)
@@ -111,7 +146,7 @@ class DurableOperationIntentTest {
 
     @Test
     fun `read queries perform no state mutations`() = runBlocking {
-        intentDao.insertIntent(validIntent)
+        intentDao.insertValidatedIntent(validIntent)
 
         val read1 = intentDao.getIntentByToken("intent-token-100")
         val read2 = intentDao.getAllIntents()
