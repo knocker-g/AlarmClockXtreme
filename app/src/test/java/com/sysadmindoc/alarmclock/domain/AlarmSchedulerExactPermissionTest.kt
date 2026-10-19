@@ -30,6 +30,7 @@ import java.time.DayOfWeek
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -134,14 +135,9 @@ class AlarmSchedulerExactPermissionTest {
 
         val armed = scheduler.scheduleSnooze(enabledAlarm(id = 73L), customMinutes = 9)
 
-        // The service has already told the user they snoozed. Dropping it
-        // silently is the one outcome that cannot be allowed, so the snooze
-        // degrades to an inexact wakeup instead of disappearing.
-        assertTrue("the snooze reported failure", armed)
-        val scheduled = scheduledAlarms().single()
-        assertNull("an inexact wakeup must not claim to be an alarm clock", scheduled.alarmClockInfo)
-        assertTrue(scheduled.isAllowWhileIdle)
-        coVerify { repository.updateNextTrigger(73L, more(0L)) }
+        assertFalse("the snooze must fail closed when exact permission revoked", armed)
+        assertTrue("no inexact alarm clock must be registered", scheduledAlarms().isEmpty())
+        coVerify(exactly = 0) { repository.updateNextTrigger(73L, any()) }
         verify {
             incidentRepository.recordAsync(
                 alarmId = 73L,
@@ -149,8 +145,8 @@ class AlarmSchedulerExactPermissionTest {
                 scheduledAt = any(),
                 eventAt = any(),
                 type = AlarmIncidentEvent.TYPE_SCHEDULE,
-                status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                reasonCode = "SNOOZE_INEXACT_NO_EXACT_PERMISSION",
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "SNOOZE_EXACT_PERMISSION_REVOKED",
                 source = "AlarmScheduler"
             )
         }
@@ -163,8 +159,9 @@ class AlarmSchedulerExactPermissionTest {
 
         val armed = scheduler.scheduleSnoozeAt(enabledAlarm(id = 74L), target)
 
-        assertTrue("the snooze reported failure", armed)
-        assertNull(scheduledAlarms().single().alarmClockInfo)
+        assertFalse("the snooze at chosen time must fail closed when exact permission revoked", armed)
+        assertTrue("no inexact alarm clock must be registered", scheduledAlarms().isEmpty())
+        coVerify(exactly = 0) { repository.updateNextTrigger(74L, any()) }
         verify {
             incidentRepository.recordAsync(
                 alarmId = 74L,
@@ -172,8 +169,8 @@ class AlarmSchedulerExactPermissionTest {
                 scheduledAt = target,
                 eventAt = any(),
                 type = AlarmIncidentEvent.TYPE_SCHEDULE,
-                status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                reasonCode = "SNOOZE_AT_INEXACT_NO_EXACT_PERMISSION",
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "SNOOZE_AT_EXACT_PERMISSION_REVOKED",
                 source = "AlarmScheduler"
             )
         }

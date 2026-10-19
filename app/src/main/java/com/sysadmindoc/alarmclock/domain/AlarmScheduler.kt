@@ -248,37 +248,16 @@ class AlarmScheduler @Inject constructor(
         val minutes = customMinutes ?: alarm.snoozeDurationMinutes
         val snoozeTime = System.currentTimeMillis() + (minutes * 60 * 1000L)
         if (!canScheduleExactAlarms()) {
-            // Exact-alarm access was revoked mid-ring. The service has already
-            // recorded and announced the snooze, so silently dropping it is
-            // the worst outcome — arm an inexact wakeup (fires within the Doze
-            // maintenance window) and leave an incident record.
             val sanitizedAlarm = alarm.sanitized()
             val fireId = AlarmIncidentEvent.fireIdFor(sanitizedAlarm.id, snoozeTime)
-            repository.updateNextTrigger(sanitizedAlarm.id, snoozeTime)
-            return try {
-                alarmManager.setAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    snoozeTime,
-                    createPendingIntent(sanitizedAlarm.id, snoozeTime, fireId)
-                )
-                recordScheduleIncident(
-                    alarmId = sanitizedAlarm.id,
-                    fireId = fireId,
-                    triggerTime = snoozeTime,
-                    status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                    reasonCode = "SNOOZE_INEXACT_NO_EXACT_PERMISSION"
-                )
-                true
-            } catch (e: Exception) {
-                recordScheduleIncident(
-                    alarmId = sanitizedAlarm.id,
-                    fireId = fireId,
-                    triggerTime = snoozeTime,
-                    status = AlarmIncidentEvent.STATUS_FAILED,
-                    reasonCode = "SNOOZE_INEXACT_FAILED_${e.javaClass.simpleName}"
-                )
-                false
-            }
+            recordScheduleIncident(
+                alarmId = sanitizedAlarm.id,
+                fireId = fireId,
+                triggerTime = snoozeTime,
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "SNOOZE_EXACT_PERMISSION_REVOKED"
+            )
+            return false
         }
         return scheduleAt(alarm, snoozeTime)
     }
@@ -294,31 +273,14 @@ class AlarmScheduler @Inject constructor(
         if (!canScheduleExactAlarms()) {
             val sanitizedAlarm = alarm.sanitized()
             val fireId = AlarmIncidentEvent.fireIdFor(sanitizedAlarm.id, snoozeTime)
-            repository.updateNextTrigger(sanitizedAlarm.id, snoozeTime)
-            return try {
-                alarmManager.setAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    snoozeTime,
-                    createPendingIntent(sanitizedAlarm.id, snoozeTime, fireId)
-                )
-                recordScheduleIncident(
-                    alarmId = sanitizedAlarm.id,
-                    fireId = fireId,
-                    triggerTime = snoozeTime,
-                    status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                    reasonCode = "SNOOZE_AT_INEXACT_NO_EXACT_PERMISSION"
-                )
-                true
-            } catch (e: Exception) {
-                recordScheduleIncident(
-                    alarmId = sanitizedAlarm.id,
-                    fireId = fireId,
-                    triggerTime = snoozeTime,
-                    status = AlarmIncidentEvent.STATUS_FAILED,
-                    reasonCode = "SNOOZE_AT_INEXACT_FAILED_${e.javaClass.simpleName}"
-                )
-                false
-            }
+            recordScheduleIncident(
+                alarmId = sanitizedAlarm.id,
+                fireId = fireId,
+                triggerTime = snoozeTime,
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "SNOOZE_AT_EXACT_PERMISSION_REVOKED"
+            )
+            return false
         }
         return scheduleAt(alarm, snoozeTime)
     }
