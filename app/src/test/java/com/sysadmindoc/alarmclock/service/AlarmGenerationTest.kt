@@ -2839,12 +2839,13 @@ class AlarmGenerationTest {
     }
 
     @Test
+    @org.robolectric.annotation.Config(sdk = [31])
     fun snoozeAlarmFailsClosedBeforeTeardownWhenExactPermissionRevoked(): Unit = runBlocking {
         val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
 
         // 1. Persist active alarm genA (501L) in FIRING state to DataStore
         val pmSetup = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
-        val genA = AlarmGeneration(501L, 1000L, "fire-501-snooze-preflight")
+        val genA = AlarmGeneration(501L, 1000L, "alarm-501-snooze-preflight")
         val snapshotA = AlarmService.Companion.ActiveAlarmSnapshot(
             alarmId = genA.alarmId,
             scheduledAt = genA.scheduledAt,
@@ -2877,6 +2878,9 @@ class AlarmGenerationTest {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
             assertEquals(501L, service.currentAlarmId)
 
+            val completionLatch = kotlinx.coroutines.CompletableDeferred<Unit>()
+            service.testColdStartAdmissionCompletionLatch = completionLatch
+
             // Deliver SNOOZE intent when exact permission is revoked
             val snoozeIntent = Intent(service, AlarmService::class.java).apply {
                 action = AlarmService.ACTION_SNOOZE
@@ -2885,6 +2889,9 @@ class AlarmGenerationTest {
                 putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, genA.fireId)
             }
             service.onStartCommand(snoozeIntent, 0, 2)
+            kotlinx.coroutines.withTimeout(5000L) {
+                completionLatch.await()
+            }
 
             // SLICE 2A PREFLIGHT VERIFICATION:
             // 1. Service remains active and firing for genA (501L) — NOT stopped, NOT torn down!
@@ -2898,11 +2905,43 @@ class AlarmGenerationTest {
             assertEquals("FIRING", pmSetup.getCurrentSettings().activeAlarmState)
             assertEquals(501L, pmSetup.getCurrentSettings().activeAlarmId)
 
-            // 4. NO ALARM_SNOOZED broadcast sent
+            // 4. Generation-qualified STATUS_FAILED incident recorded in Room DB
+            var failureIncident: com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent? = null
+            val startMs = System.currentTimeMillis()
+            while (failureIncident == null && System.currentTimeMillis() - startMs < 5000L) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                val recent = service.alarmIncidentRepository.getRecent()
+                failureIncident = recent.firstOrNull {
+                    it.alarmId == 501L && it.reasonCode == "SNOOZE_REGISTRATION_FAILED"
+                }
+                if (failureIncident == null) {
+                    kotlinx.coroutines.yield()
+                }
+            }
+            assertNotNull("SNOOZE_REGISTRATION_FAILED incident must be recorded", failureIncident)
+            assertEquals(com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent.STATUS_FAILED, failureIncident?.status)
+            assertEquals(genA.fireId, failureIncident?.fireId)
+            assertEquals(genA.scheduledAt, failureIncident?.scheduledAt)
+
+            // 5. NO SNOOZED success incident recorded
+            val recentIncidents = service.alarmIncidentRepository.getRecent()
+            val falseSuccessIncident = recentIncidents.firstOrNull {
+                it.alarmId == 501L && it.reasonCode == "SNOOZED" && it.status == com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent.STATUS_SUCCEEDED
+            }
+            assertNull("No SNOOZED success incident must be recorded on failure", falseSuccessIncident)
+
+            // 6. NO ALARM_SNOOZED broadcast sent
             val application = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
             val broadcasts = org.robolectric.Shadows.shadowOf(application).broadcastIntents
             val snoozeBroadcast = broadcasts.firstOrNull { it.action == "com.sysadmindoc.alarmclock.action.ALARM_SNOOZED" }
             assertNull("No ALARM_SNOOZED broadcast must be sent on failure", snoozeBroadcast)
+
+            // 7. NO ACTION_SNOOZED history event recorded in Room DB
+            val recentEvents = service.eventRepository.observeRecent().first()
+            val falseSnoozedEvent = recentEvents.firstOrNull {
+                it.alarmId == 501L && it.action == com.sysadmindoc.alarmclock.data.local.entity.AlarmEvent.ACTION_SNOOZED
+            }
+            assertNull("No ACTION_SNOOZED history event must be recorded on failure", falseSnoozedEvent)
         } finally {
             org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(true)
             val ackClear = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
@@ -3478,7 +3517,7 @@ class AlarmGenerationTest {
         kotlinx.coroutines.withTimeout(timeoutMs) {
             while (!latch.isCompleted) {
                 org.robolectric.shadows.ShadowLooper.idleMainLooper()
-                kotlinx.coroutines.delay(50)
+                kotlinx.coroutines.yield()
             }
         }
     }
