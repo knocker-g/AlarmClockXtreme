@@ -122,8 +122,9 @@ class RestoreBootstrapGatePolicyTest {
     }
 
     @Test
-    fun `exhaustive 243 input combinations test iff all PROVEN then ALLOW_SHADOW_META_PREPARATION`() {
+    fun `exhaustive 243 input combinations test asserts exact expected decision for every snapshot`() {
         val evidenceValues = Evidence.entries
+        val exercisedDecisions = mutableSetOf<RestoreBootstrapGateDecision>()
         var totalCombinations = 0
         var allowCount = 0
 
@@ -140,20 +141,20 @@ class RestoreBootstrapGatePolicyTest {
                                 restoreOriginClassified = ro,
                                 systemRestoreBarrierCleared = sb
                             )
-                            val decision = RestoreBootstrapGatePolicy.evaluate(snapshot)
+                            val actualDecision = RestoreBootstrapGatePolicy.evaluate(snapshot)
+                            val expectedDecision = expectedDecisionFor(snapshot)
 
-                            val isAllProven = (ce == Evidence.PROVEN &&
-                                    db == Evidence.PROVEN &&
-                                    jr == Evidence.PROVEN &&
-                                    ro == Evidence.PROVEN &&
-                                    sb == Evidence.PROVEN)
+                            exercisedDecisions.add(actualDecision)
 
-                            if (isAllProven) {
-                                assertEquals(RestoreBootstrapGateDecision.ALLOW_SHADOW_META_PREPARATION, decision)
+                            if (actualDecision == RestoreBootstrapGateDecision.ALLOW_SHADOW_META_PREPARATION) {
                                 allowCount++
-                            } else {
-                                assertNotEquals(RestoreBootstrapGateDecision.ALLOW_SHADOW_META_PREPARATION, decision)
                             }
+
+                            assertEquals(
+                                "Mismatch for snapshot $snapshot: expected $expectedDecision but got $actualDecision",
+                                expectedDecision,
+                                actualDecision
+                            )
                         }
                     }
                 }
@@ -162,6 +163,44 @@ class RestoreBootstrapGatePolicyTest {
 
         assertEquals(243, totalCombinations)
         assertEquals(1, allowCount)
+        assertEquals(
+            "Every single decision enum value must be exercised across the 243 combinations",
+            RestoreBootstrapGateDecision.entries.toSet(),
+            exercisedDecisions
+        )
+    }
+
+    private fun expectedDecisionFor(snapshot: RestoreBootstrapGateSnapshot): RestoreBootstrapGateDecision {
+        return when {
+            // 1. CE Unlock Check
+            snapshot.ceUnlocked == Evidence.NEGATED -> RestoreBootstrapGateDecision.DEFER_CE_LOCKED
+            snapshot.ceUnlocked == Evidence.UNKNOWN -> RestoreBootstrapGateDecision.BLOCK_CE_UNKNOWN
+
+            // 2. Database Compatibility Check
+            snapshot.databaseCompatible == Evidence.NEGATED -> RestoreBootstrapGateDecision.STOP_DATABASE_INCOMPATIBLE
+            snapshot.databaseCompatible == Evidence.UNKNOWN -> RestoreBootstrapGateDecision.BLOCK_DATABASE_UNKNOWN
+
+            // 3. Restore Journal Check
+            snapshot.journalResolved == Evidence.NEGATED -> RestoreBootstrapGateDecision.RECOVER_JOURNAL_FIRST
+            snapshot.journalResolved == Evidence.UNKNOWN -> RestoreBootstrapGateDecision.BLOCK_JOURNAL_UNKNOWN
+
+            // 4. Restore Origin Classification Check
+            snapshot.restoreOriginClassified == Evidence.UNKNOWN -> RestoreBootstrapGateDecision.CLASSIFY_RESTORE_ORIGIN_FIRST
+            snapshot.restoreOriginClassified == Evidence.NEGATED -> RestoreBootstrapGateDecision.BLOCK_RESTORE_ORIGIN_NEGATED
+
+            // 5. System Restore Barrier Check
+            snapshot.systemRestoreBarrierCleared == Evidence.NEGATED -> RestoreBootstrapGateDecision.COMPLETE_SYSTEM_RESTORE_BARRIER_FIRST
+            snapshot.systemRestoreBarrierCleared == Evidence.UNKNOWN -> RestoreBootstrapGateDecision.BLOCK_SYSTEM_RESTORE_BARRIER_UNKNOWN
+
+            // 6. All 5 PROVEN
+            snapshot.ceUnlocked == Evidence.PROVEN &&
+                    snapshot.databaseCompatible == Evidence.PROVEN &&
+                    snapshot.journalResolved == Evidence.PROVEN &&
+                    snapshot.restoreOriginClassified == Evidence.PROVEN &&
+                    snapshot.systemRestoreBarrierCleared == Evidence.PROVEN -> RestoreBootstrapGateDecision.ALLOW_SHADOW_META_PREPARATION
+
+            else -> error("Uncovered combination: $snapshot")
+        }
     }
 
     @Test
