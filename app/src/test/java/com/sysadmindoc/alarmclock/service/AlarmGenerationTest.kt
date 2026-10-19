@@ -2839,6 +2839,70 @@ class AlarmGenerationTest {
     }
 
     @Test
+    fun snoozeAlarmFailsClosedBeforeTeardownWhenExactPermissionRevoked(): Unit = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+
+        // 1. Persist active alarm genA (501L) in FIRING state to DataStore
+        val pmSetup = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+        val genA = AlarmGeneration(501L, 1000L, "fire-501-snooze-preflight")
+        val snapshotA = AlarmService.Companion.ActiveAlarmSnapshot(
+            alarmId = genA.alarmId,
+            scheduledAt = genA.scheduledAt,
+            fireId = genA.fireId,
+            firedAt = 1000L,
+            state = "FIRING"
+        )
+        val ackA = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        assertTrue(pmSetup.enqueueActiveAlarmUpdate(snapshotA, genA, ackA))
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackA.await())
+
+        // 2. Set ShadowAlarmManager exact alarm capability to FALSE
+        org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(false)
+
+        val controller = org.robolectric.Robolectric.buildService(AlarmService::class.java)
+        val service = controller.create().get()
+
+        try {
+            service.preferencesManager = pmSetup
+            service.repository.save(com.sysadmindoc.alarmclock.data.model.Alarm(id = genA.alarmId, hour = 7, minute = 0))
+
+            // Start alarm firing session for genA
+            val startIntent = Intent(service, AlarmService::class.java).apply {
+                action = AlarmService.ACTION_START_ALARM
+                putExtra(AlarmScheduler.EXTRA_ALARM_ID, genA.alarmId)
+                putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, genA.scheduledAt)
+                putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, genA.fireId)
+            }
+            service.onStartCommand(startIntent, 0, 1)
+            assertEquals(501L, service.currentAlarmId)
+
+            // Deliver SNOOZE intent when exact permission is revoked
+            val snoozeIntent = Intent(service, AlarmService::class.java).apply {
+                action = AlarmService.ACTION_SNOOZE
+                putExtra(AlarmScheduler.EXTRA_ALARM_ID, genA.alarmId)
+                putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, genA.scheduledAt)
+                putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, genA.fireId)
+            }
+            service.onStartCommand(snoozeIntent, 0, 2)
+
+            // SLICE 2A PREFLIGHT VERIFICATION:
+            // 1. Service remains active and firing for genA (501L) — NOT stopped, NOT torn down!
+            assertEquals(501L, service.currentAlarmId)
+            // 2. Cold-start / completed snooze count is 0
+            assertEquals(0, service.testColdStartSnoozeCount.get())
+            // 3. DataStore active state remains FIRING (not SNOOZED)
+            assertEquals("FIRING", pmSetup.getCurrentSettings().activeAlarmState)
+            assertEquals(501L, pmSetup.getCurrentSettings().activeAlarmId)
+        } finally {
+            org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(true)
+            val ackClear = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+            pmSetup.enqueueActiveAlarmUpdate(null, targetGen = genA, ack = ackClear)
+            ackClear.await()
+            controller.destroy()
+        }
+    }
+
+    @Test
     fun snoozeAlarmAwaitsDataStoreCommitAckBeforeStopSelf(): Unit = runBlocking {
         val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
 

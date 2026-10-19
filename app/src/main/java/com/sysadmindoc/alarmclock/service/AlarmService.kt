@@ -2501,6 +2501,27 @@ class AlarmService : Service() {
             return
         }
 
+        // KNO-127 Slice 2A: Exact capability preflight fail-closed check.
+        // If exact alarm capability is revoked or unavailable, reject snooze BEFORE
+        // owner-guarded teardown so audio playback stays active and audible.
+        if (!alarmScheduler.canScheduleExactAlarms()) {
+            if (currentGeneration()?.matches(acceptedGen) == true) {
+                recordIncident(
+                    type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                    status = AlarmIncidentEvent.STATUS_FAILED,
+                    reasonCode = "SNOOZE_REGISTRATION_FAILED",
+                    source = "AlarmService",
+                    alarmId = alarmId,
+                    fireId = acceptedGen.fireId,
+                    scheduledAt = acceptedGen.scheduledAt
+                )
+                if (capped != null) {
+                    refreshFiringNotification(capped)
+                }
+            }
+            return
+        }
+
         if (!performOwnerGuardedTeardown(acceptedGen)) {
             return
         }

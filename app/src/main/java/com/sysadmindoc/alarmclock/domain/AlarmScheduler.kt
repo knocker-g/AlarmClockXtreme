@@ -503,7 +503,7 @@ class AlarmScheduler @Inject constructor(
         return if (holidayRepository.isHoliday(finalDate)) null else trigger
     }
 
-    private fun canScheduleExactAlarms(): Boolean {
+    internal fun canScheduleExactAlarms(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             alarmManager.canScheduleExactAlarms()
         } else {
