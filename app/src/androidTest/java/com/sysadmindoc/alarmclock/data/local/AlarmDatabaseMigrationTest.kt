@@ -343,6 +343,11 @@ class AlarmDatabaseMigrationTest {
         )
 
         assertEquals(1, db.queryLong("SELECT COUNT(*) FROM alarms"))
+        assertEquals("Migration alarm", db.queryString("SELECT label FROM alarms LIMIT 1"))
+        assertEquals(6, db.queryLong("SELECT hour FROM alarms LIMIT 1"))
+        assertEquals(30, db.queryLong("SELECT minute FROM alarms LIMIT 1"))
+        assertEquals(1, db.queryLong("SELECT isEnabled FROM alarms LIMIT 1"))
+        assertEquals(1_700_000_000_000L, db.queryLong("SELECT nextTriggerTime FROM alarms LIMIT 1"))
         assertEquals(0, db.queryLong("SELECT COUNT(*) FROM schedule_authority"))
         assertEquals(0, db.queryLong("SELECT COUNT(*) FROM schedule_authority_meta"))
 
@@ -366,6 +371,30 @@ class AlarmDatabaseMigrationTest {
     }
 
     @Test
+    fun migrationTwentySixToTwentyEightChainedMigrationCreatesTablesAndPreservesAlarms() {
+        var db = helper.createDatabase("migration-26-to-28.db", 26)
+        insertSyntheticAlarm(db)
+        db.close()
+
+        db = helper.runMigrationsAndValidate(
+            "migration-26-to-28.db",
+            28,
+            true,
+            AlarmDatabase.MIGRATION_26_27,
+            AlarmDatabase.MIGRATION_27_28,
+        )
+
+        assertEquals(1, db.queryLong("SELECT COUNT(*) FROM alarms"))
+        assertEquals("Migration alarm", db.queryString("SELECT label FROM alarms LIMIT 1"))
+        assertEquals(1, db.queryLong("SELECT isEnabled FROM alarms LIMIT 1"))
+        assertEquals(1_700_000_000_000L, db.queryLong("SELECT nextTriggerTime FROM alarms LIMIT 1"))
+        assertEquals(0, db.queryLong("SELECT COUNT(*) FROM news_sources"))
+        assertEquals(0, db.queryLong("SELECT COUNT(*) FROM schedule_authority"))
+        assertEquals(0, db.queryLong("SELECT COUNT(*) FROM schedule_authority_meta"))
+        db.close()
+    }
+
+    @Test
     fun freshInstallVersionMatchesLatestExportedSchema() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val exportedLatest = latestExportedSchemaVersion()
@@ -373,7 +402,11 @@ class AlarmDatabaseMigrationTest {
             .allowMainThreadQueries()
             .build()
 
-        assertEquals(exportedLatest, database.openHelper.writableDatabase.version)
+        val writableDb = database.openHelper.writableDatabase
+        assertEquals(exportedLatest, writableDb.version)
+        assertEquals(28, writableDb.version)
+        assertEquals(0, writableDb.queryLong("SELECT COUNT(*) FROM schedule_authority"))
+        assertEquals(0, writableDb.queryLong("SELECT COUNT(*) FROM schedule_authority_meta"))
         database.close()
     }
 

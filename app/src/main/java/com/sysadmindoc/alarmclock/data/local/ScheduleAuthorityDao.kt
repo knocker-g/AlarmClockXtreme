@@ -9,7 +9,7 @@ import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta
 
 @Dao
 interface ScheduleAuthorityDao {
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertAuthority(authority: ScheduleAuthority)
 
     @Query("SELECT * FROM schedule_authority WHERE alarmId = :alarmId")
@@ -21,15 +21,9 @@ interface ScheduleAuthorityDao {
     @Query("DELETE FROM schedule_authority WHERE alarmId = :alarmId")
     suspend fun deleteAuthorityByAlarmId(alarmId: Long)
 
-    @Query("DELETE FROM schedule_authority")
-    suspend fun deleteAllAuthorities()
-
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMeta(meta: ScheduleAuthorityMeta)
 
     @Query("SELECT * FROM schedule_authority_meta WHERE id = :id")
     suspend fun getMetaById(id: Int = 1): ScheduleAuthorityMeta?
-
-    @Query("DELETE FROM schedule_authority_meta")
-    suspend fun deleteAllMeta()
 }
