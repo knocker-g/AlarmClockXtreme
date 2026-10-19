@@ -2874,6 +2874,7 @@ class AlarmGenerationTest {
                 putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, genA.fireId)
             }
             service.onStartCommand(startIntent, 0, 1)
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
             assertEquals(501L, service.currentAlarmId)
 
             // Deliver SNOOZE intent when exact permission is revoked
@@ -2888,11 +2889,20 @@ class AlarmGenerationTest {
             // SLICE 2A PREFLIGHT VERIFICATION:
             // 1. Service remains active and firing for genA (501L) — NOT stopped, NOT torn down!
             assertEquals(501L, service.currentAlarmId)
-            // 2. Cold-start / completed snooze count is 0
+            assertFalse("Service must not be stopped by self on snooze preflight failure", org.robolectric.Shadows.shadowOf(service).isStoppedBySelf)
+
+            // 2. Snooze count was NOT incremented (remains 0)
             assertEquals(0, service.testColdStartSnoozeCount.get())
-            // 3. DataStore active state remains FIRING (not SNOOZED)
+
+            // 3. DataStore active state remains FIRING on disk (not SNOOZED)
             assertEquals("FIRING", pmSetup.getCurrentSettings().activeAlarmState)
             assertEquals(501L, pmSetup.getCurrentSettings().activeAlarmId)
+
+            // 4. NO ALARM_SNOOZED broadcast sent
+            val application = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
+            val broadcasts = org.robolectric.Shadows.shadowOf(application).broadcastIntents
+            val snoozeBroadcast = broadcasts.firstOrNull { it.action == "com.sysadmindoc.alarmclock.action.ALARM_SNOOZED" }
+            assertNull("No ALARM_SNOOZED broadcast must be sent on failure", snoozeBroadcast)
         } finally {
             org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(true)
             val ackClear = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
