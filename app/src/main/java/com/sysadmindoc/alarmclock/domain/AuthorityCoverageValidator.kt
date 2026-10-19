@@ -37,6 +37,7 @@ enum class CoverageReasonCode {
     META_ID_INVALID,
     META_EPOCH_NEGATIVE,
     META_BOOTSTRAP_STATE_INVALID,
+    INVALID_ALARM_IDENTIFIER,
     DUPLICATE_ALARM_ID,
     DUPLICATE_OWNER_ID,
     MALFORMED_OWNER_IDENTIFIER,
@@ -98,27 +99,38 @@ object AuthorityCoverageValidator {
             return CoverageValidationReport(
                 result = CoverageResult.INVALID,
                 reasonCode = CoverageReasonCode.META_ID_INVALID,
-                details = "Metadata ID must be 1 but was ${meta.id}"
+                details = "Metadata ID must be 1"
             )
         }
-        if (meta.restoreEpoch < 0L) {
+        if (meta.restoreEpoch <= 0L) {
             return CoverageValidationReport(
                 result = CoverageResult.INVALID,
                 reasonCode = CoverageReasonCode.META_EPOCH_NEGATIVE,
-                details = "Metadata restoreEpoch cannot be negative"
+                details = "Metadata restoreEpoch must be positive"
             )
         }
         if (meta.bootstrapState !in VALID_BOOTSTRAP_STATES) {
             return CoverageValidationReport(
                 result = CoverageResult.INVALID,
                 reasonCode = CoverageReasonCode.META_BOOTSTRAP_STATE_INVALID,
-                details = "Invalid bootstrapState: ${meta.bootstrapState}"
+                details = "Invalid bootstrapState"
             )
         }
 
-        // 3. Duplicate ID Checks
+        // Sort input lists deterministically by ID to ensure permutation independence
+        val sortedAlarms = alarms.sortedBy { it.id }
+        val sortedOwners = owners.sortedBy { it.alarmId }
+
+        // 3. Alarm Validation & Duplicate ID Checks
         val alarmIds = mutableSetOf<Long>()
-        for (alarm in alarms) {
+        for (alarm in sortedAlarms) {
+            if (alarm.id <= 0L) {
+                return CoverageValidationReport(
+                    result = CoverageResult.INVALID,
+                    reasonCode = CoverageReasonCode.INVALID_ALARM_IDENTIFIER,
+                    details = "Alarm ID must be positive"
+                )
+            }
             if (!alarmIds.add(alarm.id)) {
                 return CoverageValidationReport(
                     result = CoverageResult.INVALID,
@@ -129,7 +141,7 @@ object AuthorityCoverageValidator {
         }
 
         val ownerIds = mutableSetOf<Long>()
-        for (owner in owners) {
+        for (owner in sortedOwners) {
             if (!ownerIds.add(owner.alarmId)) {
                 return CoverageValidationReport(
                     result = CoverageResult.INVALID,
@@ -139,9 +151,9 @@ object AuthorityCoverageValidator {
             }
         }
 
-        // 4. Owner Field Validation
-        val alarmMap = alarms.associateBy { it.id }
-        for (owner in owners) {
+        // 4. Owner Field Structural Validation
+        val alarmMap = sortedAlarms.associateBy { it.id }
+        for (owner in sortedOwners) {
             if (owner.alarmId <= 0L || owner.instanceToken.isBlank()) {
                 return CoverageValidationReport(
                     result = CoverageResult.INVALID,
@@ -167,21 +179,21 @@ object AuthorityCoverageValidator {
                 return CoverageValidationReport(
                     result = CoverageResult.INVALID,
                     reasonCode = CoverageReasonCode.INVALID_LIFECYCLE,
-                    details = "Invalid owner lifecycle: ${owner.lifecycle}"
+                    details = "Invalid owner lifecycle"
                 )
             }
             if (owner.desiredOperation !in VALID_OPERATIONS) {
                 return CoverageValidationReport(
                     result = CoverageResult.INVALID,
                     reasonCode = CoverageReasonCode.INVALID_OPERATION,
-                    details = "Invalid desiredOperation: ${owner.desiredOperation}"
+                    details = "Invalid desiredOperation"
                 )
             }
             if (owner.reconcileState !in VALID_RECONCILE_STATES) {
                 return CoverageValidationReport(
                     result = CoverageResult.INVALID,
                     reasonCode = CoverageReasonCode.INVALID_RECONCILE_STATE,
-                    details = "Invalid reconcileState: ${owner.reconcileState}"
+                    details = "Invalid reconcileState"
                 )
             }
 
@@ -216,7 +228,7 @@ object AuthorityCoverageValidator {
             } else if (owner.lifecycle == "LIVE") {
                 if (matchingAlarm == null) {
                     return CoverageValidationReport(
-                        result = CoverageResult.INCOMPLETE,
+                        result = CoverageResult.INVALID,
                         reasonCode = CoverageReasonCode.ORPHAN_LIVE_OWNER,
                         details = "LIVE owner has no corresponding Alarm definition"
                     )
@@ -233,8 +245,8 @@ object AuthorityCoverageValidator {
         }
 
         // 6. Completeness Rule: Every Alarm must have a LIVE owner
-        val ownerMap = owners.associateBy { it.alarmId }
-        for (alarm in alarms) {
+        val ownerMap = sortedOwners.associateBy { it.alarmId }
+        for (alarm in sortedAlarms) {
             val owner = ownerMap[alarm.id]
             if (owner == null || owner.lifecycle != "LIVE") {
                 return CoverageValidationReport(

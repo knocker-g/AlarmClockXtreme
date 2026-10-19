@@ -141,13 +141,13 @@ class AuthorityCoverageValidatorTest {
     }
 
     @Test
-    fun `orphan LIVE owner without Alarm definition produces INCOMPLETE`() {
+    fun `orphan LIVE owner without Alarm definition produces INVALID`() {
         val report = AuthorityCoverageValidator.validate(
             alarms = emptyList(),
             owners = listOf(validOwner),
             meta = validMeta
         )
-        assertEquals(CoverageResult.INCOMPLETE, report.result)
+        assertEquals(CoverageResult.INVALID, report.result)
         assertEquals(CoverageReasonCode.ORPHAN_LIVE_OWNER, report.reasonCode)
     }
 
@@ -211,6 +211,44 @@ class AuthorityCoverageValidatorTest {
     }
 
     @Test
+    fun `zero or negative Alarm ID produces INVALID`() {
+        val zeroIdReport = AuthorityCoverageValidator.validate(
+            alarms = listOf(validAlarm.copy(id = 0L)),
+            owners = listOf(validOwner.copy(alarmId = 0L)),
+            meta = validMeta
+        )
+        assertEquals(CoverageResult.INVALID, zeroIdReport.result)
+        assertEquals(CoverageReasonCode.INVALID_ALARM_IDENTIFIER, zeroIdReport.reasonCode)
+
+        val negativeIdReport = AuthorityCoverageValidator.validate(
+            alarms = listOf(validAlarm.copy(id = -10L)),
+            owners = listOf(validOwner),
+            meta = validMeta
+        )
+        assertEquals(CoverageResult.INVALID, negativeIdReport.result)
+        assertEquals(CoverageReasonCode.INVALID_ALARM_IDENTIFIER, negativeIdReport.reasonCode)
+    }
+
+    @Test
+    fun `zero or negative metadata restoreEpoch produces INVALID`() {
+        val zeroEpochReport = AuthorityCoverageValidator.validate(
+            alarms = listOf(validAlarm),
+            owners = listOf(validOwner),
+            meta = validMeta.copy(restoreEpoch = 0L)
+        )
+        assertEquals(CoverageResult.INVALID, zeroEpochReport.result)
+        assertEquals(CoverageReasonCode.META_EPOCH_NEGATIVE, zeroEpochReport.reasonCode)
+
+        val negativeEpochReport = AuthorityCoverageValidator.validate(
+            alarms = listOf(validAlarm),
+            owners = listOf(validOwner),
+            meta = validMeta.copy(restoreEpoch = -100L)
+        )
+        assertEquals(CoverageResult.INVALID, negativeEpochReport.result)
+        assertEquals(CoverageReasonCode.META_EPOCH_NEGATIVE, negativeEpochReport.reasonCode)
+    }
+
+    @Test
     fun `malformed owner fields or mismatched restoreEpoch produce INVALID`() {
         // Malformed owner identifier
         val malformedIdReport = AuthorityCoverageValidator.validate(
@@ -265,15 +303,6 @@ class AuthorityCoverageValidatorTest {
         )
         assertEquals(CoverageResult.INVALID, invalidMetaIdReport.result)
         assertEquals(CoverageReasonCode.META_ID_INVALID, invalidMetaIdReport.reasonCode)
-
-        // Meta restoreEpoch negative
-        val negativeMetaEpochReport = AuthorityCoverageValidator.validate(
-            alarms = listOf(validAlarm),
-            owners = listOf(validOwner),
-            meta = validMeta.copy(restoreEpoch = -1L)
-        )
-        assertEquals(CoverageResult.INVALID, negativeMetaEpochReport.result)
-        assertEquals(CoverageReasonCode.META_EPOCH_NEGATIVE, negativeMetaEpochReport.reasonCode)
     }
 
     @Test
@@ -359,7 +388,7 @@ class AuthorityCoverageValidatorTest {
     }
 
     @Test
-    fun `permuted list order produces equivalent validation result`() {
+    fun `permuted list order produces equivalent validation result and reason code even with multiple violations`() {
         val alarm1 = AlarmDescriptor(id = 10L, enabled = true)
         val alarm2 = AlarmDescriptor(id = 20L, enabled = false)
         val owner1 = OwnerDescriptor(
@@ -385,6 +414,7 @@ class AuthorityCoverageValidatorTest {
             restoreEpoch = 100L
         )
 
+        // Valid Permutations
         val reportOrder1 = AuthorityCoverageValidator.validate(
             alarms = listOf(alarm1, alarm2),
             owners = listOf(owner1, owner2),
@@ -395,9 +425,28 @@ class AuthorityCoverageValidatorTest {
             owners = listOf(owner2, owner1),
             meta = validMeta
         )
-
         assertEquals(reportOrder1.result, reportOrder2.result)
         assertEquals(reportOrder1.reasonCode, reportOrder2.reasonCode)
         assertEquals(CoverageResult.COMPLETE, reportOrder1.result)
+
+        // Multiple Violations Permutations (e.g., Alarm 10 has disabled SET, Owner 20 has nonpositive revision)
+        val invalidAlarm10 = alarm1.copy(enabled = false) // Violation on ID 10
+        val invalidOwner20 = owner2.copy(definitionRevision = -1L) // Violation on ID 20
+
+        val multiReportForward = AuthorityCoverageValidator.validate(
+            alarms = listOf(invalidAlarm10, alarm2),
+            owners = listOf(owner1, invalidOwner20),
+            meta = validMeta
+        )
+        val multiReportReverse = AuthorityCoverageValidator.validate(
+            alarms = listOf(alarm2, invalidAlarm10),
+            owners = listOf(invalidOwner20, owner1),
+            meta = validMeta
+        )
+
+        // Both orderings must produce identical result and reasonCode due to ID sorting
+        assertEquals(multiReportForward.result, multiReportReverse.result)
+        assertEquals(multiReportForward.reasonCode, multiReportReverse.reasonCode)
+        assertEquals(CoverageResult.INVALID, multiReportForward.result)
     }
 }
