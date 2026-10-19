@@ -80,31 +80,20 @@ class IncarnationEvidenceCombiner @Inject constructor(
 
     /**
      * Maps Room-side metadata and owners into Room-side [MarkerState], ID, and [CompletionState].
+     *
+     * Note: Room v28 schema persists scheduling authority metadata ([MetaDescriptor]) and
+     * definition owner records ([OwnerDescriptor]), but does NOT persist a physical Room-side
+     * incarnation marker ID or handshake completion state.
+     *
+     * Therefore, Room-side incarnation marker fields are non-derivable and represent explicit
+     * absence ([MarkerState.ABSENT], null ID, [CompletionState.UNKNOWN]). Owner instanceToken and
+     * bootstrapState must NOT be reinterpreted as incarnation marker evidence.
      */
     private fun deriveRoomMarkerState(
         meta: MetaDescriptor?,
         owners: List<OwnerDescriptor>
     ): Triple<MarkerState, String?, CompletionState> {
-        if (meta == null && owners.isEmpty()) {
-            return Triple(MarkerState.ABSENT, null, CompletionState.UNKNOWN)
-        }
-        if (meta == null && owners.isNotEmpty()) {
-            return Triple(MarkerState.CORRUPT, null, CompletionState.UNKNOWN)
-        }
-
-        val metaState = meta?.bootstrapState
-        val completion = when (metaState) {
-            "ENFORCED" -> CompletionState.COMPLETE
-            "PREPARING" -> CompletionState.PREPARING
-            else -> CompletionState.UNKNOWN
-        }
-
-        val primaryOwnerToken = owners.firstOrNull()?.instanceToken
-        if (primaryOwnerToken.isNullOrBlank()) {
-            return Triple(MarkerState.CORRUPT, null, CompletionState.UNKNOWN)
-        }
-
-        return Triple(MarkerState.PRESENT_VALID, primaryOwnerToken, completion)
+        return Triple(MarkerState.ABSENT, null, CompletionState.UNKNOWN)
     }
 
     /**
