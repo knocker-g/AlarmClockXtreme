@@ -112,13 +112,31 @@ class HandshakeRecoveryPolicyTest {
             HandshakeRecoveryPolicy.evaluate(nullEpochSnapshot)
         )
 
-        // Nonpositive epoch
+        // Zero epoch
         val zeroEpochSnapshot = readyMatchedSnapshot.copy(
             operationIdentity = validIdentity.copy(epoch = 0L)
         )
         assertEquals(
             HandshakeRecoveryDecision.BLOCK_OPERATION_IDENTITY,
             HandshakeRecoveryPolicy.evaluate(zeroEpochSnapshot)
+        )
+
+        // Negative epoch
+        val negativeEpochSnapshot = readyMatchedSnapshot.copy(
+            operationIdentity = validIdentity.copy(epoch = -100L)
+        )
+        assertEquals(
+            HandshakeRecoveryDecision.BLOCK_OPERATION_IDENTITY,
+            HandshakeRecoveryPolicy.evaluate(negativeEpochSnapshot)
+        )
+
+        // Null token
+        val nullTokenSnapshot = readyMatchedSnapshot.copy(
+            operationIdentity = validIdentity.copy(token = null)
+        )
+        assertEquals(
+            HandshakeRecoveryDecision.BLOCK_OPERATION_IDENTITY,
+            HandshakeRecoveryPolicy.evaluate(nullTokenSnapshot)
         )
 
         // Blank token
@@ -132,7 +150,7 @@ class HandshakeRecoveryPolicyTest {
     }
 
     @Test
-    fun `ROOM_MISSING direction with valid phase produces RESUME_ROOM_FIRST`() {
+    fun `ROOM_MISSING direction with valid phase produces RESUME_ROOM_FIRST and invalid phase produces BLOCK_PHASE_MISMATCH`() {
         val preparingSnapshot = readyMatchedSnapshot.copy(
             classification = IncarnationClassificationOutcome.ROOM_MISSING,
             phaseEvidence = RecoveryPhaseEvidence(phaseName = "LOCAL_PREPARING")
@@ -150,10 +168,19 @@ class HandshakeRecoveryPolicyTest {
             HandshakeRecoveryDecision.RESUME_ROOM_FIRST,
             HandshakeRecoveryPolicy.evaluate(committedSnapshot)
         )
+
+        val invalidPhaseSnapshot = readyMatchedSnapshot.copy(
+            classification = IncarnationClassificationOutcome.ROOM_MISSING,
+            phaseEvidence = RecoveryPhaseEvidence(phaseName = "ROOM_PREPARING")
+        )
+        assertEquals(
+            HandshakeRecoveryDecision.BLOCK_PHASE_MISMATCH,
+            HandshakeRecoveryPolicy.evaluate(invalidPhaseSnapshot)
+        )
     }
 
     @Test
-    fun `LOCAL_MISSING direction with valid phase produces RESUME_LOCAL_FIRST`() {
+    fun `LOCAL_MISSING direction with valid phase produces RESUME_LOCAL_FIRST and invalid phase produces BLOCK_PHASE_MISMATCH`() {
         val preparingSnapshot = readyMatchedSnapshot.copy(
             classification = IncarnationClassificationOutcome.LOCAL_MISSING,
             phaseEvidence = RecoveryPhaseEvidence(phaseName = "ROOM_PREPARING")
@@ -171,10 +198,19 @@ class HandshakeRecoveryPolicyTest {
             HandshakeRecoveryDecision.RESUME_LOCAL_FIRST,
             HandshakeRecoveryPolicy.evaluate(committedSnapshot)
         )
+
+        val invalidPhaseSnapshot = readyMatchedSnapshot.copy(
+            classification = IncarnationClassificationOutcome.LOCAL_MISSING,
+            phaseEvidence = RecoveryPhaseEvidence(phaseName = "LOCAL_PREPARING")
+        )
+        assertEquals(
+            HandshakeRecoveryDecision.BLOCK_PHASE_MISMATCH,
+            HandshakeRecoveryPolicy.evaluate(invalidPhaseSnapshot)
+        )
     }
 
     @Test
-    fun `INCOMPLETE_HANDSHAKE classification with valid phase produces RESUME_HANDSHAKE_COMPLETION`() {
+    fun `INCOMPLETE_HANDSHAKE classification with valid phase produces RESUME_HANDSHAKE_COMPLETION and invalid produces BLOCK_PHASE_MISMATCH`() {
         val validPhases = listOf("ROOM_PREPARING", "LOCAL_PREPARING", "ROOM_COMMITTED", "LOCAL_COMMITTED")
         for (phase in validPhases) {
             val snapshot = readyMatchedSnapshot.copy(
@@ -186,45 +222,113 @@ class HandshakeRecoveryPolicyTest {
                 HandshakeRecoveryPolicy.evaluate(snapshot)
             )
         }
+
+        val invalidPhases = listOf("COMPLETED", "UNKNOWN", "INVALID_PHASE")
+        for (phase in invalidPhases) {
+            val snapshot = readyMatchedSnapshot.copy(
+                classification = IncarnationClassificationOutcome.INCOMPLETE_HANDSHAKE,
+                phaseEvidence = RecoveryPhaseEvidence(phaseName = phase)
+            )
+            assertEquals(
+                HandshakeRecoveryDecision.BLOCK_PHASE_MISMATCH,
+                HandshakeRecoveryPolicy.evaluate(snapshot)
+            )
+        }
     }
 
     @Test
-    fun `phase mismatch for classification produces BLOCK_PHASE_MISMATCH`() {
-        // ROOM_MISSING with invalid phase "COMPLETED"
-        val roomMismatchSnapshot = readyMatchedSnapshot.copy(
-            classification = IncarnationClassificationOutcome.ROOM_MISSING,
-            phaseEvidence = RecoveryPhaseEvidence(phaseName = "COMPLETED")
-        )
-        assertEquals(
-            HandshakeRecoveryDecision.BLOCK_PHASE_MISMATCH,
-            HandshakeRecoveryPolicy.evaluate(roomMismatchSnapshot)
-        )
-
-        // LOCAL_MISSING with invalid phase "LOCAL_COMMITTED"
-        val localMismatchSnapshot = readyMatchedSnapshot.copy(
-            classification = IncarnationClassificationOutcome.LOCAL_MISSING,
-            phaseEvidence = RecoveryPhaseEvidence(phaseName = "LOCAL_COMMITTED")
-        )
-        assertEquals(
-            HandshakeRecoveryDecision.BLOCK_PHASE_MISMATCH,
-            HandshakeRecoveryPolicy.evaluate(localMismatchSnapshot)
-        )
-
-        // MATCHED_COMPLETED_PAIR with invalid phase "ROOM_PREPARING"
-        val completedMismatchSnapshot = readyMatchedSnapshot.copy(
-            classification = IncarnationClassificationOutcome.MATCHED_COMPLETED_PAIR,
-            phaseEvidence = RecoveryPhaseEvidence(phaseName = "ROOM_PREPARING")
-        )
-        assertEquals(
-            HandshakeRecoveryDecision.BLOCK_PHASE_MISMATCH,
-            HandshakeRecoveryPolicy.evaluate(completedMismatchSnapshot)
-        )
-    }
-
-    @Test
-    fun `MATCHED_COMPLETED_PAIR with COMPLETED phase produces REUSE_COMPLETED_SHADOW_EVIDENCE`() {
+    fun `MATCHED_COMPLETED_PAIR with COMPLETED phase produces REUSE_COMPLETED_SHADOW_EVIDENCE and invalid produces BLOCK_PHASE_MISMATCH`() {
         val decision = HandshakeRecoveryPolicy.evaluate(readyMatchedSnapshot)
         assertEquals(HandshakeRecoveryDecision.REUSE_COMPLETED_SHADOW_EVIDENCE, decision)
+
+        val invalidPhaseSnapshot = readyMatchedSnapshot.copy(
+            phaseEvidence = RecoveryPhaseEvidence(phaseName = "ROOM_COMMITTED")
+        )
+        assertEquals(
+            HandshakeRecoveryDecision.BLOCK_PHASE_MISMATCH,
+            HandshakeRecoveryPolicy.evaluate(invalidPhaseSnapshot)
+        )
+    }
+
+    @Test
+    fun `exhaustive classification and phase matrix test exercises all decisions and asserts independent oracle`() {
+        val classifications = IncarnationClassificationOutcome.entries
+        val phases = listOf("ROOM_PREPARING", "LOCAL_PREPARING", "ROOM_COMMITTED", "LOCAL_COMMITTED", "COMPLETED", "UNKNOWN")
+        val evidenceValues = RecoveryEvidence.entries
+        val identities = listOf(
+            validIdentity,
+            RecoveryOperationIdentity(epoch = null, token = null)
+        )
+        val exercisedDecisions = mutableSetOf<HandshakeRecoveryDecision>()
+        var totalEvaluated = 0
+
+        for (classification in classifications) {
+            for (phase in phases) {
+                for (initAuth in evidenceValues) {
+                    for (histLedger in evidenceValues) {
+                        for (identity in identities) {
+                            totalEvaluated++
+                            val snapshot = HandshakeRecoverySnapshot(
+                                classification = classification,
+                                initAuthority = initAuth,
+                                operationIdentity = identity,
+                                phaseEvidence = RecoveryPhaseEvidence(phaseName = phase),
+                                historicalEnforcedLedger = histLedger
+                            )
+
+                            val actualDecision = HandshakeRecoveryPolicy.evaluate(snapshot)
+                            val expectedDecision = expectedDecisionFor(snapshot)
+
+                            exercisedDecisions.add(actualDecision)
+                            assertEquals(
+                                "Mismatch for snapshot $snapshot: expected $expectedDecision but got $actualDecision",
+                                expectedDecision,
+                                actualDecision
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        assertEquals(972, totalEvaluated)
+        assertEquals(
+            "Every single decision enum value must be exercised across the test matrix",
+            HandshakeRecoveryDecision.entries.toSet(),
+            exercisedDecisions
+        )
+    }
+
+    private fun expectedDecisionFor(snapshot: HandshakeRecoverySnapshot): HandshakeRecoveryDecision {
+        return when {
+            // 1. Hard Classification Failures
+            snapshot.classification == IncarnationClassificationOutcome.READ_FAILURE -> HandshakeRecoveryDecision.BLOCK_READ_FAILURE
+            snapshot.classification == IncarnationClassificationOutcome.CORRUPT_EVIDENCE -> HandshakeRecoveryDecision.BLOCK_CORRUPT_EVIDENCE
+            snapshot.classification == IncarnationClassificationOutcome.INCONSISTENT_INPUT -> HandshakeRecoveryDecision.BLOCK_INCONSISTENT_INPUT
+
+            // 2. Historical Enforced Ledger Check
+            snapshot.historicalEnforcedLedger == RecoveryEvidence.PROVEN -> HandshakeRecoveryDecision.BLOCK_HISTORICAL_ENFORCED
+            snapshot.historicalEnforcedLedger == RecoveryEvidence.UNKNOWN -> HandshakeRecoveryDecision.INSPECT_UNKNOWN_HISTORICAL_LEDGER
+
+            // 3. Initialization Authority Check
+            snapshot.initAuthority == RecoveryEvidence.NEGATED -> HandshakeRecoveryDecision.BLOCK_UNPROVEN_INIT_AUTHORITY
+            snapshot.initAuthority == RecoveryEvidence.UNKNOWN -> HandshakeRecoveryDecision.INSPECT_UNKNOWN_INIT_AUTHORITY
+
+            // 4. Classification Specific Evaluation
+            snapshot.classification == IncarnationClassificationOutcome.BOTH_ABSENT_AMBIGUOUS -> HandshakeRecoveryDecision.BLOCK_AMBIGUOUS_ABSENCE
+            snapshot.classification == IncarnationClassificationOutcome.ID_MISMATCH -> HandshakeRecoveryDecision.REQUIRE_RESTORE_RECOVERY
+
+            // 5. Operation Identity Check
+            snapshot.operationIdentity.epoch == null || snapshot.operationIdentity.epoch <= 0L || snapshot.operationIdentity.token.isNullOrBlank() -> HandshakeRecoveryDecision.BLOCK_OPERATION_IDENTITY
+
+            // 6. Phase Agreement Check
+            snapshot.classification == IncarnationClassificationOutcome.ROOM_MISSING && snapshot.phaseEvidence.phaseName in setOf("LOCAL_PREPARING", "LOCAL_COMMITTED") -> HandshakeRecoveryDecision.RESUME_ROOM_FIRST
+            snapshot.classification == IncarnationClassificationOutcome.LOCAL_MISSING && snapshot.phaseEvidence.phaseName in setOf("ROOM_PREPARING", "ROOM_COMMITTED") -> HandshakeRecoveryDecision.RESUME_LOCAL_FIRST
+            snapshot.classification == IncarnationClassificationOutcome.INCOMPLETE_HANDSHAKE && snapshot.phaseEvidence.phaseName in setOf("ROOM_PREPARING", "LOCAL_PREPARING", "ROOM_COMMITTED", "LOCAL_COMMITTED") -> HandshakeRecoveryDecision.RESUME_HANDSHAKE_COMPLETION
+            snapshot.classification == IncarnationClassificationOutcome.MATCHED_COMPLETED_PAIR && snapshot.phaseEvidence.phaseName == "COMPLETED" -> HandshakeRecoveryDecision.REUSE_COMPLETED_SHADOW_EVIDENCE
+
+            else -> HandshakeRecoveryDecision.BLOCK_PHASE_MISMATCH
+        }
     }
 
     @Test
