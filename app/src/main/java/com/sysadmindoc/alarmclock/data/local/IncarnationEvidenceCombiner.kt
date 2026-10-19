@@ -22,6 +22,16 @@ sealed interface CombinedEvidenceResult {
         val report: CoverageValidationReport
     ) : CombinedEvidenceResult
 
+    data class NotDerivable(
+        val details: String,
+        val meta: MetaDescriptor?,
+        val owners: List<OwnerDescriptor>,
+        val report: CoverageValidationReport,
+        val localState: MarkerState,
+        val localId: String?,
+        val localCompletion: CompletionState
+    ) : CombinedEvidenceResult
+
     data class StorageUnavailable(val details: String) : CombinedEvidenceResult
     data class ReadFailure(val details: String) : CombinedEvidenceResult
 }
@@ -58,47 +68,24 @@ class IncarnationEvidenceCombiner @Inject constructor(
         val (roomMeta, roomOwners, roomReport) = (roomResult as RoomEvidenceReadResult.Success)
         val (localState, localId, localCompletion) = (localResult as LocalEvidenceReadResult.Success)
 
-        // Map Room-side marker state from Room meta & owners
-        val (roomState, roomId, roomCompletion) = deriveRoomMarkerState(roomMeta, roomOwners)
-
-        val markerSnapshot = IncarnationEvidenceSnapshot(
-            roomState = roomState,
-            roomId = roomId,
-            roomCompletion = roomCompletion,
+        // Room v28/v29 schema contains scheduling authority metadata (MetaDescriptor)
+        // and definition owner records (OwnerDescriptor), but does NOT persist a physical
+        // Room-side incarnation marker ID or handshake completion state.
+        // Therefore, Room-side incarnation marker fields are NOT DERIVABLE from Room schema.
+        return CombinedEvidenceResult.NotDerivable(
+            details = "Room schema v28/v29 contains no physical incarnation marker columns",
+            meta = roomMeta,
+            owners = roomOwners,
+            report = roomReport,
             localState = localState,
             localId = localId,
             localCompletion = localCompletion
         )
-
-        return CombinedEvidenceResult.Success(
-            markerSnapshot = markerSnapshot,
-            meta = roomMeta,
-            owners = roomOwners,
-            report = roomReport
-        )
-    }
-
-    /**
-     * Maps Room-side metadata and owners into Room-side [MarkerState], ID, and [CompletionState].
-     *
-     * Note: Room v28 schema persists scheduling authority metadata ([MetaDescriptor]) and
-     * definition owner records ([OwnerDescriptor]), but does NOT persist a physical Room-side
-     * incarnation marker ID or handshake completion state.
-     *
-     * Therefore, Room-side incarnation marker fields are non-derivable and represent explicit
-     * absence ([MarkerState.ABSENT], null ID, [CompletionState.UNKNOWN]). Owner instanceToken and
-     * bootstrapState must NOT be reinterpreted as incarnation marker evidence.
-     */
-    private fun deriveRoomMarkerState(
-        meta: MetaDescriptor?,
-        owners: List<OwnerDescriptor>
-    ): Triple<MarkerState, String?, CompletionState> {
-        return Triple(MarkerState.ABSENT, null, CompletionState.UNKNOWN)
     }
 
     /**
      * Helper to construct [RawIncarnationEvidence] with explicitly UNPROVEN coherence
-     * for downstream adapter testing.
+     * for downstream adapter testing when a valid [CombinedEvidenceResult.Success] is available.
      *
      * CoherenceStatus MUST remain [CoherenceStatus.UNPROVEN_COHERENCE].
      */

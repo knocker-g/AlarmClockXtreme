@@ -371,6 +371,41 @@ class AlarmDatabaseMigrationTest {
     }
 
     @Test
+    fun migrationTwentyEightToTwentyNineCreatesDurableIntentTableAndPreservesData() {
+        var db = helper.createDatabase("migration-28-to-29.db", 28)
+        insertSyntheticAlarm(db)
+        db.close()
+
+        db = helper.runMigrationsAndValidate(
+            "migration-28-to-29.db",
+            29,
+            true,
+            AlarmDatabase.MIGRATION_28_29,
+        )
+
+        assertEquals(1, db.queryLong("SELECT COUNT(*) FROM alarms"))
+        assertEquals("Migration alarm", db.queryString("SELECT label FROM alarms LIMIT 1"))
+        assertEquals(1, db.queryLong("SELECT isEnabled FROM alarms LIMIT 1"))
+        assertEquals(1_700_000_000_000L, db.queryLong("SELECT nextTriggerTime FROM alarms LIMIT 1"))
+        assertEquals(0, db.queryLong("SELECT COUNT(*) FROM schedule_authority"))
+        assertEquals(0, db.queryLong("SELECT COUNT(*) FROM schedule_authority_meta"))
+        assertEquals(0, db.queryLong("SELECT COUNT(*) FROM durable_operation_intent"))
+
+        val intentColumns = tableColumns(db, "durable_operation_intent").associateBy { it.name }
+        assertTrue(intentColumns.containsKey("operationToken"))
+        assertTrue(intentColumns.containsKey("alarmId"))
+        assertTrue(intentColumns.containsKey("operationEpoch"))
+        assertTrue(intentColumns.containsKey("incarnationId"))
+        assertTrue(intentColumns.containsKey("operationKind"))
+        assertTrue(intentColumns.containsKey("expectedOwnerToken"))
+        assertTrue(intentColumns.containsKey("expectedScheduleRevision"))
+        assertTrue(intentColumns.containsKey("expectedRestoreEpoch"))
+        assertTrue(intentColumns.containsKey("phase"))
+        assertTrue(intentColumns.containsKey("intentRevision"))
+        db.close()
+    }
+
+    @Test
     fun migrationTwentySixToTwentyEightChainedMigrationCreatesTablesAndPreservesAlarms() {
         var db = helper.createDatabase("migration-26-to-28.db", 26)
         insertSyntheticAlarm(db)

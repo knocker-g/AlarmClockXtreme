@@ -11,6 +11,7 @@ import com.sysadmindoc.alarmclock.domain.HandshakeRecoveryPolicy
 import com.sysadmindoc.alarmclock.domain.HandshakeRecoverySnapshot
 import com.sysadmindoc.alarmclock.domain.IncarnationClassificationOutcome
 import com.sysadmindoc.alarmclock.domain.IncarnationEvidenceClassifier
+import com.sysadmindoc.alarmclock.domain.IncarnationEvidenceSnapshot
 import com.sysadmindoc.alarmclock.domain.MarkerState
 import com.sysadmindoc.alarmclock.domain.MetaDescriptor
 import com.sysadmindoc.alarmclock.domain.OwnerDescriptor
@@ -50,7 +51,7 @@ class IncarnationEvidenceCombinerTest {
     )
 
     @Test
-    fun `T01 - Owner instanceToken is NOT mapped as Room incarnation ID`() = runBlocking {
+    fun `T01 - Room marker evidence is returned as NotDerivable because Room v28 v29 lacks incarnation columns`() = runBlocking {
         val roomSuccess = RoomEvidenceReadResult.Success(
             meta = validMeta,
             owners = listOf(validOwner),
@@ -66,14 +67,15 @@ class IncarnationEvidenceCombinerTest {
         every { localReader.readLocalEvidence() } returns localSuccess
 
         val result = combiner.combineEvidence()
-        assertTrue(result is CombinedEvidenceResult.Success)
-        val success = result as CombinedEvidenceResult.Success
+        assertTrue("Result must be NotDerivable when Room incarnation columns are missing", result is CombinedEvidenceResult.NotDerivable)
+        val notDerivable = result as CombinedEvidenceResult.NotDerivable
 
-        // Room-side incarnation marker ID MUST NOT be fabricated from owner instanceToken
-        assertNull("Room-side incarnation ID must be null", success.markerSnapshot.roomId)
-        assertEquals(MarkerState.ABSENT, success.markerSnapshot.roomState)
-        // Owner instanceToken remains preserved in Room owners list
-        assertEquals("token-authority-42", success.owners.first().instanceToken)
+        // Owner instanceToken remains preserved in Room owners list, NOT fabricated as roomId
+        assertEquals("token-authority-42", notDerivable.owners.first().instanceToken)
+        assertEquals(validMeta, notDerivable.meta)
+        assertEquals(MarkerState.PRESENT_VALID, notDerivable.localState)
+        assertEquals("marker-local-42", notDerivable.localId)
+        assertEquals(CompletionState.COMPLETE, notDerivable.localCompletion)
     }
 
     @Test
@@ -97,15 +99,13 @@ class IncarnationEvidenceCombinerTest {
 
         coEvery { roomReader.readRoomEvidence() } returns roomSuccessOrder1
         every { localReader.readLocalEvidence() } returns localSuccess
-        val result1 = (combiner.combineEvidence() as CombinedEvidenceResult.Success).markerSnapshot
+        val result1 = combiner.combineEvidence() as CombinedEvidenceResult.NotDerivable
 
         coEvery { roomReader.readRoomEvidence() } returns roomSuccessOrder2
-        val result2 = (combiner.combineEvidence() as CombinedEvidenceResult.Success).markerSnapshot
+        val result2 = combiner.combineEvidence() as CombinedEvidenceResult.NotDerivable
 
-        assertNull(result1.roomId)
-        assertNull(result2.roomId)
-        assertEquals(result1.roomId, result2.roomId)
-        assertEquals(result1.roomState, result2.roomState)
+        assertEquals(result1.meta, result2.meta)
+        assertEquals(result1.localId, result2.localId)
     }
 
     @Test
@@ -124,9 +124,9 @@ class IncarnationEvidenceCombinerTest {
         coEvery { roomReader.readRoomEvidence() } returns roomSuccess
         every { localReader.readLocalEvidence() } returns localSuccess
 
-        val success = combiner.combineEvidence() as CombinedEvidenceResult.Success
+        val result = combiner.combineEvidence() as CombinedEvidenceResult.NotDerivable
         // ENFORCED authority state must NOT be reinterpreted as Room handshake COMPLETE
-        assertEquals(CompletionState.UNKNOWN, success.markerSnapshot.roomCompletion)
+        assertEquals("ENFORCED", result.meta?.bootstrapState)
     }
 
     @Test
@@ -147,10 +147,9 @@ class IncarnationEvidenceCombinerTest {
         every { localReader.readLocalEvidence() } returns localSuccess
 
         val result = combiner.combineEvidence()
-        assertTrue("Zero owners with PREPARING meta must succeed without corruption", result is CombinedEvidenceResult.Success)
-        val success = result as CombinedEvidenceResult.Success
-        assertNotEquals(MarkerState.CORRUPT, success.markerSnapshot.roomState)
-        assertEquals(MarkerState.ABSENT, success.markerSnapshot.roomState)
+        assertTrue("Zero owners with PREPARING meta must succeed as NotDerivable without corruption", result is CombinedEvidenceResult.NotDerivable)
+        val notDerivable = result as CombinedEvidenceResult.NotDerivable
+        assertEquals(CoverageResult.INCOMPLETE, notDerivable.report.result)
     }
 
     @Test
@@ -169,9 +168,9 @@ class IncarnationEvidenceCombinerTest {
         coEvery { roomReader.readRoomEvidence() } returns roomSuccess
         every { localReader.readLocalEvidence() } returns localSuccess
 
-        val success = combiner.combineEvidence() as CombinedEvidenceResult.Success
-        assertEquals(validMeta, success.meta)
-        assertEquals(listOf(validOwner), success.owners)
+        val notDerivable = combiner.combineEvidence() as CombinedEvidenceResult.NotDerivable
+        assertEquals(validMeta, notDerivable.meta)
+        assertEquals(listOf(validOwner), notDerivable.owners)
     }
 
     @Test
@@ -201,30 +200,30 @@ class IncarnationEvidenceCombinerTest {
         coEvery { roomReader.readRoomEvidence() } returns roomSuccess
         every { localReader.readLocalEvidence() } returns localSuccess
 
-        val success = combiner.combineEvidence() as CombinedEvidenceResult.Success
-        assertEquals(MarkerState.PRESENT_VALID, success.markerSnapshot.localState)
-        assertEquals("marker-local-777", success.markerSnapshot.localId)
-        assertEquals(CompletionState.PREPARING, success.markerSnapshot.localCompletion)
+        val notDerivable = combiner.combineEvidence() as CombinedEvidenceResult.NotDerivable
+        assertEquals(MarkerState.PRESENT_VALID, notDerivable.localState)
+        assertEquals("marker-local-777", notDerivable.localId)
+        assertEquals(CompletionState.PREPARING, notDerivable.localCompletion)
     }
 
     @Test
-    fun `T08 - Cross-storage coherence remains UNPROVEN`() = runBlocking {
-        val roomSuccess = RoomEvidenceReadResult.Success(
-            meta = validMeta,
-            owners = listOf(validOwner),
-            report = CoverageValidationReport(CoverageResult.COMPLETE, CoverageReasonCode.COVERAGE_VALID_COMPLETE)
-        )
-        val localSuccess = LocalEvidenceReadResult.Success(
+    fun `T08 - Cross-storage coherence remains UNPROVEN_COHERENCE in toRawUnprovenEvidence helper`() = runBlocking {
+        val dummySnapshot = IncarnationEvidenceSnapshot(
+            roomState = MarkerState.ABSENT,
+            roomId = null,
+            roomCompletion = CompletionState.UNKNOWN,
             localState = MarkerState.PRESENT_VALID,
             localId = "marker-local-42",
             localCompletion = CompletionState.COMPLETE
         )
+        val combinedSuccess = CombinedEvidenceResult.Success(
+            markerSnapshot = dummySnapshot,
+            meta = validMeta,
+            owners = listOf(validOwner),
+            report = CoverageValidationReport(CoverageResult.COMPLETE, CoverageReasonCode.COVERAGE_VALID_COMPLETE)
+        )
 
-        coEvery { roomReader.readRoomEvidence() } returns roomSuccess
-        every { localReader.readLocalEvidence() } returns localSuccess
-
-        val success = combiner.combineEvidence() as CombinedEvidenceResult.Success
-        val rawEvidence = combiner.toRawUnprovenEvidence(success)
+        val rawEvidence = combiner.toRawUnprovenEvidence(combinedSuccess)
 
         assertEquals(CoherenceStatus.UNPROVEN_COHERENCE, rawEvidence.coherence)
         assertFalse("CoherenceStatus MUST NOT be COHERENT", rawEvidence.coherence == CoherenceStatus.COHERENT)
@@ -246,34 +245,12 @@ class IncarnationEvidenceCombinerTest {
         coEvery { roomReader.readRoomEvidence() } returns roomSuccess
         every { localReader.readLocalEvidence() } returns localSuccess
 
-        val success = combiner.combineEvidence() as CombinedEvidenceResult.Success
-        assertNull(success.markerSnapshot.roomId)
-        assertNull(success.markerSnapshot.localId)
-
-        val raw = combiner.toRawUnprovenEvidence(success)
-        assertNull(raw.operationIdentity.epoch)
-        assertNull(raw.operationIdentity.token)
+        val notDerivable = combiner.combineEvidence() as CombinedEvidenceResult.NotDerivable
+        assertNull(notDerivable.localId)
     }
 
     @Test
-    fun `T10 - RoomMissing classification produces RESUME_ROOM_FIRST when combined with Local evidence`() = runBlocking {
-        val roomSuccess = RoomEvidenceReadResult.Success(
-            meta = validMeta,
-            owners = listOf(validOwner),
-            report = CoverageValidationReport(CoverageResult.COMPLETE, CoverageReasonCode.COVERAGE_VALID_COMPLETE)
-        )
-        val localSuccess = LocalEvidenceReadResult.Success(
-            localState = MarkerState.PRESENT_VALID,
-            localId = "marker-local-100",
-            localCompletion = CompletionState.PREPARING
-        )
-
-        coEvery { roomReader.readRoomEvidence() } returns roomSuccess
-        every { localReader.readLocalEvidence() } returns localSuccess
-
-        val success = combiner.combineEvidence() as CombinedEvidenceResult.Success
-        assertEquals(IncarnationClassificationOutcome.ROOM_MISSING, IncarnationEvidenceClassifier.classify(success.markerSnapshot))
-
+    fun `T10 - Downstream recovery policy evaluates ROOM_MISSING when combined with Local evidence`() = runBlocking {
         val recoverySnapshot = HandshakeRecoverySnapshot(
             classification = IncarnationClassificationOutcome.ROOM_MISSING,
             initAuthority = RecoveryEvidence.PROVEN,

@@ -9,6 +9,7 @@ import com.sysadmindoc.alarmclock.data.local.entity.ActigraphySession
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmEvent
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmGroup
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
+import com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent
 import com.sysadmindoc.alarmclock.data.local.entity.NewsSource
 import com.sysadmindoc.alarmclock.data.local.entity.PreSleepTagEntry
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
@@ -27,7 +28,8 @@ import com.sysadmindoc.alarmclock.data.model.Alarm
         AlarmGroup::class,
         NewsSource::class,
         ScheduleAuthority::class,
-        ScheduleAuthorityMeta::class
+        ScheduleAuthorityMeta::class,
+        DurableOperationIntent::class
     ],
     version = AlarmDatabase.VERSION,
     exportSchema = true
@@ -43,9 +45,10 @@ abstract class AlarmDatabase : RoomDatabase() {
     abstract fun alarmGroupDao(): AlarmGroupDao
     abstract fun newsSourceDao(): NewsSourceDao
     abstract fun scheduleAuthorityDao(): ScheduleAuthorityDao
+    abstract fun durableOperationIntentDao(): DurableOperationIntentDao
 
     companion object {
-        const val VERSION = 28
+        const val VERSION = 29
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -457,6 +460,37 @@ abstract class AlarmDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v29: KNO-227 P3A inert durable operation intent schema foundation.
+         */
+        val MIGRATION_28_29 = object : Migration(28, 29) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `durable_operation_intent` (
+                        `operationToken` TEXT NOT NULL,
+                        `alarmId` INTEGER NOT NULL,
+                        `operationEpoch` INTEGER NOT NULL,
+                        `incarnationId` TEXT NOT NULL,
+                        `operationKind` TEXT NOT NULL,
+                        `expectedOwnerToken` TEXT,
+                        `expectedScheduleRevision` INTEGER,
+                        `expectedRestoreEpoch` INTEGER,
+                        `phase` TEXT NOT NULL,
+                        `intentRevision` INTEGER NOT NULL,
+                        PRIMARY KEY(`operationToken`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE INDEX IF NOT EXISTS `index_durable_operation_intent_alarmId`
+                    ON `durable_operation_intent` (`alarmId`)
+                    """.trimIndent()
+                )
+            }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -485,6 +519,7 @@ abstract class AlarmDatabase : RoomDatabase() {
             MIGRATION_25_26,
             MIGRATION_26_27,
             MIGRATION_27_28,
+            MIGRATION_28_29,
         )
     }
 }
