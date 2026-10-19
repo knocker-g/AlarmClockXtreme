@@ -484,6 +484,12 @@ abstract class AlarmDatabase : RoomDatabase() {
                 )
                 db.execSQL(
                     """
+                    CREATE INDEX IF NOT EXISTS `index_durable_operation_intent_alarmId_phase`
+                    ON `durable_operation_intent` (`alarmId`, `phase`)
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
                     CREATE INDEX IF NOT EXISTS `index_durable_operation_intent_alarmId`
                     ON `durable_operation_intent` (`alarmId`)
                     """.trimIndent()

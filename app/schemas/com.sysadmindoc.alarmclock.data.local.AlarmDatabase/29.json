@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 29,
-    "identityHash": "032c36c2b27fb5a7b9b65e5211a78598",
+    "identityHash": "8a4786184f5cbf61d17fb42d541c182c",
     "entities": [
       {
         "tableName": "alarms",
@@ -1195,6 +1195,16 @@
         },
         "indices": [
           {
+            "name": "index_durable_operation_intent_alarmId_phase",
+            "unique": false,
+            "columnNames": [
+              "alarmId",
+              "phase"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_durable_operation_intent_alarmId_phase` ON `${TABLE_NAME}` (`alarmId`, `phase`)"
+          },
+          {
             "name": "index_durable_operation_intent_alarmId",
             "unique": false,
             "columnNames": [
@@ -1210,7 +1220,7 @@
     "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '032c36c2b27fb5a7b9b65e5211a78598')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '8a4786184f5cbf61d17fb42d541c182c')"
     ]
   }
 }
