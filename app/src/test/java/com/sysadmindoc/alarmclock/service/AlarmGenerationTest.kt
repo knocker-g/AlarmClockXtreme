@@ -1701,13 +1701,16 @@ class AlarmGenerationTest {
             // 4. Service is destroyed while DataStore read is in-flight!
             controller.destroy()
 
-            // 5. Unblock DataStore initial load
+            // 5. Unblock DataStore initial load after service destruction
             loadLatch.complete(Unit)
 
-            // 6. Await completion of the cancelled coroutine
-            awaitColdStartCompletion(completionLatch)
+            // 6. Flush main looper to process cancellation
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
 
-            // 7. Verify stale snooze action was CANCELLED and NEVER executed: DataStore state remains FIRING (NOT SNOOZED)
+            // 7. Verify stale snooze action was CANCELLED and NEVER executed:
+            // - No cold start snooze action was executed (snooze count == 0)
+            assertEquals(0, service.testColdStartSnoozeCount.get())
+            // - DataStore state remains FIRING for genA 405L (NOT SNOOZED)
             val settingsAfterDestroy = pmCold.getCurrentSettings()
             assertEquals("FIRING", settingsAfterDestroy.activeAlarmState)
             assertEquals(405L, settingsAfterDestroy.activeAlarmId)

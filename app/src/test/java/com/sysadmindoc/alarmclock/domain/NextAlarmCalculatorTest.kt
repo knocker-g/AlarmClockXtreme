@@ -108,8 +108,10 @@ class NextAlarmCalculatorTest {
     @Test
     fun `formatRemaining drops zero hours but keeps minutes`() {
         // Multi-day diff with zero-hour component should not render "Xd m" with empty hours.
+        // Add 30s buffer inside the 5m interval so clock progression between test setup
+        // and formatRemaining execution never boundary-wraps 5m 0s to 4m 59s / 23h 59m.
         val twoDaysFiveMin = System.currentTimeMillis() +
-                2 * 24 * 60 * 60 * 1000L + 5 * 60 * 1000L
+                2 * 24 * 60 * 60 * 1000L + 5 * 60 * 1000L + 30_000L
         val result = calculator.formatRemaining(context, twoDaysFiveMin)
         assertTrue("Should contain 2d", result.contains("2d"))
         assertTrue("Should contain 5m", result.contains("5m"))
