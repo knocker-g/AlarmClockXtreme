@@ -461,7 +461,7 @@ abstract class AlarmDatabase : RoomDatabase() {
         }
 
         /**
-         * v29: KNO-227 P3A inert durable operation intent schema foundation.
+         * v29: KNO-227 P3A/P3B-D inert durable operation intent schema foundation.
          */
         val MIGRATION_28_29 = object : Migration(28, 29) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -478,8 +478,22 @@ abstract class AlarmDatabase : RoomDatabase() {
                         `expectedRestoreEpoch` INTEGER,
                         `phase` TEXT NOT NULL,
                         `intentRevision` INTEGER NOT NULL,
-                        PRIMARY KEY(`operationToken`)
+                        PRIMARY KEY(`operationToken`),
+                        CHECK(length(trim(`operationToken`)) > 0),
+                        CHECK(length(trim(`incarnationId`)) > 0),
+                        CHECK(length(trim(`operationKind`)) > 0),
+                        CHECK(`alarmId` > 0),
+                        CHECK(`operationEpoch` > 0),
+                        CHECK(`intentRevision` > 0),
+                        CHECK(`phase` IN ('PENDING', 'IN_FLIGHT', 'COMPLETED', 'ABORTED', 'EXPIRED'))
                     )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS `index_durable_operation_intent_unresolved_alarm`
+                    ON `durable_operation_intent` (`alarmId`)
+                    WHERE `phase` IN ('PENDING', 'IN_FLIGHT')
                     """.trimIndent()
                 )
                 db.execSQL(

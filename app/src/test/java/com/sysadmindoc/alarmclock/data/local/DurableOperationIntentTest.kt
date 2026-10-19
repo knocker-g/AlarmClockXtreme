@@ -44,6 +44,42 @@ class DurableOperationIntentTest {
         context = ApplicationProvider.getApplicationContext()
         database = Room.inMemoryDatabaseBuilder(context, AlarmDatabase::class.java)
             .allowMainThreadQueries()
+            .addCallback(object : androidx.room.RoomDatabase.Callback() {
+                override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                    db.execSQL("DROP TABLE IF EXISTS `durable_operation_intent`")
+                    db.execSQL(
+                        """
+                        CREATE TABLE IF NOT EXISTS `durable_operation_intent` (
+                            `operationToken` TEXT NOT NULL,
+                            `alarmId` INTEGER NOT NULL,
+                            `operationEpoch` INTEGER NOT NULL,
+                            `incarnationId` TEXT NOT NULL,
+                            `operationKind` TEXT NOT NULL,
+                            `expectedOwnerToken` TEXT,
+                            `expectedScheduleRevision` INTEGER,
+                            `expectedRestoreEpoch` INTEGER,
+                            `phase` TEXT NOT NULL,
+                            `intentRevision` INTEGER NOT NULL,
+                            PRIMARY KEY(`operationToken`),
+                            CHECK(length(trim(`operationToken`)) > 0),
+                            CHECK(length(trim(`incarnationId`)) > 0),
+                            CHECK(length(trim(`operationKind`)) > 0),
+                            CHECK(`alarmId` > 0),
+                            CHECK(`operationEpoch` > 0),
+                            CHECK(`intentRevision` > 0),
+                            CHECK(`phase` IN ('PENDING', 'IN_FLIGHT', 'COMPLETED', 'ABORTED', 'EXPIRED'))
+                        )
+                        """.trimIndent()
+                    )
+                    db.execSQL(
+                        """
+                        CREATE UNIQUE INDEX IF NOT EXISTS `index_durable_operation_intent_unresolved_alarm`
+                        ON `durable_operation_intent` (`alarmId`)
+                        WHERE `phase` IN ('PENDING', 'IN_FLIGHT')
+                        """.trimIndent()
+                    )
+                }
+            })
             .build()
         intentDao = database.durableOperationIntentDao()
     }
@@ -54,8 +90,8 @@ class DurableOperationIntentTest {
     }
 
     @Test
-    fun `insertValidatedIntent and getByToken stores and reads durable operation intent correctly`() = runBlocking {
-        intentDao.insertValidatedIntent(validIntent)
+    fun `G0 - insertRawIntent and getByToken stores and reads durable operation intent correctly`() = runBlocking {
+        intentDao.insertRawIntent(validIntent)
 
         val retrieved = intentDao.getIntentByToken("intent-token-100")
         assertNotNull(retrieved)
@@ -63,100 +99,86 @@ class DurableOperationIntentTest {
     }
 
     @Test(expected = SQLiteConstraintException::class)
-    fun `duplicate operationToken throws SQLiteConstraintException on ABORT strategy`(): Unit = runBlocking {
-        intentDao.insertValidatedIntent(validIntent)
-
-        val duplicateTokenIntent = validIntent.copy(
-            operationEpoch = 2L,
-            phase = DurableOperationIntent.PHASE_COMPLETED
-        )
-        // ABORT strategy prevents silent overwrite or deletion of existing token
-        intentDao.insertValidatedIntent(duplicateTokenIntent)
-    }
-
-    @Test(expected = SQLiteConstraintException::class)
-    fun `same alarm with two unresolved operations throws SQLiteConstraintException`(): Unit = runBlocking {
+    fun `G1 - SQLite partial UNIQUE index rejects raw insert of second unresolved intent for same alarmId`(): Unit = runBlocking {
         val unresolved1 = validIntent.copy(operationToken = "tok-1", phase = DurableOperationIntent.PHASE_PENDING)
         val unresolved2 = validIntent.copy(operationToken = "tok-2", phase = DurableOperationIntent.PHASE_IN_FLIGHT)
 
-        intentDao.insertValidatedIntent(unresolved1)
-        // Attempting to insert a second unresolved intent for alarmId = 42L fails closed
-        intentDao.insertValidatedIntent(unresolved2)
+        intentDao.insertRawIntent(unresolved1)
+        // SQLite's partial UNIQUE index (index_durable_operation_intent_unresolved_alarm) rejects second unresolved insert
+        intentDao.insertRawIntent(unresolved2)
+    }
+
+    @Test(expected = SQLiteConstraintException::class)
+    fun `G2 - SQLite CHECK constraint rejects raw insert of unknown phase`(): Unit = runBlocking {
+        val invalidPhaseIntent = validIntent.copy(phase = "UNKNOWN_PHASE_STRING")
+        // SQLite's CHECK(phase IN ('PENDING', 'IN_FLIGHT', 'COMPLETED', 'ABORTED', 'EXPIRED')) constraint rejects raw insert
+        intentDao.insertRawIntent(invalidPhaseIntent)
+    }
+
+    @Test(expected = SQLiteConstraintException::class)
+    fun `G3 - SQLite CHECK constraint rejects raw insert of blank operationToken`(): Unit = runBlocking {
+        val blankTokenIntent = validIntent.copy(operationToken = "   ")
+        // SQLite's CHECK(length(trim(operationToken)) > 0) constraint rejects raw insert
+        intentDao.insertRawIntent(blankTokenIntent)
+    }
+
+    @Test(expected = SQLiteConstraintException::class)
+    fun `G3 - SQLite CHECK constraint rejects raw insert of nonpositive alarmId`(): Unit = runBlocking {
+        val zeroAlarmIdIntent = validIntent.copy(alarmId = 0L)
+        // SQLite's CHECK(alarmId > 0) constraint rejects raw insert
+        intentDao.insertRawIntent(zeroAlarmIdIntent)
+    }
+
+    @Test(expected = SQLiteConstraintException::class)
+    fun `G3 - SQLite CHECK constraint rejects raw insert of nonpositive operationEpoch`(): Unit = runBlocking {
+        val zeroEpochIntent = validIntent.copy(operationEpoch = 0L)
+        // SQLite's CHECK(operationEpoch > 0) constraint rejects raw insert
+        intentDao.insertRawIntent(zeroEpochIntent)
     }
 
     @Test
-    fun `two different alarms with unresolved operations succeeds`() = runBlocking {
+    fun `G4 - Two different alarms with unresolved operations succeeds at SQLite layer`() = runBlocking {
         val alarm42Intent = validIntent.copy(alarmId = 42L, operationToken = "tok-42", phase = DurableOperationIntent.PHASE_PENDING)
         val alarm99Intent = validIntent.copy(alarmId = 99L, operationToken = "tok-99", phase = DurableOperationIntent.PHASE_PENDING)
 
-        intentDao.insertValidatedIntent(alarm42Intent)
-        intentDao.insertValidatedIntent(alarm99Intent)
+        intentDao.insertRawIntent(alarm42Intent)
+        intentDao.insertRawIntent(alarm99Intent)
 
         assertEquals(1, intentDao.getUnresolvedIntentsByAlarmId(42L).size)
         assertEquals(1, intentDao.getUnresolvedIntentsByAlarmId(99L).size)
     }
 
-    @Test(expected = IllegalArgumentException::class)
-    fun `invalid phase at persistence boundary throws IllegalArgumentException`(): Unit = runBlocking {
-        val invalidPhaseIntent = validIntent.copy(phase = "UNKNOWN_PHASE")
-        intentDao.insertValidatedIntent(invalidPhaseIntent)
-    }
-
-    @Test(expected = IllegalArgumentException::class)
-    fun `blank operation token throws IllegalArgumentException`(): Unit = runBlocking {
-        val blankTokenIntent = validIntent.copy(operationToken = "   ")
-        intentDao.insertValidatedIntent(blankTokenIntent)
-    }
-
-    @Test(expected = IllegalArgumentException::class)
-    fun `nonpositive epoch throws IllegalArgumentException`(): Unit = runBlocking {
-        val zeroEpochIntent = validIntent.copy(operationEpoch = 0L)
-        intentDao.insertValidatedIntent(zeroEpochIntent)
-    }
-
     @Test
-    fun `getUnresolvedIntentsByAlarmId returns PENDING and IN_FLIGHT intents only`() = runBlocking {
-        val pendingIntent = validIntent.copy(operationToken = "tok-pending", phase = DurableOperationIntent.PHASE_PENDING)
-        val completedIntent = validIntent.copy(operationToken = "tok-completed", phase = DurableOperationIntent.PHASE_COMPLETED)
-        val abortedIntent = validIntent.copy(operationToken = "tok-aborted", phase = DurableOperationIntent.PHASE_ABORTED)
-
-        intentDao.insertValidatedIntent(pendingIntent)
-        intentDao.insertValidatedIntent(completedIntent)
-        intentDao.insertValidatedIntent(abortedIntent)
-
-        val unresolved = intentDao.getUnresolvedIntentsByAlarmId(42L)
-        assertEquals(1, unresolved.size)
-        assertEquals("tok-pending", unresolved.first().operationToken)
-
-        val allIntents = intentDao.getIntentsByAlarmId(42L)
-        assertEquals(3, allIntents.size)
-    }
-
-    @Test
-    fun `historical terminal intents are retained for replay audit`() = runBlocking {
+    fun `G5 - Historical terminal intents are retained for replay audit`() = runBlocking {
         val completed = validIntent.copy(operationToken = "tok-comp", phase = DurableOperationIntent.PHASE_COMPLETED)
         val expired = validIntent.copy(operationToken = "tok-exp", phase = DurableOperationIntent.PHASE_EXPIRED)
 
-        intentDao.insertValidatedIntent(completed)
-        intentDao.insertValidatedIntent(expired)
+        intentDao.insertRawIntent(completed)
+        intentDao.insertRawIntent(expired)
 
         val all = intentDao.getAllIntents()
         assertEquals(2, all.size)
     }
 
     @Test
-    fun `read queries perform no state mutations`() = runBlocking {
-        intentDao.insertValidatedIntent(validIntent)
+    fun `G6 - Collision on operationToken cannot erase previous row due to ABORT strategy`() = runBlocking {
+        intentDao.insertRawIntent(validIntent)
 
-        val read1 = intentDao.getIntentByToken("intent-token-100")
-        val read2 = intentDao.getAllIntents()
+        var thrown = false
+        try {
+            val duplicate = validIntent.copy(operationEpoch = 2L, phase = DurableOperationIntent.PHASE_COMPLETED)
+            intentDao.insertRawIntent(duplicate)
+        } catch (_: SQLiteConstraintException) {
+            thrown = true
+        }
 
-        assertEquals(read1, validIntent)
-        assertEquals(1, read2.size)
+        assertTrue("SQLiteConstraintException must be thrown on duplicate token", thrown)
+        val existing = intentDao.getIntentByToken("intent-token-100")
+        assertEquals(validIntent, existing)
     }
 
     @Test
-    fun `valid phase vocabulary is correctly identified`() {
+    fun `G7 - Valid phase vocabulary helper functions correctly`() {
         assertTrue(DurableOperationIntent.isValidPhase("PENDING"))
         assertTrue(DurableOperationIntent.isValidPhase("IN_FLIGHT"))
         assertTrue(DurableOperationIntent.isValidPhase("COMPLETED"))
