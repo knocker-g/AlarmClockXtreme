@@ -7,6 +7,7 @@ import androidx.room.PrimaryKey
 @Entity(
     tableName = "durable_operation_intent",
     indices = [
+        Index(value = ["alarmId", "phase"]),
         Index(value = ["alarmId"])
     ]
 )

@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 29,
-    "identityHash": "7e7b8ae0a8517078d2321379268184af",
+    "identityHash": "8a4786184f5cbf61d17fb42d541c182c",
     "entities": [
       {
         "tableName": "alarms",
@@ -1195,6 +1195,16 @@
         },
         "indices": [
           {
+            "name": "index_durable_operation_intent_alarmId_phase",
+            "unique": false,
+            "columnNames": [
+              "alarmId",
+              "phase"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_durable_operation_intent_alarmId_phase` ON `${TABLE_NAME}` (`alarmId`, `phase`)"
+          },
+          {
             "name": "index_durable_operation_intent_alarmId",
             "unique": false,
             "columnNames": [
@@ -1205,62 +1215,12 @@
           }
         ],
         "foreignKeys": []
-      },
-      {
-        "tableName": "durable_unresolved_intent_slot",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`alarmId` INTEGER NOT NULL, `operationToken` TEXT NOT NULL, `operationEpoch` INTEGER NOT NULL, `incarnationId` TEXT NOT NULL, `operationKind` TEXT NOT NULL, `phase` TEXT NOT NULL, PRIMARY KEY(`alarmId`))",
-        "fields": [
-          {
-            "fieldPath": "alarmId",
-            "columnName": "alarmId",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "operationToken",
-            "columnName": "operationToken",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "operationEpoch",
-            "columnName": "operationEpoch",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "incarnationId",
-            "columnName": "incarnationId",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "operationKind",
-            "columnName": "operationKind",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "phase",
-            "columnName": "phase",
-            "affinity": "TEXT",
-            "notNull": true
-          }
-        ],
-        "primaryKey": {
-          "autoGenerate": false,
-          "columnNames": [
-            "alarmId"
-          ]
-        },
-        "indices": [],
-        "foreignKeys": []
       }
     ],
     "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '7e7b8ae0a8517078d2321379268184af')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '8a4786184f5cbf61d17fb42d541c182c')"
     ]
   }
 }

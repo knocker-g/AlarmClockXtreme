@@ -144,8 +144,8 @@ class DurableOperationIntentTest {
         intentDao.insertValidatedIntent(alarm42Intent)
         intentDao.insertValidatedIntent(alarm99Intent)
 
-        assertEquals("tok-42", intentDao.getUnresolvedSlotByAlarmId(42L)?.operationToken)
-        assertEquals("tok-99", intentDao.getUnresolvedSlotByAlarmId(99L)?.operationToken)
+        assertEquals("tok-42", intentDao.getUnresolvedIntentsByAlarmId(42L).first().operationToken)
+        assertEquals("tok-99", intentDao.getUnresolvedIntentsByAlarmId(99L).first().operationToken)
     }
 
     @Test
