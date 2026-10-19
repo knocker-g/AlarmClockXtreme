@@ -2879,7 +2879,7 @@ class AlarmGenerationTest {
             assertEquals(501L, service.currentAlarmId)
 
             val completionLatch = kotlinx.coroutines.CompletableDeferred<Unit>()
-            service.testColdStartAdmissionCompletionLatch = completionLatch
+            service.testOnSnoozeActionCompletionLatch = completionLatch
 
             // Deliver SNOOZE intent when exact permission is revoked
             val snoozeIntent = Intent(service, AlarmService::class.java).apply {

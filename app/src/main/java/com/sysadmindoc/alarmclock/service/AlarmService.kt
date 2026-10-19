@@ -230,6 +230,8 @@ class AlarmService : Service() {
     @VisibleForTesting
     internal var testOnSnoozeRetryFinishedCallback: (() -> Unit)? = null
     @VisibleForTesting
+    internal var testOnSnoozeActionCompletionLatch: CompletableDeferred<Unit>? = null
+    @VisibleForTesting
     internal val testColdStartSnoozeCount = java.util.concurrent.atomic.AtomicInteger(0)
     @VisibleForTesting
     internal val testColdStartDismissCount = java.util.concurrent.atomic.AtomicInteger(0)
@@ -616,6 +618,7 @@ class AlarmService : Service() {
                                     snoozeAlarm(alarmId, acceptedGen, customMinutes, snoozeAtMillis)
                                 } finally {
                                     snoozeActionInFlight.set(false)
+                                    testOnSnoozeActionCompletionLatch?.complete(Unit)
                                 }
                             }
                         } else {
@@ -2506,7 +2509,7 @@ class AlarmService : Service() {
         // owner-guarded teardown so audio playback stays active and audible.
         if (!alarmScheduler.canScheduleExactAlarms()) {
             if (currentGeneration()?.matches(acceptedGen) == true) {
-                recordIncident(
+                recordIncidentAsync(
                     type = AlarmIncidentEvent.TYPE_USER_ACTION,
                     status = AlarmIncidentEvent.STATUS_FAILED,
                     reasonCode = "SNOOZE_REGISTRATION_FAILED",
