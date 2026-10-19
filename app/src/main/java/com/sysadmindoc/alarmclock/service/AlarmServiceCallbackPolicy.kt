@@ -1,6 +1,7 @@
 package com.sysadmindoc.alarmclock.service
 
 import android.os.Looper
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -9,6 +10,25 @@ internal data class PlaybackAttemptToken(
     val attemptSequence: Long,
     val authorityId: Long = 0L
 )
+
+internal class PreemptionFinalizationTracker {
+    private val finalizedGenerations = ConcurrentHashMap.newKeySet<String>()
+
+    fun markFinalized(generation: AlarmGeneration): Boolean {
+        val key = "${generation.alarmId}_${generation.scheduledAt}_${generation.fireId}"
+        return finalizedGenerations.add(key)
+    }
+
+    fun isFinalized(generation: AlarmGeneration?): Boolean {
+        if (generation == null) return false
+        val key = "${generation.alarmId}_${generation.scheduledAt}_${generation.fireId}"
+        return finalizedGenerations.contains(key)
+    }
+
+    fun resetState() {
+        finalizedGenerations.clear()
+    }
+}
 
 internal class PlayerCallbackStateHolder(
     val token: PlaybackAttemptToken,
@@ -434,8 +454,12 @@ internal class AlarmPlaybackAttemptAuthority {
  */
 internal object AlarmServiceCallbackPolicy {
     val defaultAuthority = AlarmPlaybackAttemptAuthority()
+    val defaultTracker = PreemptionFinalizationTracker()
 
-    fun resetState() = defaultAuthority.resetState()
+    fun resetState() {
+        defaultAuthority.resetState()
+        defaultTracker.resetState()
+    }
 
     fun mintNextToken(generation: AlarmGeneration) = defaultAuthority.mintNextToken(generation)
 

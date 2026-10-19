@@ -3,6 +3,7 @@ package com.sysadmindoc.alarmclock.data.preferences
 import android.content.Context
 import android.graphics.Color
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
@@ -15,16 +16,26 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.squareup.moshi.JsonClass
+import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
+import com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository
 import com.sysadmindoc.alarmclock.domain.ChronotypeEstimator
 import com.sysadmindoc.alarmclock.domain.GroupTabPosition
 import com.sysadmindoc.alarmclock.domain.JetLagDirection
 import com.sysadmindoc.alarmclock.domain.LongPressThreshold
+import com.sysadmindoc.alarmclock.service.AlarmGeneration
+import com.sysadmindoc.alarmclock.service.AlarmService.Companion.ActiveAlarmSnapshot
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
 import java.io.IOException
 import java.util.Locale
 import javax.inject.Inject
@@ -299,7 +310,8 @@ fun AppSettings.isPaused(now: Long = System.currentTimeMillis()): Boolean =
 
 @Singleton
 class PreferencesManager @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val alarmIncidentRepository: javax.inject.Provider<AlarmIncidentRepository>? = null
 ) {
     // v1.5.1: Lock-free latest-settings snapshot kept in sync by [settings]'s
     // collectors. Callers that can't suspend (scheduler math from a `combine`
@@ -408,7 +420,13 @@ class PreferencesManager @Inject constructor(
         val YT_ENGINE_LAST_FAILURE_REASON = stringPreferencesKey("yt_engine_last_failure_reason")
     }
 
+    @VisibleForTesting
+    internal var testReadFaultInjector: (() -> Unit)? = null
+
     val settings: Flow<AppSettings> = context.dataStore.data
+        .onEach {
+            testReadFaultInjector?.invoke()
+        }
         .catch { e ->
             if (e is IOException) {
                 // v1.9.1: DataStore reports IOException on both transient I/O
@@ -427,6 +445,7 @@ class PreferencesManager @Inject constructor(
         }
         .map { it.toSettings().sanitized() }
         .onEach {
+            testInitialLoadLatch?.await()
             cachedSettings = it
             hasLoadedSettings = true
         }
@@ -442,18 +461,145 @@ class PreferencesManager @Inject constructor(
      */
     fun getCachedSettings(): AppSettings = cachedSettings
 
+    val isSettingsLoaded: Boolean get() = hasLoadedSettings
+
     /** Privacy-sensitive public surfaces fail closed during cold process start,
      *  before DataStore has emitted the user's persisted preference. */
     fun shouldHideLabelsOnPublicSurfaces(): Boolean {
         return !hasLoadedSettings || cachedSettings.hideAlarmLabelsOnPublicSurfaces
     }
 
+    companion object {
+        @VisibleForTesting
+        internal var defaultInitialLoadLatch: CompletableDeferred<Unit>? = null
+    }
+
+    @VisibleForTesting
+    internal var testInitialLoadLatch: CompletableDeferred<Unit>? = defaultInitialLoadLatch
+    @VisibleForTesting
+    internal var testFaultInjector: (() -> Unit)? = null
+
+    internal enum class ActiveAlarmUpdateResult {
+        COMMITTED,
+        REJECTED_STALE,
+        FAILED_COMMIT
+    }
+
+    internal data class ActiveAlarmUpdateRequest(
+        val snapshot: ActiveAlarmSnapshot?,
+        val targetGen: AlarmGeneration? = null,
+        val ack: CompletableDeferred<ActiveAlarmUpdateResult>? = null
+    )
+
+    internal object ActiveAlarmWriterPolicy {
+        fun shouldExecuteUpdate(
+            storedId: Long?,
+            storedScheduledAt: Long,
+            storedFireId: String,
+            requestSnapshot: ActiveAlarmSnapshot?,
+            targetGen: AlarmGeneration?
+        ): Boolean {
+            if (requestSnapshot == null) {
+                // Fail-Closed: Clear request MUST specify targetGen to establish ownership
+                val target = targetGen ?: return false
+                if (storedId != null && storedId > 0L) {
+                    val storedGen = AlarmGeneration(storedId, storedScheduledAt, storedFireId)
+                    if (!storedGen.matches(target)) {
+                        return false // DataStore holds a DIFFERENT active generation -> REJECT clear!
+                    }
+                }
+            }
+            return true
+        }
+    }
+
+    // Application-lived repository scope so active alarm DataStore updates
+    // execute serially in strict FIFO order and survive component teardown (stopSelf / onDestroy).
+    private val activeAlarmWriterScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val activeAlarmChannel = Channel<ActiveAlarmUpdateRequest>(Channel.UNLIMITED)
+
+    init {
+        activeAlarmWriterScope.launch {
+            settings.collect {}
+        }
+        activeAlarmWriterScope.launch {
+            for (request in activeAlarmChannel) {
+                try {
+                    updateActiveAlarmInternal(request)
+                } catch (e: Exception) {
+                    Log.w("PreferencesManager", "Failed to persist active alarm update", e)
+                }
+            }
+        }
+    }
+
+    internal fun enqueueActiveAlarmUpdate(
+        snapshot: ActiveAlarmSnapshot?,
+        targetGen: AlarmGeneration? = null,
+        ack: CompletableDeferred<ActiveAlarmUpdateResult>? = null
+    ): Boolean {
+        val result = activeAlarmChannel.trySend(ActiveAlarmUpdateRequest(snapshot, targetGen, ack))
+        if (result.isFailure) {
+            Log.w("PreferencesManager", "Failed to enqueue active alarm update request (channel closed or full)")
+            ack?.complete(ActiveAlarmUpdateResult.FAILED_COMMIT)
+            return false
+        }
+        return true
+    }
+
+    private suspend fun updateActiveAlarmInternal(request: ActiveAlarmUpdateRequest) {
+        try {
+            var updateResult = ActiveAlarmUpdateResult.COMMITTED
+            context.dataStore.edit { prefs ->
+                testFaultInjector?.invoke()
+                val old = prefs.toSettings().sanitized()
+
+                if (!ActiveAlarmWriterPolicy.shouldExecuteUpdate(
+                        storedId = old.activeAlarmId,
+                        storedScheduledAt = old.activeAlarmScheduledAt,
+                        storedFireId = old.activeAlarmFireId,
+                        requestSnapshot = request.snapshot,
+                        targetGen = request.targetGen
+                    )
+                ) {
+                    updateResult = ActiveAlarmUpdateResult.REJECTED_STALE
+                    return@edit
+                }
+
+                val snapshot = request.snapshot
+                val newSettings = old.copy(
+                    activeAlarmId = snapshot?.alarmId,
+                    activeAlarmScheduledAt = snapshot?.scheduledAt ?: 0L,
+                    activeAlarmFireId = snapshot?.fireId ?: "",
+                    activeAlarmFiredAt = snapshot?.firedAt ?: 0L,
+                    activeAlarmState = snapshot?.state ?: "",
+                    activeAlarmRefireAt = snapshot?.refireAt ?: 0L
+                )
+                prefs.applySettings(newSettings)
+            }
+            request.ack?.complete(updateResult)
+        } catch (e: Exception) {
+            Log.w("PreferencesManager", "Failed to persist active alarm update", e)
+            request.ack?.complete(ActiveAlarmUpdateResult.FAILED_COMMIT)
+            val alarmId = request.snapshot?.alarmId ?: request.targetGen?.alarmId ?: -1L
+            if (alarmId > 0L) {
+                alarmIncidentRepository?.get()?.recordAsync(
+                    alarmId = alarmId,
+                    fireId = request.snapshot?.fireId ?: request.targetGen?.fireId ?: "",
+                    scheduledAt = request.snapshot?.scheduledAt ?: request.targetGen?.scheduledAt ?: 0L,
+                    type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                    status = AlarmIncidentEvent.STATUS_FAILED,
+                    reasonCode = "ACTIVE_ALARM_PERSISTENCE_COMMIT_FAILED",
+                    source = "PreferencesManager"
+                )
+            }
+        }
+    }
+
     suspend fun update(transform: (AppSettings) -> AppSettings) {
         context.dataStore.edit { prefs ->
             val old = prefs.toSettings().sanitized()
             val new = transform(old).sanitized()
-            cachedSettings = new
-            hasLoadedSettings = true
             prefs.applySettings(new)
         }
     }
