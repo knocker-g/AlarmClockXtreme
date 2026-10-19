@@ -256,4 +256,57 @@ class LocalIncarnationMarkerStoreTest {
         assertNotNull(parentDir)
         assertEquals(context.noBackupFilesDir.canonicalPath, parentDir?.canonicalPath)
     }
+
+    @Test
+    fun `A01 - Primary missing with valid backup present recovers state from backup file`() {
+        val backupFile = File(context.noBackupFilesDir, LocalIncarnationMarkerStore.BACKUP_FILE_NAME)
+        backupFile.writeText("""{"formatVersion": 1, "incarnationId": "inc-bak-100", "completionState": "COMPLETE"}""")
+        assertFalse(markerFile.exists())
+        assertTrue(backupFile.exists())
+
+        val readResult = store.readMarker()
+        assertTrue(readResult is LocalMarkerReadResult.Present)
+        val present = readResult as LocalMarkerReadResult.Present
+        assertEquals("inc-bak-100", present.payload.incarnationId)
+        assertEquals(CompletionState.COMPLETE, present.payload.completionState)
+    }
+
+    @Test
+    fun `A02 - readMarker never creates directories or marker files on disk`() {
+        val nonExistentDir = File(context.cacheDir, "non_existent_read_test_dir")
+        if (nonExistentDir.exists()) nonExistentDir.deleteRecursively()
+
+        val mockContext = io.mockk.mockk<Context>()
+        io.mockk.every { mockContext.noBackupFilesDir } returns nonExistentDir
+        io.mockk.every { mockContext.getSystemService(Context.USER_SERVICE) } returns null
+
+        val testStore = LocalIncarnationMarkerStore(mockContext)
+        val readResult = testStore.readMarker()
+
+        assertEquals(LocalMarkerReadResult.Absent, readResult)
+        assertFalse("readMarker must not create non-existent directories", nonExistentDir.exists())
+    }
+
+    @Test
+    fun `A03 - DirectBoot locked user returns Unavailable on read and StorageUnavailable on write`() {
+        val mockUserManager = io.mockk.mockk<android.os.UserManager>()
+        io.mockk.every { mockUserManager.isUserUnlocked } returns false
+
+        val lockedContext = io.mockk.mockk<Context>()
+        io.mockk.every { lockedContext.getSystemService(Context.USER_SERVICE) } returns mockUserManager
+        io.mockk.every { lockedContext.noBackupFilesDir } returns context.noBackupFilesDir
+
+        val lockedStore = LocalIncarnationMarkerStore(lockedContext)
+
+        val readResult = lockedStore.readMarker()
+        assertEquals(LocalMarkerReadResult.Unavailable, readResult)
+
+        val payload = LocalMarkerPayload(
+            formatVersion = 1,
+            incarnationId = "inc-locked-100",
+            completionState = CompletionState.COMPLETE
+        )
+        val writeResult = lockedStore.writeMarker(payload)
+        assertEquals(LocalMarkerWriteResult.StorageUnavailable, writeResult)
+    }
 }
