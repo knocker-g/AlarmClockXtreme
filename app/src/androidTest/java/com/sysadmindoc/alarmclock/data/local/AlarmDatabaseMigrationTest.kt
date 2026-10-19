@@ -330,6 +330,42 @@ class AlarmDatabaseMigrationTest {
     }
 
     @Test
+    fun migrationTwentySevenToTwentyEightAddsScheduleAuthorityTablesAndPreservesAlarms() {
+        var db = helper.createDatabase("migration-27-to-28.db", 27)
+        insertSyntheticAlarm(db)
+        db.close()
+
+        db = helper.runMigrationsAndValidate(
+            "migration-27-to-28.db",
+            28,
+            true,
+            AlarmDatabase.MIGRATION_27_28,
+        )
+
+        assertEquals(1, db.queryLong("SELECT COUNT(*) FROM alarms"))
+        assertEquals(0, db.queryLong("SELECT COUNT(*) FROM schedule_authority"))
+        assertEquals(0, db.queryLong("SELECT COUNT(*) FROM schedule_authority_meta"))
+
+        val authorityColumns = tableColumns(db, "schedule_authority").associateBy { it.name }
+        assertTrue(authorityColumns.containsKey("alarmId"))
+        assertTrue(authorityColumns.containsKey("instanceToken"))
+        assertTrue(authorityColumns.containsKey("definitionRevision"))
+        assertTrue(authorityColumns.containsKey("scheduleRevision"))
+        assertTrue(authorityColumns.containsKey("lifecycle"))
+        assertTrue(authorityColumns.containsKey("desiredOperation"))
+        assertTrue(authorityColumns.containsKey("desiredTriggerMillis"))
+        assertTrue(authorityColumns.containsKey("reconcileState"))
+        assertTrue(authorityColumns.containsKey("restoreEpoch"))
+        assertTrue(authorityColumns.containsKey("actionKey"))
+
+        val metaColumns = tableColumns(db, "schedule_authority_meta").associateBy { it.name }
+        assertTrue(metaColumns.containsKey("id"))
+        assertTrue(metaColumns.containsKey("restoreEpoch"))
+        assertTrue(metaColumns.containsKey("bootstrapState"))
+        db.close()
+    }
+
+    @Test
     fun freshInstallVersionMatchesLatestExportedSchema() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val exportedLatest = latestExportedSchemaVersion()

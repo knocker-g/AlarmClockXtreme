@@ -6,11 +6,13 @@ import androidx.room.TypeConverters
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.sysadmindoc.alarmclock.data.local.entity.ActigraphySession
-import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmEvent
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmGroup
+import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.data.local.entity.NewsSource
 import com.sysadmindoc.alarmclock.data.local.entity.PreSleepTagEntry
+import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
+import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta
 import com.sysadmindoc.alarmclock.data.local.entity.SnoreEvent
 import com.sysadmindoc.alarmclock.data.model.Alarm
 
@@ -23,7 +25,9 @@ import com.sysadmindoc.alarmclock.data.model.Alarm
         SnoreEvent::class,
         PreSleepTagEntry::class,
         AlarmGroup::class,
-        NewsSource::class
+        NewsSource::class,
+        ScheduleAuthority::class,
+        ScheduleAuthorityMeta::class
     ],
     version = AlarmDatabase.VERSION,
     exportSchema = true
@@ -38,9 +42,10 @@ abstract class AlarmDatabase : RoomDatabase() {
     abstract fun preSleepTagDao(): PreSleepTagDao
     abstract fun alarmGroupDao(): AlarmGroupDao
     abstract fun newsSourceDao(): NewsSourceDao
+    abstract fun scheduleAuthorityDao(): ScheduleAuthorityDao
 
     companion object {
-        const val VERSION = 27
+        const val VERSION = 28
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -417,6 +422,41 @@ abstract class AlarmDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v28: KNO-227 P1A schedule authority schema expansion.
+         */
+        val MIGRATION_27_28 = object : Migration(27, 28) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `schedule_authority` (
+                        `alarmId` INTEGER NOT NULL,
+                        `instanceToken` TEXT NOT NULL,
+                        `definitionRevision` INTEGER NOT NULL,
+                        `scheduleRevision` INTEGER NOT NULL,
+                        `lifecycle` TEXT NOT NULL,
+                        `desiredOperation` TEXT NOT NULL,
+                        `desiredTriggerMillis` INTEGER,
+                        `reconcileState` TEXT NOT NULL,
+                        `restoreEpoch` INTEGER NOT NULL,
+                        `actionKey` TEXT,
+                        PRIMARY KEY(`alarmId`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `schedule_authority_meta` (
+                        `id` INTEGER NOT NULL,
+                        `restoreEpoch` INTEGER NOT NULL,
+                        `bootstrapState` TEXT NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -444,6 +484,7 @@ abstract class AlarmDatabase : RoomDatabase() {
             MIGRATION_24_25,
             MIGRATION_25_26,
             MIGRATION_26_27,
+            MIGRATION_27_28,
         )
     }
 }
