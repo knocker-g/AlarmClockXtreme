@@ -73,12 +73,8 @@ object BootstrapAdmissionPolicy {
 
         // 3. Epoch & Metadata Validation
         if (snapshot.metaState == BootstrapMetaState.ABSENT) {
-            // ABSENT metadata must not have a metaEpoch
-            if (snapshot.metaEpoch != null) {
-                return BootstrapAdmissionDecision.BLOCK_EPOCH
-            }
-            // If expectedEpoch is provided, it must be positive
-            if (snapshot.expectedEpoch != null && snapshot.expectedEpoch <= 0L) {
+            // ABSENT metadata must not have a metaEpoch or an expectedEpoch
+            if (snapshot.metaEpoch != null || snapshot.expectedEpoch != null) {
                 return BootstrapAdmissionDecision.BLOCK_EPOCH
             }
             // An existing owner while metadata is ABSENT is a conflict!
@@ -103,31 +99,26 @@ object BootstrapAdmissionPolicy {
             return BootstrapAdmissionDecision.REPLAN_STALE_DEFINITION
         }
 
-        // 5. Owner State Checks
+        // 5. Owner State & Token Matching Checks (Precedes Intent State)
         when (snapshot.ownerState) {
             BootstrapOwnerState.CONFLICT -> return BootstrapAdmissionDecision.BLOCK_OWNER_CONFLICT
             BootstrapOwnerState.UNKNOWN -> return BootstrapAdmissionDecision.INSPECT_UNKNOWN_OWNER
-            BootstrapOwnerState.ABSENT,
-            BootstrapOwnerState.VALID_CURRENT -> { /* proceed */ }
-        }
-
-        // 6. Intent State Checks
-        when (snapshot.intentState) {
-            BootstrapIntentState.INVALID -> return BootstrapAdmissionDecision.BLOCK_INVALID_INTENT
-            BootstrapIntentState.UNRESOLVED -> return BootstrapAdmissionDecision.KEEP_UNRESOLVED
-            BootstrapIntentState.RESOLVED_SET,
-            BootstrapIntentState.RESOLVED_CANCEL -> { /* proceed */ }
-        }
-
-        // 7. Owner Action Decision
-        if (snapshot.ownerState == BootstrapOwnerState.VALID_CURRENT) {
-            return if (snapshot.expectedOwnerTokenMatches) {
-                BootstrapAdmissionDecision.REUSE_OWNER
-            } else {
-                BootstrapAdmissionDecision.BLOCK_OWNER_CONFLICT
+            BootstrapOwnerState.VALID_CURRENT -> {
+                return if (snapshot.expectedOwnerTokenMatches) {
+                    BootstrapAdmissionDecision.REUSE_OWNER
+                } else {
+                    BootstrapAdmissionDecision.BLOCK_OWNER_CONFLICT
+                }
             }
+            BootstrapOwnerState.ABSENT -> { /* proceed to intent state evaluation */ }
         }
 
-        return BootstrapAdmissionDecision.PREPARE_OWNER
+        // 6. Intent State Checks (Only reached when ownerState == ABSENT)
+        return when (snapshot.intentState) {
+            BootstrapIntentState.INVALID -> BootstrapAdmissionDecision.BLOCK_INVALID_INTENT
+            BootstrapIntentState.UNRESOLVED -> BootstrapAdmissionDecision.KEEP_UNRESOLVED
+            BootstrapIntentState.RESOLVED_SET,
+            BootstrapIntentState.RESOLVED_CANCEL -> BootstrapAdmissionDecision.PREPARE_OWNER
+        }
     }
 }

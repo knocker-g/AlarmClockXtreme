@@ -55,18 +55,24 @@ class BootstrapAdmissionPolicyTest {
     }
 
     @Test
-    fun `ABSENT metadata with malformed fields produces BLOCK_EPOCH`() {
-        // ABSENT metadata with non-null metaEpoch
-        val nonNullMetaEpochSnapshot = readyAbsentMetaSnapshot.copy(
-            metaEpoch = 100L
+    fun `ABSENT metadata with non-null expectedEpoch fails closed to BLOCK_EPOCH`() {
+        // ABSENT metadata with positive expectedEpoch (e.g. 100L) must fail closed to BLOCK_EPOCH
+        val positiveExpectedEpochSnapshot = readyAbsentMetaSnapshot.copy(
+            expectedEpoch = 100L
         )
-        assertEquals(BootstrapAdmissionDecision.BLOCK_EPOCH, BootstrapAdmissionPolicy.evaluate(nonNullMetaEpochSnapshot))
+        assertEquals(BootstrapAdmissionDecision.BLOCK_EPOCH, BootstrapAdmissionPolicy.evaluate(positiveExpectedEpochSnapshot))
 
         // ABSENT metadata with nonpositive expectedEpoch
         val negativeExpectedEpochSnapshot = readyAbsentMetaSnapshot.copy(
             expectedEpoch = -5L
         )
         assertEquals(BootstrapAdmissionDecision.BLOCK_EPOCH, BootstrapAdmissionPolicy.evaluate(negativeExpectedEpochSnapshot))
+
+        // ABSENT metadata with non-null metaEpoch
+        val nonNullMetaEpochSnapshot = readyAbsentMetaSnapshot.copy(
+            metaEpoch = 100L
+        )
+        assertEquals(BootstrapAdmissionDecision.BLOCK_EPOCH, BootstrapAdmissionPolicy.evaluate(nonNullMetaEpochSnapshot))
     }
 
     @Test
@@ -155,23 +161,49 @@ class BootstrapAdmissionPolicyTest {
     }
 
     @Test
-    fun `existing valid owner with token mismatch produces BLOCK_OWNER_CONFLICT`() {
-        val snapshot = readyPreparingMetaSnapshot.copy(
+    fun `VALID_CURRENT owner with token mismatch produces BLOCK_OWNER_CONFLICT regardless of intent state`() {
+        // VALID_CURRENT + UNRESOLVED + token mismatch -> BLOCK_OWNER_CONFLICT
+        val unresolvedMismatch = readyPreparingMetaSnapshot.copy(
             ownerState = BootstrapOwnerState.VALID_CURRENT,
-            expectedOwnerTokenMatches = false
+            expectedOwnerTokenMatches = false,
+            intentState = BootstrapIntentState.UNRESOLVED
         )
-        val decision = BootstrapAdmissionPolicy.evaluate(snapshot)
-        assertEquals(BootstrapAdmissionDecision.BLOCK_OWNER_CONFLICT, decision)
+        assertEquals(BootstrapAdmissionDecision.BLOCK_OWNER_CONFLICT, BootstrapAdmissionPolicy.evaluate(unresolvedMismatch))
+
+        // VALID_CURRENT + INVALID + token mismatch -> BLOCK_OWNER_CONFLICT
+        val invalidMismatch = readyPreparingMetaSnapshot.copy(
+            ownerState = BootstrapOwnerState.VALID_CURRENT,
+            expectedOwnerTokenMatches = false,
+            intentState = BootstrapIntentState.INVALID
+        )
+        assertEquals(BootstrapAdmissionDecision.BLOCK_OWNER_CONFLICT, BootstrapAdmissionPolicy.evaluate(invalidMismatch))
+
+        // VALID_CURRENT + RESOLVED_SET + token mismatch -> BLOCK_OWNER_CONFLICT
+        val setMismatch = readyPreparingMetaSnapshot.copy(
+            ownerState = BootstrapOwnerState.VALID_CURRENT,
+            expectedOwnerTokenMatches = false,
+            intentState = BootstrapIntentState.RESOLVED_SET
+        )
+        assertEquals(BootstrapAdmissionDecision.BLOCK_OWNER_CONFLICT, BootstrapAdmissionPolicy.evaluate(setMismatch))
     }
 
     @Test
-    fun `existing valid owner with token match produces REUSE_OWNER`() {
-        val snapshot = readyPreparingMetaSnapshot.copy(
+    fun `VALID_CURRENT owner with matching token produces REUSE_OWNER even when intent is UNRESOLVED`() {
+        // VALID_CURRENT + UNRESOLVED + matching token -> REUSE_OWNER
+        val unresolvedMatching = readyPreparingMetaSnapshot.copy(
             ownerState = BootstrapOwnerState.VALID_CURRENT,
-            expectedOwnerTokenMatches = true
+            expectedOwnerTokenMatches = true,
+            intentState = BootstrapIntentState.UNRESOLVED
         )
-        val decision = BootstrapAdmissionPolicy.evaluate(snapshot)
-        assertEquals(BootstrapAdmissionDecision.REUSE_OWNER, decision)
+        assertEquals(BootstrapAdmissionDecision.REUSE_OWNER, BootstrapAdmissionPolicy.evaluate(unresolvedMatching))
+
+        // VALID_CURRENT + RESOLVED_SET + matching token -> REUSE_OWNER
+        val setMatching = readyPreparingMetaSnapshot.copy(
+            ownerState = BootstrapOwnerState.VALID_CURRENT,
+            expectedOwnerTokenMatches = true,
+            intentState = BootstrapIntentState.RESOLVED_SET
+        )
+        assertEquals(BootstrapAdmissionDecision.REUSE_OWNER, BootstrapAdmissionPolicy.evaluate(setMatching))
     }
 
     @Test
@@ -200,8 +232,9 @@ class BootstrapAdmissionPolicyTest {
     }
 
     @Test
-    fun `invalid intent state produces BLOCK_INVALID_INTENT`() {
+    fun `absent owner with invalid intent produces BLOCK_INVALID_INTENT`() {
         val snapshot = readyPreparingMetaSnapshot.copy(
+            ownerState = BootstrapOwnerState.ABSENT,
             intentState = BootstrapIntentState.INVALID
         )
         val decision = BootstrapAdmissionPolicy.evaluate(snapshot)
@@ -233,7 +266,8 @@ class BootstrapAdmissionPolicyTest {
 
         // Precedence 4: Owner State > Intent State
         val ownerOverIntent = readyPreparingMetaSnapshot.copy(
-            ownerState = BootstrapOwnerState.CONFLICT,
+            ownerState = BootstrapOwnerState.VALID_CURRENT,
+            expectedOwnerTokenMatches = false,
             intentState = BootstrapIntentState.INVALID
         )
         assertEquals(BootstrapAdmissionDecision.BLOCK_OWNER_CONFLICT, BootstrapAdmissionPolicy.evaluate(ownerOverIntent))
