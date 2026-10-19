@@ -141,11 +141,11 @@ class DurableOperationIntentTest {
         val alarm42Intent = validIntent.copy(alarmId = 42L, operationToken = "tok-42", phase = DurableOperationIntent.PHASE_PENDING)
         val alarm99Intent = validIntent.copy(alarmId = 99L, operationToken = "tok-99", phase = DurableOperationIntent.PHASE_PENDING)
 
-        intentDao.insertRawIntent(alarm42Intent)
-        intentDao.insertRawIntent(alarm99Intent)
+        intentDao.insertValidatedIntent(alarm42Intent)
+        intentDao.insertValidatedIntent(alarm99Intent)
 
-        assertEquals(1, intentDao.getUnresolvedIntentsByAlarmId(42L).size)
-        assertEquals(1, intentDao.getUnresolvedIntentsByAlarmId(99L).size)
+        assertEquals("tok-42", intentDao.getUnresolvedSlotByAlarmId(42L)?.operationToken)
+        assertEquals("tok-99", intentDao.getUnresolvedSlotByAlarmId(99L)?.operationToken)
     }
 
     @Test

@@ -1,12 +1,12 @@
 package com.sysadmindoc.alarmclock.data.local
 
-import android.database.sqlite.SQLiteConstraintException
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
 import com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent
+import com.sysadmindoc.alarmclock.data.local.entity.DurableUnresolvedIntentSlot
 
 @Dao
 interface DurableOperationIntentDao {
@@ -18,26 +18,35 @@ interface DurableOperationIntentDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertRawIntent(intent: DurableOperationIntent)
 
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertUnresolvedSlot(slot: DurableUnresolvedIntentSlot)
+
+    @Query("DELETE FROM durable_unresolved_intent_slot WHERE alarmId = :alarmId")
+    suspend fun deleteUnresolvedSlotByAlarmId(alarmId: Long)
+
     /**
-     * Inserts a validated durable operation intent, enforcing that:
-     * - Payload fields are valid (non-blank identities, positive epoch, valid phase).
-     * - If the intent is unresolved (PENDING or IN_FLIGHT), no existing unresolved intent exists for the target alarmId.
-     * - Uses ABORT strategy on primary key / constraint collisions.
+     * Inserts a validated durable operation intent.
+     * Enforces physical SQLite PRIMARY KEY(alarmId) uniqueness on unresolved intents
+     * via the [DurableUnresolvedIntentSlot] table, preventing duplicate unresolved operations
+     * on both Fresh and Migrated databases.
      */
     @Transaction
     suspend fun insertValidatedIntent(intent: DurableOperationIntent) {
         DurableOperationIntent.validateForInsert(intent)
 
-        if (DurableOperationIntent.isUnresolvedPhase(intent.phase)) {
-            val existingUnresolved = getUnresolvedIntentsByAlarmId(intent.alarmId)
-            if (existingUnresolved.isNotEmpty() && existingUnresolved.none { it.operationToken == intent.operationToken }) {
-                throw SQLiteConstraintException(
-                    "Cannot insert unresolved operation intent for alarmId=${intent.alarmId}: an unresolved operation (${existingUnresolved.first().operationToken}) already exists"
-                )
-            }
-        }
-
         insertRawIntent(intent)
+
+        if (DurableOperationIntent.isUnresolvedPhase(intent.phase)) {
+            val slot = DurableUnresolvedIntentSlot(
+                alarmId = intent.alarmId,
+                operationToken = intent.operationToken,
+                operationEpoch = intent.operationEpoch,
+                incarnationId = intent.incarnationId,
+                operationKind = intent.operationKind,
+                phase = intent.phase
+            )
+            insertUnresolvedSlot(slot)
+        }
     }
 
     @Query("SELECT * FROM durable_operation_intent WHERE operationToken = :operationToken")
@@ -46,8 +55,8 @@ interface DurableOperationIntentDao {
     @Query("SELECT * FROM durable_operation_intent WHERE alarmId = :alarmId ORDER BY operationEpoch ASC")
     suspend fun getIntentsByAlarmId(alarmId: Long): List<DurableOperationIntent>
 
-    @Query("SELECT * FROM durable_operation_intent WHERE alarmId = :alarmId AND phase IN ('PENDING', 'IN_FLIGHT')")
-    suspend fun getUnresolvedIntentsByAlarmId(alarmId: Long): List<DurableOperationIntent>
+    @Query("SELECT * FROM durable_unresolved_intent_slot WHERE alarmId = :alarmId")
+    suspend fun getUnresolvedSlotByAlarmId(alarmId: Long): DurableUnresolvedIntentSlot?
 
     @Query("SELECT * FROM durable_operation_intent ORDER BY operationEpoch ASC")
     suspend fun getAllIntents(): List<DurableOperationIntent>

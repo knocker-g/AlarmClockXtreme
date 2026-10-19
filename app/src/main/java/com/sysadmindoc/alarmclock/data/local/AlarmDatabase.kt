@@ -10,6 +10,7 @@ import com.sysadmindoc.alarmclock.data.local.entity.AlarmEvent
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmGroup
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent
+import com.sysadmindoc.alarmclock.data.local.entity.DurableUnresolvedIntentSlot
 import com.sysadmindoc.alarmclock.data.local.entity.NewsSource
 import com.sysadmindoc.alarmclock.data.local.entity.PreSleepTagEntry
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
@@ -29,7 +30,8 @@ import com.sysadmindoc.alarmclock.data.model.Alarm
         NewsSource::class,
         ScheduleAuthority::class,
         ScheduleAuthorityMeta::class,
-        DurableOperationIntent::class
+        DurableOperationIntent::class,
+        DurableUnresolvedIntentSlot::class
     ],
     version = AlarmDatabase.VERSION,
     exportSchema = true
