@@ -71,12 +71,24 @@ object BootstrapAdmissionPolicy {
             BootstrapMetaState.PREPARING -> { /* proceed */ }
         }
 
-        // 3. Epoch Validation
+        // 3. Epoch & Metadata Validation
         if (snapshot.metaState == BootstrapMetaState.ABSENT) {
-            if (snapshot.expectedEpoch == null || snapshot.expectedEpoch <= 0L) {
+            // ABSENT metadata must not have a metaEpoch
+            if (snapshot.metaEpoch != null) {
                 return BootstrapAdmissionDecision.BLOCK_EPOCH
             }
+            // If expectedEpoch is provided, it must be positive
+            if (snapshot.expectedEpoch != null && snapshot.expectedEpoch <= 0L) {
+                return BootstrapAdmissionDecision.BLOCK_EPOCH
+            }
+            // An existing owner while metadata is ABSENT is a conflict!
+            if (snapshot.ownerState != BootstrapOwnerState.ABSENT) {
+                return BootstrapAdmissionDecision.BLOCK_OWNER_CONFLICT
+            }
+            // Valid ABSENT metadata with absent owner produces INITIALIZE_META
+            return BootstrapAdmissionDecision.INITIALIZE_META
         } else if (snapshot.metaState == BootstrapMetaState.PREPARING) {
+            // PREPARING metadata requires positive metaEpoch and matching expectedEpoch
             if (snapshot.metaEpoch == null ||
                 snapshot.metaEpoch <= 0L ||
                 snapshot.expectedEpoch == null ||
@@ -108,8 +120,12 @@ object BootstrapAdmissionPolicy {
         }
 
         // 7. Owner Action Decision
-        if (snapshot.ownerState == BootstrapOwnerState.VALID_CURRENT && snapshot.expectedOwnerTokenMatches) {
-            return BootstrapAdmissionDecision.REUSE_OWNER
+        if (snapshot.ownerState == BootstrapOwnerState.VALID_CURRENT) {
+            return if (snapshot.expectedOwnerTokenMatches) {
+                BootstrapAdmissionDecision.REUSE_OWNER
+            } else {
+                BootstrapAdmissionDecision.BLOCK_OWNER_CONFLICT
+            }
         }
 
         return BootstrapAdmissionDecision.PREPARE_OWNER
