@@ -11,6 +11,7 @@ import com.sysadmindoc.alarmclock.domain.CoverageResult
 import com.sysadmindoc.alarmclock.domain.CoverageValidationReport
 import com.sysadmindoc.alarmclock.domain.MetaDescriptor
 import com.sysadmindoc.alarmclock.domain.OwnerDescriptor
+import kotlinx.coroutines.CancellationException
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -35,11 +36,13 @@ class AuthoritySnapshotReader @Inject constructor(
                     database.scheduleAuthorityDao().getAllMeta()
                 )
             }
-        } catch (e: Exception) {
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
             return CoverageValidationReport(
                 result = CoverageResult.READ_FAILED,
                 reasonCode = CoverageReasonCode.NONE,
-                details = "Failed to read authority snapshot from Room database: ${e.message}"
+                details = "Failed to read authority snapshot from Room database"
             )
         }
 

@@ -3,6 +3,7 @@ package com.sysadmindoc.alarmclock.data.local
 import android.app.Application
 import android.content.Context
 import androidx.room.Room
+import androidx.room.withTransaction
 import androidx.test.core.app.ApplicationProvider
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta
@@ -170,7 +171,43 @@ class AuthoritySnapshotReaderTest {
 
         assertEquals(CoverageResult.READ_FAILED, report.result)
         assertEquals(CoverageReasonCode.NONE, report.reasonCode)
-        assertTrue(report.details.contains("Failed to read authority snapshot from Room database"))
+        assertEquals("Failed to read authority snapshot from Room database", report.details)
+    }
+
+    @Test
+    fun cancellationExceptionIsRethrownWithoutConversionToReadFailed() = runBlocking {
+        val cancellingDb = io.mockk.mockk<AlarmDatabase>()
+        io.mockk.mockkStatic("androidx.room.RoomDatabaseKt")
+        io.mockk.coEvery { cancellingDb.withTransaction(any<suspend () -> Any>()) } throws kotlinx.coroutines.CancellationException("Coroutine cancelled")
+
+        val reader = AuthoritySnapshotReader(cancellingDb)
+        var thrown: Throwable? = null
+        try {
+            reader.readAndValidateSnapshot()
+        } catch (e: Throwable) {
+            thrown = e
+        }
+
+        org.junit.Assert.assertNotNull("CancellationException must be rethrown", thrown)
+        assertTrue(
+            "Rethrown exception must be a CancellationException, but was: ${thrown?.javaClass}",
+            thrown is kotlinx.coroutines.CancellationException
+        )
+        io.mockk.unmockkStatic("androidx.room.RoomDatabaseKt")
+    }
+
+    @Test
+    fun sensitiveExceptionContentIsSanitizedFromReportDetails() = runBlocking {
+        val sensitiveDb = io.mockk.mockk<AlarmDatabase>()
+        io.mockk.coEvery { sensitiveDb.alarmDao() } throws android.database.sqlite.SQLiteException("Error near WHERE label = 'secret_user_alarm_label_99'")
+
+        val reader = AuthoritySnapshotReader(sensitiveDb)
+        val report = reader.readAndValidateSnapshot()
+
+        assertEquals(CoverageResult.READ_FAILED, report.result)
+        assertEquals(CoverageReasonCode.NONE, report.reasonCode)
+        assertEquals("Failed to read authority snapshot from Room database", report.details)
+        org.junit.Assert.assertFalse(report.details.contains("secret_user_alarm_label_99"))
     }
 
     @Test
