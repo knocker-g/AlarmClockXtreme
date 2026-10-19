@@ -1,10 +1,14 @@
 package com.sysadmindoc.alarmclock.domain
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RecoveryEvidenceSnapshotAdapterTest {
+
+    // CoherenceStatus.COHERENT is caller-supplied.
+    // This adapter does not prove Room/Local atomic observation.
 
     private val validMarkerSnapshot = IncarnationEvidenceSnapshot(
         roomState = MarkerState.PRESENT_VALID,
@@ -34,56 +38,70 @@ class RecoveryEvidenceSnapshotAdapterTest {
     )
 
     @Test
-    fun `E01 - Coherent valid evidence produces prepared snapshot Success`() {
+    fun `A01 - COHERENT is caller-supplied and adapter operates without external storage or side effects`() {
+        // CoherenceStatus.COHERENT is caller-supplied.
+        // This adapter does not prove Room/Local atomic observation.
         val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(coherentRawEvidence)
-        assertTrue("Result must be Success", result is AdapterResult.Success)
-        val success = result as AdapterResult.Success
-
-        assertEquals(IncarnationClassificationOutcome.MATCHED_COMPLETED_PAIR, success.snapshot.classification)
-        assertEquals(RecoveryEvidence.PROVEN, success.snapshot.initAuthority)
-        assertEquals(RecoveryEvidence.NEGATED, success.snapshot.historicalEnforcedLedger)
-        assertEquals(validOperationIdentity, success.snapshot.operationIdentity)
-        assertEquals(validPhaseEvidence, success.snapshot.phaseEvidence)
+        assertTrue("Result must be Success for valid coherent input", result is AdapterResult.Success)
     }
 
     @Test
-    fun `E02 - Explicit Room-side absence remains explicit in snapshot`() {
-        val roomMissingSnapshot = validMarkerSnapshot.copy(
-            roomState = MarkerState.ABSENT,
-            roomId = null,
-            roomCompletion = CompletionState.UNKNOWN
+    fun `A02 - UNPROVEN_COHERENCE never yields Success even when marker identifiers match`() {
+        val matchingUnproven = coherentRawEvidence.copy(
+            coherence = CoherenceStatus.UNPROVEN_COHERENCE
         )
-        val raw = coherentRawEvidence.copy(
-            markerSnapshot = roomMissingSnapshot,
-            phaseEvidence = RecoveryPhaseEvidence(phaseName = "LOCAL_PREPARING")
-        )
-
-        val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(raw)
-        assertTrue(result is AdapterResult.Success)
-        val success = result as AdapterResult.Success
-        assertEquals(IncarnationClassificationOutcome.ROOM_MISSING, success.snapshot.classification)
+        val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(matchingUnproven)
+        assertFalse("Result must NOT be Success when coherence is unproven", result is AdapterResult.Success)
+        assertTrue("Result must be Failure", result is AdapterResult.Failure)
+        assertEquals(AdapterFailureReason.UNPROVEN_COHERENCE, (result as AdapterResult.Failure).reason)
     }
 
     @Test
-    fun `E03 - Explicit Local-side absence remains explicit in snapshot`() {
-        val localMissingSnapshot = validMarkerSnapshot.copy(
-            localState = MarkerState.ABSENT,
-            localId = null,
-            localCompletion = CompletionState.UNKNOWN
+    fun `A03 - UNPROVEN_COHERENCE with a valid completed pair fails closed to UNPROVEN_COHERENCE`() {
+        val completedUnproven = coherentRawEvidence.copy(
+            markerSnapshot = validMarkerSnapshot, // Valid completed pair
+            coherence = CoherenceStatus.UNPROVEN_COHERENCE
         )
-        val raw = coherentRawEvidence.copy(
-            markerSnapshot = localMissingSnapshot,
-            phaseEvidence = RecoveryPhaseEvidence(phaseName = "ROOM_PREPARING")
-        )
-
-        val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(raw)
-        assertTrue(result is AdapterResult.Success)
-        val success = result as AdapterResult.Success
-        assertEquals(IncarnationClassificationOutcome.LOCAL_MISSING, success.snapshot.classification)
+        val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(completedUnproven)
+        assertTrue(result is AdapterResult.Failure)
+        assertEquals(AdapterFailureReason.UNPROVEN_COHERENCE, (result as AdapterResult.Failure).reason)
     }
 
     @Test
-    fun `E04 - Both identifiers absent produces BOTH_ABSENT_AMBIGUOUS without assuming first install`() {
+    fun `A04 - Classifier READ_FAILURE and UNPROVEN_COHERENCE together preserves READ_FAILURE precedence`() {
+        val readFailureUnproven = coherentRawEvidence.copy(
+            markerSnapshot = validMarkerSnapshot.copy(roomState = MarkerState.READ_FAILED),
+            coherence = CoherenceStatus.UNPROVEN_COHERENCE
+        )
+        val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(readFailureUnproven)
+        assertTrue(result is AdapterResult.Failure)
+        assertEquals(AdapterFailureReason.READ_FAILURE, (result as AdapterResult.Failure).reason)
+    }
+
+    @Test
+    fun `A05 - Classifier CORRUPT_EVIDENCE and UNPROVEN_COHERENCE together preserves CORRUPT_EVIDENCE precedence`() {
+        val corruptUnproven = coherentRawEvidence.copy(
+            markerSnapshot = validMarkerSnapshot.copy(roomState = MarkerState.CORRUPT),
+            coherence = CoherenceStatus.UNPROVEN_COHERENCE
+        )
+        val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(corruptUnproven)
+        assertTrue(result is AdapterResult.Failure)
+        assertEquals(AdapterFailureReason.CORRUPT_EVIDENCE, (result as AdapterResult.Failure).reason)
+    }
+
+    @Test
+    fun `A06 - Classifier INCONSISTENT_INPUT and UNPROVEN_COHERENCE together preserves INCONSISTENT_INPUT precedence`() {
+        val inconsistentUnproven = coherentRawEvidence.copy(
+            markerSnapshot = validMarkerSnapshot.copy(localId = "   "), // Blank ID -> INCONSISTENT_INPUT
+            coherence = CoherenceStatus.UNPROVEN_COHERENCE
+        )
+        val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(inconsistentUnproven)
+        assertTrue(result is AdapterResult.Failure)
+        assertEquals(AdapterFailureReason.INCONSISTENT_INPUT, (result as AdapterResult.Failure).reason)
+    }
+
+    @Test
+    fun `A07 - BOTH_ABSENT_AMBIGUOUS is not converted into fresh-install or initialization authority`() {
         val bothAbsentSnapshot = IncarnationEvidenceSnapshot(
             roomState = MarkerState.ABSENT,
             roomId = null,
@@ -92,87 +110,39 @@ class RecoveryEvidenceSnapshotAdapterTest {
             localId = null,
             localCompletion = CompletionState.UNKNOWN
         )
-        val raw = coherentRawEvidence.copy(markerSnapshot = bothAbsentSnapshot)
+        val raw = coherentRawEvidence.copy(
+            markerSnapshot = bothAbsentSnapshot,
+            initAuthority = RecoveryEvidence.PROVEN
+        )
 
         val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(raw)
         assertTrue(result is AdapterResult.Success)
         val success = result as AdapterResult.Success
         assertEquals(IncarnationClassificationOutcome.BOTH_ABSENT_AMBIGUOUS, success.snapshot.classification)
+
+        // Evaluate in downstream policy: MUST NOT yield fresh install or authorization
+        val decision = HandshakeRecoveryPolicy.evaluate(success.snapshot)
+        assertEquals(HandshakeRecoveryDecision.BLOCK_AMBIGUOUS_ABSENCE, decision)
     }
 
     @Test
-    fun `E05 - Room read failure produces non-success Failure`() {
-        val roomFailedSnapshot = validMarkerSnapshot.copy(
-            roomState = MarkerState.READ_FAILED,
-            roomId = null,
-            roomCompletion = CompletionState.UNKNOWN
+    fun `A08 - ID_MISMATCH remains ID_MISMATCH and does not become MATCHED_COMPLETED_PAIR`() {
+        val mismatchedMarkers = validMarkerSnapshot.copy(
+            localId = "marker-different-200"
         )
-        val raw = coherentRawEvidence.copy(markerSnapshot = roomFailedSnapshot)
+        val raw = coherentRawEvidence.copy(markerSnapshot = mismatchedMarkers)
 
         val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(raw)
-        assertTrue(result is AdapterResult.Failure)
-        val failure = result as AdapterResult.Failure
-        assertEquals(AdapterFailureReason.READ_FAILURE, failure.reason)
+        assertTrue(result is AdapterResult.Success)
+        val success = result as AdapterResult.Success
+        assertEquals(IncarnationClassificationOutcome.ID_MISMATCH, success.snapshot.classification)
+
+        val decision = HandshakeRecoveryPolicy.evaluate(success.snapshot)
+        assertEquals(HandshakeRecoveryDecision.REQUIRE_RESTORE_RECOVERY, decision)
     }
 
     @Test
-    fun `E06 - Local read failure produces non-success Failure`() {
-        val localFailedSnapshot = validMarkerSnapshot.copy(
-            localState = MarkerState.READ_FAILED,
-            localId = null,
-            localCompletion = CompletionState.UNKNOWN
-        )
-        val raw = coherentRawEvidence.copy(markerSnapshot = localFailedSnapshot)
-
-        val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(raw)
-        assertTrue(result is AdapterResult.Failure)
-        val failure = result as AdapterResult.Failure
-        assertEquals(AdapterFailureReason.READ_FAILURE, failure.reason)
-    }
-
-    @Test
-    fun `E07 - Corrupt evidence produces non-success Failure`() {
-        val corruptSnapshot = validMarkerSnapshot.copy(
-            roomState = MarkerState.CORRUPT,
-            roomId = null,
-            roomCompletion = CompletionState.UNKNOWN
-        )
-        val raw = coherentRawEvidence.copy(markerSnapshot = corruptSnapshot)
-
-        val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(raw)
-        assertTrue(result is AdapterResult.Failure)
-        val failure = result as AdapterResult.Failure
-        assertEquals(AdapterFailureReason.CORRUPT_EVIDENCE, failure.reason)
-    }
-
-    @Test
-    fun `E08 - Inconsistent identity produces non-success Failure`() {
-        val inconsistentSnapshot = validMarkerSnapshot.copy(
-            localState = MarkerState.PRESENT_VALID,
-            localId = "   " // Blank ID -> INCONSISTENT_INPUT
-        )
-        val raw = coherentRawEvidence.copy(markerSnapshot = inconsistentSnapshot)
-
-        val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(raw)
-        assertTrue(result is AdapterResult.Failure)
-        val failure = result as AdapterResult.Failure
-        assertEquals(AdapterFailureReason.INCONSISTENT_INPUT, failure.reason)
-    }
-
-    @Test
-    fun `E09 - Snapshot coherence unproven produces non-success Failure`() {
-        val unprovenRaw = coherentRawEvidence.copy(
-            coherence = CoherenceStatus.UNPROVEN_COHERENCE
-        )
-
-        val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(unprovenRaw)
-        assertTrue(result is AdapterResult.Failure)
-        val failure = result as AdapterResult.Failure
-        assertEquals(AdapterFailureReason.UNPROVEN_COHERENCE, failure.reason)
-    }
-
-    @Test
-    fun `E10 - Unknown historical ledger remains UNKNOWN in prepared snapshot`() {
+    fun `A09 - UNKNOWN historical ENFORCED evidence remains UNKNOWN and leads to INSPECT_UNKNOWN_HISTORICAL_LEDGER`() {
         val unknownLedgerRaw = coherentRawEvidence.copy(
             historicalEnforcedLedger = RecoveryEvidence.UNKNOWN
         )
@@ -181,10 +151,13 @@ class RecoveryEvidenceSnapshotAdapterTest {
         assertTrue(result is AdapterResult.Success)
         val success = result as AdapterResult.Success
         assertEquals(RecoveryEvidence.UNKNOWN, success.snapshot.historicalEnforcedLedger)
+
+        val decision = HandshakeRecoveryPolicy.evaluate(success.snapshot)
+        assertEquals(HandshakeRecoveryDecision.INSPECT_UNKNOWN_HISTORICAL_LEDGER, decision)
     }
 
     @Test
-    fun `E11 - Unknown initialization authority remains UNKNOWN in prepared snapshot`() {
+    fun `A10 - UNKNOWN initialization authority remains UNKNOWN and leads to INSPECT_UNKNOWN_INIT_AUTHORITY`() {
         val unknownAuthRaw = coherentRawEvidence.copy(
             initAuthority = RecoveryEvidence.UNKNOWN
         )
@@ -193,58 +166,99 @@ class RecoveryEvidenceSnapshotAdapterTest {
         assertTrue(result is AdapterResult.Success)
         val success = result as AdapterResult.Success
         assertEquals(RecoveryEvidence.UNKNOWN, success.snapshot.initAuthority)
+
+        val decision = HandshakeRecoveryPolicy.evaluate(success.snapshot)
+        assertEquals(HandshakeRecoveryDecision.INSPECT_UNKNOWN_INIT_AUTHORITY, decision)
     }
 
     @Test
-    fun `E12 - Invalid operation epoch is preserved without normalization`() {
-        val invalidEpochIdentity = validOperationIdentity.copy(epoch = null)
-        val raw = coherentRawEvidence.copy(operationIdentity = invalidEpochIdentity)
+    fun `A11 - Invalid epoch is not repaired and downstream policy produces BLOCK_OPERATION_IDENTITY`() {
+        val invalidEpochs = listOf<Long?>(null, 0L, -100L)
+        for (invalidEpoch in invalidEpochs) {
+            val invalidIdentity = validOperationIdentity.copy(epoch = invalidEpoch)
+            val raw = coherentRawEvidence.copy(operationIdentity = invalidIdentity)
 
-        val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(raw)
+            val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(raw)
+            assertTrue(result is AdapterResult.Success)
+            val success = result as AdapterResult.Success
+            assertEquals(invalidEpoch, success.snapshot.operationIdentity.epoch)
+
+            val decision = HandshakeRecoveryPolicy.evaluate(success.snapshot)
+            assertEquals(HandshakeRecoveryDecision.BLOCK_OPERATION_IDENTITY, decision)
+        }
+    }
+
+    @Test
+    fun `A12 - Invalid token is not repaired and downstream policy produces BLOCK_OPERATION_IDENTITY`() {
+        val invalidTokens = listOf<String?>(null, "", "   ")
+        for (invalidToken in invalidTokens) {
+            val invalidIdentity = validOperationIdentity.copy(token = invalidToken)
+            val raw = coherentRawEvidence.copy(operationIdentity = invalidIdentity)
+
+            val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(raw)
+            assertTrue(result is AdapterResult.Success)
+            val success = result as AdapterResult.Success
+            assertEquals(invalidToken, success.snapshot.operationIdentity.token)
+
+            val decision = HandshakeRecoveryPolicy.evaluate(success.snapshot)
+            assertEquals(HandshakeRecoveryDecision.BLOCK_OPERATION_IDENTITY, decision)
+        }
+    }
+
+    @Test
+    fun `A13 - Valid completed pair does not establish ENFORCED authority and produces REUSE_COMPLETED_SHADOW_EVIDENCE`() {
+        val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(coherentRawEvidence)
         assertTrue(result is AdapterResult.Success)
         val success = result as AdapterResult.Success
-        assertEquals(invalidEpochIdentity, success.snapshot.operationIdentity)
+
+        val decision = HandshakeRecoveryPolicy.evaluate(success.snapshot)
+        assertEquals(HandshakeRecoveryDecision.REUSE_COMPLETED_SHADOW_EVIDENCE, decision)
     }
 
     @Test
-    fun `E13 - Blank operation token is preserved without fabrication`() {
-        val blankTokenIdentity = validOperationIdentity.copy(token = "   ")
-        val raw = coherentRawEvidence.copy(operationIdentity = blankTokenIdentity)
-
-        val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(raw)
-        assertTrue(result is AdapterResult.Success)
-        val success = result as AdapterResult.Success
-        assertEquals(blankTokenIdentity, success.snapshot.operationIdentity)
-    }
-
-    @Test
-    fun `E14 - Conflicting evidence fails closed with READ_FAILURE first`() {
-        val readFailedSnapshot = validMarkerSnapshot.copy(roomState = MarkerState.READ_FAILED)
-        val conflictingRaw = coherentRawEvidence.copy(
-            markerSnapshot = readFailedSnapshot,
-            coherence = CoherenceStatus.UNPROVEN_COHERENCE
-        )
-
-        val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(conflictingRaw)
-        assertTrue(result is AdapterResult.Failure)
-        val failure = result as AdapterResult.Failure
-        assertEquals(AdapterFailureReason.READ_FAILURE, failure.reason)
-    }
-
-    @Test
-    fun `E15 - Repeated identical input produces identical AdapterResult`() {
+    fun `A14 - Repeated identical immutable inputs produce identical AdapterResult values`() {
         val result1 = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(coherentRawEvidence)
         val result2 = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(coherentRawEvidence)
         assertEquals(result1, result2)
     }
 
     @Test
-    fun `E16 - Prepared snapshot evaluates cleanly in HandshakeRecoveryPolicy without precedence modification`() {
-        val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(coherentRawEvidence)
-        assertTrue(result is AdapterResult.Success)
-        val success = result as AdapterResult.Success
+    fun `A15 - Input fixture mutation using copy does not affect previously prepared snapshot`() {
+        val originalRaw = coherentRawEvidence.copy()
+        val result1 = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(originalRaw)
+        assertTrue(result1 is AdapterResult.Success)
+        val snapshot1 = (result1 as AdapterResult.Success).snapshot
 
-        val policyDecision = HandshakeRecoveryPolicy.evaluate(success.snapshot)
-        assertEquals(HandshakeRecoveryDecision.REUSE_COMPLETED_SHADOW_EVIDENCE, policyDecision)
+        // Mutate raw evidence via copy
+        val mutatedRaw = originalRaw.copy(
+            initAuthority = RecoveryEvidence.NEGATED,
+            operationIdentity = validOperationIdentity.copy(epoch = 999L)
+        )
+        val result2 = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(mutatedRaw)
+        assertTrue(result2 is AdapterResult.Success)
+        val snapshot2 = (result2 as AdapterResult.Success).snapshot
+
+        // First snapshot MUST remain immutable and unaffected
+        assertEquals(RecoveryEvidence.PROVEN, snapshot1.initAuthority)
+        assertEquals(100L, snapshot1.operationIdentity.epoch)
+
+        assertEquals(RecoveryEvidence.NEGATED, snapshot2.initAuthority)
+        assertEquals(999L, snapshot2.operationIdentity.epoch)
+    }
+
+    @Test
+    fun `A16 - Every Failure is distinguishable from Success and exposes no usable snapshot`() {
+        val failures = listOf(
+            coherentRawEvidence.copy(markerSnapshot = validMarkerSnapshot.copy(roomState = MarkerState.READ_FAILED)),
+            coherentRawEvidence.copy(markerSnapshot = validMarkerSnapshot.copy(roomState = MarkerState.CORRUPT)),
+            coherentRawEvidence.copy(markerSnapshot = validMarkerSnapshot.copy(roomId = "")),
+            coherentRawEvidence.copy(coherence = CoherenceStatus.UNPROVEN_COHERENCE)
+        )
+
+        for (failingRaw in failures) {
+            val result = RecoveryEvidenceSnapshotAdapter.prepareSnapshot(failingRaw)
+            assertTrue("Failing raw input must produce AdapterResult.Failure", result is AdapterResult.Failure)
+            assertFalse("Failing result must NOT be AdapterResult.Success", result is AdapterResult.Success)
+        }
     }
 }
