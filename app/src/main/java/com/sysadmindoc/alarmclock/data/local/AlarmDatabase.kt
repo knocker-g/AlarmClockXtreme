@@ -460,8 +460,118 @@ abstract class AlarmDatabase : RoomDatabase() {
             }
         }
 
+        fun installDurableIntentTriggers(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TRIGGER IF NOT EXISTS `trigger_durable_intent_unresolved_unique_insert`
+                BEFORE INSERT ON `durable_operation_intent`
+                FOR EACH ROW
+                WHEN NEW.phase IN ('PENDING', 'IN_FLIGHT')
+                BEGIN
+                    SELECT RAISE(ABORT, 'SQLite Constraint Error: An unresolved operation intent already exists for this alarmId')
+                    WHERE EXISTS (
+                        SELECT 1 FROM `durable_operation_intent`
+                        WHERE `alarmId` = NEW.alarmId
+                          AND `phase` IN ('PENDING', 'IN_FLIGHT')
+                          AND `operationToken` != NEW.operationToken
+                    );
+                END;
+                """.trimIndent()
+            )
+
+            db.execSQL(
+                """
+                CREATE TRIGGER IF NOT EXISTS `trigger_durable_intent_unresolved_unique_update`
+                BEFORE UPDATE ON `durable_operation_intent`
+                FOR EACH ROW
+                WHEN NEW.phase IN ('PENDING', 'IN_FLIGHT')
+                BEGIN
+                    SELECT RAISE(ABORT, 'SQLite Constraint Error: An unresolved operation intent already exists for this alarmId')
+                    WHERE EXISTS (
+                        SELECT 1 FROM `durable_operation_intent`
+                        WHERE `alarmId` = NEW.alarmId
+                          AND `phase` IN ('PENDING', 'IN_FLIGHT')
+                          AND `operationToken` != NEW.operationToken
+                    );
+                END;
+                """.trimIndent()
+            )
+
+            db.execSQL(
+                """
+                CREATE TRIGGER IF NOT EXISTS `trigger_durable_intent_phase_insert`
+                BEFORE INSERT ON `durable_operation_intent`
+                FOR EACH ROW
+                WHEN NEW.phase NOT IN ('PENDING', 'IN_FLIGHT', 'COMPLETED', 'ABORTED', 'EXPIRED')
+                BEGIN
+                    SELECT RAISE(ABORT, 'SQLite Constraint Error: Invalid phase value');
+                END;
+                """.trimIndent()
+            )
+
+            db.execSQL(
+                """
+                CREATE TRIGGER IF NOT EXISTS `trigger_durable_intent_phase_update`
+                BEFORE UPDATE ON `durable_operation_intent`
+                FOR EACH ROW
+                WHEN NEW.phase NOT IN ('PENDING', 'IN_FLIGHT', 'COMPLETED', 'ABORTED', 'EXPIRED')
+                BEGIN
+                    SELECT RAISE(ABORT, 'SQLite Constraint Error: Invalid phase value');
+                END;
+                """.trimIndent()
+            )
+
+            db.execSQL(
+                """
+                CREATE TRIGGER IF NOT EXISTS `trigger_durable_intent_identity_insert`
+                BEFORE INSERT ON `durable_operation_intent`
+                FOR EACH ROW
+                WHEN length(trim(NEW.operationToken)) = 0
+                  OR length(trim(NEW.incarnationId)) = 0
+                  OR length(trim(NEW.operationKind)) = 0
+                  OR NEW.alarmId <= 0
+                  OR NEW.operationEpoch <= 0
+                  OR NEW.intentRevision <= 0
+                BEGIN
+                    SELECT RAISE(ABORT, 'SQLite Constraint Error: Invalid identity or epoch invariants');
+                END;
+                """.trimIndent()
+            )
+
+            db.execSQL(
+                """
+                CREATE TRIGGER IF NOT EXISTS `trigger_durable_intent_identity_update`
+                BEFORE UPDATE ON `durable_operation_intent`
+                FOR EACH ROW
+                WHEN length(trim(NEW.operationToken)) = 0
+                  OR length(trim(NEW.incarnationId)) = 0
+                  OR length(trim(NEW.operationKind)) = 0
+                  OR NEW.alarmId <= 0
+                  OR NEW.operationEpoch <= 0
+                  OR NEW.intentRevision <= 0
+                BEGIN
+                    SELECT RAISE(ABORT, 'SQLite Constraint Error: Invalid identity or epoch invariants');
+                END;
+                """.trimIndent()
+            )
+        }
+
+        val DATABASE_CALLBACK = object : RoomDatabase.Callback() {
+            override fun onCreate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "INSERT OR IGNORE INTO alarm_groups (name) " +
+                        "VALUES ('Work'), ('School'), ('Gym'), ('Medication'), ('Personal'), ('Calendar')"
+                )
+                installDurableIntentTriggers(db)
+            }
+
+            override fun onOpen(db: SupportSQLiteDatabase) {
+                installDurableIntentTriggers(db)
+            }
+        }
+
         /**
-         * v29: KNO-227 P3A/P3B-D inert durable operation intent schema foundation.
+         * v29: KNO-227 P3A/P3B-H inert durable operation intent schema foundation.
          */
         val MIGRATION_28_29 = object : Migration(28, 29) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -478,22 +588,8 @@ abstract class AlarmDatabase : RoomDatabase() {
                         `expectedRestoreEpoch` INTEGER,
                         `phase` TEXT NOT NULL,
                         `intentRevision` INTEGER NOT NULL,
-                        PRIMARY KEY(`operationToken`),
-                        CHECK(length(trim(`operationToken`)) > 0),
-                        CHECK(length(trim(`incarnationId`)) > 0),
-                        CHECK(length(trim(`operationKind`)) > 0),
-                        CHECK(`alarmId` > 0),
-                        CHECK(`operationEpoch` > 0),
-                        CHECK(`intentRevision` > 0),
-                        CHECK(`phase` IN ('PENDING', 'IN_FLIGHT', 'COMPLETED', 'ABORTED', 'EXPIRED'))
+                        PRIMARY KEY(`operationToken`)
                     )
-                    """.trimIndent()
-                )
-                db.execSQL(
-                    """
-                    CREATE UNIQUE INDEX IF NOT EXISTS `index_durable_operation_intent_unresolved_alarm`
-                    ON `durable_operation_intent` (`alarmId`)
-                    WHERE `phase` IN ('PENDING', 'IN_FLIGHT')
                     """.trimIndent()
                 )
                 db.execSQL(
@@ -508,6 +604,7 @@ abstract class AlarmDatabase : RoomDatabase() {
                     ON `durable_operation_intent` (`alarmId`)
                     """.trimIndent()
                 )
+                installDurableIntentTriggers(db)
             }
         }
 

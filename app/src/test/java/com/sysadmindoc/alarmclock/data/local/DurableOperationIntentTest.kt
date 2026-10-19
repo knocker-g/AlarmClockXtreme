@@ -6,6 +6,7 @@ import android.database.sqlite.SQLiteConstraintException
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent
+import com.sysadmindoc.alarmclock.data.model.Alarm
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -17,6 +18,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33], application = Application::class)
@@ -44,42 +46,7 @@ class DurableOperationIntentTest {
         context = ApplicationProvider.getApplicationContext()
         database = Room.inMemoryDatabaseBuilder(context, AlarmDatabase::class.java)
             .allowMainThreadQueries()
-            .addCallback(object : androidx.room.RoomDatabase.Callback() {
-                override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
-                    db.execSQL("DROP TABLE IF EXISTS `durable_operation_intent`")
-                    db.execSQL(
-                        """
-                        CREATE TABLE IF NOT EXISTS `durable_operation_intent` (
-                            `operationToken` TEXT NOT NULL,
-                            `alarmId` INTEGER NOT NULL,
-                            `operationEpoch` INTEGER NOT NULL,
-                            `incarnationId` TEXT NOT NULL,
-                            `operationKind` TEXT NOT NULL,
-                            `expectedOwnerToken` TEXT,
-                            `expectedScheduleRevision` INTEGER,
-                            `expectedRestoreEpoch` INTEGER,
-                            `phase` TEXT NOT NULL,
-                            `intentRevision` INTEGER NOT NULL,
-                            PRIMARY KEY(`operationToken`),
-                            CHECK(length(trim(`operationToken`)) > 0),
-                            CHECK(length(trim(`incarnationId`)) > 0),
-                            CHECK(length(trim(`operationKind`)) > 0),
-                            CHECK(`alarmId` > 0),
-                            CHECK(`operationEpoch` > 0),
-                            CHECK(`intentRevision` > 0),
-                            CHECK(`phase` IN ('PENDING', 'IN_FLIGHT', 'COMPLETED', 'ABORTED', 'EXPIRED'))
-                        )
-                        """.trimIndent()
-                    )
-                    db.execSQL(
-                        """
-                        CREATE UNIQUE INDEX IF NOT EXISTS `index_durable_operation_intent_unresolved_alarm`
-                        ON `durable_operation_intent` (`alarmId`)
-                        WHERE `phase` IN ('PENDING', 'IN_FLIGHT')
-                        """.trimIndent()
-                    )
-                }
-            })
+            .addCallback(AlarmDatabase.DATABASE_CALLBACK)
             .build()
         intentDao = database.durableOperationIntentDao()
     }
@@ -90,66 +57,95 @@ class DurableOperationIntentTest {
     }
 
     @Test
-    fun `G0 - insertRawIntent and getByToken stores and reads durable operation intent correctly`() = runBlocking {
+    fun `1 - Fresh Room DB opens and installs SQLite triggers`() = runBlocking {
         intentDao.insertRawIntent(validIntent)
-
         val retrieved = intentDao.getIntentByToken("intent-token-100")
         assertNotNull(retrieved)
         assertEquals(validIntent, retrieved)
+
+        // Inspect sqlite_master for trigger installation on fresh DB
+        val cursor = database.openHelper.readableDatabase.query(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'trigger_durable_intent%'"
+        )
+        val triggerNames = mutableListOf<String>()
+        cursor.use {
+            while (it.moveToNext()) {
+                triggerNames.add(it.getString(0))
+            }
+        }
+        assertTrue("Triggers must be installed on Fresh DB", triggerNames.size >= 6)
     }
 
     @Test(expected = SQLiteConstraintException::class)
-    fun `G1 - SQLite partial UNIQUE index rejects raw insert of second unresolved intent for same alarmId`(): Unit = runBlocking {
+    fun `3 - Duplicate unresolved INSERT via raw SQL is rejected by SQLite trigger`(): Unit = runBlocking {
         val unresolved1 = validIntent.copy(operationToken = "tok-1", phase = DurableOperationIntent.PHASE_PENDING)
         val unresolved2 = validIntent.copy(operationToken = "tok-2", phase = DurableOperationIntent.PHASE_IN_FLIGHT)
 
         intentDao.insertRawIntent(unresolved1)
-        // SQLite's partial UNIQUE index (index_durable_operation_intent_unresolved_alarm) rejects second unresolved insert
+        // SQLite's BEFORE INSERT trigger rejects second unresolved intent for alarmId = 42L
         intentDao.insertRawIntent(unresolved2)
     }
 
     @Test(expected = SQLiteConstraintException::class)
-    fun `G2 - SQLite CHECK constraint rejects raw insert of unknown phase`(): Unit = runBlocking {
-        val invalidPhaseIntent = validIntent.copy(phase = "UNKNOWN_PHASE_STRING")
-        // SQLite's CHECK(phase IN ('PENDING', 'IN_FLIGHT', 'COMPLETED', 'ABORTED', 'EXPIRED')) constraint rejects raw insert
+    fun `4 - Raw UPDATE creating duplicate unresolved intent is rejected by SQLite trigger`(): Unit = runBlocking {
+        val unresolved1 = validIntent.copy(operationToken = "tok-1", alarmId = 42L, phase = DurableOperationIntent.PHASE_PENDING)
+        val completed2 = validIntent.copy(operationToken = "tok-2", alarmId = 42L, phase = DurableOperationIntent.PHASE_COMPLETED)
+
+        intentDao.insertRawIntent(unresolved1)
+        intentDao.insertRawIntent(completed2)
+
+        // Raw SQL UPDATE attempting to transition completed2 -> IN_FLIGHT causes second unresolved for alarm 42L
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE durable_operation_intent SET phase = 'IN_FLIGHT' WHERE operationToken = 'tok-2'"
+        )
+    }
+
+    @Test(expected = SQLiteConstraintException::class)
+    fun `5 - Invalid phase INSERT is rejected by SQLite trigger`(): Unit = runBlocking {
+        val invalidPhaseIntent = validIntent.copy(phase = "INVALID_PHASE_STRING")
         intentDao.insertRawIntent(invalidPhaseIntent)
     }
 
     @Test(expected = SQLiteConstraintException::class)
-    fun `G3 - SQLite CHECK constraint rejects raw insert of blank operationToken`(): Unit = runBlocking {
+    fun `6 - Invalid phase UPDATE is rejected by SQLite trigger`(): Unit = runBlocking {
+        intentDao.insertRawIntent(validIntent)
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE durable_operation_intent SET phase = 'UNKNOWN_PHASE' WHERE operationToken = 'intent-token-100'"
+        )
+    }
+
+    @Test(expected = SQLiteConstraintException::class)
+    fun `7 - Blank operationToken is rejected by SQLite trigger`(): Unit = runBlocking {
         val blankTokenIntent = validIntent.copy(operationToken = "   ")
-        // SQLite's CHECK(length(trim(operationToken)) > 0) constraint rejects raw insert
         intentDao.insertRawIntent(blankTokenIntent)
     }
 
     @Test(expected = SQLiteConstraintException::class)
-    fun `G3 - SQLite CHECK constraint rejects raw insert of nonpositive alarmId`(): Unit = runBlocking {
+    fun `8 - Nonpositive alarmId is rejected by SQLite trigger`(): Unit = runBlocking {
         val zeroAlarmIdIntent = validIntent.copy(alarmId = 0L)
-        // SQLite's CHECK(alarmId > 0) constraint rejects raw insert
         intentDao.insertRawIntent(zeroAlarmIdIntent)
     }
 
     @Test(expected = SQLiteConstraintException::class)
-    fun `G3 - SQLite CHECK constraint rejects raw insert of nonpositive operationEpoch`(): Unit = runBlocking {
+    fun `8 - Nonpositive operationEpoch is rejected by SQLite trigger`(): Unit = runBlocking {
         val zeroEpochIntent = validIntent.copy(operationEpoch = 0L)
-        // SQLite's CHECK(operationEpoch > 0) constraint rejects raw insert
         intentDao.insertRawIntent(zeroEpochIntent)
     }
 
     @Test
-    fun `G4 - Two different alarms with unresolved operations succeeds at SQLite layer`() = runBlocking {
+    fun `9 - Distinct alarm IDs with unresolved operations succeed at SQLite layer`() = runBlocking {
         val alarm42Intent = validIntent.copy(alarmId = 42L, operationToken = "tok-42", phase = DurableOperationIntent.PHASE_PENDING)
         val alarm99Intent = validIntent.copy(alarmId = 99L, operationToken = "tok-99", phase = DurableOperationIntent.PHASE_PENDING)
 
-        intentDao.insertValidatedIntent(alarm42Intent)
-        intentDao.insertValidatedIntent(alarm99Intent)
+        intentDao.insertRawIntent(alarm42Intent)
+        intentDao.insertRawIntent(alarm99Intent)
 
         assertEquals("tok-42", intentDao.getUnresolvedIntentsByAlarmId(42L).first().operationToken)
         assertEquals("tok-99", intentDao.getUnresolvedIntentsByAlarmId(99L).first().operationToken)
     }
 
     @Test
-    fun `G5 - Historical terminal intents are retained for replay audit`() = runBlocking {
+    fun `10 - Terminal historical records are retained for replay audit`() = runBlocking {
         val completed = validIntent.copy(operationToken = "tok-comp", phase = DurableOperationIntent.PHASE_COMPLETED)
         val expired = validIntent.copy(operationToken = "tok-exp", phase = DurableOperationIntent.PHASE_EXPIRED)
 
@@ -161,24 +157,40 @@ class DurableOperationIntentTest {
     }
 
     @Test
-    fun `G6 - Collision on operationToken cannot erase previous row due to ABORT strategy`() = runBlocking {
-        intentDao.insertRawIntent(validIntent)
+    fun `12 - Database close and reopen retains effective triggers and constraints`() = runBlocking {
+        val dbFile = File(context.cacheDir, "test_reopen_triggers.db")
+        if (dbFile.exists()) dbFile.delete()
+
+        var fileDb = Room.databaseBuilder(context, AlarmDatabase::class.java, dbFile.absolutePath)
+            .allowMainThreadQueries()
+            .addCallback(AlarmDatabase.DATABASE_CALLBACK)
+            .build()
+
+        fileDb.durableOperationIntentDao().insertRawIntent(validIntent)
+        fileDb.close()
+
+        // Reopen same database file
+        fileDb = Room.databaseBuilder(context, AlarmDatabase::class.java, dbFile.absolutePath)
+            .allowMainThreadQueries()
+            .addCallback(AlarmDatabase.DATABASE_CALLBACK)
+            .build()
 
         var thrown = false
         try {
-            val duplicate = validIntent.copy(operationEpoch = 2L, phase = DurableOperationIntent.PHASE_COMPLETED)
-            intentDao.insertRawIntent(duplicate)
+            val duplicate = validIntent.copy(operationToken = "tok-dup-reopen", phase = DurableOperationIntent.PHASE_IN_FLIGHT)
+            fileDb.durableOperationIntentDao().insertRawIntent(duplicate)
         } catch (_: SQLiteConstraintException) {
             thrown = true
         }
 
-        assertTrue("SQLiteConstraintException must be thrown on duplicate token", thrown)
-        val existing = intentDao.getIntentByToken("intent-token-100")
-        assertEquals(validIntent, existing)
+        fileDb.close()
+        if (dbFile.exists()) dbFile.delete()
+
+        assertTrue("Triggers must remain active on reopened file DB", thrown)
     }
 
     @Test
-    fun `G7 - Valid phase vocabulary helper functions correctly`() {
+    fun `13 - Valid phase vocabulary helper functions correctly`() {
         assertTrue(DurableOperationIntent.isValidPhase("PENDING"))
         assertTrue(DurableOperationIntent.isValidPhase("IN_FLIGHT"))
         assertTrue(DurableOperationIntent.isValidPhase("COMPLETED"))

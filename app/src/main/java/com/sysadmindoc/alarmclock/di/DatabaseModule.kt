@@ -2,7 +2,6 @@ package com.sysadmindoc.alarmclock.di
 
 import android.content.Context
 import androidx.room.Room
-import androidx.room.RoomDatabase
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.sysadmindoc.alarmclock.data.local.ActigraphySessionDao
 import com.sysadmindoc.alarmclock.data.local.AlarmDao
@@ -33,14 +32,7 @@ object DatabaseModule {
             "alarm_clock.db"
         )
             .addMigrations(*AlarmDatabase.ALL_MIGRATIONS)
-            .addCallback(object : RoomDatabase.Callback() {
-                override fun onCreate(db: SupportSQLiteDatabase) {
-                    db.execSQL(
-                        "INSERT OR IGNORE INTO alarm_groups (name) " +
-                            "VALUES ('Work'), ('School'), ('Gym'), ('Medication'), ('Personal'), ('Calendar')"
-                    )
-                }
-            })
+            .addCallback(AlarmDatabase.DATABASE_CALLBACK)
             .build()
     }
 
