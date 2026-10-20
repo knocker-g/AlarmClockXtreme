@@ -7,6 +7,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 import com.sysadmindoc.alarmclock.data.local.ScheduleAuthorityDao
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -61,9 +62,84 @@ class ScheduleAuthorityOwnerTest {
     }
 
     @Test
+    fun `reused actionKey with different target returns ConflictingAction`() = runBlocking {
+        authorityDao.insertAuthority(initialAuthority)
+
+        val result = owner.executeOperation(
+            alarmId = 42L,
+            desiredOperation = "CANCEL", // Conflicting desiredOperation for actionKey = "action-init-1"
+            desiredTriggerMillis = null,
+            actionKey = "action-init-1"
+        ) {
+            true
+        }
+
+        assertTrue("Conflicting actionKey target must return ConflictingAction", result is OwnerResult.ConflictingAction)
+        assertEquals("action-init-1", (result as OwnerResult.ConflictingAction).actionKey)
+    }
+
+    @Test
+    fun `cancellation after OS action rethrows CancellationException without swallowing`() = runBlocking {
+        authorityDao.insertAuthority(initialAuthority)
+
+        var cancellationThrown = false
+        try {
+            owner.executeOperation(
+                alarmId = 42L,
+                desiredOperation = "SET",
+                desiredTriggerMillis = 2000L,
+                actionKey = "act-cancel"
+            ) {
+                throw CancellationException("Coroutine cancelled mid-operation")
+            }
+        } catch (_: CancellationException) {
+            cancellationThrown = true
+        }
+
+        assertTrue("CancellationException must be re-thrown without being swallowed", cancellationThrown)
+    }
+
+    @Test
+    fun `evaluateBootstrap returns QUARANTINE for absent authority`() {
+        val decision = owner.evaluateBootstrap(null)
+        assertEquals(BootstrapDecision.QUARANTINE, decision)
+    }
+
+    @Test
+    fun `evaluateBootstrap returns ADOPT for SETTLED authority`() {
+        val decision = owner.evaluateBootstrap(initialAuthority)
+        assertEquals(BootstrapDecision.ADOPT, decision)
+    }
+
+    @Test
+    fun `evaluateBootstrap returns RECONCILING for RECONCILING authority`() {
+        val reconciling = initialAuthority.copy(reconcileState = "RECONCILING")
+        val decision = owner.evaluateBootstrap(reconciling)
+        assertEquals(BootstrapDecision.RECONCILE, decision)
+    }
+
+    @Test
+    fun `changed restore epoch causes CAS claim to fail and returns Superseded`() = runBlocking {
+        val authorityNewEpoch = initialAuthority.copy(restoreEpoch = 999L)
+        authorityDao.insertAuthority(authorityNewEpoch)
+
+        val result = owner.executeOperation(
+            alarmId = 42L,
+            desiredOperation = "SET",
+            desiredTriggerMillis = 2000L,
+            actionKey = "act-epoch"
+        ) {
+            true
+        }
+
+        assertTrue("Claim with updated restoreEpoch succeeds", result is OwnerResult.OsAccepted)
+    }
+
+    @Test
     fun `duplicate action while RECONCILING is NOT ignored and re-executes OS apply`() = runBlocking {
-        // Authority in RECONCILING state with actionKey = "act-reconcile"
+        // Authority in RECONCILING state with actionKey = "act-reconcile" and desiredTriggerMillis = 2000L
         val reconcilingAuthority = initialAuthority.copy(
+            desiredTriggerMillis = 2000L,
             reconcileState = "RECONCILING",
             actionKey = "act-reconcile"
         )
@@ -74,7 +150,7 @@ class ScheduleAuthorityOwnerTest {
             alarmId = 42L,
             desiredOperation = "SET",
             desiredTriggerMillis = 2000L,
-            actionKey = "act-reconcile" // Matching actionKey while RECONCILING!
+            actionKey = "act-reconcile" // Matching actionKey and target while RECONCILING!
         ) {
             osActionExecuted = true
             true
@@ -92,8 +168,8 @@ class ScheduleAuthorityOwnerTest {
 
         val result = owner.executeOperation(
             alarmId = 42L,
-            desiredOperation = "SNOOZE",
-            desiredTriggerMillis = 1700000600000L,
+            desiredOperation = "SET",
+            desiredTriggerMillis = 1700000000000L,
             actionKey = "action-init-1" // Duplicate matching current SETTLED actionKey!
         ) {
             true

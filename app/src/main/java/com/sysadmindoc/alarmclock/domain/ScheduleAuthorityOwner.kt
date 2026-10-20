@@ -3,17 +3,25 @@ package com.sysadmindoc.alarmclock.domain
 import android.util.Log
 import com.sysadmindoc.alarmclock.data.local.ScheduleAuthorityDao
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
+enum class BootstrapDecision {
+    ADOPT,
+    RECONCILE,
+    QUARANTINE
+}
+
 sealed interface OwnerResult {
     data class OsAccepted(val revision: Long, val actionKey: String?) : OwnerResult
     data class PermissionBlocked(val revision: Long) : OwnerResult
     data class Superseded(val currentRevision: Long) : OwnerResult
     data class OutcomeUnknown(val revision: Long, val cause: Throwable) : OwnerResult
+    data class ConflictingAction(val actionKey: String) : OwnerResult
     object DuplicateIgnored : OwnerResult
     object AuthorityNotFound : OwnerResult
 }
@@ -25,11 +33,13 @@ sealed interface OwnerResult {
  * Guarantees:
  * - OS effects must be serialized per alarmId via in-process Mutex map.
  * - Reads current ScheduleAuthority state before claim.
- * - Only ignores duplicate actionKey if reconcileState is confirmed 'SETTLED'.
+ * - Validates duplicate actionKey against operation kind and trigger target; rejects conflicting actions.
+ * - Re-executes OS apply for pending RECONCILING actions; ignores only confirmed SETTLED matching duplicates.
  * - Checks exact alarm capability before claim and OS action for SET operations.
  * - CAS claims and increments revision by 1, with Long.MAX_VALUE overflow protection.
  * - Validates settlement with matching actionKey and claimed revision.
- * - Re-reads authority after OS action to detect post-operation convergence/superseding.
+ * - Re-reads authority after OS action to detect post-operation convergence/superseding, re-converging OS slot to latest.
+ * - Preserves coroutine CancellationException without swallowing.
  */
 @Singleton
 class ScheduleAuthorityOwner @Inject constructor(
@@ -43,6 +53,15 @@ class ScheduleAuthorityOwner @Inject constructor(
         return mutexMap.computeIfAbsent(alarmId) { Mutex() }
     }
 
+    fun evaluateBootstrap(authority: ScheduleAuthority?): BootstrapDecision {
+        if (authority == null) return BootstrapDecision.QUARANTINE
+        return when (authority.reconcileState) {
+            "SETTLED" -> BootstrapDecision.ADOPT
+            "RECONCILING" -> BootstrapDecision.RECONCILE
+            else -> BootstrapDecision.QUARANTINE
+        }
+    }
+
     suspend fun executeOperation(
         alarmId: Long,
         desiredOperation: String,
@@ -54,10 +73,17 @@ class ScheduleAuthorityOwner @Inject constructor(
             val authority = authorityDao.getAuthorityByAlarmId(alarmId)
                 ?: return@withLock OwnerResult.AuthorityNotFound
 
-            // Duplicate action token check: ignore ONLY if already confirmed SETTLED
-            if (actionKey != null && authority.actionKey == actionKey && authority.reconcileState == "SETTLED") {
-                Log.i("ScheduleAuthorityOwner", "Duplicate actionKey '$actionKey' for alarm $alarmId already SETTLED; ignoring")
-                return@withLock OwnerResult.DuplicateIgnored
+            // Duplicate action token check
+            if (actionKey != null && authority.actionKey == actionKey) {
+                if (authority.desiredOperation != desiredOperation || authority.desiredTriggerMillis != desiredTriggerMillis) {
+                    Log.w("ScheduleAuthorityOwner", "Conflicting action for actionKey '$actionKey' on alarm $alarmId; rejecting")
+                    return@withLock OwnerResult.ConflictingAction(actionKey)
+                }
+                if (authority.reconcileState == "SETTLED") {
+                    Log.i("ScheduleAuthorityOwner", "Duplicate actionKey '$actionKey' for alarm $alarmId already SETTLED; ignoring")
+                    return@withLock OwnerResult.DuplicateIgnored
+                }
+                // If RECONCILING, proceed to re-execute OS action without ignoring
             }
 
             // Check exact alarm permission for SET operations BEFORE claim and OS action
@@ -101,6 +127,9 @@ class ScheduleAuthorityOwner @Inject constructor(
                     actionKey = actionKey
                 )
                 osAction(updatedAuthority)
+            } catch (e: CancellationException) {
+                Log.w("ScheduleAuthorityOwner", "OS operation cancelled for alarm $alarmId at rev $claimedRev")
+                throw e
             } catch (e: Exception) {
                 Log.e("ScheduleAuthorityOwner", "OS operation threw exception for alarm $alarmId at rev $claimedRev", e)
                 return@withLock OwnerResult.OutcomeUnknown(claimedRev, e)
@@ -114,7 +143,9 @@ class ScheduleAuthorityOwner @Inject constructor(
             // Re-read current authority from DB after OS action to detect convergence/superseding
             val postOsAuth = authorityDao.getAuthorityByAlarmId(alarmId)
             if (postOsAuth != null && postOsAuth.scheduleRevision > claimedRev) {
-                Log.w("ScheduleAuthorityOwner", "Post-OS re-read detected newer revision ${postOsAuth.scheduleRevision} for alarm $alarmId")
+                Log.w("ScheduleAuthorityOwner", "Post-OS re-read detected newer revision ${postOsAuth.scheduleRevision} for alarm $alarmId; re-converging OS slot")
+                // Re-converge OS slot to latest desired state
+                osAction(postOsAuth)
                 return@withLock OwnerResult.Superseded(postOsAuth.scheduleRevision)
             }
 
@@ -129,6 +160,9 @@ class ScheduleAuthorityOwner @Inject constructor(
 
             if (settled != 1) {
                 val current = authorityDao.getAuthorityByAlarmId(alarmId)
+                if (current != null && current.scheduleRevision > claimedRev) {
+                    osAction(current)
+                }
                 Log.w("ScheduleAuthorityOwner", "Settlement for alarm $alarmId at rev $claimedRev was superseded by rev ${current?.scheduleRevision}")
                 return@withLock OwnerResult.Superseded(current?.scheduleRevision ?: claimedRev)
             }
