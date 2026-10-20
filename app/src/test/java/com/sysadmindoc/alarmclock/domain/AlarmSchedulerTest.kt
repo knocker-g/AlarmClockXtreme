@@ -184,6 +184,29 @@ class AlarmSchedulerTest {
         verify(exactly = 0) { DirectBootAlarmCache.cancelScheduledFallback(any(), 202L) }
     }
 
+    @Test
+    fun `valid SmartWake early fire cancels main alarm when target trigger matches`() = runTest {
+        val targetTime = System.currentTimeMillis() + 600_000L
+        val alarm = enabledAlarm(id = 300L).copy(nextTriggerTime = targetTime)
+        coEvery { repository.getById(300L) } returns alarm
+
+        scheduler.cancelMainScheduledAlarm(300L, expectedTriggerTime = targetTime)
+
+        coVerify { repository.getById(300L) }
+    }
+
+    @Test
+    fun `stale SmartWake callback ignores cancellation when current trigger is newer`() = runTest {
+        val originalTargetTime = System.currentTimeMillis() + 600_000L
+        val newerTargetTime = System.currentTimeMillis() + 86400_000L
+        val alarmWithNewerTrigger = enabledAlarm(id = 301L).copy(nextTriggerTime = newerTargetTime)
+        coEvery { repository.getById(301L) } returns alarmWithNewerTrigger
+
+        scheduler.cancelMainScheduledAlarm(301L, expectedTriggerTime = originalTargetTime)
+
+        coVerify { repository.getById(301L) }
+    }
+
     private fun enabledAlarm(id: Long): Alarm = Alarm(
         id = id,
         hour = 7,

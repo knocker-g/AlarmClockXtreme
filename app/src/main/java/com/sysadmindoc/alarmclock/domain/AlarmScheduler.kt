@@ -466,11 +466,23 @@ class AlarmScheduler @Inject constructor(
      * early: the original exact alarm scheduled at the unmodified trigger time is
      * still armed and would otherwise fire a spurious second time. Safe no-op when
      * nothing is armed.
+     *
+     * Validates [expectedTriggerTime] generation: if a newer occurrence is already
+     * scheduled, stale SmartWake cancellation is ignored to protect the successor.
      */
-    fun cancelMainScheduledAlarm(alarmId: Long) {
-        val pendingIntent = createPendingIntent(alarmId)
-        alarmManager.cancel(pendingIntent)
-        pendingIntent.cancel()
+    fun cancelMainScheduledAlarm(alarmId: Long, expectedTriggerTime: Long = 0L) {
+        if (expectedTriggerTime > 0L) {
+            val alarm = runBlocking { repository.getById(alarmId)?.sanitized() }
+            if (alarm != null && alarm.nextTriggerTime > expectedTriggerTime) {
+                Log.w("AlarmScheduler", "Stale SmartWake cancellation ignored for alarm $alarmId (current ${alarm.nextTriggerTime} > expected $expectedTriggerTime)")
+                return
+            }
+        }
+        val pendingIntent = lookupPendingIntentForCancel(alarmId)
+        if (pendingIntent != null) {
+            alarmManager.cancel(pendingIntent)
+            pendingIntent.cancel()
+        }
     }
 
     /**

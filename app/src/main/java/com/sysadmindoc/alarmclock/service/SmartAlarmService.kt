@@ -247,7 +247,7 @@ class SmartAlarmService : Service(), SensorEventListener {
         // scheduled at the unmodified trigger time is still armed (this path does
         // not consume its PendingIntent), so cancel it now to prevent a spurious
         // second fire at the originally-scheduled minute.
-        runCatching { alarmScheduler.cancelMainScheduledAlarm(alarmId) }
+        runCatching { alarmScheduler.cancelMainScheduledAlarm(alarmId, targetTimeMs) }
             .onFailure { android.util.Log.e("SmartAlarmService", "Failed to cancel stale alarm $alarmId", it) }
 
         val fireId = com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent.fireIdFor(alarmId, targetTimeMs)
