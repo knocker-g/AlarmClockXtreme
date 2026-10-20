@@ -284,6 +284,86 @@ class RecoveryPlannerTest {
     }
 
     @Test
+    fun `blank originalFireId in intent produces BLOCKED_MISSING_EVIDENCE`() = runBlocking {
+        database.alarmDao().insert(testAlarm)
+        authorityDao.insertMeta(testMeta)
+        authorityDao.insertAuthority(readyAuthority)
+
+        val firingSettings = AppSettings(
+            activeAlarmId = 42L,
+            activeAlarmScheduledAt = 2000L,
+            activeAlarmFireId = "fire-42",
+            activeAlarmFiredAt = System.currentTimeMillis(),
+            activeAlarmState = "FIRING"
+        )
+        coEvery { preferencesManager.getCurrentSettings() } returns firingSettings
+
+        val intentWithBlankFireId = DurableOperationIntent(
+            operationToken = "intent-42",
+            alarmId = 42L,
+            operationEpoch = 100L,
+            incarnationId = "token-verified-42",
+            operationKind = "SET",
+            expectedOwnerToken = "token-verified-42",
+            expectedScheduleRevision = 1L,
+            expectedRestoreEpoch = 100L,
+            phase = "COMPLETED",
+            intentRevision = 1L,
+            originalFireId = "", // Blank fireId!
+            originalScheduledAt = 2000L,
+            candidateSnoozeAt = null
+        )
+        durableIntentDao.insertValidatedIntent(intentWithBlankFireId)
+
+        val bridgeReport = bridge.evaluateDiagnosticRecovery(42L)
+        val plan = planner.planRecovery(bridgeReport)
+
+        assertEquals(RecoveryPlanOutcome.BLOCKED_MISSING_EVIDENCE, plan.outcome)
+        assertEquals("INTENT_IDENTITY_EVIDENCE_MISSING", plan.reasonCode)
+        assertFalse(plan.isExecutable)
+    }
+
+    @Test
+    fun `non-positive originalScheduledAt in intent produces BLOCKED_MISSING_EVIDENCE`() = runBlocking {
+        database.alarmDao().insert(testAlarm)
+        authorityDao.insertMeta(testMeta)
+        authorityDao.insertAuthority(readyAuthority)
+
+        val firingSettings = AppSettings(
+            activeAlarmId = 42L,
+            activeAlarmScheduledAt = 2000L,
+            activeAlarmFireId = "fire-42",
+            activeAlarmFiredAt = System.currentTimeMillis(),
+            activeAlarmState = "FIRING"
+        )
+        coEvery { preferencesManager.getCurrentSettings() } returns firingSettings
+
+        val intentWithZeroScheduledAt = DurableOperationIntent(
+            operationToken = "intent-42",
+            alarmId = 42L,
+            operationEpoch = 100L,
+            incarnationId = "token-verified-42",
+            operationKind = "SET",
+            expectedOwnerToken = "token-verified-42",
+            expectedScheduleRevision = 1L,
+            expectedRestoreEpoch = 100L,
+            phase = "COMPLETED",
+            intentRevision = 1L,
+            originalFireId = "fire-42",
+            originalScheduledAt = 0L, // Zero scheduledAt!
+            candidateSnoozeAt = null
+        )
+        durableIntentDao.insertValidatedIntent(intentWithZeroScheduledAt)
+
+        val bridgeReport = bridge.evaluateDiagnosticRecovery(42L)
+        val plan = planner.planRecovery(bridgeReport)
+
+        assertEquals(RecoveryPlanOutcome.BLOCKED_MISSING_EVIDENCE, plan.outcome)
+        assertEquals("INTENT_IDENTITY_EVIDENCE_MISSING", plan.reasonCode)
+        assertFalse(plan.isExecutable)
+    }
+
+    @Test
     fun `deterministic repeated evaluation produces identical plan`() = runBlocking {
         database.alarmDao().insert(testAlarm)
         authorityDao.insertMeta(testMeta)

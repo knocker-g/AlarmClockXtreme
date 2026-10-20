@@ -68,8 +68,8 @@ data class RecoveryPlanReport(
  * - Pure: does NOT perform OS operations, invoke Owner, start Services, or mutate persistence.
  * - Does NOT use system clock or wall-clock timing.
  * - Evaluates [RecoveryDiagnosticBridgeReport] evidence deterministically.
- * - Explicit candidate intent selection: does NOT select intent based on list position or recency.
- * - Validates Fire ID and scheduledAt session identity before planning session effect inspection.
+ * - Candidate intent selection requires a unique unresolved intent with proven operation identity.
+ * - Disallows blank originalFireId or non-positive originalScheduledAt from proving session operation identity.
  * - Structurally diagnostic-only: [isExecutable] and [isActionable] getters always return false.
  */
 @Singleton
@@ -126,10 +126,11 @@ class RecoveryPlanner @Inject constructor() {
         val unresolvedIntents = room.intents.filter { it.phase in setOf("PENDING", "IN_FLIGHT") }
         val historicalIntents = room.intents.filter { it.phase !in setOf("PENDING", "IN_FLIGHT") }
 
+        // Candidate operation identity is derived ONLY from a unique unresolved intent
+        // or a unique historical intent. Multiple intents or ambiguous intents return null.
         val candidateIntent: DurableOperationIntent? = when {
             unresolvedIntents.size == 1 -> unresolvedIntents.first()
-            unresolvedIntents.size > 1 -> null
-            historicalIntents.size == 1 -> historicalIntents.first()
+            unresolvedIntents.isEmpty() && historicalIntents.size == 1 -> historicalIntents.first()
             else -> null
         }
 
@@ -195,17 +196,20 @@ class RecoveryPlanner @Inject constructor() {
                     session.fireId.isNotBlank() &&
                     session.scheduledAt > 0L) {
 
-                    if (candidateIntent != null) {
-                        val fireIdMatches = candidateIntent.originalFireId.isNullOrBlank() || candidateIntent.originalFireId == session.fireId
-                        val scheduledAtMatches = candidateIntent.originalScheduledAt == null || candidateIntent.originalScheduledAt == 0L || candidateIntent.originalScheduledAt == session.scheduledAt
-                        if (!fireIdMatches) {
-                            return makeReport(alarmId, RecoveryPlanOutcome.BLOCKED_CONFLICT, "INTENT_FIRE_ID_MISMATCH", planFingerprint, bridgeReport)
-                        }
-                        if (!scheduledAtMatches) {
-                            return makeReport(alarmId, RecoveryPlanOutcome.BLOCKED_CONFLICT, "INTENT_SCHEDULED_AT_MISMATCH", planFingerprint, bridgeReport)
-                        }
-                    } else if (historicalIntents.size > 1) {
-                        return makeReport(alarmId, RecoveryPlanOutcome.BLOCKED_MISSING_EVIDENCE, "AMBIGUOUS_HISTORICAL_SESSION_INTENTS", planFingerprint, bridgeReport)
+                    if (candidateIntent == null) {
+                        return makeReport(alarmId, RecoveryPlanOutcome.BLOCKED_MISSING_EVIDENCE, "CANDIDATE_OPERATION_INTENT_MISSING", planFingerprint, bridgeReport)
+                    }
+
+                    if (candidateIntent.originalFireId.isNullOrBlank() || candidateIntent.originalScheduledAt == null || candidateIntent.originalScheduledAt <= 0L) {
+                        return makeReport(alarmId, RecoveryPlanOutcome.BLOCKED_MISSING_EVIDENCE, "INTENT_IDENTITY_EVIDENCE_MISSING", planFingerprint, bridgeReport)
+                    }
+
+                    if (candidateIntent.originalFireId != session.fireId) {
+                        return makeReport(alarmId, RecoveryPlanOutcome.BLOCKED_CONFLICT, "INTENT_FIRE_ID_MISMATCH", planFingerprint, bridgeReport)
+                    }
+
+                    if (candidateIntent.originalScheduledAt != session.scheduledAt) {
+                        return makeReport(alarmId, RecoveryPlanOutcome.BLOCKED_CONFLICT, "INTENT_SCHEDULED_AT_MISMATCH", planFingerprint, bridgeReport)
                     }
 
                     makeReport(alarmId, RecoveryPlanOutcome.INSPECT_SESSION_EFFECTS, "P1_SESSION_EFFECTS_INSPECTION", planFingerprint, bridgeReport)
