@@ -68,6 +68,8 @@ data class RecoveryPlanReport(
  * - Pure: does NOT perform OS operations, invoke Owner, start Services, or mutate persistence.
  * - Does NOT use system clock or wall-clock timing.
  * - Evaluates [RecoveryDiagnosticBridgeReport] evidence deterministically.
+ * - Explicit candidate intent selection: does NOT select intent based on list position or recency.
+ * - Validates Fire ID and scheduledAt session identity before planning session effect inspection.
  * - Structurally diagnostic-only: [isExecutable] and [isActionable] getters always return false.
  */
 @Singleton
@@ -121,8 +123,17 @@ class RecoveryPlanner @Inject constructor() {
         val collection = bridgeReport.collectionReport
         val room = collection.roomEvidence
 
+        val unresolvedIntents = room.intents.filter { it.phase in setOf("PENDING", "IN_FLIGHT") }
+        val historicalIntents = room.intents.filter { it.phase !in setOf("PENDING", "IN_FLIGHT") }
+
+        val candidateIntent: DurableOperationIntent? = when {
+            unresolvedIntents.size == 1 -> unresolvedIntents.first()
+            unresolvedIntents.size > 1 -> null
+            historicalIntents.size == 1 -> historicalIntents.first()
+            else -> null
+        }
+
         val authFingerprint = extractAuthorityFingerprint(room.authority)
-        val candidateIntent = room.intents.firstOrNull()
         val opFingerprint = extractOperationFingerprint(candidateIntent)
         val sessionFingerprint = extractSessionFingerprint(collection.sessionEvidence.snapshot)
 
@@ -176,10 +187,27 @@ class RecoveryPlanner @Inject constructor() {
                 makeReport(alarmId, RecoveryPlanOutcome.INSPECT_AUTHORITY, "P1_RECONCILE_AUTHORITY_INSPECTION", planFingerprint, bridgeReport)
             }
             RecoveryDecisionOutcome.RESUME_COMMITTED_SESSION_EFFECTS -> {
+                val session = collection.sessionEvidence.snapshot
                 if (collection.sessionEvidence.status == EvidenceReadStatus.PROVEN_PRESENT &&
-                    collection.sessionEvidence.snapshot != null &&
-                    collection.sessionEvidence.snapshot.alarmId == alarmId &&
-                    collection.sessionEvidence.snapshot.state in setOf("FIRING", "SNOOZED")) {
+                    session != null &&
+                    session.alarmId == alarmId &&
+                    session.state in setOf("FIRING", "SNOOZED") &&
+                    session.fireId.isNotBlank() &&
+                    session.scheduledAt > 0L) {
+
+                    if (candidateIntent != null) {
+                        val fireIdMatches = candidateIntent.originalFireId.isNullOrBlank() || candidateIntent.originalFireId == session.fireId
+                        val scheduledAtMatches = candidateIntent.originalScheduledAt == null || candidateIntent.originalScheduledAt == 0L || candidateIntent.originalScheduledAt == session.scheduledAt
+                        if (!fireIdMatches) {
+                            return makeReport(alarmId, RecoveryPlanOutcome.BLOCKED_CONFLICT, "INTENT_FIRE_ID_MISMATCH", planFingerprint, bridgeReport)
+                        }
+                        if (!scheduledAtMatches) {
+                            return makeReport(alarmId, RecoveryPlanOutcome.BLOCKED_CONFLICT, "INTENT_SCHEDULED_AT_MISMATCH", planFingerprint, bridgeReport)
+                        }
+                    } else if (historicalIntents.size > 1) {
+                        return makeReport(alarmId, RecoveryPlanOutcome.BLOCKED_MISSING_EVIDENCE, "AMBIGUOUS_HISTORICAL_SESSION_INTENTS", planFingerprint, bridgeReport)
+                    }
+
                     makeReport(alarmId, RecoveryPlanOutcome.INSPECT_SESSION_EFFECTS, "P1_SESSION_EFFECTS_INSPECTION", planFingerprint, bridgeReport)
                 } else {
                     makeReport(alarmId, RecoveryPlanOutcome.BLOCKED_MISSING_EVIDENCE, "SESSION_COMMIT_PROOF_MISSING", planFingerprint, bridgeReport)

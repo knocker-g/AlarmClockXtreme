@@ -204,15 +204,83 @@ class RecoveryPlannerTest {
     }
 
     @Test
-    fun `conflicting generation instanceToken mismatch produces BLOCKED_CONFLICT`() = runBlocking {
+    fun `mismatched fireId between intent and session produces BLOCKED_CONFLICT`() = runBlocking {
         database.alarmDao().insert(testAlarm)
         authorityDao.insertMeta(testMeta)
-        authorityDao.insertAuthority(readyAuthority.copy(instanceToken = "token-STALE"))
+        authorityDao.insertAuthority(readyAuthority)
+
+        val firingSettings = AppSettings(
+            activeAlarmId = 42L,
+            activeAlarmScheduledAt = 2000L,
+            activeAlarmFireId = "fire-42-NEW", // Session has new fire ID
+            activeAlarmFiredAt = System.currentTimeMillis(),
+            activeAlarmState = "FIRING"
+        )
+        coEvery { preferencesManager.getCurrentSettings() } returns firingSettings
+
+        val intent = DurableOperationIntent(
+            operationToken = "intent-42",
+            alarmId = 42L,
+            operationEpoch = 100L,
+            incarnationId = "token-verified-42",
+            operationKind = "SET",
+            expectedOwnerToken = "token-verified-42",
+            expectedScheduleRevision = 1L,
+            expectedRestoreEpoch = 100L,
+            phase = "COMPLETED",
+            intentRevision = 1L,
+            originalFireId = "fire-42-OLD", // Intent has old fire ID!
+            originalScheduledAt = 2000L,
+            candidateSnoozeAt = null
+        )
+        durableIntentDao.insertValidatedIntent(intent)
 
         val bridgeReport = bridge.evaluateDiagnosticRecovery(42L)
         val plan = planner.planRecovery(bridgeReport)
 
         assertEquals(RecoveryPlanOutcome.BLOCKED_CONFLICT, plan.outcome)
+        assertEquals("P1_QUARANTINE_INTENT_FIRE_ID_MISMATCH", plan.reasonCode)
+        assertFalse(plan.isExecutable)
+    }
+
+    @Test
+    fun `mismatched scheduledAt between intent and session produces BLOCKED_CONFLICT`() = runBlocking {
+        database.alarmDao().insert(testAlarm)
+        authorityDao.insertMeta(testMeta)
+        authorityDao.insertAuthority(readyAuthority)
+
+        val firingSettings = AppSettings(
+            activeAlarmId = 42L,
+            activeAlarmScheduledAt = 2000L, // Session scheduledAt = 2000L
+            activeAlarmFireId = "fire-42",
+            activeAlarmFiredAt = System.currentTimeMillis(),
+            activeAlarmState = "FIRING"
+        )
+        coEvery { preferencesManager.getCurrentSettings() } returns firingSettings
+
+        val intent = DurableOperationIntent(
+            operationToken = "intent-42",
+            alarmId = 42L,
+            operationEpoch = 100L,
+            incarnationId = "token-verified-42",
+            operationKind = "SET",
+            expectedOwnerToken = "token-verified-42",
+            expectedScheduleRevision = 1L,
+            expectedRestoreEpoch = 100L,
+            phase = "COMPLETED",
+            intentRevision = 1L,
+            originalFireId = "fire-42",
+            originalScheduledAt = 9999L, // Intent scheduledAt = 9999L (mismatched!)
+            candidateSnoozeAt = null
+        )
+        durableIntentDao.insertValidatedIntent(intent)
+
+        val bridgeReport = bridge.evaluateDiagnosticRecovery(42L)
+        val plan = planner.planRecovery(bridgeReport)
+
+        assertEquals(RecoveryPlanOutcome.BLOCKED_CONFLICT, plan.outcome)
+        assertEquals("P1_QUARANTINE_INTENT_SCHEDULED_AT_MISMATCH", plan.reasonCode)
+        assertFalse(plan.isExecutable)
     }
 
     @Test
