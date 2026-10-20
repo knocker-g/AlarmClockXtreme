@@ -48,58 +48,110 @@ class RecoveryExecutionFence @Inject constructor(
 
         val freshCollection = collector.collectEvidence(alarmId)
 
-        // 1. Check Fresh Evidence Collection Read Status
+        // 1. Frozen Plan Admission Gate
+        if (planReport.outcome == RecoveryPlanOutcome.BLOCKED_CONFLICT) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.CONTRADICTORY_EVIDENCE, "PLAN_BLOCKED_CONFLICT", freshCollection)
+        }
+        if (planReport.outcome == RecoveryPlanOutcome.BLOCKED_MISSING_EVIDENCE) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.NEEDS_EVIDENCE, "PLAN_BLOCKED_MISSING_EVIDENCE", freshCollection)
+        }
+        if (planReport.bridgeReport.status == BridgeStatus.NOT_EVALUATED) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.NEEDS_EVIDENCE, "BRIDGE_NOT_EVALUATED", freshCollection)
+        }
+        if (alarmId != frozenFingerprint.alarmId || alarmId != planReport.bridgeReport.alarmId) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.CONTRADICTORY_EVIDENCE, "PLAN_FINGERPRINT_ALARM_ID_MISMATCH", freshCollection)
+        }
+        val frozenAuth = frozenFingerprint.authorityFingerprint
+            ?: return makeReport(alarmId, ExecutionFenceVerificationOutcome.NEEDS_EVIDENCE, "FROZEN_AUTHORITY_FINGERPRINT_MISSING", freshCollection)
+
+        // 2. Global Active Session Drift Gate
+        val globalSession = freshCollection.globalSessionEvidence
+        if (globalSession.hasGlobalActiveSession && !globalSession.isSameAlarm) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.CONTRADICTORY_EVIDENCE, "NEW_GLOBAL_ACTIVE_SESSION", freshCollection)
+        }
+
+        // 3. Fresh Evidence Admission Gate
         if (freshCollection.overallStatus == EvidenceReadStatus.READ_FAILURE) {
             return makeReport(alarmId, ExecutionFenceVerificationOutcome.NEEDS_EVIDENCE, "FRESH_READ_FAILURE", freshCollection)
         }
         if (freshCollection.overallStatus == EvidenceReadStatus.STORAGE_UNAVAILABLE) {
             return makeReport(alarmId, ExecutionFenceVerificationOutcome.NEEDS_EVIDENCE, "FRESH_STORAGE_UNAVAILABLE", freshCollection)
         }
-
-        // 2. Check Global Active Session Drift
-        val globalSession = freshCollection.globalSessionEvidence
-        if (globalSession.hasGlobalActiveSession && !globalSession.isSameAlarm) {
-            return makeReport(alarmId, ExecutionFenceVerificationOutcome.CONTRADICTORY_EVIDENCE, "NEW_GLOBAL_ACTIVE_SESSION", freshCollection)
+        if (freshCollection.overallStatus == EvidenceReadStatus.CORRUPT_DATA) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.CONTRADICTORY_EVIDENCE, "FRESH_CORRUPT_DATA", freshCollection)
+        }
+        if (freshCollection.overallStatus == EvidenceReadStatus.UNPROVEN_CROSS_STORE_MISMATCH) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.CONTRADICTORY_EVIDENCE, "FRESH_CROSS_STORE_MISMATCH", freshCollection)
+        }
+        if (freshCollection.overallStatus == EvidenceReadStatus.PROVEN_ABSENT) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.NEEDS_EVIDENCE, "FRESH_ROOM_EVIDENCE_ABSENT", freshCollection)
         }
 
-        // 3. Verify Authority Fingerprint
-        val frozenAuth = frozenFingerprint.authorityFingerprint
+        if (freshCollection.coherenceClassification == CrossStoreCoherenceClassification.CONTRADICTORY) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.CONTRADICTORY_EVIDENCE, "FRESH_COHERENCE_CONTRADICTORY", freshCollection)
+        }
+        if (freshCollection.coherenceClassification == CrossStoreCoherenceClassification.UNPROVEN) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.NEEDS_EVIDENCE, "FRESH_COHERENCE_UNPROVEN", freshCollection)
+        }
+        if (freshCollection.coherenceClassification == CrossStoreCoherenceClassification.UNAVAILABLE) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.NEEDS_EVIDENCE, "FRESH_COHERENCE_UNAVAILABLE", freshCollection)
+        }
+
         val freshAuth = freshCollection.roomEvidence.authority
+        val freshAlarm = freshCollection.roomEvidence.alarm
         val freshRestoreEpoch = freshCollection.roomEvidence.restoreEpoch
         val freshLocalMarker = freshCollection.localMarkerEvidence
 
-        if (frozenAuth != null) {
-            if (freshAuth == null || freshRestoreEpoch == null || freshLocalMarker.status != EvidenceReadStatus.PROVEN_PRESENT) {
-                return makeReport(alarmId, ExecutionFenceVerificationOutcome.NEEDS_EVIDENCE, "FRESH_AUTHORITY_EVIDENCE_MISSING", freshCollection)
-            }
+        if (freshAlarm == null) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.NEEDS_EVIDENCE, "FRESH_ALARM_DEFINITION_ABSENT", freshCollection)
+        }
+        if (freshAuth == null) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.NEEDS_EVIDENCE, "FRESH_AUTHORITY_ABSENT", freshCollection)
+        }
+        if (freshRestoreEpoch == null) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.NEEDS_EVIDENCE, "FRESH_RESTORE_EPOCH_MISSING", freshCollection)
+        }
+        if (freshLocalMarker.status != EvidenceReadStatus.PROVEN_PRESENT || freshLocalMarker.localId.isNullOrBlank()) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.NEEDS_EVIDENCE, "FRESH_LOCAL_MARKER_INCOMPLETE_OR_ABSENT", freshCollection)
+        }
 
-            if (freshAuth.instanceToken != frozenAuth.instanceToken) {
-                return makeReport(alarmId, ExecutionFenceVerificationOutcome.STALE_GENERATION, "INCARNATION_TOKEN_CHANGED", freshCollection)
+        // 4. Outcome-Dependent Fingerprint Requirements
+        if (planReport.outcome == RecoveryPlanOutcome.INSPECT_SESSION_EFFECTS) {
+            if (frozenFingerprint.operationFingerprint == null) {
+                return makeReport(alarmId, ExecutionFenceVerificationOutcome.NEEDS_EVIDENCE, "SESSION_INSPECTION_OPERATION_FINGERPRINT_MISSING", freshCollection)
             }
-            if (freshRestoreEpoch != frozenAuth.restoreEpoch) {
-                return makeReport(alarmId, ExecutionFenceVerificationOutcome.STALE_GENERATION, "RESTORE_EPOCH_CHANGED", freshCollection)
-            }
-            if (freshAuth.definitionRevision != frozenAuth.definitionRevision) {
-                return makeReport(alarmId, ExecutionFenceVerificationOutcome.STALE_GENERATION, "DEFINITION_REVISION_CHANGED", freshCollection)
-            }
-            if (freshAuth.scheduleRevision != frozenAuth.scheduleRevision) {
-                return makeReport(alarmId, ExecutionFenceVerificationOutcome.STALE_GENERATION, "SCHEDULE_REVISION_CHANGED", freshCollection)
-            }
-            if (freshAuth.lifecycle != frozenAuth.lifecycle) {
-                return makeReport(alarmId, ExecutionFenceVerificationOutcome.STALE_GENERATION, "LIFECYCLE_CHANGED", freshCollection)
-            }
-            if (freshAuth.actionKey != frozenAuth.actionKey) {
-                return makeReport(alarmId, ExecutionFenceVerificationOutcome.STALE_GENERATION, "ACTION_KEY_CHANGED", freshCollection)
-            }
-            if (freshAuth.desiredOperation != frozenAuth.desiredOperation) {
-                return makeReport(alarmId, ExecutionFenceVerificationOutcome.STALE_GENERATION, "DESIRED_OPERATION_CHANGED", freshCollection)
-            }
-            if (freshAuth.desiredTriggerMillis != frozenAuth.desiredTriggerMillis) {
-                return makeReport(alarmId, ExecutionFenceVerificationOutcome.STALE_GENERATION, "DESIRED_TRIGGER_CHANGED", freshCollection)
+            if (frozenFingerprint.sessionFingerprint == null) {
+                return makeReport(alarmId, ExecutionFenceVerificationOutcome.NEEDS_EVIDENCE, "SESSION_INSPECTION_SESSION_FINGERPRINT_MISSING", freshCollection)
             }
         }
 
-        // 4. Verify Operation Fingerprint
+        // 5. Verify Authority Fingerprint
+        if (freshAuth.instanceToken != frozenAuth.instanceToken) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.STALE_GENERATION, "INCARNATION_TOKEN_CHANGED", freshCollection)
+        }
+        if (freshRestoreEpoch != frozenAuth.restoreEpoch) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.STALE_GENERATION, "RESTORE_EPOCH_CHANGED", freshCollection)
+        }
+        if (freshAuth.definitionRevision != frozenAuth.definitionRevision) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.STALE_GENERATION, "DEFINITION_REVISION_CHANGED", freshCollection)
+        }
+        if (freshAuth.scheduleRevision != frozenAuth.scheduleRevision) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.STALE_GENERATION, "SCHEDULE_REVISION_CHANGED", freshCollection)
+        }
+        if (freshAuth.lifecycle != frozenAuth.lifecycle) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.STALE_GENERATION, "LIFECYCLE_CHANGED", freshCollection)
+        }
+        if (freshAuth.actionKey != frozenAuth.actionKey) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.STALE_GENERATION, "ACTION_KEY_CHANGED", freshCollection)
+        }
+        if (freshAuth.desiredOperation != frozenAuth.desiredOperation) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.STALE_GENERATION, "DESIRED_OPERATION_CHANGED", freshCollection)
+        }
+        if (freshAuth.desiredTriggerMillis != frozenAuth.desiredTriggerMillis) {
+            return makeReport(alarmId, ExecutionFenceVerificationOutcome.STALE_GENERATION, "DESIRED_TRIGGER_CHANGED", freshCollection)
+        }
+
+        // 6. Verify Operation Fingerprint if present
         val frozenOp = frozenFingerprint.operationFingerprint
         if (frozenOp != null) {
             val matchingIntents = freshCollection.roomEvidence.intents.filter { it.operationToken == frozenOp.operationToken }
@@ -125,7 +177,7 @@ class RecoveryExecutionFence @Inject constructor(
             }
         }
 
-        // 5. Verify Session Fingerprint
+        // 7. Verify Session Fingerprint if present
         val frozenSession = frozenFingerprint.sessionFingerprint
         val freshSession = freshCollection.sessionEvidence.snapshot
         if (frozenSession != null) {
@@ -145,14 +197,6 @@ class RecoveryExecutionFence @Inject constructor(
             if (freshSession.refireAt != frozenSession.refireAt) {
                 return makeReport(alarmId, ExecutionFenceVerificationOutcome.STALE_GENERATION, "SESSION_REFIRE_AT_CHANGED", freshCollection)
             }
-        }
-
-        // 6. Check Overall Evidence Coherence
-        if (freshCollection.coherenceClassification == CrossStoreCoherenceClassification.CONTRADICTORY) {
-            return makeReport(alarmId, ExecutionFenceVerificationOutcome.CONTRADICTORY_EVIDENCE, "FRESH_COHERENCE_CONTRADICTORY", freshCollection)
-        }
-        if (freshCollection.coherenceClassification == CrossStoreCoherenceClassification.UNPROVEN) {
-            return makeReport(alarmId, ExecutionFenceVerificationOutcome.NEEDS_EVIDENCE, "FRESH_COHERENCE_UNPROVEN", freshCollection)
         }
 
         Log.i(TAG, "Execution fence verified MATCHED_OBSERVATION for alarm $alarmId")

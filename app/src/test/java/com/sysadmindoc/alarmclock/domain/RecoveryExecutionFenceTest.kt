@@ -253,7 +253,7 @@ class RecoveryExecutionFenceTest {
     }
 
     @Test
-    fun `missing local marker produces NEEDS_EVIDENCE`() = runBlocking {
+    fun `null frozen authority fingerprint produces NEEDS_EVIDENCE`() = runBlocking {
         database.alarmDao().insert(testAlarm)
         authorityDao.insertMeta(testMeta)
         authorityDao.insertAuthority(readyAuthority)
@@ -261,12 +261,90 @@ class RecoveryExecutionFenceTest {
         val bridgeReport = bridge.evaluateDiagnosticRecovery(42L)
         val plan = planner.planRecovery(bridgeReport)
 
-        // Local marker unavailable post-planning
-        coEvery { localReader.readLocalEvidence() } returns LocalEvidenceReadResult.StorageUnavailable
+        val nullAuthPlan = plan.copy(
+            fingerprint = plan.fingerprint.copy(authorityFingerprint = null)
+        )
+
+        val fenceReport = fence.verifyFence(nullAuthPlan)
+
+        assertEquals(ExecutionFenceVerificationOutcome.NEEDS_EVIDENCE, fenceReport.outcome)
+        assertEquals("FROZEN_AUTHORITY_FINGERPRINT_MISSING", fenceReport.reasonCode)
+    }
+
+    @Test
+    fun `blocked missing evidence plan produces NEEDS_EVIDENCE`() = runBlocking {
+        database.alarmDao().insert(testAlarm)
+        authorityDao.insertMeta(testMeta)
+        // Missing Authority -> Bridge NOT_EVALUATED -> Plan BLOCKED_MISSING_EVIDENCE
+
+        val bridgeReport = bridge.evaluateDiagnosticRecovery(42L)
+        val plan = planner.planRecovery(bridgeReport)
 
         val fenceReport = fence.verifyFence(plan)
 
         assertEquals(ExecutionFenceVerificationOutcome.NEEDS_EVIDENCE, fenceReport.outcome)
-        assertEquals("FRESH_STORAGE_UNAVAILABLE", fenceReport.reasonCode)
+        assertEquals("PLAN_BLOCKED_MISSING_EVIDENCE", fenceReport.reasonCode)
+    }
+
+    @Test
+    fun `alarmId mismatch between plan and fingerprint produces CONTRADICTORY_EVIDENCE`() = runBlocking {
+        database.alarmDao().insert(testAlarm)
+        authorityDao.insertMeta(testMeta)
+        authorityDao.insertAuthority(readyAuthority)
+
+        val bridgeReport = bridge.evaluateDiagnosticRecovery(42L)
+        val plan = planner.planRecovery(bridgeReport)
+
+        val mismatchedPlan = plan.copy(alarmId = 99L)
+
+        val fenceReport = fence.verifyFence(mismatchedPlan)
+
+        assertEquals(ExecutionFenceVerificationOutcome.CONTRADICTORY_EVIDENCE, fenceReport.outcome)
+        assertEquals("PLAN_FINGERPRINT_ALARM_ID_MISMATCH", fenceReport.reasonCode)
+    }
+
+    @Test
+    fun `session inspection without operation fingerprint produces NEEDS_EVIDENCE`() = runBlocking {
+        database.alarmDao().insert(testAlarm)
+        authorityDao.insertMeta(testMeta)
+        authorityDao.insertAuthority(readyAuthority)
+
+        val firingSettings = AppSettings(
+            activeAlarmId = 42L,
+            activeAlarmScheduledAt = 2000L,
+            activeAlarmFireId = "fire-42",
+            activeAlarmFiredAt = System.currentTimeMillis(),
+            activeAlarmState = "FIRING"
+        )
+        coEvery { preferencesManager.getCurrentSettings() } returns firingSettings
+
+        val intent = DurableOperationIntent(
+            operationToken = "intent-42",
+            alarmId = 42L,
+            operationEpoch = 100L,
+            incarnationId = "token-verified-42",
+            operationKind = "SET",
+            expectedOwnerToken = "token-verified-42",
+            expectedScheduleRevision = 1L,
+            expectedRestoreEpoch = 100L,
+            phase = "COMPLETED",
+            intentRevision = 1L,
+            originalFireId = "fire-42",
+            originalScheduledAt = 2000L,
+            candidateSnoozeAt = null
+        )
+        durableIntentDao.insertValidatedIntent(intent)
+
+        val bridgeReport = bridge.evaluateDiagnosticRecovery(42L)
+        val plan = planner.planRecovery(bridgeReport)
+
+        val nullOpPlan = plan.copy(
+            fingerprint = plan.fingerprint.copy(operationFingerprint = null)
+        )
+
+        val fenceReport = fence.verifyFence(nullOpPlan)
+
+        assertEquals(ExecutionFenceVerificationOutcome.NEEDS_EVIDENCE, fenceReport.outcome)
+        assertEquals("SESSION_INSPECTION_OPERATION_FINGERPRINT_MISSING", fenceReport.reasonCode)
     }
 }
