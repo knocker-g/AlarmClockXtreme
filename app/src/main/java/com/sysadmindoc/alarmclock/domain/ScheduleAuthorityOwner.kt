@@ -16,6 +16,10 @@ enum class BootstrapDecision {
     QUARANTINE
 }
 
+fun interface MainSlotApplier {
+    suspend fun applySlotOperation(authority: ScheduleAuthority): Boolean
+}
+
 sealed interface OwnerResult {
     data class OsAccepted(val revision: Long, val actionKey: String?) : OwnerResult
     data class PermissionBlocked(val revision: Long) : OwnerResult
@@ -33,6 +37,7 @@ sealed interface OwnerResult {
  * Guarantees:
  * - OS effects must be serialized per alarmId via in-process Mutex map.
  * - Reads current ScheduleAuthority state before claim.
+ * - Uses [MainSlotApplier] to map current authority to OS SET/CANCEL slot operation.
  * - Validates duplicate actionKey against operation kind and trigger target; rejects conflicting actions.
  * - Re-executes OS apply for pending RECONCILING actions; ignores only confirmed SETTLED matching duplicates.
  * - Checks exact alarm capability before claim and OS action for SET operations.
@@ -53,11 +58,15 @@ class ScheduleAuthorityOwner @Inject constructor(
         return mutexMap.computeIfAbsent(alarmId) { Mutex() }
     }
 
-    fun evaluateBootstrap(authority: ScheduleAuthority?): BootstrapDecision {
-        if (authority == null) return BootstrapDecision.QUARANTINE
-        return when (authority.reconcileState) {
-            "SETTLED" -> BootstrapDecision.ADOPT
-            "RECONCILING" -> BootstrapDecision.RECONCILE
+    fun evaluateBootstrap(
+        authority: ScheduleAuthority?,
+        definitionExists: Boolean = true,
+        sessionValid: Boolean = true
+    ): BootstrapDecision {
+        if (authority == null || !definitionExists) return BootstrapDecision.QUARANTINE
+        return when {
+            authority.reconcileState == "SETTLED" && sessionValid -> BootstrapDecision.ADOPT
+            authority.reconcileState == "RECONCILING" -> BootstrapDecision.RECONCILE
             else -> BootstrapDecision.QUARANTINE
         }
     }
@@ -67,107 +76,112 @@ class ScheduleAuthorityOwner @Inject constructor(
         desiredOperation: String,
         desiredTriggerMillis: Long?,
         actionKey: String?,
-        osAction: suspend (authority: ScheduleAuthority) -> Boolean
+        applier: MainSlotApplier
     ): OwnerResult {
         return mutexFor(alarmId).withLock {
-            val authority = authorityDao.getAuthorityByAlarmId(alarmId)
+            val initialAuth = authorityDao.getAuthorityByAlarmId(alarmId)
                 ?: return@withLock OwnerResult.AuthorityNotFound
 
             // Duplicate action token check
-            if (actionKey != null && authority.actionKey == actionKey) {
-                if (authority.desiredOperation != desiredOperation || authority.desiredTriggerMillis != desiredTriggerMillis) {
+            if (actionKey != null && initialAuth.actionKey == actionKey) {
+                if (initialAuth.desiredOperation != desiredOperation || initialAuth.desiredTriggerMillis != desiredTriggerMillis) {
                     Log.w("ScheduleAuthorityOwner", "Conflicting action for actionKey '$actionKey' on alarm $alarmId; rejecting")
                     return@withLock OwnerResult.ConflictingAction(actionKey)
                 }
-                if (authority.reconcileState == "SETTLED") {
+                if (initialAuth.reconcileState == "SETTLED") {
                     Log.i("ScheduleAuthorityOwner", "Duplicate actionKey '$actionKey' for alarm $alarmId already SETTLED; ignoring")
                     return@withLock OwnerResult.DuplicateIgnored
                 }
-                // If RECONCILING, proceed to re-execute OS action without ignoring
-            }
+                // If RECONCILING, proceed to re-apply OS action for current authority
+            } else {
+                // Check exact alarm permission for SET operations BEFORE claim
+                if (desiredOperation == "SET" && !exactPermissionChecker()) {
+                    Log.w("ScheduleAuthorityOwner", "Exact alarm capability unavailable for alarm $alarmId")
+                    return@withLock OwnerResult.PermissionBlocked(initialAuth.scheduleRevision)
+                }
 
-            // Check exact alarm permission for SET operations BEFORE claim and OS action
-            if (desiredOperation == "SET" && !exactPermissionChecker()) {
-                Log.w("ScheduleAuthorityOwner", "Exact alarm capability unavailable for alarm $alarmId")
-                return@withLock OwnerResult.PermissionBlocked(authority.scheduleRevision)
-            }
+                val expectedRev = initialAuth.scheduleRevision
+                if (expectedRev >= Long.MAX_VALUE) {
+                    Log.e("ScheduleAuthorityOwner", "scheduleRevision overflow for alarm $alarmId")
+                    return@withLock OwnerResult.Superseded(Long.MAX_VALUE)
+                }
 
-            val expectedRev = authority.scheduleRevision
-            if (expectedRev >= Long.MAX_VALUE) {
-                Log.e("ScheduleAuthorityOwner", "scheduleRevision overflow for alarm $alarmId")
-                return@withLock OwnerResult.Superseded(Long.MAX_VALUE)
-            }
-
-            val claimedRev = expectedRev + 1L
-
-            // CAS claim authority transition to RECONCILING
-            val claimed = authorityDao.casClaimAuthority(
-                alarmId = alarmId,
-                instanceToken = authority.instanceToken,
-                restoreEpoch = authority.restoreEpoch,
-                expectedRevision = expectedRev,
-                expectedLifecycle = authority.lifecycle,
-                desiredOperation = desiredOperation,
-                desiredTriggerMillis = desiredTriggerMillis,
-                actionKey = actionKey
-            )
-
-            if (claimed != 1) {
-                val current = authorityDao.getAuthorityByAlarmId(alarmId)
-                return@withLock OwnerResult.Superseded(current?.scheduleRevision ?: expectedRev)
-            }
-
-            // Apply OS action
-            val osSuccess = try {
-                val updatedAuthority = authority.copy(
-                    scheduleRevision = claimedRev,
+                val claimed = authorityDao.casClaimAuthority(
+                    alarmId = alarmId,
+                    instanceToken = initialAuth.instanceToken,
+                    restoreEpoch = initialAuth.restoreEpoch,
+                    expectedRevision = expectedRev,
+                    expectedLifecycle = initialAuth.lifecycle,
                     desiredOperation = desiredOperation,
                     desiredTriggerMillis = desiredTriggerMillis,
-                    reconcileState = "RECONCILING",
                     actionKey = actionKey
                 )
-                osAction(updatedAuthority)
-            } catch (e: CancellationException) {
-                Log.w("ScheduleAuthorityOwner", "OS operation cancelled for alarm $alarmId at rev $claimedRev")
-                throw e
-            } catch (e: Exception) {
-                Log.e("ScheduleAuthorityOwner", "OS operation threw exception for alarm $alarmId at rev $claimedRev", e)
-                return@withLock OwnerResult.OutcomeUnknown(claimedRev, e)
-            }
 
-            if (!osSuccess) {
-                Log.w("ScheduleAuthorityOwner", "OS operation returned false for alarm $alarmId at rev $claimedRev")
-                return@withLock OwnerResult.OutcomeUnknown(claimedRev, IllegalStateException("OS action returned false"))
-            }
-
-            // Re-read current authority from DB after OS action to detect convergence/superseding
-            val postOsAuth = authorityDao.getAuthorityByAlarmId(alarmId)
-            if (postOsAuth != null && postOsAuth.scheduleRevision > claimedRev) {
-                Log.w("ScheduleAuthorityOwner", "Post-OS re-read detected newer revision ${postOsAuth.scheduleRevision} for alarm $alarmId; re-converging OS slot")
-                // Re-converge OS slot to latest desired state
-                osAction(postOsAuth)
-                return@withLock OwnerResult.Superseded(postOsAuth.scheduleRevision)
-            }
-
-            // Settle authority after successful OS apply
-            val settled = authorityDao.settleAuthority(
-                alarmId = alarmId,
-                instanceToken = authority.instanceToken,
-                restoreEpoch = authority.restoreEpoch,
-                claimedRevision = claimedRev,
-                expectedActionKey = actionKey
-            )
-
-            if (settled != 1) {
-                val current = authorityDao.getAuthorityByAlarmId(alarmId)
-                if (current != null && current.scheduleRevision > claimedRev) {
-                    osAction(current)
+                if (claimed != 1) {
+                    val current = authorityDao.getAuthorityByAlarmId(alarmId)
+                    return@withLock OwnerResult.Superseded(current?.scheduleRevision ?: expectedRev)
                 }
-                Log.w("ScheduleAuthorityOwner", "Settlement for alarm $alarmId at rev $claimedRev was superseded by rev ${current?.scheduleRevision}")
-                return@withLock OwnerResult.Superseded(current?.scheduleRevision ?: claimedRev)
             }
 
-            OwnerResult.OsAccepted(claimedRev, actionKey)
+            // Convergence Loop: Apply OS operation for latest authority state
+            while (true) {
+                val currentAuth = authorityDao.getAuthorityByAlarmId(alarmId)
+                    ?: return@withLock OwnerResult.AuthorityNotFound
+
+                // Check permission for SET before applying
+                if (currentAuth.desiredOperation == "SET" && !exactPermissionChecker()) {
+                    Log.w("ScheduleAuthorityOwner", "Exact alarm capability unavailable for alarm $alarmId at rev ${currentAuth.scheduleRevision}")
+                    return@withLock OwnerResult.PermissionBlocked(currentAuth.scheduleRevision)
+                }
+
+                // Apply OS action via MainSlotApplier
+                val osSuccess = try {
+                    applier.applySlotOperation(currentAuth)
+                } catch (e: CancellationException) {
+                    Log.w("ScheduleAuthorityOwner", "OS operation cancelled for alarm $alarmId at rev ${currentAuth.scheduleRevision}")
+                    throw e
+                } catch (e: Exception) {
+                    Log.e("ScheduleAuthorityOwner", "OS operation threw exception for alarm $alarmId at rev ${currentAuth.scheduleRevision}", e)
+                    return@withLock OwnerResult.OutcomeUnknown(currentAuth.scheduleRevision, e)
+                }
+
+                if (!osSuccess) {
+                    Log.w("ScheduleAuthorityOwner", "OS operation returned false for alarm $alarmId at rev ${currentAuth.scheduleRevision}")
+                    return@withLock OwnerResult.OutcomeUnknown(currentAuth.scheduleRevision, IllegalStateException("OS action returned false"))
+                }
+
+                // Re-read authority after OS apply to check if a newer revision was admitted concurrently
+                val latestAuth = authorityDao.getAuthorityByAlarmId(alarmId)
+                if (latestAuth != null && latestAuth.scheduleRevision > currentAuth.scheduleRevision) {
+                    Log.w("ScheduleAuthorityOwner", "Post-OS re-read detected newer revision ${latestAuth.scheduleRevision} > ${currentAuth.scheduleRevision} for alarm $alarmId; converging...")
+                    continue
+                }
+
+                // Settle authority
+                val settled = authorityDao.settleAuthority(
+                    alarmId = alarmId,
+                    instanceToken = currentAuth.instanceToken,
+                    restoreEpoch = currentAuth.restoreEpoch,
+                    claimedRevision = currentAuth.scheduleRevision,
+                    expectedActionKey = currentAuth.actionKey
+                )
+
+                if (settled == 1) {
+                    return@withLock OwnerResult.OsAccepted(currentAuth.scheduleRevision, currentAuth.actionKey)
+                }
+
+                // Settlement failed due to concurrent claim; re-read and loop to converge!
+                val postSettleAuth = authorityDao.getAuthorityByAlarmId(alarmId)
+                if (postSettleAuth != null && postSettleAuth.scheduleRevision > currentAuth.scheduleRevision) {
+                    Log.w("ScheduleAuthorityOwner", "Settlement superseded for alarm $alarmId; re-converging to rev ${postSettleAuth.scheduleRevision}")
+                    continue
+                } else {
+                    return@withLock OwnerResult.Superseded(currentAuth.scheduleRevision)
+                }
+            }
+
+            @Suppress("UNREACHABLE_CODE")
+            OwnerResult.AuthorityNotFound
         }
     }
 }

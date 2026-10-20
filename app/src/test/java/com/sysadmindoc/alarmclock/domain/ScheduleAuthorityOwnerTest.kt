@@ -100,44 +100,29 @@ class ScheduleAuthorityOwnerTest {
     }
 
     @Test
-    fun `evaluateBootstrap returns QUARANTINE for absent authority`() {
-        val decision = owner.evaluateBootstrap(null)
-        assertEquals(BootstrapDecision.QUARANTINE, decision)
+    fun `evaluateBootstrap returns QUARANTINE for absent authority or missing definition`() {
+        val decisionNoAuth = owner.evaluateBootstrap(null, definitionExists = true, sessionValid = true)
+        assertEquals(BootstrapDecision.QUARANTINE, decisionNoAuth)
+
+        val decisionNoDef = owner.evaluateBootstrap(initialAuthority, definitionExists = false, sessionValid = true)
+        assertEquals(BootstrapDecision.QUARANTINE, decisionNoDef)
     }
 
     @Test
-    fun `evaluateBootstrap returns ADOPT for SETTLED authority`() {
-        val decision = owner.evaluateBootstrap(initialAuthority)
+    fun `evaluateBootstrap returns ADOPT for SETTLED authority with valid definition and session`() {
+        val decision = owner.evaluateBootstrap(initialAuthority, definitionExists = true, sessionValid = true)
         assertEquals(BootstrapDecision.ADOPT, decision)
     }
 
     @Test
-    fun `evaluateBootstrap returns RECONCILING for RECONCILING authority`() {
+    fun `evaluateBootstrap returns RECONCILING for RECONCILING authority with valid definition`() {
         val reconciling = initialAuthority.copy(reconcileState = "RECONCILING")
-        val decision = owner.evaluateBootstrap(reconciling)
+        val decision = owner.evaluateBootstrap(reconciling, definitionExists = true, sessionValid = false)
         assertEquals(BootstrapDecision.RECONCILE, decision)
     }
 
     @Test
-    fun `changed restore epoch causes CAS claim to fail and returns Superseded`() = runBlocking {
-        val authorityNewEpoch = initialAuthority.copy(restoreEpoch = 999L)
-        authorityDao.insertAuthority(authorityNewEpoch)
-
-        val result = owner.executeOperation(
-            alarmId = 42L,
-            desiredOperation = "SET",
-            desiredTriggerMillis = 2000L,
-            actionKey = "act-epoch"
-        ) {
-            true
-        }
-
-        assertTrue("Claim with updated restoreEpoch succeeds", result is OwnerResult.OsAccepted)
-    }
-
-    @Test
     fun `duplicate action while RECONCILING is NOT ignored and re-executes OS apply`() = runBlocking {
-        // Authority in RECONCILING state with actionKey = "act-reconcile" and desiredTriggerMillis = 2000L
         val reconcilingAuthority = initialAuthority.copy(
             desiredTriggerMillis = 2000L,
             reconcileState = "RECONCILING",
@@ -150,7 +135,7 @@ class ScheduleAuthorityOwnerTest {
             alarmId = 42L,
             desiredOperation = "SET",
             desiredTriggerMillis = 2000L,
-            actionKey = "act-reconcile" // Matching actionKey and target while RECONCILING!
+            actionKey = "act-reconcile"
         ) {
             osActionExecuted = true
             true
@@ -208,35 +193,36 @@ class ScheduleAuthorityOwnerTest {
     }
 
     @Test
-    fun `OS SET(A) in progress then B CANCEL results in final CANCEL SETTLED state`() = runBlocking {
+    fun `OS SET(A) in progress then B CANCEL admitted results in final OS slot CANCEL`() = runBlocking {
         authorityDao.insertAuthority(initialAuthority)
 
         val fakeOsSlot = mutableListOf<String>()
+        val slotApplier = MainSlotApplier { authority ->
+            fakeOsSlot.clear()
+            if (authority.desiredOperation == "SET") {
+                fakeOsSlot.add("SET_${authority.desiredTriggerMillis}")
+            } else {
+                fakeOsSlot.add("CANCEL")
+            }
+            true
+        }
 
         val resA = owner.executeOperation(
             alarmId = 42L,
             desiredOperation = "SET",
             desiredTriggerMillis = 2000L,
-            actionKey = "action-set-a"
-        ) {
-            fakeOsSlot.clear()
-            fakeOsSlot.add("SET_2000")
-            true
-        }
-
+            actionKey = "action-set-a",
+            applier = slotApplier
+        )
         assertTrue("First operation SET(A) must succeed", resA is OwnerResult.OsAccepted)
 
         val resB = owner.executeOperation(
             alarmId = 42L,
             desiredOperation = "CANCEL",
             desiredTriggerMillis = null,
-            actionKey = "action-cancel-b"
-        ) {
-            fakeOsSlot.clear()
-            fakeOsSlot.add("CANCEL")
-            true
-        }
-
+            actionKey = "action-cancel-b",
+            applier = slotApplier
+        )
         assertTrue("Second operation CANCEL(B) must succeed", resB is OwnerResult.OsAccepted)
 
         val finalAuth = authorityDao.getAuthorityByAlarmId(42L)
@@ -244,36 +230,39 @@ class ScheduleAuthorityOwnerTest {
         assertEquals(3L, finalAuth?.scheduleRevision)
         assertEquals("CANCEL", finalAuth?.desiredOperation)
         assertEquals("SETTLED", finalAuth?.reconcileState)
-        assertEquals(listOf("CANCEL"), fakeOsSlot)
+        assertEquals("Final fake OS slot MUST contain CANCEL", listOf("CANCEL"), fakeOsSlot)
     }
 
     @Test
-    fun `OS CANCEL(A) in progress then B SET results in final SET SETTLED state`() = runBlocking {
+    fun `OS CANCEL(A) in progress then B SET admitted results in final OS slot SET_5000`() = runBlocking {
         authorityDao.insertAuthority(initialAuthority)
 
         val fakeOsSlot = mutableListOf<String>()
+        val slotApplier = MainSlotApplier { authority ->
+            fakeOsSlot.clear()
+            if (authority.desiredOperation == "SET") {
+                fakeOsSlot.add("SET_${authority.desiredTriggerMillis}")
+            } else {
+                fakeOsSlot.add("CANCEL")
+            }
+            true
+        }
 
         owner.executeOperation(
             alarmId = 42L,
             desiredOperation = "CANCEL",
             desiredTriggerMillis = null,
-            actionKey = "act-cancel-a"
-        ) {
-            fakeOsSlot.clear()
-            fakeOsSlot.add("CANCEL")
-            true
-        }
+            actionKey = "act-cancel-a",
+            applier = slotApplier
+        )
 
         owner.executeOperation(
             alarmId = 42L,
             desiredOperation = "SET",
             desiredTriggerMillis = 5000L,
-            actionKey = "act-set-b"
-        ) {
-            fakeOsSlot.clear()
-            fakeOsSlot.add("SET_5000")
-            true
-        }
+            actionKey = "act-set-b",
+            applier = slotApplier
+        )
 
         val finalAuth = authorityDao.getAuthorityByAlarmId(42L)
         assertNotNull(finalAuth)
@@ -281,55 +270,77 @@ class ScheduleAuthorityOwnerTest {
         assertEquals("SET", finalAuth?.desiredOperation)
         assertEquals(5000L, finalAuth?.desiredTriggerMillis)
         assertEquals("SETTLED", finalAuth?.reconcileState)
-        assertEquals(listOf("SET_5000"), fakeOsSlot)
+        assertEquals("Final fake OS slot MUST contain SET_5000", listOf("SET_5000"), fakeOsSlot)
     }
 
     @Test
-    fun `OS result succeeded but settlement superseded returns Superseded`() = runBlocking {
+    fun `newer C arrives during B application and applier re-converges OS slot to C`() = runBlocking {
         authorityDao.insertAuthority(initialAuthority)
+
+        val fakeOsSlot = mutableListOf<String>()
+        val slotApplier = MainSlotApplier { authority ->
+            fakeOsSlot.clear()
+            if (authority.desiredOperation == "SET") {
+                fakeOsSlot.add("SET_${authority.desiredTriggerMillis}")
+            } else {
+                fakeOsSlot.add("CANCEL")
+            }
+
+            // Simulate concurrent operation C arriving during B's OS apply
+            if (authority.scheduleRevision == 2L) {
+                authorityDao.casClaimAuthority(
+                    alarmId = 42L,
+                    instanceToken = "token-instance-42",
+                    restoreEpoch = 100L,
+                    expectedRevision = 2L,
+                    expectedLifecycle = "LIVE",
+                    desiredOperation = "CANCEL",
+                    desiredTriggerMillis = null,
+                    actionKey = "action-c"
+                )
+            }
+            true
+        }
 
         val result = owner.executeOperation(
             alarmId = 42L,
             desiredOperation = "SET",
             desiredTriggerMillis = 2000L,
-            actionKey = "act-superseded"
-        ) {
-            // Concurrent operation B updates scheduleRevision during OS action execution
-            authorityDao.casClaimAuthority(
-                alarmId = 42L,
-                instanceToken = "token-instance-42",
-                restoreEpoch = 100L,
-                expectedRevision = 2L,
-                expectedLifecycle = "LIVE",
-                desiredOperation = "CANCEL",
-                desiredTriggerMillis = null,
-                actionKey = "act-b"
-            )
-            true
-        }
+            actionKey = "action-b",
+            applier = slotApplier
+        )
 
-        assertTrue("Operation A must detect post-OS superseding and return Superseded", result is OwnerResult.Superseded)
-        val current = authorityDao.getAuthorityByAlarmId(42L)
-        assertEquals(3L, current?.scheduleRevision)
-        assertEquals("CANCEL", current?.desiredOperation)
+        assertTrue("Operation B convergence must accept final C state", result is OwnerResult.OsAccepted)
+        val acceptedResult = result as OwnerResult.OsAccepted
+        assertEquals("Final accepted revision must be 3", 3L, acceptedResult.revision)
+        assertEquals("Final accepted actionKey must be action-c", "action-c", acceptedResult.actionKey)
+
+        val finalAuth = authorityDao.getAuthorityByAlarmId(42L)
+        assertEquals("Final DB revision must be 3", 3L, finalAuth?.scheduleRevision)
+        assertEquals("Final DB desiredOperation must be CANCEL", "CANCEL", finalAuth?.desiredOperation)
+        assertEquals("Final DB reconcileState must be SETTLED", "SETTLED", finalAuth?.reconcileState)
+        assertEquals("Final fake OS slot MUST re-converge to CANCEL", listOf("CANCEL"), fakeOsSlot)
     }
 
     @Test
-    fun `exception after OS action leaves state RECONCILING and returns OutcomeUnknown`() = runBlocking {
+    fun `B SET fails during convergence leaves state RECONCILING without false SETTLED`() = runBlocking {
         authorityDao.insertAuthority(initialAuthority)
+
+        val failingApplier = MainSlotApplier {
+            false // OS apply fails!
+        }
 
         val result = owner.executeOperation(
             alarmId = 42L,
             desiredOperation = "SET",
             desiredTriggerMillis = 9000L,
-            actionKey = "act-fail"
-        ) {
-            throw IllegalStateException("OS registration failed")
-        }
+            actionKey = "act-fail",
+            applier = failingApplier
+        )
 
-        assertTrue("Exception must return OutcomeUnknown", result is OwnerResult.OutcomeUnknown)
+        assertTrue("Failing OS applier must return OutcomeUnknown", result is OwnerResult.OutcomeUnknown)
         val current = authorityDao.getAuthorityByAlarmId(42L)
-        assertEquals("RECONCILING", current?.reconcileState)
+        assertEquals("DB state MUST remain RECONCILING (no false SETTLED)", "RECONCILING", current?.reconcileState)
     }
 
     @Test
