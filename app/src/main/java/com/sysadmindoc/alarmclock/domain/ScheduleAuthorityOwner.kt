@@ -40,6 +40,7 @@ sealed interface OwnerResult {
  * - Rejects unknown or unsupported desiredOperation values (only 'SET' and 'CANCEL' are valid).
  * - Full ownership validation including alarmId, instanceToken, restoreEpoch, scheduleRevision, actionKey, desiredOperation.
  * - Bounded convergence loop (max 5 attempts) to prevent infinite looping while leaving durable 'RECONCILING' state on timeout.
+ * - Dedicated [replayBootOsOperation] handles post-boot OS re-registration without fabricating synthetic actionKeys or advancing revision.
  * - Validates duplicate actionKey against operation kind and trigger target; rejects conflicting actions.
  * - Re-executes OS apply for pending RECONCILING actions; ignores only confirmed SETTLED matching duplicates.
  * - Checks exact alarm capability before claim and OS action for SET operations.
@@ -220,6 +221,73 @@ class ScheduleAuthorityOwner @Inject constructor(
                 finalUnsettled?.scheduleRevision ?: 0L,
                 IllegalStateException("Bounded convergence limit reached")
             )
+        }
+    }
+
+    /**
+     * Dedicated post-boot OS re-registration contract for live authorities.
+     * Re-applies OS slot operation using current ScheduleAuthority state WITHOUT advancing scheduleRevision or fabricating actionKey!
+     */
+    suspend fun replayBootOsOperation(alarmId: Long): OwnerResult {
+        return mutexFor(alarmId).withLock {
+            val authority = authorityDao.getAuthorityByAlarmId(alarmId)
+                ?: return@withLock OwnerResult.AuthorityNotFound
+
+            if (authority.lifecycle != "LIVE") {
+                Log.i(TAG, "Boot replay skipped for alarm $alarmId: lifecycle is ${authority.lifecycle}")
+                return@withLock OwnerResult.DuplicateIgnored
+            }
+
+            if (authority.desiredOperation !in SUPPORTED_OPERATIONS) {
+                Log.e(TAG, "Unsupported desiredOperation '${authority.desiredOperation}' for boot replay on alarm $alarmId")
+                return@withLock OwnerResult.OutcomeUnknown(
+                    authority.scheduleRevision,
+                    IllegalArgumentException("Unsupported desiredOperation: '${authority.desiredOperation}'")
+                )
+            }
+
+            // Check exact alarm permission for SET
+            if (authority.desiredOperation == "SET" && !exactPermissionChecker()) {
+                Log.w(TAG, "Exact alarm capability unavailable during boot replay for alarm $alarmId")
+                return@withLock OwnerResult.PermissionBlocked(authority.scheduleRevision)
+            }
+
+            // Apply OS action via injected MainSlotApplier
+            val osSuccess = try {
+                mainSlotApplier.applySlotOperation(authority)
+            } catch (e: CancellationException) {
+                Log.w(TAG, "Boot OS replay cancelled for alarm $alarmId at rev ${authority.scheduleRevision}")
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Boot OS replay threw exception for alarm $alarmId at rev ${authority.scheduleRevision}", e)
+                return@withLock OwnerResult.OutcomeUnknown(authority.scheduleRevision, e)
+            }
+
+            if (!osSuccess) {
+                Log.w(TAG, "Boot OS replay returned false for alarm $alarmId at rev ${authority.scheduleRevision}")
+                return@withLock OwnerResult.OutcomeUnknown(authority.scheduleRevision, IllegalStateException("Boot OS action returned false"))
+            }
+
+            // Post-OS re-read: verify no newer revision or changed incarnation arrived during OS apply
+            val latestAuth = authorityDao.getAuthorityByAlarmId(alarmId)
+            if (latestAuth == null || latestAuth.scheduleRevision != authority.scheduleRevision ||
+                latestAuth.instanceToken != authority.instanceToken || latestAuth.restoreEpoch != authority.restoreEpoch) {
+                Log.w(TAG, "Boot OS replay detected changed revision/incarnation for alarm $alarmId; superseding")
+                return@withLock OwnerResult.Superseded(latestAuth?.scheduleRevision ?: authority.scheduleRevision)
+            }
+
+            // Ensure reconcileState is SETTLED in DB (retaining original scheduleRevision and actionKey 100% UNCHANGED!)
+            if (latestAuth.reconcileState != "SETTLED") {
+                authorityDao.settleAuthority(
+                    alarmId = alarmId,
+                    instanceToken = latestAuth.instanceToken,
+                    restoreEpoch = latestAuth.restoreEpoch,
+                    claimedRevision = latestAuth.scheduleRevision,
+                    expectedActionKey = latestAuth.actionKey
+                )
+            }
+
+            OwnerResult.OsAccepted(latestAuth.scheduleRevision, latestAuth.actionKey)
         }
     }
 }

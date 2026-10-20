@@ -110,9 +110,9 @@ object DatabaseModule {
     @Singleton
     fun provideExactPermissionChecker(@ApplicationContext context: Context): () -> Boolean {
         return {
-            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? android.app.AlarmManager
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                alarmManager?.canScheduleExactAlarms() != false
+                val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? android.app.AlarmManager
+                alarmManager?.canScheduleExactAlarms() == true
             } else {
                 true
             }
