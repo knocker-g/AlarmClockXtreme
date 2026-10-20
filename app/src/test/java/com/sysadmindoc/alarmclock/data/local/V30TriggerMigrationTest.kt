@@ -224,11 +224,8 @@ class V30TriggerMigrationTest {
     }
 
     @Test
-    fun `unknown or modified trigger in v29 database causes MIGRATION_29_30 to abort safely`() = runBlocking {
-        val unknownDbFile = context.getDatabasePath("v29_unknown_trigger_test.db")
-        if (unknownDbFile.exists()) unknownDbFile.delete()
-
-        val sqliteDb = SQLiteDatabase.openOrCreateDatabase(unknownDbFile, null)
+    fun `unknown or modified trigger in v29 database causes MIGRATION_29_30 to abort safely and rollback`() = runBlocking {
+        val sqliteDb = SQLiteDatabase.openOrCreateDatabase(dbFile, null)
         populateFull28Schema(sqliteDb)
         sqliteDb.execSQL(
             "CREATE TABLE IF NOT EXISTS `durable_operation_intent` (`operationToken` TEXT NOT NULL, `alarmId` INTEGER NOT NULL, `operationEpoch` INTEGER NOT NULL, `incarnationId` TEXT NOT NULL, `operationKind` TEXT NOT NULL, `expectedOwnerToken` TEXT, `expectedScheduleRevision` INTEGER, `expectedRestoreEpoch` INTEGER, `phase` TEXT NOT NULL, `intentRevision` INTEGER NOT NULL, PRIMARY KEY(`operationToken`))"
@@ -239,7 +236,7 @@ class V30TriggerMigrationTest {
         sqliteDb.close()
 
         val openResult = runCatching {
-            Room.databaseBuilder(context, AlarmDatabase::class.java, "v29_unknown_trigger_test.db")
+            Room.databaseBuilder(context, AlarmDatabase::class.java, "v30_migration_test.db")
                 .allowMainThreadQueries()
                 .setJournalMode(RoomDatabase.JournalMode.TRUNCATE)
                 .addMigrations(*AlarmDatabase.ALL_MIGRATIONS)
@@ -249,20 +246,19 @@ class V30TriggerMigrationTest {
         }
 
         assertTrue("Migration must abort on unknown/modified trigger set", openResult.isFailure)
+        val cause = openResult.exceptionOrNull()
+        assertNotNull(cause)
+        assertTrue("Exception must state migration 29->30 aborted: ${cause?.message}", cause?.message?.contains("Migration 29->30 aborted") == true)
 
-        // Verify database file was NOT destructively wiped or corrupted
-        val checkDb = SQLiteDatabase.openDatabase(unknownDbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
+        // Verify database file was NOT destructively wiped or corrupted and remains version 29
+        val checkDb = SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
         assertEquals(29, checkDb.version)
         checkDb.close()
-        if (unknownDbFile.exists()) unknownDbFile.delete()
     }
 
     @Test
-    fun `invalid persisted intent row in v29 database causes MIGRATION_29_30 to abort safely`() = runBlocking {
-        val invalidRowDbFile = context.getDatabasePath("v29_invalid_row_test.db")
-        if (invalidRowDbFile.exists()) invalidRowDbFile.delete()
-
-        val sqliteDb = SQLiteDatabase.openOrCreateDatabase(invalidRowDbFile, null)
+    fun `invalid persisted intent row in v29 database causes MIGRATION_29_30 to abort safely and rollback`() = runBlocking {
+        val sqliteDb = SQLiteDatabase.openOrCreateDatabase(dbFile, null)
         populateFull28Schema(sqliteDb)
         sqliteDb.execSQL(
             "CREATE TABLE IF NOT EXISTS `durable_operation_intent` (`operationToken` TEXT NOT NULL, `alarmId` INTEGER NOT NULL, `operationEpoch` INTEGER NOT NULL, `incarnationId` TEXT NOT NULL, `operationKind` TEXT NOT NULL, `expectedOwnerToken` TEXT, `expectedScheduleRevision` INTEGER, `expectedRestoreEpoch` INTEGER, `phase` TEXT NOT NULL, `intentRevision` INTEGER NOT NULL, PRIMARY KEY(`operationToken`))"
@@ -276,7 +272,7 @@ class V30TriggerMigrationTest {
         sqliteDb.close()
 
         val openResult = runCatching {
-            Room.databaseBuilder(context, AlarmDatabase::class.java, "v29_invalid_row_test.db")
+            Room.databaseBuilder(context, AlarmDatabase::class.java, "v30_migration_test.db")
                 .allowMainThreadQueries()
                 .setJournalMode(RoomDatabase.JournalMode.TRUNCATE)
                 .addMigrations(*AlarmDatabase.ALL_MIGRATIONS)
@@ -286,12 +282,54 @@ class V30TriggerMigrationTest {
         }
 
         assertTrue("Migration must abort on invalid persisted intent row", openResult.isFailure)
+        val cause = openResult.exceptionOrNull()
+        assertNotNull(cause)
+        assertTrue("Exception must cite row validation failure: ${cause?.message}", cause?.message?.contains("Persisted row has") == true)
 
-        // Verify database file was NOT destructively wiped or corrupted
-        val checkDb = SQLiteDatabase.openDatabase(invalidRowDbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
+        // Verify database file was NOT destructively wiped or corrupted and remains version 29
+        val checkDb = SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
         assertEquals(29, checkDb.version)
         checkDb.close()
-        if (invalidRowDbFile.exists()) invalidRowDbFile.delete()
+    }
+
+    @Test
+    fun `duplicate unresolved intents in v29 database causes MIGRATION_29_30 to abort safely and rollback`() = runBlocking {
+        val sqliteDb = SQLiteDatabase.openOrCreateDatabase(dbFile, null)
+        populateFull28Schema(sqliteDb)
+        sqliteDb.execSQL(
+            "CREATE TABLE IF NOT EXISTS `durable_operation_intent` (`operationToken` TEXT NOT NULL, `alarmId` INTEGER NOT NULL, `operationEpoch` INTEGER NOT NULL, `incarnationId` TEXT NOT NULL, `operationKind` TEXT NOT NULL, `expectedOwnerToken` TEXT, `expectedScheduleRevision` INTEGER, `expectedRestoreEpoch` INTEGER, `phase` TEXT NOT NULL, `intentRevision` INTEGER NOT NULL, PRIMARY KEY(`operationToken`))"
+        )
+        // Insert two unresolved intents for the same alarmId = 42
+        sqliteDb.execSQL(
+            "INSERT INTO durable_operation_intent (operationToken, alarmId, operationEpoch, incarnationId, operationKind, phase, intentRevision) " +
+                "VALUES ('tok-dup-1', 42, 1, 'inc-1', 'SET', 'PENDING', 1)"
+        )
+        sqliteDb.execSQL(
+            "INSERT INTO durable_operation_intent (operationToken, alarmId, operationEpoch, incarnationId, operationKind, phase, intentRevision) " +
+                "VALUES ('tok-dup-2', 42, 2, 'inc-2', 'SET', 'IN_FLIGHT', 1)"
+        )
+        sqliteDb.version = 29
+        sqliteDb.close()
+
+        val openResult = runCatching {
+            Room.databaseBuilder(context, AlarmDatabase::class.java, "v30_migration_test.db")
+                .allowMainThreadQueries()
+                .setJournalMode(RoomDatabase.JournalMode.TRUNCATE)
+                .addMigrations(*AlarmDatabase.ALL_MIGRATIONS)
+                .addCallback(AlarmDatabase.DATABASE_CALLBACK)
+                .build()
+                .openHelper.writableDatabase
+        }
+
+        assertTrue("Migration must abort on duplicate unresolved intents", openResult.isFailure)
+        val cause = openResult.exceptionOrNull()
+        assertNotNull(cause)
+        assertTrue("Exception must cite duplicate unresolved intent error: ${cause?.message}", cause?.message?.contains("Duplicate unresolved operation intent") == true)
+
+        // Verify database file was NOT destructively wiped or corrupted and remains version 29
+        val checkDb = SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
+        assertEquals(29, checkDb.version)
+        checkDb.close()
     }
 
     @Test
