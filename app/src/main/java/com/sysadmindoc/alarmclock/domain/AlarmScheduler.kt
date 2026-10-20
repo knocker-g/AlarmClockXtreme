@@ -467,22 +467,56 @@ class AlarmScheduler @Inject constructor(
      * still armed and would otherwise fire a spurious second time. Safe no-op when
      * nothing is armed.
      *
-     * Validates [expectedTriggerTime] generation: if a newer occurrence is already
-     * scheduled, stale SmartWake cancellation is ignored to protect the successor.
+     * Validates full generation fence ([expectedTriggerTime], [expectedInstanceToken],
+     * [expectedRestoreEpoch], [expectedScheduleRevision]): if a newer occurrence is already
+     * scheduled or incarnation/generation changed, stale SmartWake cancellation is rejected.
      */
-    fun cancelMainScheduledAlarm(alarmId: Long, expectedTriggerTime: Long = 0L) {
+    fun cancelMainScheduledAlarm(
+        alarmId: Long,
+        expectedTriggerTime: Long = 0L,
+        expectedInstanceToken: String? = null,
+        expectedRestoreEpoch: Long? = null,
+        expectedScheduleRevision: Long? = null
+    ): Boolean {
+        val alarm = runBlocking { repository.getById(alarmId)?.sanitized() }
+            ?: run {
+                Log.w("AlarmScheduler", "Alarm $alarmId missing; rejecting SmartWake cancellation")
+                return false
+            }
+
+        val authority = runBlocking { repository.getAuthorityByAlarmId(alarmId) }
+
+        // Generation Fence Verification
+        if (expectedInstanceToken != null && authority != null && authority.instanceToken != expectedInstanceToken) {
+            Log.w("AlarmScheduler", "Stale SmartWake cancellation ignored for alarm $alarmId (instanceToken mismatch)")
+            return false
+        }
+
+        if (expectedRestoreEpoch != null && authority != null && authority.restoreEpoch != expectedRestoreEpoch) {
+            Log.w("AlarmScheduler", "Stale SmartWake cancellation ignored for alarm $alarmId (restoreEpoch mismatch)")
+            return false
+        }
+
+        if (expectedScheduleRevision != null && authority != null && authority.scheduleRevision != expectedScheduleRevision) {
+            Log.w("AlarmScheduler", "Stale SmartWake cancellation ignored for alarm $alarmId (scheduleRevision mismatch)")
+            return false
+        }
+
         if (expectedTriggerTime > 0L) {
-            val alarm = runBlocking { repository.getById(alarmId)?.sanitized() }
-            if (alarm != null && alarm.nextTriggerTime > expectedTriggerTime) {
+            if (alarm.nextTriggerTime > expectedTriggerTime ||
+                (authority != null && authority.desiredTriggerMillis != null && authority.desiredTriggerMillis > expectedTriggerTime)) {
                 Log.w("AlarmScheduler", "Stale SmartWake cancellation ignored for alarm $alarmId (current ${alarm.nextTriggerTime} > expected $expectedTriggerTime)")
-                return
+                return false
             }
         }
+
         val pendingIntent = lookupPendingIntentForCancel(alarmId)
         if (pendingIntent != null) {
             alarmManager.cancel(pendingIntent)
             pendingIntent.cancel()
+            return true
         }
+        return false
     }
 
     /**

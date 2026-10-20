@@ -25,6 +25,7 @@ class AlarmRepository @Inject constructor(
     suspend fun getEnabled(): List<Alarm> = dao.getEnabled()
     suspend fun getNextAlarm(): Alarm? = dao.getNextAlarm()
     suspend fun getAll(): List<Alarm> = dao.getAll()
+    suspend fun getAuthorityByAlarmId(alarmId: Long) = database.scheduleAuthorityDao().getAuthorityByAlarmId(alarmId)
 
     suspend fun save(alarm: Alarm): Long {
         val sanitized = alarm.sanitized()

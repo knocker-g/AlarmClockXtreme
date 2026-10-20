@@ -189,8 +189,9 @@ class AlarmSchedulerTest {
         val targetTime = System.currentTimeMillis() + 600_000L
         val alarm = enabledAlarm(id = 300L).copy(nextTriggerTime = targetTime)
         coEvery { repository.getById(300L) } returns alarm
+        coEvery { repository.getAuthorityByAlarmId(300L) } returns null
 
-        scheduler.cancelMainScheduledAlarm(300L, expectedTriggerTime = targetTime)
+        val canceled = scheduler.cancelMainScheduledAlarm(300L, expectedTriggerTime = targetTime)
 
         coVerify { repository.getById(300L) }
     }
@@ -201,10 +202,74 @@ class AlarmSchedulerTest {
         val newerTargetTime = System.currentTimeMillis() + 86400_000L
         val alarmWithNewerTrigger = enabledAlarm(id = 301L).copy(nextTriggerTime = newerTargetTime)
         coEvery { repository.getById(301L) } returns alarmWithNewerTrigger
+        coEvery { repository.getAuthorityByAlarmId(301L) } returns null
 
-        scheduler.cancelMainScheduledAlarm(301L, expectedTriggerTime = originalTargetTime)
+        val canceled = scheduler.cancelMainScheduledAlarm(301L, expectedTriggerTime = originalTargetTime)
 
-        coVerify { repository.getById(301L) }
+        assertFalse("Stale cancellation MUST be rejected when current trigger is newer", canceled)
+    }
+
+    @Test
+    fun `missing alarm row rejects SmartWake cancellation`() = runTest {
+        coEvery { repository.getById(302L) } returns null
+
+        val canceled = scheduler.cancelMainScheduledAlarm(302L, expectedTriggerTime = 1000L)
+
+        assertFalse("Missing alarm row MUST reject cancellation", canceled)
+    }
+
+    @Test
+    fun `new incarnation instanceToken mismatch rejects SmartWake cancellation`() = runTest {
+        val alarm = enabledAlarm(id = 303L).copy(nextTriggerTime = 1000L)
+        val authority = com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority(
+            alarmId = 303L,
+            instanceToken = "token-NEW-INC",
+            definitionRevision = 1L,
+            scheduleRevision = 1L,
+            lifecycle = "LIVE",
+            desiredOperation = "SET",
+            desiredTriggerMillis = 1000L,
+            reconcileState = "SETTLED",
+            restoreEpoch = 100L,
+            actionKey = "act-303"
+        )
+        coEvery { repository.getById(303L) } returns alarm
+        coEvery { repository.getAuthorityByAlarmId(303L) } returns authority
+
+        val canceled = scheduler.cancelMainScheduledAlarm(
+            alarmId = 303L,
+            expectedTriggerTime = 1000L,
+            expectedInstanceToken = "token-OLD-INC" // Mismatched instance token!
+        )
+
+        assertFalse("InstanceToken mismatch MUST reject cancellation", canceled)
+    }
+
+    @Test
+    fun `restoreEpoch mismatch rejects SmartWake cancellation`() = runTest {
+        val alarm = enabledAlarm(id = 304L).copy(nextTriggerTime = 1000L)
+        val authority = com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority(
+            alarmId = 304L,
+            instanceToken = "token-304",
+            definitionRevision = 1L,
+            scheduleRevision = 1L,
+            lifecycle = "LIVE",
+            desiredOperation = "SET",
+            desiredTriggerMillis = 1000L,
+            reconcileState = "SETTLED",
+            restoreEpoch = 200L, // Current restore epoch is 200L
+            actionKey = "act-304"
+        )
+        coEvery { repository.getById(304L) } returns alarm
+        coEvery { repository.getAuthorityByAlarmId(304L) } returns authority
+
+        val canceled = scheduler.cancelMainScheduledAlarm(
+            alarmId = 304L,
+            expectedTriggerTime = 1000L,
+            expectedRestoreEpoch = 100L // Mismatched restore epoch!
+        )
+
+        assertFalse("RestoreEpoch mismatch MUST reject cancellation", canceled)
     }
 
     private fun enabledAlarm(id: Long): Alarm = Alarm(
