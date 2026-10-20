@@ -27,6 +27,7 @@ import com.sysadmindoc.alarmclock.worker.FireWatchdogWorker
 import com.sysadmindoc.alarmclock.worker.HueSunriseNotifications
 import com.sysadmindoc.alarmclock.worker.HueSunriseWorker
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import java.time.Instant
 import java.time.ZoneId
@@ -42,7 +43,8 @@ class AlarmScheduler @Inject constructor(
     private val preferencesManager: com.sysadmindoc.alarmclock.data.preferences.PreferencesManager,
     private val holidayRepository: HolidayRepository,
     private val alarmIncidentRepository: AlarmIncidentRepository,
-    private val weatherRepository: com.sysadmindoc.alarmclock.data.repository.WeatherRepository
+    private val weatherRepository: com.sysadmindoc.alarmclock.data.repository.WeatherRepository,
+    private val scheduleAuthorityOwnerProvider: javax.inject.Provider<ScheduleAuthorityOwner>? = null
 ) {
     private val alarmManager: AlarmManager
         get() = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
@@ -581,20 +583,23 @@ class AlarmScheduler @Inject constructor(
             status = AlarmIncidentEvent.STATUS_REQUESTED,
             reasonCode = if (showAlarmClockIcon) "SET_ALARM_CLOCK" else "SET_EXACT_ALLOW_WHILE_IDLE"
         )
-        val pendingIntent = createPendingIntent(alarmId, triggerTime, fireId)
-        try {
-            if (showAlarmClockIcon) {
-                alarmManager.setAlarmClock(
-                    AlarmManager.AlarmClockInfo(triggerTime, createShowIntent(alarmId)),
-                    pendingIntent
-                )
-            } else {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    triggerTime,
-                    pendingIntent
+        val owner = scheduleAuthorityOwnerProvider?.get()
+        val success = if (owner != null) {
+            val actionKey = "act-sched-$alarmId-$triggerTime"
+            val ownerRes = runBlocking {
+                owner.executeOperation(
+                    alarmId = alarmId,
+                    desiredOperation = "SET",
+                    desiredTriggerMillis = triggerTime,
+                    actionKey = actionKey
                 )
             }
+            ownerRes is OwnerResult.OsAccepted || ownerRes is OwnerResult.DuplicateIgnored
+        } else {
+            applyRawOsSet(alarmId, triggerTime)
+        }
+
+        if (success) {
             recordScheduleIncident(
                 alarmId = alarmId,
                 fireId = fireId,
@@ -602,36 +607,8 @@ class AlarmScheduler @Inject constructor(
                 status = AlarmIncidentEvent.STATUS_SUCCEEDED,
                 reasonCode = if (showAlarmClockIcon) "SET_ALARM_CLOCK" else "SET_EXACT_ALLOW_WHILE_IDLE"
             )
-            return true
-        } catch (e: SecurityException) {
-            Log.e(
-                "AlarmScheduler",
-                "Exact alarm registration denied (SecurityException) for alarm $alarmId",
-                e
-            )
-            recordScheduleIncident(
-                alarmId = alarmId,
-                fireId = fireId,
-                triggerTime = triggerTime,
-                status = AlarmIncidentEvent.STATUS_FAILED,
-                reasonCode = "SET_ALARM_CLOCK_SECURITY_EXCEPTION_${e.javaClass.simpleName}"
-            )
-            return false
-        } catch (e: Exception) {
-            android.util.Log.e(
-                "AlarmScheduler",
-                "Unexpected error scheduling alarm $alarmId",
-                e
-            )
-            recordScheduleIncident(
-                alarmId = alarmId,
-                fireId = fireId,
-                triggerTime = triggerTime,
-                status = AlarmIncidentEvent.STATUS_FAILED,
-                reasonCode = "SET_ALARM_CLOCK_FAILED_${e.javaClass.simpleName}"
-            )
-            return false
         }
+        return success
     }
 
     private fun recordScheduleIncident(
@@ -773,10 +750,19 @@ class AlarmScheduler @Inject constructor(
     }
 
     private fun cancelScheduledEntries(alarmId: Long, includeFollowUpWorkers: Boolean = false) {
-        val pendingIntent = lookupPendingIntentForCancel(alarmId)
-        if (pendingIntent != null) {
-            alarmManager.cancel(pendingIntent)
-            pendingIntent.cancel()
+        val owner = scheduleAuthorityOwnerProvider?.get()
+        if (owner != null) {
+            val actionKey = "act-cancel-$alarmId-${System.currentTimeMillis()}"
+            runBlocking {
+                owner.executeOperation(
+                    alarmId = alarmId,
+                    desiredOperation = "CANCEL",
+                    desiredTriggerMillis = null,
+                    actionKey = actionKey
+                )
+            }
+        } else {
+            applyRawOsCancel(alarmId)
         }
         DirectBootAlarmCache.removeIfMatches(context, alarmId)
 
