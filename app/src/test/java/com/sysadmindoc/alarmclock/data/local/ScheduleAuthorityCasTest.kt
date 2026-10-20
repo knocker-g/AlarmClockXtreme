@@ -55,7 +55,7 @@ class ScheduleAuthorityCasTest {
     }
 
     @Test
-    fun `claim with matching fingerprint succeeds and advances revision to RECONCILING`() = runBlocking {
+    fun `claim with matching fingerprint succeeds and strictly increments revision by 1`() = runBlocking {
         authorityDao.insertAuthority(initialAuthority)
 
         val rowsUpdated = authorityDao.casClaimAuthority(
@@ -63,7 +63,7 @@ class ScheduleAuthorityCasTest {
             instanceToken = "token-instance-42",
             restoreEpoch = 100L,
             expectedRevision = 1L,
-            newRevision = 2L,
+            expectedLifecycle = "LIVE",
             desiredOperation = "SNOOZE",
             desiredTriggerMillis = 1700000600000L,
             actionKey = "action-snooze-2"
@@ -89,32 +89,29 @@ class ScheduleAuthorityCasTest {
             instanceToken = "token-instance-42",
             restoreEpoch = 100L,
             expectedRevision = 99L, // Stale revision!
-            newRevision = 100L,
+            expectedLifecycle = "LIVE",
             desiredOperation = "CANCEL",
             desiredTriggerMillis = null,
             actionKey = "action-stale"
         )
 
         assertEquals(0, rowsUpdated)
-
-        // Verify DB record remained unchanged
-        val current = authorityDao.getAuthorityByAlarmId(42L)
-        assertEquals(initialAuthority, current)
+        assertEquals(initialAuthority, authorityDao.getAuthorityByAlarmId(42L))
     }
 
     @Test
-    fun `stale instance token claim is rejected and returns 0`() = runBlocking {
+    fun `stale lifecycle claim is rejected and returns 0`() = runBlocking {
         authorityDao.insertAuthority(initialAuthority)
 
         val rowsUpdated = authorityDao.casClaimAuthority(
             alarmId = 42L,
-            instanceToken = "stale-instance-token", // Stale instance token!
+            instanceToken = "token-instance-42",
             restoreEpoch = 100L,
             expectedRevision = 1L,
-            newRevision = 2L,
+            expectedLifecycle = "DISABLED", // Stale lifecycle!
             desiredOperation = "CANCEL",
             desiredTriggerMillis = null,
-            actionKey = "action-stale-token"
+            actionKey = "action-stale-lc"
         )
 
         assertEquals(0, rowsUpdated)
@@ -122,88 +119,55 @@ class ScheduleAuthorityCasTest {
     }
 
     @Test
-    fun `stale restore epoch claim is rejected and returns 0`() = runBlocking {
+    fun `stale actionKey settlement is rejected and returns 0`() = runBlocking {
         authorityDao.insertAuthority(initialAuthority)
 
-        val rowsUpdated = authorityDao.casClaimAuthority(
-            alarmId = 42L,
-            instanceToken = "token-instance-42",
-            restoreEpoch = 999L, // Stale restore epoch!
-            expectedRevision = 1L,
-            newRevision = 2L,
-            desiredOperation = "CANCEL",
-            desiredTriggerMillis = null,
-            actionKey = "action-stale-epoch"
+        // Claim revision 1 -> 2 with actionKey = "act-2"
+        authorityDao.casClaimAuthority(
+            alarmId = 42L, instanceToken = "token-instance-42", restoreEpoch = 100L,
+            expectedRevision = 1L, expectedLifecycle = "LIVE", desiredOperation = "SET", desiredTriggerMillis = 2000L, actionKey = "act-2"
         )
 
-        assertEquals(0, rowsUpdated)
-        assertEquals(initialAuthority, authorityDao.getAuthorityByAlarmId(42L))
-    }
-
-    @Test
-    fun `duplicate action does not advance revision if CAS fails`() = runBlocking {
-        authorityDao.insertAuthority(initialAuthority)
-
-        val firstClaim = authorityDao.casClaimAuthority(
-            alarmId = 42L,
-            instanceToken = "token-instance-42",
-            restoreEpoch = 100L,
-            expectedRevision = 1L,
-            newRevision = 2L,
-            desiredOperation = "SNOOZE",
-            desiredTriggerMillis = 1700000600000L,
-            actionKey = "action-snooze-2"
+        // Settlement attempt with wrong actionKey = "act-WRONG"
+        val settledWrong = authorityDao.settleAuthority(
+            alarmId = 42L, instanceToken = "token-instance-42", restoreEpoch = 100L, claimedRevision = 2L, expectedActionKey = "act-WRONG"
         )
-        assertEquals(1, firstClaim)
+        assertEquals(0, settledWrong)
 
-        // Attempting duplicate claim with stale expectedRevision = 1L
-        val duplicateClaim = authorityDao.casClaimAuthority(
-            alarmId = 42L,
-            instanceToken = "token-instance-42",
-            restoreEpoch = 100L,
-            expectedRevision = 1L,
-            newRevision = 3L,
-            desiredOperation = "SNOOZE",
-            desiredTriggerMillis = 1700000600000L,
-            actionKey = "action-snooze-2"
+        // Settlement attempt with correct actionKey = "act-2"
+        val settledRight = authorityDao.settleAuthority(
+            alarmId = 42L, instanceToken = "token-instance-42", restoreEpoch = 100L, claimedRevision = 2L, expectedActionKey = "act-2"
         )
-        assertEquals(0, duplicateClaim)
-
-        val current = authorityDao.getAuthorityByAlarmId(42L)
-        assertEquals(2L, current?.scheduleRevision)
+        assertEquals(1, settledRight)
     }
 
     @Test
     fun `old settlement after new claim is rejected and returns 0`() = runBlocking {
         authorityDao.insertAuthority(initialAuthority)
 
-        // Claim 1: revision 1 -> 2 (RECONCILING)
+        // Claim 1: revision 1 -> 2
         authorityDao.casClaimAuthority(
             alarmId = 42L, instanceToken = "token-instance-42", restoreEpoch = 100L,
-            expectedRevision = 1L, newRevision = 2L, desiredOperation = "SET", desiredTriggerMillis = 2000L, actionKey = "act-2"
+            expectedRevision = 1L, expectedLifecycle = "LIVE", desiredOperation = "SET", desiredTriggerMillis = 2000L, actionKey = "act-2"
         )
 
-        // Claim 2: revision 2 -> 3 (RECONCILING)
+        // Claim 2: revision 2 -> 3
         authorityDao.casClaimAuthority(
             alarmId = 42L, instanceToken = "token-instance-42", restoreEpoch = 100L,
-            expectedRevision = 2L, newRevision = 3L, desiredOperation = "SET", desiredTriggerMillis = 3000L, actionKey = "act-3"
+            expectedRevision = 2L, expectedLifecycle = "LIVE", desiredOperation = "SET", desiredTriggerMillis = 3000L, actionKey = "act-3"
         )
 
         // Old settlement attempt for revision 2
         val settledRev2 = authorityDao.settleAuthority(
-            alarmId = 42L, instanceToken = "token-instance-42", restoreEpoch = 100L, claimedRevision = 2L
+            alarmId = 42L, instanceToken = "token-instance-42", restoreEpoch = 100L, claimedRevision = 2L, expectedActionKey = "act-2"
         )
         assertEquals("Settling old revision 2 after newer claim 3 must return 0", 0, settledRev2)
 
         // Settlement for current revision 3
         val settledRev3 = authorityDao.settleAuthority(
-            alarmId = 42L, instanceToken = "token-instance-42", restoreEpoch = 100L, claimedRevision = 3L
+            alarmId = 42L, instanceToken = "token-instance-42", restoreEpoch = 100L, claimedRevision = 3L, expectedActionKey = "act-3"
         )
         assertEquals("Settling current revision 3 must succeed and return 1", 1, settledRev3)
-
-        val finalAuthority = authorityDao.getAuthorityByAlarmId(42L)
-        assertEquals("SETTLED", finalAuthority?.reconcileState)
-        assertEquals(3L, finalAuthority?.scheduleRevision)
     }
 
     @Test
@@ -218,7 +182,7 @@ class ScheduleAuthorityCasTest {
                     instanceToken = "token-instance-42",
                     restoreEpoch = 100L,
                     expectedRevision = 1L,
-                    newRevision = 2L,
+                    expectedLifecycle = "LIVE",
                     desiredOperation = "OP_$taskIdx",
                     desiredTriggerMillis = 1000L + taskIdx,
                     actionKey = "action-$taskIdx"

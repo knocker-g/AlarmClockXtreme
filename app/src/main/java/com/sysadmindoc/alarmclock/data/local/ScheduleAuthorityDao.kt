@@ -31,20 +31,15 @@ interface ScheduleAuthorityDao {
     suspend fun getAllMeta(): List<ScheduleAuthorityMeta>
 
     /**
-     * Generation-qualified CAS update for ScheduleAuthority.
-     * Validates matching alarmId, instanceToken, restoreEpoch, and scheduleRevision before claiming.
+     * Generation-qualified CAS claim update for ScheduleAuthority.
+     * Strictly increments scheduleRevision by 1 and sets reconcileState = 'RECONCILING'.
      *
-     * On match:
-     * - Advances scheduleRevision to [newRevision]
-     * - Updates desiredOperation and desiredTriggerMillis
-     * - Marks reconcileState = 'RECONCILING'
-     * - Updates actionKey
-     *
+     * Validates matching alarmId, instanceToken, restoreEpoch, expectedLifecycle, and scheduleRevision.
      * Returns 1 if transition succeeded, or 0 if stale, absent, or conflicting identity/revision.
      */
     @Query("""
         UPDATE schedule_authority
-        SET scheduleRevision = :newRevision,
+        SET scheduleRevision = scheduleRevision + 1,
             desiredOperation = :desiredOperation,
             desiredTriggerMillis = :desiredTriggerMillis,
             reconcileState = 'RECONCILING',
@@ -53,23 +48,24 @@ interface ScheduleAuthorityDao {
           AND instanceToken = :instanceToken
           AND restoreEpoch = :restoreEpoch
           AND scheduleRevision = :expectedRevision
+          AND lifecycle = :expectedLifecycle
     """)
     suspend fun casClaimAuthority(
         alarmId: Long,
         instanceToken: String,
         restoreEpoch: Long,
         expectedRevision: Long,
-        newRevision: Long,
+        expectedLifecycle: String,
         desiredOperation: String,
         desiredTriggerMillis: Long?,
         actionKey: String?
     ): Int
 
     /**
-     * Conditional settlement requiring matching owner identity, revision, and pending RECONCILING state.
+     * Conditional settlement requiring matching owner identity, revision, expected actionKey, and pending RECONCILING state.
      * Transitions reconcileState from 'RECONCILING' to 'SETTLED'.
      *
-     * Returns 1 if settlement succeeded, or 0 if stale or superseded.
+     * Returns 1 if settlement succeeded, or 0 if stale, mismatched actionKey, or superseded.
      */
     @Query("""
         UPDATE schedule_authority
@@ -78,23 +74,26 @@ interface ScheduleAuthorityDao {
           AND instanceToken = :instanceToken
           AND restoreEpoch = :restoreEpoch
           AND scheduleRevision = :claimedRevision
+          AND actionKey IS :expectedActionKey
           AND reconcileState = 'RECONCILING'
     """)
     suspend fun settleAuthority(
         alarmId: Long,
         instanceToken: String,
         restoreEpoch: Long,
-        claimedRevision: Long
+        claimedRevision: Long,
+        expectedActionKey: String?
     ): Int
 
     /**
      * Generation-qualified lifecycle update for ScheduleAuthority (e.g. LIVE <-> DISABLED).
+     * Strictly increments scheduleRevision by 1.
      *
      * Returns 1 if transition succeeded, or 0 if stale or conflicting.
      */
     @Query("""
         UPDATE schedule_authority
-        SET scheduleRevision = :newRevision,
+        SET scheduleRevision = scheduleRevision + 1,
             lifecycle = :newLifecycle,
             desiredOperation = :desiredOperation,
             desiredTriggerMillis = :desiredTriggerMillis,
@@ -104,13 +103,14 @@ interface ScheduleAuthorityDao {
           AND instanceToken = :instanceToken
           AND restoreEpoch = :restoreEpoch
           AND scheduleRevision = :expectedRevision
+          AND lifecycle = :expectedLifecycle
     """)
     suspend fun casUpdateLifecycle(
         alarmId: Long,
         instanceToken: String,
         restoreEpoch: Long,
         expectedRevision: Long,
-        newRevision: Long,
+        expectedLifecycle: String,
         newLifecycle: String,
         desiredOperation: String,
         desiredTriggerMillis: Long?,
