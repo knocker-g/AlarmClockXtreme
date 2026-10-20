@@ -109,7 +109,6 @@ class ScheduleAuthorityPreflightAssessorTest {
     fun `one missing Authority is classified as UNKNOWN and blocks cutover`() = runBlocking {
         coEvery { alarmRepository.getAll() } returns listOf(testAlarm)
         authorityDao.insertMeta(testMeta)
-        // No ScheduleAuthority inserted in authorityDao!
 
         val report = assessor.assessCutoverReadiness()
 
@@ -117,6 +116,7 @@ class ScheduleAuthorityPreflightAssessorTest {
         assertEquals(1, report.unknownCount)
         assertEquals(AlarmCohortClassification.UNKNOWN, report.classifications[42L])
         assertFalse("Cutover MUST be false when an enabled alarm is UNKNOWN", report.cutoverReady)
+        assertTrue(report.blockerReasons.contains(ScheduleAuthorityPreflightAssessor.BLOCKER_UNEXPOSED_AUTHORITY))
     }
 
     @Test
@@ -130,6 +130,20 @@ class ScheduleAuthorityPreflightAssessorTest {
         assertEquals(1, report.quarantinedCount)
         assertEquals(AlarmCohortClassification.QUARANTINED, report.classifications[42L])
         assertFalse("Cutover MUST be false when an enabled alarm is QUARANTINED", report.cutoverReady)
+    }
+
+    @Test
+    fun `RECONCILING Authority causes QUARANTINED classification and PENDING_RECONCILING blocker`() = runBlocking {
+        coEvery { alarmRepository.getAll() } returns listOf(testAlarm)
+        authorityDao.insertMeta(testMeta)
+        authorityDao.insertAuthority(readyAuthority.copy(reconcileState = "RECONCILING"))
+
+        val report = assessor.assessCutoverReadiness()
+
+        assertEquals(1, report.quarantinedCount)
+        assertEquals(AlarmCohortClassification.QUARANTINED, report.classifications[42L])
+        assertTrue(report.blockerReasons.contains(ScheduleAuthorityPreflightAssessor.BLOCKER_PENDING_RECONCILIATION))
+        assertFalse("Cutover MUST be false when authority is RECONCILING", report.cutoverReady)
     }
 
     @Test
@@ -151,6 +165,7 @@ class ScheduleAuthorityPreflightAssessorTest {
 
         assertEquals(1, report.activeSessionCount)
         assertEquals(AlarmCohortClassification.ACTIVE_SESSION_OWNED, report.classifications[42L])
+        assertTrue(report.blockerReasons.contains(ScheduleAuthorityPreflightAssessor.BLOCKER_ACTIVE_SESSION_PROTECTED))
         assertFalse("Cutover MUST be false when active FIRING session exists", report.cutoverReady)
     }
 
@@ -174,6 +189,7 @@ class ScheduleAuthorityPreflightAssessorTest {
 
         assertEquals(1, report.activeSessionCount)
         assertEquals(AlarmCohortClassification.ACTIVE_SESSION_OWNED, report.classifications[42L])
+        assertTrue(report.blockerReasons.contains(ScheduleAuthorityPreflightAssessor.BLOCKER_ACTIVE_SESSION_PROTECTED))
         assertFalse("Cutover MUST be false when active SNOOZED session exists", report.cutoverReady)
     }
 
@@ -204,6 +220,7 @@ class ScheduleAuthorityPreflightAssessorTest {
 
         assertEquals(1, report.quarantinedCount)
         assertEquals(AlarmCohortClassification.QUARANTINED, report.classifications[42L])
+        assertTrue(report.blockerReasons.contains(ScheduleAuthorityPreflightAssessor.BLOCKER_UNRESOLVED_DURABLE_INTENT))
         assertFalse("Cutover MUST be false when unresolved DurableIntent exists", report.cutoverReady)
     }
 
@@ -218,11 +235,12 @@ class ScheduleAuthorityPreflightAssessorTest {
 
         assertEquals(1, report.quarantinedCount)
         assertEquals(AlarmCohortClassification.QUARANTINED, report.classifications[42L])
+        assertTrue(report.blockerReasons.contains(ScheduleAuthorityPreflightAssessor.BLOCKER_UNSUPPORTED_SCHEDULING_POLICY))
         assertFalse("Cutover MUST be false when alarm uses unsupported smartAlarm policy", report.cutoverReady)
     }
 
     @Test
-    fun `legacyBypassesReachable is true when owner provider is null`() = runBlocking {
+    fun `legacyBypassesReachable is true when owner provider is null and reports explicit blockers`() = runBlocking {
         coEvery { alarmRepository.getAll() } returns listOf(testAlarm)
         authorityDao.insertMeta(testMeta)
         authorityDao.insertAuthority(readyAuthority)
@@ -231,6 +249,10 @@ class ScheduleAuthorityPreflightAssessorTest {
 
         assertEquals(1, report.ownerReadyCount)
         assertTrue("legacyBypassesReachable MUST be true when scheduleAuthorityOwnerProvider is null", report.legacyBypassesReachable)
+        assertTrue(report.blockerReasons.contains(ScheduleAuthorityPreflightAssessor.BLOCKER_LEGACY_WRITER_REACHABLE))
+        assertTrue(report.blockerReasons.contains(ScheduleAuthorityPreflightAssessor.BLOCKER_DIRECT_BOOT_ORDER_UNSAFE))
+        assertTrue(report.blockerReasons.contains(ScheduleAuthorityPreflightAssessor.BLOCKER_DUPLICATE_NOT_OS_PROOF))
+        assertTrue(report.blockerReasons.contains(ScheduleAuthorityPreflightAssessor.BLOCKER_OS_REGISTRATION_UNPROVEN))
         assertFalse("Cutover MUST be false while legacy bypasses remain reachable", report.cutoverReady)
     }
 }

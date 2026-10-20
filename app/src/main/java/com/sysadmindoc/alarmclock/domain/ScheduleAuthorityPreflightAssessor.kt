@@ -28,6 +28,7 @@ data class CutoverReadinessReport(
     val unknownCount: Int,
     val legacyBypassesReachable: Boolean,
     val cutoverReady: Boolean,
+    val blockerReasons: List<String>,
     val classifications: Map<Long, AlarmCohortClassification>
 )
 
@@ -47,11 +48,22 @@ class ScheduleAuthorityPreflightAssessor @Inject constructor(
 
     companion object {
         private const val TAG = "ScheduleAuthorityPreflightAssessor"
+
+        const val BLOCKER_LEGACY_WRITER_REACHABLE = "LEGACY_WRITER_REACHABLE"
+        const val BLOCKER_OS_REGISTRATION_UNPROVEN = "OS_REGISTRATION_UNPROVEN"
+        const val BLOCKER_PENDING_RECONCILIATION = "PENDING_RECONCILING"
+        const val BLOCKER_DIRECT_BOOT_ORDER_UNSAFE = "DIRECT_BOOT_ORDER_UNSAFE"
+        const val BLOCKER_DUPLICATE_NOT_OS_PROOF = "DUPLICATE_NOT_OS_PROOF"
+        const val BLOCKER_ACTIVE_SESSION_PROTECTED = "ACTIVE_SESSION_PROTECTED"
+        const val BLOCKER_UNRESOLVED_DURABLE_INTENT = "UNRESOLVED_DURABLE_INTENT"
+        const val BLOCKER_UNSUPPORTED_SCHEDULING_POLICY = "UNSUPPORTED_SCHEDULING_POLICY"
+        const val BLOCKER_UNEXPOSED_AUTHORITY = "UNEXPOSED_AUTHORITY"
     }
 
     suspend fun assessCutoverReadiness(): CutoverReadinessReport {
         val allAlarms = alarmRepository.getAll()
         val classifications = mutableMapOf<Long, AlarmCohortClassification>()
+        val blockerReasons = mutableSetOf<String>()
 
         var enabledCount = 0
         var ownerReadyCount = 0
@@ -87,6 +99,7 @@ class ScheduleAuthorityPreflightAssessor @Inject constructor(
             if (isFiring || isSnoozed) {
                 classifications[alarm.id] = AlarmCohortClassification.ACTIVE_SESSION_OWNED
                 activeSessionCount++
+                blockerReasons.add(BLOCKER_ACTIVE_SESSION_PROTECTED)
                 continue
             }
 
@@ -94,6 +107,7 @@ class ScheduleAuthorityPreflightAssessor @Inject constructor(
             if (verifiedRestoreEpoch == null || currentLocalId.isNullOrBlank()) {
                 classifications[alarm.id] = AlarmCohortClassification.UNKNOWN
                 unknownCount++
+                blockerReasons.add(BLOCKER_UNEXPOSED_AUTHORITY)
                 continue
             }
 
@@ -102,6 +116,7 @@ class ScheduleAuthorityPreflightAssessor @Inject constructor(
             if (authority == null) {
                 classifications[alarm.id] = AlarmCohortClassification.UNKNOWN
                 unknownCount++
+                blockerReasons.add(BLOCKER_UNEXPOSED_AUTHORITY)
                 continue
             }
 
@@ -113,6 +128,7 @@ class ScheduleAuthorityPreflightAssessor @Inject constructor(
             if (unresolvedIntents.isNotEmpty()) {
                 classifications[alarm.id] = AlarmCohortClassification.QUARANTINED
                 quarantinedCount++
+                blockerReasons.add(BLOCKER_UNRESOLVED_DURABLE_INTENT)
                 continue
             }
 
@@ -120,6 +136,7 @@ class ScheduleAuthorityPreflightAssessor @Inject constructor(
             if (alarm.weatherEarlyMinutes > 0 || alarm.smartAlarmEnabled || alarm.hueEnabled) {
                 classifications[alarm.id] = AlarmCohortClassification.QUARANTINED
                 quarantinedCount++
+                blockerReasons.add(BLOCKER_UNSUPPORTED_SCHEDULING_POLICY)
                 continue
             }
 
@@ -131,20 +148,32 @@ class ScheduleAuthorityPreflightAssessor @Inject constructor(
                 authority.reconcileState == "QUARANTINE") {
                 classifications[alarm.id] = AlarmCohortClassification.QUARANTINED
                 quarantinedCount++
+                blockerReasons.add(BLOCKER_UNEXPOSED_AUTHORITY)
                 continue
             }
 
-            if (authority.reconcileState == "SETTLED" || authority.reconcileState == "RECONCILING") {
+            if (authority.reconcileState == "RECONCILING") {
+                classifications[alarm.id] = AlarmCohortClassification.QUARANTINED
+                quarantinedCount++
+                blockerReasons.add(BLOCKER_PENDING_RECONCILIATION)
+            } else if (authority.reconcileState == "SETTLED") {
                 classifications[alarm.id] = AlarmCohortClassification.OWNER_READY
                 ownerReadyCount++
             } else {
                 classifications[alarm.id] = AlarmCohortClassification.QUARANTINED
                 quarantinedCount++
+                blockerReasons.add(BLOCKER_UNEXPOSED_AUTHORITY)
             }
         }
 
         // Source-level writer gate: check if legacy bypasses remain reachable
         val legacyBypassesReachable = scheduleAuthorityOwnerProvider == null || scheduleAuthorityOwnerProvider.get() == null
+        if (legacyBypassesReachable) {
+            blockerReasons.add(BLOCKER_LEGACY_WRITER_REACHABLE)
+            blockerReasons.add(BLOCKER_DIRECT_BOOT_ORDER_UNSAFE)
+            blockerReasons.add(BLOCKER_DUPLICATE_NOT_OS_PROOF)
+            blockerReasons.add(BLOCKER_OS_REGISTRATION_UNPROVEN)
+        }
 
         val isReady = enabledCount > 0 &&
                 ownerReadyCount == enabledCount &&
@@ -153,7 +182,7 @@ class ScheduleAuthorityPreflightAssessor @Inject constructor(
                 unknownCount == 0 &&
                 !legacyBypassesReachable
 
-        Log.i(TAG, "Assessed cutover readiness: total=${allAlarms.size}, enabled=$enabledCount, ready=$ownerReadyCount, legacyBypassesReachable=$legacyBypassesReachable -> cutoverReady=$isReady")
+        Log.i(TAG, "Assessed cutover readiness: total=${allAlarms.size}, enabled=$enabledCount, ready=$ownerReadyCount, legacyBypassesReachable=$legacyBypassesReachable -> cutoverReady=$isReady, blockers=$blockerReasons")
 
         return CutoverReadinessReport(
             totalAlarmCount = allAlarms.size,
@@ -164,6 +193,7 @@ class ScheduleAuthorityPreflightAssessor @Inject constructor(
             unknownCount = unknownCount,
             legacyBypassesReachable = legacyBypassesReachable,
             cutoverReady = isReady,
+            blockerReasons = blockerReasons.toList().sorted(),
             classifications = classifications
         )
     }
