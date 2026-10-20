@@ -68,13 +68,15 @@ data class RecoveryEvidenceCollectionReport(
 /**
  * Read-only recovery evidence collector for gathering all recovery evidence for a specified alarmId.
  *
- * Guarantees:
+ * Guarantees & Semantics:
  * - Read-only: does NOT perform OS operations, start Services, or mutate persistence.
  * - Reads Room records within database.withTransaction for atomicity.
  * - Reads authoritative DataStore persisted ActiveAlarmSnapshot (does NOT rely on memory).
- * - Distinguishes per-source EvidenceReadStatus from CrossStoreCoherenceClassification.
- * - Captures global active session status when another alarm has an active persisted session.
- * - Preserves all DurableOperationIntents without silently discarding multiple or conflicting intents.
+ * - Compares ALL 6 persisted session fields (id, scheduledAt, fireId, firedAt, state, refireAt) pre/post read.
+ * - Validates LocalIncarnationEvidenceReader marker state AND completion state (requires CompletionState.COMPLETE).
+ * - Preserves ALL DurableOperationIntents without silently discarding multiple or conflicting intents.
+ * - [overallStatus] == PROVEN_PRESENT indicates entity presence ONLY when [coherenceClassification] is CONSISTENT_OBSERVATION.
+ * - Does NOT establish atomic cross-store snapshot or authorize OS operations.
  */
 @Singleton
 class RecoveryEvidenceCollector @Inject constructor(
@@ -146,6 +148,15 @@ class RecoveryEvidenceCollector @Inject constructor(
             null
         }
 
+        // Full 6-field Session Revalidation
+        val sessionConsistent = preSessionSettings != null && postSessionSettings != null &&
+                preSessionSettings.activeAlarmId == postSessionSettings.activeAlarmId &&
+                preSessionSettings.activeAlarmScheduledAt == postSessionSettings.activeAlarmScheduledAt &&
+                preSessionSettings.activeAlarmFireId == postSessionSettings.activeAlarmFireId &&
+                preSessionSettings.activeAlarmFiredAt == postSessionSettings.activeAlarmFiredAt &&
+                preSessionSettings.activeAlarmState == postSessionSettings.activeAlarmState &&
+                preSessionSettings.activeAlarmRefireAt == postSessionSettings.activeAlarmRefireAt
+
         val sessionResult: PersistedSessionEvidence
         val globalSession: GlobalSessionEvidence
 
@@ -164,7 +175,9 @@ class RecoveryEvidenceCollector @Inject constructor(
                     val state = postSessionSettings.activeAlarmState
                     val refireAt = postSessionSettings.activeAlarmRefireAt
 
-                    if (state.isBlank() || fireId.isBlank() || scheduledAt <= 0L) {
+                    if (!sessionConsistent) {
+                        sessionResult = PersistedSessionEvidence(EvidenceReadStatus.UNPROVEN_CROSS_STORE_MISMATCH, null)
+                    } else if (state.isBlank() || fireId.isBlank() || scheduledAt <= 0L) {
                         sessionResult = PersistedSessionEvidence(EvidenceReadStatus.CORRUPT_DATA, null)
                     } else if (state !in setOf("FIRING", "SNOOZED")) {
                         sessionResult = PersistedSessionEvidence(EvidenceReadStatus.CORRUPT_DATA, null)
@@ -190,7 +203,10 @@ class RecoveryEvidenceCollector @Inject constructor(
                     activeAlarmId = null,
                     isSameAlarm = false
                 )
-                sessionResult = PersistedSessionEvidence(EvidenceReadStatus.PROVEN_ABSENT, null)
+                sessionResult = PersistedSessionEvidence(
+                    if (!sessionConsistent) EvidenceReadStatus.UNPROVEN_CROSS_STORE_MISMATCH else EvidenceReadStatus.PROVEN_ABSENT,
+                    null
+                )
             }
         } else {
             globalSession = GlobalSessionEvidence(
@@ -218,8 +234,9 @@ class RecoveryEvidenceCollector @Inject constructor(
                 is LocalEvidenceReadResult.Success -> {
                     when (postLocalRead.localState) {
                         MarkerState.PRESENT_VALID -> {
-                            if (postLocalRead.localId.isNullOrBlank()) {
-                                LocalMarkerEvidence(EvidenceReadStatus.CORRUPT_DATA, null)
+                            if (postLocalRead.localId.isNullOrBlank() || postLocalRead.localCompletion != CompletionState.COMPLETE) {
+                                // Incomplete or missing completion state is mapped to CORRUPT_DATA
+                                LocalMarkerEvidence(EvidenceReadStatus.CORRUPT_DATA, postLocalRead.localId)
                             } else {
                                 LocalMarkerEvidence(EvidenceReadStatus.PROVEN_PRESENT, postLocalRead.localId)
                             }
@@ -235,13 +252,20 @@ class RecoveryEvidenceCollector @Inject constructor(
             LocalMarkerEvidence(if (localExceptionThrown) EvidenceReadStatus.READ_FAILURE else EvidenceReadStatus.STORAGE_UNAVAILABLE, null)
         }
 
-        // Validate cross-store pre/post local marker and DataStore consistency
+        // Validate cross-store pre/post local marker consistency
         val localConsistent = preLocalRead != null && postLocalRead != null && preLocalRead == postLocalRead
-        val sessionConsistent = preSessionSettings != null && postSessionSettings != null && preSessionSettings.activeAlarmId == postSessionSettings.activeAlarmId
 
-        // Detect multiple unresolved intents
+        // Detect multiple unresolved intents and generation contradictions
         val unresolvedIntents = roomResult.intents.filter { it.phase in setOf("PENDING", "IN_FLIGHT") }
         val hasMultipleUnresolvedIntents = unresolvedIntents.size > 1
+
+        val hasIntentGenerationConflict = roomResult.intents.any { intent ->
+            (intent.alarmId != alarmId) ||
+            (localEvidence.localId != null && intent.incarnationId != localEvidence.localId) ||
+            (intent.expectedRestoreEpoch != null && roomResult.restoreEpoch != null && intent.expectedRestoreEpoch != roomResult.restoreEpoch) ||
+            (intent.expectedOwnerToken != null && roomResult.authority != null && intent.expectedOwnerToken != roomResult.authority.instanceToken) ||
+            (intent.expectedScheduleRevision != null && roomResult.authority != null && intent.expectedScheduleRevision != roomResult.authority.scheduleRevision)
+        }
 
         // Coherence Classification
         val coherenceClassification = when {
@@ -249,9 +273,11 @@ class RecoveryEvidenceCollector @Inject constructor(
             !localConsistent || !sessionConsistent -> CrossStoreCoherenceClassification.UNPROVEN
             roomResult.status == EvidenceReadStatus.READ_FAILURE -> CrossStoreCoherenceClassification.UNPROVEN
             sessionResult.status == EvidenceReadStatus.READ_FAILURE -> CrossStoreCoherenceClassification.UNPROVEN
+            sessionResult.status == EvidenceReadStatus.UNPROVEN_CROSS_STORE_MISMATCH -> CrossStoreCoherenceClassification.UNPROVEN
             localEvidence.status == EvidenceReadStatus.READ_FAILURE -> CrossStoreCoherenceClassification.UNPROVEN
             
             // Check for contradictory evidence
+            hasMultipleUnresolvedIntents || hasIntentGenerationConflict -> CrossStoreCoherenceClassification.CONTRADICTORY
             roomResult.authority != null && localEvidence.localId != null && roomResult.authority.instanceToken != localEvidence.localId -> {
                 CrossStoreCoherenceClassification.CONTRADICTORY
             }
@@ -267,8 +293,10 @@ class RecoveryEvidenceCollector @Inject constructor(
             else -> CrossStoreCoherenceClassification.CONSISTENT_OBSERVATION
         }
 
+        // Aggregate Overall Status: Never suggest fully valid recovery when coherence is UNPROVEN or CONTRADICTORY!
         val overallStatus = when {
             coherenceClassification == CrossStoreCoherenceClassification.UNPROVEN -> EvidenceReadStatus.UNPROVEN_CROSS_STORE_MISMATCH
+            coherenceClassification == CrossStoreCoherenceClassification.CONTRADICTORY -> EvidenceReadStatus.UNPROVEN_CROSS_STORE_MISMATCH
             roomResult.status == EvidenceReadStatus.READ_FAILURE -> EvidenceReadStatus.READ_FAILURE
             sessionResult.status == EvidenceReadStatus.READ_FAILURE -> EvidenceReadStatus.READ_FAILURE
             sessionResult.status == EvidenceReadStatus.CORRUPT_DATA -> EvidenceReadStatus.CORRUPT_DATA

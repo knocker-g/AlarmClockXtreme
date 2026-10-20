@@ -126,6 +126,7 @@ class RecoveryEvidenceCollectorTest {
         val report = collector.collectEvidence(42L)
 
         assertEquals(CrossStoreCoherenceClassification.CONTRADICTORY, report.coherenceClassification)
+        assertEquals(EvidenceReadStatus.UNPROVEN_CROSS_STORE_MISMATCH, report.overallStatus)
     }
 
     @Test
@@ -154,7 +155,6 @@ class RecoveryEvidenceCollectorTest {
     @Test
     fun `alarm definition absent returns PROVEN_ABSENT for room evidence`() = runBlocking {
         authorityDao.insertMeta(testMeta)
-        // Alarm 42L NOT inserted into database!
 
         val report = collector.collectEvidence(42L)
 
@@ -211,7 +211,7 @@ class RecoveryEvidenceCollectorTest {
     }
 
     @Test
-    fun `partial or invalid persisted session returns CORRUPT_DATA`() = runBlocking {
+    fun `partial or invalid persisted session returns CORRUPT_DATA and UNPROVEN_CROSS_STORE_MISMATCH`() = runBlocking {
         database.alarmDao().insert(testAlarm)
         authorityDao.insertMeta(testMeta)
 
@@ -226,7 +226,8 @@ class RecoveryEvidenceCollectorTest {
         val report = collector.collectEvidence(42L)
 
         assertEquals(EvidenceReadStatus.CORRUPT_DATA, report.sessionEvidence.status)
-        assertEquals(EvidenceReadStatus.CORRUPT_DATA, report.overallStatus)
+        assertEquals(CrossStoreCoherenceClassification.CONTRADICTORY, report.coherenceClassification)
+        assertEquals(EvidenceReadStatus.UNPROVEN_CROSS_STORE_MISMATCH, report.overallStatus)
     }
 
     @Test
@@ -241,26 +242,48 @@ class RecoveryEvidenceCollectorTest {
     }
 
     @Test
-    fun `cross-store local marker mismatch between pre and post read returns UNPROVEN_CROSS_STORE_MISMATCH`() = runBlocking {
+    fun `session drift between pre and post read returns UNPROVEN coherence`() = runBlocking {
         database.alarmDao().insert(testAlarm)
         authorityDao.insertMeta(testMeta)
 
-        // Pre-read returns Success token A, Post-read returns Success token B
-        coEvery { localReader.readLocalEvidence() } returnsMany listOf(
-            LocalEvidenceReadResult.Success(
-                localState = MarkerState.PRESENT_VALID,
-                localId = "token-A",
-                localCompletion = CompletionState.COMPLETE
-            ),
-            LocalEvidenceReadResult.Success(
-                localState = MarkerState.PRESENT_VALID,
-                localId = "token-B", // Changed during read!
-                localCompletion = CompletionState.COMPLETE
-            )
+        val preSettings = AppSettings(
+            activeAlarmId = 42L,
+            activeAlarmScheduledAt = 1000L,
+            activeAlarmFireId = "fire-42-A",
+            activeAlarmFiredAt = 1000L,
+            activeAlarmState = "FIRING"
+        )
+        val postSettings = AppSettings(
+            activeAlarmId = 42L,
+            activeAlarmScheduledAt = 1000L,
+            activeAlarmFireId = "fire-42-B", // Fire ID changed during read!
+            activeAlarmFiredAt = 1000L,
+            activeAlarmState = "SNOOZED", // State changed during read!
+            activeAlarmRefireAt = 2000L
+        )
+
+        coEvery { preferencesManager.getCurrentSettings() } returnsMany listOf(preSettings, postSettings)
+
+        val report = collector.collectEvidence(42L)
+
+        assertEquals(CrossStoreCoherenceClassification.UNPROVEN, report.coherenceClassification)
+        assertEquals(EvidenceReadStatus.UNPROVEN_CROSS_STORE_MISMATCH, report.overallStatus)
+    }
+
+    @Test
+    fun `incomplete local marker completion state PREPARING returns CORRUPT_DATA`() = runBlocking {
+        database.alarmDao().insert(testAlarm)
+        authorityDao.insertMeta(testMeta)
+
+        coEvery { localReader.readLocalEvidence() } returns LocalEvidenceReadResult.Success(
+            localState = MarkerState.PRESENT_VALID,
+            localId = "token-verified-42",
+            localCompletion = CompletionState.PREPARING // Incomplete completion state!
         )
 
         val report = collector.collectEvidence(42L)
 
-        assertEquals(EvidenceReadStatus.UNPROVEN_CROSS_STORE_MISMATCH, report.overallStatus)
+        assertEquals(EvidenceReadStatus.CORRUPT_DATA, report.localMarkerEvidence.status)
+        assertEquals(CrossStoreCoherenceClassification.CONTRADICTORY, report.coherenceClassification)
     }
 }
