@@ -48,7 +48,7 @@ abstract class AlarmDatabase : RoomDatabase() {
     abstract fun durableOperationIntentDao(): DurableOperationIntentDao
 
     companion object {
-        const val VERSION = 30
+        const val VERSION = 31
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -557,6 +557,21 @@ abstract class AlarmDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v31: KNO-227 G1 inert provenance persistence foundation.
+         * Adds nullable additive columns for causal provenance tracking:
+         * - originalFireId (TEXT)
+         * - originalScheduledAt (INTEGER)
+         * - candidateSnoozeAt (INTEGER)
+         */
+        val MIGRATION_30_31 = object : Migration(30, 31) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `durable_operation_intent` ADD COLUMN `originalFireId` TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE `durable_operation_intent` ADD COLUMN `originalScheduledAt` INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE `durable_operation_intent` ADD COLUMN `candidateSnoozeAt` INTEGER DEFAULT NULL")
+            }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -587,6 +602,7 @@ abstract class AlarmDatabase : RoomDatabase() {
             MIGRATION_27_28,
             MIGRATION_28_29,
             MIGRATION_29_30,
+            MIGRATION_30_31,
         )
     }
 }

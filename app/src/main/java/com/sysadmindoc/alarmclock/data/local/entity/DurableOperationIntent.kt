@@ -22,7 +22,10 @@ data class DurableOperationIntent(
     val expectedScheduleRevision: Long?,
     val expectedRestoreEpoch: Long?,
     val phase: String,
-    val intentRevision: Long
+    val intentRevision: Long,
+    val originalFireId: String? = null,
+    val originalScheduledAt: Long? = null,
+    val candidateSnoozeAt: Long? = null
 ) {
     companion object {
         const val PHASE_PENDING = "PENDING"

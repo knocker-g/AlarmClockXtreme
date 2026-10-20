@@ -180,8 +180,8 @@ class V30TriggerMigrationTest {
 
         val db = database.openHelper.writableDatabase
 
-        // 3. Confirm Room opened cleanly and version transitioned to 30
-        assertEquals(30, db.version)
+        // 3. Confirm Room opened cleanly and version transitioned to target VERSION
+        assertEquals(AlarmDatabase.VERSION, db.version)
         assertTrue("Room database must open cleanly", db.isOpen)
 
         // 4. Confirm preserved v29 data rows
@@ -218,7 +218,7 @@ class V30TriggerMigrationTest {
             .build()
 
         val reopenedDb = database.openHelper.writableDatabase
-        assertEquals(30, reopenedDb.version)
+        assertEquals(AlarmDatabase.VERSION, reopenedDb.version)
         assertEquals(TriggerVerificationResult.Valid, verifier.verifyTriggers(reopenedDb))
         database.close()
     }
@@ -364,7 +364,7 @@ class V30TriggerMigrationTest {
             .build()
 
         val db = database.openHelper.writableDatabase
-        assertEquals(30, db.version)
+        assertEquals(AlarmDatabase.VERSION, db.version)
         assertEquals(TriggerVerificationResult.Valid, verifier.verifyTriggers(db))
 
         database.close()
@@ -379,7 +379,7 @@ class V30TriggerMigrationTest {
             .build()
 
         val db = database.openHelper.writableDatabase
-        assertEquals(30, db.version)
+        assertEquals(AlarmDatabase.VERSION, db.version)
         assertEquals(TriggerVerificationResult.Valid, verifier.verifyTriggers(db))
 
         database.close()
