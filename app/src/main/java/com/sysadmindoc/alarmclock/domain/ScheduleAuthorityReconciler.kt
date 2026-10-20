@@ -21,7 +21,8 @@ import javax.inject.Singleton
 @Singleton
 class ScheduleAuthorityReconciler @Inject constructor(
     private val authorityDao: ScheduleAuthorityDao,
-    private val owner: ScheduleAuthorityOwner
+    private val owner: ScheduleAuthorityOwner,
+    private val routeAuthority: ProductionSchedulingRouteAuthority = ProductionSchedulingRouteAuthority()
 ) {
 
     companion object {
@@ -30,6 +31,8 @@ class ScheduleAuthorityReconciler @Inject constructor(
 
     /** Routine health-check reconciliation for pending 'RECONCILING' authorities. */
     suspend fun reconcilePendingAuthorities(): Int {
+        if (!routeAuthority.isOwnerRouteActive()) return 0
+
         val allAuthorities = authorityDao.getAllAuthorities()
         val reconcilingList = allAuthorities.filter { it.reconcileState == "RECONCILING" }
 
@@ -55,6 +58,8 @@ class ScheduleAuthorityReconciler @Inject constructor(
 
     /** Dedicated post-boot OS re-registration for live authorities. */
     suspend fun reconcileBootAuthorities(): Int {
+        if (!routeAuthority.isOwnerRouteActive()) return 0
+
         val allAuthorities = authorityDao.getAllAuthorities()
         val bootTargets = allAuthorities.filter {
             it.lifecycle == "LIVE" && (it.reconcileState == "RECONCILING" || it.reconcileState == "SETTLED")

@@ -33,12 +33,15 @@ class AlarmHealthWorker @AssistedInject constructor(
     @Assisted context: Context,
     @Assisted workerParams: WorkerParameters,
     private val alarmRepository: AlarmRepository,
-    private val scheduleAuthorityReconciler: ScheduleAuthorityReconciler
+    private val scheduleAuthorityReconciler: ScheduleAuthorityReconciler,
+    private val routeAuthority: com.sysadmindoc.alarmclock.domain.ProductionSchedulingRouteAuthority = com.sysadmindoc.alarmclock.domain.ProductionSchedulingRouteAuthority()
 ) : CoroutineWorker(context, workerParams) {
 
     override suspend fun doWork(): Result {
         try {
-            scheduleAuthorityReconciler.reconcilePendingAuthorities()
+            if (routeAuthority.isOwnerRouteActive()) {
+                scheduleAuthorityReconciler.reconcilePendingAuthorities()
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

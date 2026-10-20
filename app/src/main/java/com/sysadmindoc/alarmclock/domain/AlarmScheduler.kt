@@ -44,7 +44,8 @@ class AlarmScheduler @Inject constructor(
     private val holidayRepository: HolidayRepository,
     private val alarmIncidentRepository: AlarmIncidentRepository,
     private val weatherRepository: com.sysadmindoc.alarmclock.data.repository.WeatherRepository,
-    private val scheduleAuthorityOwnerProvider: javax.inject.Provider<ScheduleAuthorityOwner>? = null
+    private val scheduleAuthorityOwnerProvider: javax.inject.Provider<ScheduleAuthorityOwner>? = null,
+    private val routeAuthority: ProductionSchedulingRouteAuthority = ProductionSchedulingRouteAuthority()
 ) {
     private val alarmManager: AlarmManager
         get() = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
@@ -628,7 +629,7 @@ class AlarmScheduler @Inject constructor(
             status = AlarmIncidentEvent.STATUS_REQUESTED,
             reasonCode = if (showAlarmClockIcon) "SET_ALARM_CLOCK" else "SET_EXACT_ALLOW_WHILE_IDLE"
         )
-        val owner = scheduleAuthorityOwnerProvider?.get()
+        val owner = if (routeAuthority.isOwnerRouteActive()) scheduleAuthorityOwnerProvider?.get() else null
         var freshOsRegistration = false
         val success = if (owner != null) {
             val actionKey = "act-sched-$alarmId-$triggerTime"
@@ -806,7 +807,7 @@ class AlarmScheduler @Inject constructor(
     }
 
     private fun cancelScheduledEntries(alarmId: Long, includeFollowUpWorkers: Boolean = false) {
-        val owner = scheduleAuthorityOwnerProvider?.get()
+        val owner = if (routeAuthority.isOwnerRouteActive()) scheduleAuthorityOwnerProvider?.get() else null
         if (owner != null) {
             val actionKey = "act-cancel-$alarmId-${System.currentTimeMillis()}"
             runBlocking {

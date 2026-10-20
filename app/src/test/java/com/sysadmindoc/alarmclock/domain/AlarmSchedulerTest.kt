@@ -1,19 +1,17 @@
 package com.sysadmindoc.alarmclock.domain
 
-import android.app.AlarmManager
 import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.work.Operation
 import androidx.work.WorkManager
-import com.sysadmindoc.alarmclock.directboot.DirectBootAlarmCache
-import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.preferences.AppSettings
 import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.data.repository.HolidayRepository
+import com.sysadmindoc.alarmclock.directboot.DirectBootAlarmCache
 import com.sysadmindoc.alarmclock.widget.WidgetUpdater
 import io.mockk.Runs
 import io.mockk.coEvery
@@ -99,13 +97,62 @@ class AlarmSchedulerTest {
     }
 
     @Test
-    fun `successful fresh OS SET cancels DirectBoot fallback`() = runTest {
+    fun `non-null Owner Provider under default LEGACY_ONLY route does NOT call Owner for SET`() = runTest {
+        val alarm = enabledAlarm(id = 500L)
+        val triggerTime = System.currentTimeMillis() + 600_000L
+        every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
+
+        val mockOwner = mockk<ScheduleAuthorityOwner>()
+
+        val legacyOnlyScheduler = AlarmScheduler(
+            context = context,
+            repository = repository,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            holidayRepository = holidayRepository,
+            alarmIncidentRepository = incidentRepository,
+            weatherRepository = weatherRepository,
+            scheduleAuthorityOwnerProvider = { mockOwner },
+            routeAuthority = ProductionSchedulingRouteAuthority() // Default LEGACY_ONLY
+        )
+
+        legacyOnlyScheduler.schedule(alarm, requestWidgetUpdate = false)
+
+        coVerify(exactly = 0) { mockOwner.executeOperation(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `non-null Owner Provider under default LEGACY_ONLY route does NOT call Owner for CANCEL`() = runTest {
+        val mockOwner = mockk<ScheduleAuthorityOwner>()
+
+        val legacyOnlyScheduler = AlarmScheduler(
+            context = context,
+            repository = repository,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            holidayRepository = holidayRepository,
+            alarmIncidentRepository = incidentRepository,
+            weatherRepository = weatherRepository,
+            scheduleAuthorityOwnerProvider = { mockOwner },
+            routeAuthority = ProductionSchedulingRouteAuthority() // Default LEGACY_ONLY
+        )
+
+        legacyOnlyScheduler.cancel(501L)
+
+        coVerify(exactly = 0) { mockOwner.executeOperation(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `successful fresh OS SET cancels DirectBoot fallback when OWNER_EXCLUSIVE route active`() = runTest {
         val alarm = enabledAlarm(id = 200L)
         val triggerTime = System.currentTimeMillis() + 600_000L
         every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
 
         val mockOwner = mockk<ScheduleAuthorityOwner>()
         coEvery { mockOwner.executeOperation(200L, "SET", triggerTime, any()) } returns OwnerResult.OsAccepted(1L, "act-sched-200")
+
+        val ownerRouteAuthority = mockk<ProductionSchedulingRouteAuthority>()
+        every { ownerRouteAuthority.isOwnerRouteActive() } returns true
 
         val schedulerWithOwner = AlarmScheduler(
             context = context,
@@ -115,7 +162,8 @@ class AlarmSchedulerTest {
             holidayRepository = holidayRepository,
             alarmIncidentRepository = incidentRepository,
             weatherRepository = weatherRepository,
-            scheduleAuthorityOwnerProvider = { mockOwner }
+            scheduleAuthorityOwnerProvider = { mockOwner },
+            routeAuthority = ownerRouteAuthority
         )
 
         mockkObject(DirectBootAlarmCache)
@@ -127,13 +175,16 @@ class AlarmSchedulerTest {
     }
 
     @Test
-    fun `DuplicateIgnored outcome does NOT cancel DirectBoot fallback`() = runTest {
+    fun `DuplicateIgnored outcome does NOT cancel DirectBoot fallback when OWNER_EXCLUSIVE route active`() = runTest {
         val alarm = enabledAlarm(id = 201L)
         val triggerTime = System.currentTimeMillis() + 600_000L
         every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
 
         val mockOwner = mockk<ScheduleAuthorityOwner>()
         coEvery { mockOwner.executeOperation(201L, "SET", triggerTime, any()) } returns OwnerResult.DuplicateIgnored
+
+        val ownerRouteAuthority = mockk<ProductionSchedulingRouteAuthority>()
+        every { ownerRouteAuthority.isOwnerRouteActive() } returns true
 
         val schedulerWithOwner = AlarmScheduler(
             context = context,
@@ -143,7 +194,8 @@ class AlarmSchedulerTest {
             holidayRepository = holidayRepository,
             alarmIncidentRepository = incidentRepository,
             weatherRepository = weatherRepository,
-            scheduleAuthorityOwnerProvider = { mockOwner }
+            scheduleAuthorityOwnerProvider = { mockOwner },
+            routeAuthority = ownerRouteAuthority
         )
 
         mockkObject(DirectBootAlarmCache)
@@ -155,7 +207,7 @@ class AlarmSchedulerTest {
     }
 
     @Test
-    fun `failed OS SET preserves DirectBoot fallback`() = runTest {
+    fun `failed OS SET preserves DirectBoot fallback when OWNER_EXCLUSIVE route active`() = runTest {
         val alarm = enabledAlarm(id = 202L)
         val triggerTime = System.currentTimeMillis() + 600_000L
         every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
@@ -163,6 +215,9 @@ class AlarmSchedulerTest {
         val mockOwner = mockk<ScheduleAuthorityOwner>()
         coEvery { mockOwner.executeOperation(202L, "SET", triggerTime, any()) } returns OwnerResult.OutcomeUnknown(1L, IllegalStateException("OS Error"))
         coEvery { mockOwner.executeOperation(202L, "CANCEL", null, any()) } returns OwnerResult.OsAccepted(1L, "act-cancel-202")
+
+        val ownerRouteAuthority = mockk<ProductionSchedulingRouteAuthority>()
+        every { ownerRouteAuthority.isOwnerRouteActive() } returns true
 
         val schedulerWithOwner = AlarmScheduler(
             context = context,
@@ -172,7 +227,8 @@ class AlarmSchedulerTest {
             holidayRepository = holidayRepository,
             alarmIncidentRepository = incidentRepository,
             weatherRepository = weatherRepository,
-            scheduleAuthorityOwnerProvider = { mockOwner }
+            scheduleAuthorityOwnerProvider = { mockOwner },
+            routeAuthority = ownerRouteAuthority
         )
 
         mockkObject(DirectBootAlarmCache)

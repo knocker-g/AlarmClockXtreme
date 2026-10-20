@@ -105,9 +105,13 @@ class ScheduleAuthorityReconcilerTest {
             exactPermissionChecker = { true }
         )
 
+        val ownerRouteAuthority = mockk<ProductionSchedulingRouteAuthority>()
+        io.mockk.every { ownerRouteAuthority.isOwnerRouteActive() } returns true
+
         reconciler = ScheduleAuthorityReconciler(
             authorityDao = authorityDao,
-            owner = owner
+            owner = owner,
+            routeAuthority = ownerRouteAuthority
         )
 
         bootstrapAdapter = ScheduleAuthorityBootstrapAdapter(
