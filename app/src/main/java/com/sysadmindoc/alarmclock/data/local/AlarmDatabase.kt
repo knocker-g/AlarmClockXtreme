@@ -48,7 +48,7 @@ abstract class AlarmDatabase : RoomDatabase() {
     abstract fun durableOperationIntentDao(): DurableOperationIntentDao
 
     companion object {
-        const val VERSION = 29
+        const val VERSION = 30
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -516,6 +516,23 @@ abstract class AlarmDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v30: KNO-227 P3B-N controlled migration for legacy trigger replacement.
+         * Explicitly drops outdated v29 trigger definitions and installs canonical
+         * triggers with full Unicode whitespace rejection rules.
+         */
+        val MIGRATION_29_30 = object : Migration(29, 30) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_unresolved_unique_insert`")
+                db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_unresolved_unique_update`")
+                db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_phase_insert`")
+                db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_phase_update`")
+                db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_identity_insert`")
+                db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_identity_update`")
+                installDurableIntentTriggers(db)
+            }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -545,6 +562,7 @@ abstract class AlarmDatabase : RoomDatabase() {
             MIGRATION_26_27,
             MIGRATION_27_28,
             MIGRATION_28_29,
+            MIGRATION_29_30,
         )
     }
 }

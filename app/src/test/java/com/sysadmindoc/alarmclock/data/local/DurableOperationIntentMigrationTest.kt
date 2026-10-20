@@ -122,8 +122,8 @@ class DurableOperationIntentMigrationTest {
 
         val db = database.openHelper.writableDatabase
 
-        // 4. Confirm actual Room migration occurred and version transitioned to 29
-        assertEquals(29, db.version)
+        // 4. Confirm actual Room migration occurred and version transitioned to current VERSION (30)
+        assertEquals(AlarmDatabase.VERSION, db.version)
         assertTrue("Room database must open cleanly without schema validation errors", db.isOpen)
 
         // 5. Confirm preserved v28 rows
@@ -181,7 +181,7 @@ class DurableOperationIntentMigrationTest {
             .build()
 
         val reopenedDb = database.openHelper.writableDatabase
-        assertEquals(29, reopenedDb.version)
+        assertEquals(AlarmDatabase.VERSION, reopenedDb.version)
         assertEquals(TriggerVerificationResult.Valid, verifier.verifyTriggers(reopenedDb))
         database.close()
     }
