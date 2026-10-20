@@ -725,9 +725,11 @@ class AlarmScheduler @Inject constructor(
     }
 
     private fun cancelScheduledEntries(alarmId: Long, includeFollowUpWorkers: Boolean = false) {
-        val pendingIntent = createPendingIntent(alarmId)
-        alarmManager.cancel(pendingIntent)
-        pendingIntent.cancel()
+        val pendingIntent = lookupPendingIntentForCancel(alarmId)
+        if (pendingIntent != null) {
+            alarmManager.cancel(pendingIntent)
+            pendingIntent.cancel()
+        }
         DirectBootAlarmCache.removeIfMatches(context, alarmId)
 
         cancelSmartAlarmStart(alarmId)
@@ -776,6 +778,18 @@ class AlarmScheduler @Inject constructor(
             alarmId.toInt(),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    private fun lookupPendingIntentForCancel(alarmId: Long): PendingIntent? {
+        val intent = Intent(context, AlarmReceiver::class.java).apply {
+            action = "com.sysadmindoc.alarmclock.ALARM_FIRE"
+        }
+        return PendingIntent.getBroadcast(
+            context,
+            alarmId.toInt(),
+            intent,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
         )
     }
 
