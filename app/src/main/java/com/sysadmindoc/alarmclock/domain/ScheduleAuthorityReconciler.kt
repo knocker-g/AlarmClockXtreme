@@ -72,14 +72,7 @@ class ScheduleAuthorityReconciler @Inject constructor(
             }
 
             Log.i(TAG, "Boot OS re-registration for alarm ${currentAuth.alarmId} at rev ${currentAuth.scheduleRevision}")
-            // Use dedicated boot actionKey to force OS apply re-execution
-            val bootActionKey = "act-boot-${currentAuth.alarmId}-${currentAuth.scheduleRevision}"
-            val result = owner.executeOperation(
-                alarmId = currentAuth.alarmId,
-                desiredOperation = currentAuth.desiredOperation,
-                desiredTriggerMillis = currentAuth.desiredTriggerMillis,
-                actionKey = bootActionKey
-            )
+            val result = owner.replayBootOsOperation(currentAuth.alarmId)
 
             if (result is OwnerResult.OsAccepted || result is OwnerResult.DuplicateIgnored) {
                 reRegisteredCount++

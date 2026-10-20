@@ -149,14 +149,18 @@ class ScheduleAuthorityReconcilerTest {
     }
 
     @Test
-    fun `reconcileBootAuthorities re-evaluates SETTLED authority after boot and re-applies OS slot`() = runBlocking {
+    fun `reconcileBootAuthorities re-evaluates SETTLED authority after boot and re-applies OS slot preserving revision and actionKey`() = runBlocking {
         val futureTarget = System.currentTimeMillis() + 600_000L
-        val settledBootAuth = initialSettled.copy(desiredTriggerMillis = futureTarget)
+        val settledBootAuth = initialSettled.copy(desiredTriggerMillis = futureTarget, actionKey = "act-original-settled")
         authorityDao.insertAuthority(settledBootAuth)
 
         val count = reconciler.reconcileBootAuthorities()
 
         assertEquals(1, count)
+        val reRegisteredAuth = authorityDao.getAuthorityByAlarmId(43L)
+        assertNotNull(reRegisteredAuth)
+        assertEquals("scheduleRevision MUST remain 1L after boot replay", 1L, reRegisteredAuth?.scheduleRevision)
+        assertEquals("actionKey MUST remain act-original-settled after boot replay", "act-original-settled", reRegisteredAuth?.actionKey)
         assertEquals("Boot recovery MUST re-register SETTLED authority in fake OS slot", listOf("SET_$futureTarget"), fakeOsSlot)
     }
 
