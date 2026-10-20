@@ -5,6 +5,7 @@ import com.sysadmindoc.alarmclock.data.local.ScheduleAuthorityDao
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
+import java.time.ZonedDateTime
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -12,48 +13,78 @@ import javax.inject.Singleton
  * Adapter to safely initialize [ScheduleAuthority] rows for existing enabled [Alarm] definitions lacking authority.
  *
  * Guarantees:
- * - Does NOT trust nextTriggerTime as proof of OS registration.
+ * - Requires verified restoreEpoch from ScheduleAuthorityMeta (does NOT manufacture restoreEpoch).
+ * - Requires verified instanceToken evidence (does NOT manufacture instanceToken).
+ * - Recomputes target trigger time from [NextAlarmCalculator] (does NOT trust legacy nextTriggerTime as truth).
  * - Marks bootstrapped enabled alarms as 'RECONCILING' so reconciler evaluates capability and registers OS alarm clock.
  * - Does NOT reconstruct uncommitted SNOOZED sessions from Room alone.
- * - Returns [BootstrapDecision.QUARANTINE] if required definition or session evidence is missing/invalid.
+ * - Returns [BootstrapDecision.QUARANTINE] if required definition, instanceToken, or restoreEpoch evidence is missing.
  */
 @Singleton
 class ScheduleAuthorityBootstrapAdapter @Inject constructor(
     private val authorityDao: ScheduleAuthorityDao,
-    private val alarmRepository: AlarmRepository
+    private val alarmRepository: AlarmRepository,
+    private val calculator: NextAlarmCalculator
 ) {
 
     companion object {
         private const val TAG = "ScheduleAuthorityBootstrapAdapter"
     }
 
-    suspend fun bootstrapMissingAuthorities(): List<ScheduleAuthority> {
-        val allAlarms = alarmRepository.getAll()
-        val bootstrapped = mutableListOf<ScheduleAuthority>()
+    suspend fun bootstrapAuthorityForAlarm(alarmId: Long, instanceToken: String?): BootstrapDecision {
+        val alarm = alarmRepository.getById(alarmId)?.sanitized()
+            ?: return BootstrapDecision.QUARANTINE
 
-        for (alarm in allAlarms) {
-            val existing = authorityDao.getAuthorityByAlarmId(alarm.id)
-            if (existing == null) {
-                val desiredOp = if (alarm.isEnabled && alarm.nextTriggerTime > 0L) "SET" else "CANCEL"
-                val desiredTrigger = if (alarm.isEnabled && alarm.nextTriggerTime > 0L) alarm.nextTriggerTime else null
+        val meta = authorityDao.getMetaById(1)
+        val verifiedRestoreEpoch = meta?.restoreEpoch
+            ?: return BootstrapDecision.QUARANTINE // Cannot bootstrap without verified restore epoch!
 
-                val newAuthority = ScheduleAuthority(
-                    alarmId = alarm.id,
-                    instanceToken = "token-bootstrap-${alarm.id}-${alarm.nextTriggerTime}",
-                    definitionRevision = 1L,
-                    scheduleRevision = 1L,
-                    lifecycle = if (alarm.isEnabled) "LIVE" else "DISABLED",
-                    desiredOperation = desiredOp,
-                    desiredTriggerMillis = desiredTrigger,
-                    reconcileState = "RECONCILING", // Requires reconciliation; NOT assumed SETTLED!
-                    restoreEpoch = 100L,
-                    actionKey = null
-                )
-                authorityDao.insertAuthority(newAuthority)
-                bootstrapped.add(newAuthority)
-                Log.i(TAG, "Bootstrapped missing authority for alarm ${alarm.id} as RECONCILING")
+        if (instanceToken.isNullOrBlank()) {
+            return BootstrapDecision.QUARANTINE // Cannot bootstrap without verified instance token!
+        }
+
+        val existing = authorityDao.getAuthorityByAlarmId(alarmId)
+        if (existing != null) {
+            return when (existing.reconcileState) {
+                "SETTLED" -> BootstrapDecision.ADOPT
+                "RECONCILING" -> BootstrapDecision.RECONCILE
+                else -> BootstrapDecision.QUARANTINE
             }
         }
-        return bootstrapped
+
+        val now = ZonedDateTime.now()
+        val computedTriggerMillis = if (alarm.isEnabled) {
+            try {
+                calculator.calculate(alarm, now)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to compute next trigger for alarm ${alarm.id}", e)
+                null
+            }
+        } else null
+
+        val desiredOp = if (alarm.isEnabled && computedTriggerMillis != null && computedTriggerMillis > System.currentTimeMillis()) {
+            "SET"
+        } else {
+            "CANCEL"
+        }
+
+        val desiredTrigger = if (desiredOp == "SET") computedTriggerMillis else null
+
+        val newAuthority = ScheduleAuthority(
+            alarmId = alarm.id,
+            instanceToken = instanceToken,
+            definitionRevision = 1L,
+            scheduleRevision = 1L,
+            lifecycle = if (alarm.isEnabled) "LIVE" else "DISABLED",
+            desiredOperation = desiredOp,
+            desiredTriggerMillis = desiredTrigger,
+            reconcileState = "RECONCILING", // Requires reconciliation; NOT assumed SETTLED!
+            restoreEpoch = verifiedRestoreEpoch,
+            actionKey = null
+        )
+
+        authorityDao.insertAuthority(newAuthority)
+        Log.i(TAG, "Bootstrapped missing authority for alarm ${alarm.id} as RECONCILING with calculated trigger $desiredTrigger")
+        return BootstrapDecision.RECONCILE
     }
 }

@@ -21,6 +21,7 @@ import androidx.work.WorkerParameters
 import com.sysadmindoc.alarmclock.MainActivity
 import com.sysadmindoc.alarmclock.R
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
+import com.sysadmindoc.alarmclock.domain.ScheduleAuthorityReconciler
 import com.sysadmindoc.alarmclock.service.AlarmService
 import com.sysadmindoc.alarmclock.util.ManufacturerCompat
 import dagger.assisted.Assisted
@@ -30,10 +31,17 @@ import dagger.assisted.AssistedInject
 class AlarmHealthWorker @AssistedInject constructor(
     @Assisted context: Context,
     @Assisted workerParams: WorkerParameters,
-    private val alarmRepository: AlarmRepository
+    private val alarmRepository: AlarmRepository,
+    private val scheduleAuthorityReconciler: ScheduleAuthorityReconciler? = null
 ) : CoroutineWorker(context, workerParams) {
 
     override suspend fun doWork(): Result {
+        try {
+            scheduleAuthorityReconciler?.reconcilePendingAuthorities()
+        } catch (e: Exception) {
+            android.util.Log.w("AlarmHealthWorker", "Pending ScheduleAuthority reconciliation encountered error", e)
+        }
+
         val hasEnabledAlarms = alarmRepository.getEnabled().isNotEmpty()
         if (!hasEnabledAlarms) {
             cancelWarningNotification()

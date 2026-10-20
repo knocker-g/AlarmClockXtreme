@@ -9,9 +9,13 @@ import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 import com.sysadmindoc.alarmclock.data.local.AlarmEventDao
 import com.sysadmindoc.alarmclock.data.local.AlarmGroupDao
 import com.sysadmindoc.alarmclock.data.local.AlarmIncidentEventDao
+import com.sysadmindoc.alarmclock.data.local.DurableOperationIntentDao
 import com.sysadmindoc.alarmclock.data.local.NewsSourceDao
 import com.sysadmindoc.alarmclock.data.local.PreSleepTagDao
+import com.sysadmindoc.alarmclock.data.local.ScheduleAuthorityDao
 import com.sysadmindoc.alarmclock.data.local.SnoreEventDao
+import com.sysadmindoc.alarmclock.domain.MainSlotApplier
+import com.sysadmindoc.alarmclock.domain.RealMainSlotApplier
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -82,5 +86,29 @@ object DatabaseModule {
     @Singleton
     fun provideNewsSourceDao(database: AlarmDatabase): NewsSourceDao {
         return database.newsSourceDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideScheduleAuthorityDao(database: AlarmDatabase): ScheduleAuthorityDao {
+        return database.scheduleAuthorityDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideDurableOperationIntentDao(database: AlarmDatabase): DurableOperationIntentDao {
+        return database.durableOperationIntentDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideMainSlotApplier(impl: RealMainSlotApplier): MainSlotApplier {
+        return impl
+    }
+
+    @Provides
+    @Singleton
+    fun provideExactPermissionChecker(): () -> Boolean {
+        return { true }
     }
 }

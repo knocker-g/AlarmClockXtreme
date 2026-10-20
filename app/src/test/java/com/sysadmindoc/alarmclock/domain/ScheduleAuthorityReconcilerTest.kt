@@ -7,6 +7,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 import com.sysadmindoc.alarmclock.data.local.ScheduleAuthorityDao
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
+import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import io.mockk.coEvery
@@ -31,6 +32,7 @@ class ScheduleAuthorityReconcilerTest {
     private lateinit var reconciler: ScheduleAuthorityReconciler
     private lateinit var bootstrapAdapter: ScheduleAuthorityBootstrapAdapter
     private lateinit var alarmRepository: AlarmRepository
+    private lateinit var calculator: NextAlarmCalculator
     private val fakeOsSlot = mutableListOf<String>()
 
     private val initialUnreconciled = ScheduleAuthority(
@@ -55,6 +57,8 @@ class ScheduleAuthorityReconcilerTest {
             .build()
         authorityDao = database.scheduleAuthorityDao()
         alarmRepository = mockk()
+        calculator = mockk()
+        coEvery { calculator.calculate(any(), any()) } returns 5000L
 
         fakeOsSlot.clear()
         val slotApplier = MainSlotApplier { authority ->
@@ -80,7 +84,8 @@ class ScheduleAuthorityReconcilerTest {
 
         bootstrapAdapter = ScheduleAuthorityBootstrapAdapter(
             authorityDao = authorityDao,
-            alarmRepository = alarmRepository
+            alarmRepository = alarmRepository,
+            calculator = calculator
         )
     }
 
@@ -104,22 +109,25 @@ class ScheduleAuthorityReconcilerTest {
 
     @Test
     fun `bootstrapAdapter creates RECONCILING authority for enabled alarm lacking authority`() = runBlocking {
-        val alarm = Alarm(id = 99L, hour = 8, minute = 0, label = "Bootstrap Alarm", isEnabled = true, nextTriggerTime = 5000L)
-        coEvery { alarmRepository.getAll() } returns listOf(alarm)
+        val futureTarget = System.currentTimeMillis() + 600_000L
+        val alarm = Alarm(id = 99L, hour = 8, minute = 0, label = "Bootstrap Alarm", isEnabled = true, nextTriggerTime = futureTarget)
+        coEvery { alarmRepository.getById(99L) } returns alarm
+        coEvery { calculator.calculate(any(), any()) } returns futureTarget
+        authorityDao.insertMeta(ScheduleAuthorityMeta(id = 1, restoreEpoch = 100L, bootstrapState = "ENFORCED"))
 
-        val bootstrapped = bootstrapAdapter.bootstrapMissingAuthorities()
+        val decision = bootstrapAdapter.bootstrapAuthorityForAlarm(alarmId = 99L, instanceToken = "token-verified-99")
 
-        assertEquals(1, bootstrapped.size)
+        assertEquals(BootstrapDecision.RECONCILE, decision)
         val authInDb = authorityDao.getAuthorityByAlarmId(99L)
         assertNotNull(authInDb)
         assertEquals("RECONCILING", authInDb?.reconcileState)
         assertEquals("SET", authInDb?.desiredOperation)
-        assertEquals(5000L, authInDb?.desiredTriggerMillis)
+        assertEquals(futureTarget, authInDb?.desiredTriggerMillis)
 
         // Run reconciler to settle bootstrapped authority
         val reconciledCount = reconciler.reconcilePendingAuthorities()
         assertEquals(1, reconciledCount)
         assertEquals("SETTLED", authorityDao.getAuthorityByAlarmId(99L)?.reconcileState)
-        assertEquals(listOf("SET_5000"), fakeOsSlot)
+        assertEquals(listOf("SET_$futureTarget"), fakeOsSlot)
     }
 }
