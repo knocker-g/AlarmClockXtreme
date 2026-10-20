@@ -111,6 +111,7 @@ class ScheduleAuthorityReconcilerTest {
         )
 
         bootstrapAdapter = ScheduleAuthorityBootstrapAdapter(
+            database = database,
             authorityDao = authorityDao,
             alarmRepository = alarmRepository,
             calculator = calculator,

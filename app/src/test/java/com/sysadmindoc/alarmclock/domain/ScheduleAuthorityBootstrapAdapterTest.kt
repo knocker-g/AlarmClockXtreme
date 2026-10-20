@@ -15,6 +15,7 @@ import com.sysadmindoc.alarmclock.data.preferences.AppSettings
 import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.data.repository.HolidayRepository
+import com.sysadmindoc.alarmclock.service.AlarmService
 import io.mockk.coEvery
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
@@ -68,6 +69,8 @@ class ScheduleAuthorityBootstrapAdapterTest {
         preferencesManager = mockk()
         holidayRepository = mockk()
 
+        AlarmService.activeAlarm.set(null)
+
         coEvery { preferencesManager.getCurrentSettings() } returns defaultSettings
         coEvery { localReader.readLocalEvidence() } returns LocalEvidenceReadResult.Success(
             localState = MarkerState.PRESENT_VALID,
@@ -77,6 +80,7 @@ class ScheduleAuthorityBootstrapAdapterTest {
         coEvery { holidayRepository.isHoliday(any()) } returns false
 
         bootstrapAdapter = ScheduleAuthorityBootstrapAdapter(
+            database = database,
             authorityDao = authorityDao,
             alarmRepository = alarmRepository,
             calculator = calculator,
@@ -88,6 +92,7 @@ class ScheduleAuthorityBootstrapAdapterTest {
 
     @After
     fun tearDown() {
+        AlarmService.activeAlarm.set(null)
         database.close()
     }
 
@@ -143,6 +148,37 @@ class ScheduleAuthorityBootstrapAdapterTest {
             actionKey = null
         )
         authorityDao.insertAuthority(oldAuthority)
+
+        val result = bootstrapAdapter.bootstrapAuthorityForAlarm(alarmId = 42L, instanceToken = "token-verified-42")
+
+        assertEquals(BootstrapDecision.QUARANTINE, result)
+    }
+
+    @Test
+    fun `unsupported policy configuration smartAlarmEnabled quarantines alarm`() = runBlocking {
+        val smartAlarm = testAlarm.copy(smartAlarmEnabled = true)
+        coEvery { alarmRepository.getById(42L) } returns smartAlarm
+        authorityDao.insertMeta(ScheduleAuthorityMeta(id = 1, restoreEpoch = 100L, bootstrapState = "ENFORCED"))
+
+        val result = bootstrapAdapter.bootstrapAuthorityForAlarm(alarmId = 42L, instanceToken = "token-verified-42")
+
+        assertEquals(BootstrapDecision.QUARANTINE, result)
+    }
+
+    @Test
+    fun `active FIRING session quarantines alarm`() = runBlocking {
+        coEvery { alarmRepository.getById(42L) } returns testAlarm
+        authorityDao.insertMeta(ScheduleAuthorityMeta(id = 1, restoreEpoch = 100L, bootstrapState = "ENFORCED"))
+
+        AlarmService.activeAlarm.set(
+            AlarmService.Companion.ActiveAlarmSnapshot(
+                alarmId = 42L,
+                scheduledAt = 1000L,
+                fireId = "fire-42-1000",
+                firedAt = System.currentTimeMillis(),
+                state = "FIRING"
+            )
+        )
 
         val result = bootstrapAdapter.bootstrapAuthorityForAlarm(alarmId = 42L, instanceToken = "token-verified-42")
 
