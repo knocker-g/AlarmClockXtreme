@@ -8,6 +8,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * Shared across:
  * - Fresh DB creation ([AlarmDatabase.DATABASE_CALLBACK])
  * - Migration from v28 to v29 ([AlarmDatabase.MIGRATION_28_29])
+ * - Migration admission safety from v29 to v30 ([AlarmDatabase.MIGRATION_29_30])
  * - Read-only trigger definition verification ([DurableIntentTriggerVerifier])
  */
 object DurableIntentTriggers {
@@ -87,6 +88,43 @@ object DurableIntentTriggers {
             WHEN length(trim(NEW.operationToken, ' ' || char(9) || char(10) || char(13) || char(0x3000))) = 0
               OR length(trim(NEW.incarnationId, ' ' || char(9) || char(10) || char(13) || char(0x3000))) = 0
               OR length(trim(NEW.operationKind, ' ' || char(9) || char(10) || char(13) || char(0x3000))) = 0
+              OR NEW.alarmId <= 0
+              OR NEW.operationEpoch <= 0
+              OR NEW.intentRevision <= 0
+            BEGIN
+                SELECT RAISE(ABORT, 'SQLite Constraint Error: Invalid identity or epoch invariants');
+            END
+        """.trimIndent()
+    )
+
+    val LEGACY_TRIGGERS: Map<String, String> = mapOf(
+        "trigger_durable_intent_unresolved_unique_insert" to CANONICAL_TRIGGERS["trigger_durable_intent_unresolved_unique_insert"]!!,
+        "trigger_durable_intent_unresolved_unique_update" to CANONICAL_TRIGGERS["trigger_durable_intent_unresolved_unique_update"]!!,
+        "trigger_durable_intent_phase_insert" to CANONICAL_TRIGGERS["trigger_durable_intent_phase_insert"]!!,
+        "trigger_durable_intent_phase_update" to CANONICAL_TRIGGERS["trigger_durable_intent_phase_update"]!!,
+
+        "trigger_durable_intent_identity_insert" to """
+            CREATE TRIGGER IF NOT EXISTS `trigger_durable_intent_identity_insert`
+            BEFORE INSERT ON `durable_operation_intent`
+            FOR EACH ROW
+            WHEN length(trim(NEW.operationToken)) = 0
+              OR length(trim(NEW.incarnationId)) = 0
+              OR length(trim(NEW.operationKind)) = 0
+              OR NEW.alarmId <= 0
+              OR NEW.operationEpoch <= 0
+              OR NEW.intentRevision <= 0
+            BEGIN
+                SELECT RAISE(ABORT, 'SQLite Constraint Error: Invalid identity or epoch invariants');
+            END
+        """.trimIndent(),
+
+        "trigger_durable_intent_identity_update" to """
+            CREATE TRIGGER IF NOT EXISTS `trigger_durable_intent_identity_update`
+            BEFORE UPDATE ON `durable_operation_intent`
+            FOR EACH ROW
+            WHEN length(trim(NEW.operationToken)) = 0
+              OR length(trim(NEW.incarnationId)) = 0
+              OR length(trim(NEW.operationKind)) = 0
               OR NEW.alarmId <= 0
               OR NEW.operationEpoch <= 0
               OR NEW.intentRevision <= 0

@@ -517,19 +517,43 @@ abstract class AlarmDatabase : RoomDatabase() {
         }
 
         /**
-         * v30: KNO-227 P3B-N controlled migration for legacy trigger replacement.
-         * Explicitly drops outdated v29 trigger definitions and installs canonical
-         * triggers with full Unicode whitespace rejection rules.
+         * v30: KNO-227 P3B-N1 controlled migration admission for legacy trigger replacement.
+         * Validates existing rows against invariants and classifies trigger definitions
+         * BEFORE performing any trigger replacement.
          */
         val MIGRATION_29_30 = object : Migration(29, 30) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_unresolved_unique_insert`")
-                db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_unresolved_unique_update`")
-                db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_phase_insert`")
-                db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_phase_update`")
-                db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_identity_insert`")
-                db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_identity_update`")
-                installDurableIntentTriggers(db)
+                val verifier = DurableIntentTriggerVerifier()
+
+                // 1. Validate existing persisted intent rows against invariants
+                verifier.validatePersistedIntents(db)
+
+                // 2. Classify existing trigger definitions in sqlite_master
+                when (val classification = verifier.classifyTriggers(db)) {
+                    is TriggerClassificationResult.AlreadyCanonical -> {
+                        // Triggers already match current canonical definitions; proceed safely
+                    }
+                    is TriggerClassificationResult.KnownLegacy -> {
+                        // Drop known legacy triggers and install canonical triggers
+                        db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_unresolved_unique_insert`")
+                        db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_unresolved_unique_update`")
+                        db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_phase_insert`")
+                        db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_phase_update`")
+                        db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_identity_insert`")
+                        db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_identity_update`")
+
+                        installDurableIntentTriggers(db)
+
+                        val postVerify = verifier.verifyTriggers(db)
+                        if (postVerify !is TriggerVerificationResult.Valid) {
+                            error("Post-migration trigger verification failed: $postVerify")
+                        }
+                    }
+                    is TriggerClassificationResult.UnknownOrModified -> {
+                        // Abort migration safely without deleting or altering any data
+                        error("Migration 29->30 aborted: ${classification.details}")
+                    }
+                }
             }
         }
 
