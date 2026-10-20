@@ -166,23 +166,76 @@ class ScheduleAuthorityBootstrapAdapterTest {
     }
 
     @Test
-    fun `active FIRING session quarantines alarm`() = runBlocking {
+    fun `persisted FIRING session with memory service absent quarantines alarm`() = runBlocking {
         coEvery { alarmRepository.getById(42L) } returns testAlarm
         authorityDao.insertMeta(ScheduleAuthorityMeta(id = 1, restoreEpoch = 100L, bootstrapState = "ENFORCED"))
 
-        AlarmService.activeAlarm.set(
-            AlarmService.Companion.ActiveAlarmSnapshot(
-                alarmId = 42L,
-                scheduledAt = 1000L,
-                fireId = "fire-42-1000",
-                firedAt = System.currentTimeMillis(),
-                state = "FIRING"
-            )
+        // Service memory is absent (null)
+        AlarmService.activeAlarm.set(null)
+
+        // DataStore holds persisted FIRING session
+        val firingSettings = AppSettings(
+            activeAlarmId = 42L,
+            activeAlarmScheduledAt = 1000L,
+            activeAlarmFireId = "fire-42-1000",
+            activeAlarmFiredAt = System.currentTimeMillis(),
+            activeAlarmState = "FIRING"
+        )
+        coEvery { preferencesManager.getCurrentSettings() } returns firingSettings
+
+        val result = bootstrapAdapter.bootstrapAuthorityForAlarm(alarmId = 42L, instanceToken = "token-verified-42")
+
+        assertEquals(BootstrapDecision.QUARANTINE, result)
+    }
+
+    @Test
+    fun `persisted SNOOZED session with memory service absent quarantines alarm`() = runBlocking {
+        coEvery { alarmRepository.getById(42L) } returns testAlarm
+        authorityDao.insertMeta(ScheduleAuthorityMeta(id = 1, restoreEpoch = 100L, bootstrapState = "ENFORCED"))
+
+        AlarmService.activeAlarm.set(null)
+
+        val snoozedSettings = AppSettings(
+            activeAlarmId = 42L,
+            activeAlarmScheduledAt = 1000L,
+            activeAlarmFireId = "fire-42-1000",
+            activeAlarmFiredAt = System.currentTimeMillis(),
+            activeAlarmState = "SNOOZED",
+            activeAlarmRefireAt = System.currentTimeMillis() + 600_000L
+        )
+        coEvery { preferencesManager.getCurrentSettings() } returns snoozedSettings
+
+        val result = bootstrapAdapter.bootstrapAuthorityForAlarm(alarmId = 42L, instanceToken = "token-verified-42")
+
+        assertEquals(BootstrapDecision.QUARANTINE, result)
+    }
+
+    @Test
+    fun `cross-store mismatch after INSERT persists durable QUARANTINE barrier in DB`() = runBlocking {
+        coEvery { alarmRepository.getById(42L) } returns testAlarm
+        authorityDao.insertMeta(ScheduleAuthorityMeta(id = 1, restoreEpoch = 100L, bootstrapState = "ENFORCED"))
+
+        val targetTime = System.currentTimeMillis() + 600_000L
+        coEvery { calculator.calculate(any(), any()) } returns targetTime
+
+        // Pre-admission local read succeeds, but post-admission local read fails
+        coEvery { localReader.readLocalEvidence() } returnsMany listOf(
+            LocalEvidenceReadResult.Success(
+                localState = MarkerState.PRESENT_VALID,
+                localId = "token-verified-42",
+                localCompletion = CompletionState.COMPLETE
+            ),
+            LocalEvidenceReadResult.StorageUnavailable // Post-admission read fails!
         )
 
         val result = bootstrapAdapter.bootstrapAuthorityForAlarm(alarmId = 42L, instanceToken = "token-verified-42")
 
         assertEquals(BootstrapDecision.QUARANTINE, result)
+
+        // Verify durable QUARANTINE barrier was persisted in DB
+        val dbAuth = authorityDao.getAuthorityByAlarmId(42L)
+        assertNotNull(dbAuth)
+        assertEquals("Durable QUARANTINE barrier must be persisted in DB", "QUARANTINE", dbAuth?.reconcileState)
     }
 
     @Test

@@ -27,12 +27,14 @@ import javax.inject.Singleton
  * - Prepares candidate without DB writes or OS operations.
  * - Requires verified restoreEpoch from ScheduleAuthorityMeta (does NOT manufacture restoreEpoch).
  * - Requires verified LocalEvidenceReadResult.Success with non-blank matching localId. All other outcomes return QUARANTINE.
+ * - Reads authoritative persisted ActiveAlarmSnapshot from PreferencesManager DataStore (does NOT rely on memory alone).
+ * - FIRING or SNOOZED persisted session state returns QUARANTINE.
  * - Re-reads current Alarm definition before admission to detect definition mutations.
- * - Recomputes target trigger time using [NextAlarmCalculator] with Pause/Holiday suppression rules.
+ * - Validates instanceToken, restoreEpoch, definitionRevision, and lifecycle when checking existing authority rows.
+ * - Recalculates target trigger time using [NextAlarmCalculator] with Pause/Holiday suppression rules.
  * - Quarantines unsupported policy configurations (Weather pre-wake lead, SmartWake window, Hue pre-wake).
- * - Protects active FIRING and SNOOZED sessions (quarantines uncommitted/missing session evidence).
  * - Revalidates Definition, restoreEpoch, incarnation marker, and unresolved DurableIntents atomically inside Room [withTransaction].
- * - Performs post-admission cross-store revalidation fencing; quarantines if local marker changed post-admission.
+ * - Performs post-admission cross-store revalidation fencing; persists a durable 'QUARANTINE' barrier in DB if local marker changed post-admission.
  * - Catches SQLiteConstraintException specifically for insertion conflicts; does NOT treat generic DB failures as conflicts.
  * - Preserves CancellationException without swallowing.
  * - Returns [BootstrapDecision.QUARANTINE] for unsupported or invalid policy evidence rather than guessing an OS target.
@@ -78,11 +80,17 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
             return BootstrapDecision.QUARANTINE
         }
 
+        val expectedLifecycle = if (initialAlarm.isEnabled) "LIVE" else "DISABLED"
+        val currentDefRev = computeDefinitionRevision(initialAlarm)
+
         val existing = authorityDao.getAuthorityByAlarmId(alarmId)
         if (existing != null) {
-            val currentDefRev = computeDefinitionRevision(initialAlarm)
-            if (existing.definitionRevision != currentDefRev) {
-                Log.w(TAG, "Definition edit detected for alarm ${initialAlarm.id} (stored ${existing.definitionRevision} vs current $currentDefRev)")
+            // Full ownership validation: instanceToken, restoreEpoch, definitionRevision, lifecycle
+            if (existing.instanceToken != instanceToken ||
+                existing.restoreEpoch != verifiedRestoreEpoch ||
+                existing.definitionRevision != currentDefRev ||
+                existing.lifecycle != expectedLifecycle) {
+                Log.w(TAG, "Existing authority validation failed for alarm ${initialAlarm.id}; QUARANTINING")
                 return BootstrapDecision.QUARANTINE
             }
             return when (existing.reconcileState) {
@@ -98,32 +106,41 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
             return BootstrapDecision.QUARANTINE
         }
 
-        // Step 2: Validate Active Session Evidence
-        val activeSnapshot = AlarmService.activeAlarm.get()
-        if (activeSnapshot != null && activeSnapshot.alarmId == alarmId) {
-            when (activeSnapshot.state) {
-                "FIRING" -> {
-                    Log.i(TAG, "Alarm $alarmId is currently FIRING in active snapshot; preserving active session without overwriting")
-                    return BootstrapDecision.QUARANTINE
-                }
-                "SNOOZED" -> {
-                    if (activeSnapshot.refireAt <= System.currentTimeMillis()) {
-                        Log.w(TAG, "Alarm $alarmId has expired or uncommitted SNOOZED session proof; QUARANTINING")
-                        return BootstrapDecision.QUARANTINE
-                    }
-                }
-            }
+        // Step 2: Validate Authoritative Persisted Session Evidence from PreferencesManager DataStore
+        val currentSettings = preferencesManager.getCurrentSettings()
+        val persistedActiveId = currentSettings.activeAlarmId
+        val persistedState = currentSettings.activeAlarmState
+        val memoryActiveSnapshot = AlarmService.activeAlarm.get()
+
+        val isFiring = (persistedActiveId == alarmId && persistedState == "FIRING") ||
+                       (memoryActiveSnapshot != null && memoryActiveSnapshot.alarmId == alarmId && memoryActiveSnapshot.state == "FIRING")
+
+        val isSnoozed = (persistedActiveId == alarmId && persistedState == "SNOOZED") ||
+                        (memoryActiveSnapshot != null && memoryActiveSnapshot.alarmId == alarmId && memoryActiveSnapshot.state == "SNOOZED")
+
+        if (isFiring) {
+            Log.i(TAG, "Alarm $alarmId is currently FIRING in session evidence; preserving active session without overwriting")
+            return BootstrapDecision.QUARANTINE
         }
 
-        val currentSettings = preferencesManager.getCurrentSettings()
+        if (isSnoozed) {
+            val refireAt = if (persistedActiveId == alarmId) currentSettings.activeAlarmRefireAt else (memoryActiveSnapshot?.refireAt ?: 0L)
+            if (refireAt <= System.currentTimeMillis()) {
+                Log.w(TAG, "Alarm $alarmId has expired or uncommitted SNOOZED session proof; QUARANTINING")
+                return BootstrapDecision.QUARANTINE
+            }
+            Log.i(TAG, "Alarm $alarmId is SNOOZED in session evidence; quarantining for generation-qualified snooze path")
+            return BootstrapDecision.QUARANTINE
+        }
+
         if (currentSettings.pauseUntilMillis > System.currentTimeMillis()) {
             Log.i(TAG, "Pause mode is active; setting desiredOperation = CANCEL for alarm ${initialAlarm.id}")
             val pausedAuthority = ScheduleAuthority(
                 alarmId = initialAlarm.id,
                 instanceToken = instanceToken,
-                definitionRevision = computeDefinitionRevision(initialAlarm),
+                definitionRevision = currentDefRev,
                 scheduleRevision = 1L,
-                lifecycle = if (initialAlarm.isEnabled) "LIVE" else "DISABLED",
+                lifecycle = expectedLifecycle,
                 desiredOperation = "CANCEL",
                 desiredTriggerMillis = null,
                 reconcileState = "RECONCILING",
@@ -160,13 +177,12 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
 
         val desiredTrigger = if (desiredOp == "SET") computedTriggerMillis else null
 
-        val preparedDefRev = computeDefinitionRevision(initialAlarm)
         val candidateAuthority = ScheduleAuthority(
             alarmId = initialAlarm.id,
             instanceToken = instanceToken,
-            definitionRevision = preparedDefRev,
+            definitionRevision = currentDefRev,
             scheduleRevision = 1L,
-            lifecycle = if (initialAlarm.isEnabled) "LIVE" else "DISABLED",
+            lifecycle = expectedLifecycle,
             desiredOperation = desiredOp,
             desiredTriggerMillis = desiredTrigger,
             reconcileState = "RECONCILING", // Always RECONCILING, never SETTLED!
@@ -238,10 +254,15 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
         }
 
         if (decision == BootstrapDecision.RECONCILE) {
-            // Step 4: Cross-store post-admission revalidation fencing
+            // Step 4: Cross-store post-admission revalidation fencing & durable quarantine barrier
             val postRead = localReader.readLocalEvidence()
             if (postRead !is LocalEvidenceReadResult.Success || postRead.localId != candidate.instanceToken) {
-                Log.w(TAG, "Post-admission local incarnation marker changed or unavailable for alarm ${candidate.alarmId}; QUARANTINING")
+                Log.w(TAG, "Post-admission local incarnation marker changed or unavailable for alarm ${candidate.alarmId}; PERSISTING DURABLE QUARANTINE BARRIER")
+                try {
+                    authorityDao.quarantineAuthority(candidate.alarmId, candidate.instanceToken, candidate.scheduleRevision)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to persist durable quarantine barrier for alarm ${candidate.alarmId}", e)
+                }
                 return BootstrapDecision.QUARANTINE
             }
         }

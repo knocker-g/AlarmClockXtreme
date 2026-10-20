@@ -21,6 +21,9 @@ interface ScheduleAuthorityDao {
     @Query("DELETE FROM schedule_authority WHERE alarmId = :alarmId")
     suspend fun deleteAuthorityByAlarmId(alarmId: Long)
 
+    @Query("UPDATE schedule_authority SET reconcileState = 'QUARANTINE' WHERE alarmId = :alarmId AND instanceToken = :instanceToken AND scheduleRevision = :scheduleRevision")
+    suspend fun quarantineAuthority(alarmId: Long, instanceToken: String, scheduleRevision: Long): Int
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMeta(meta: ScheduleAuthorityMeta)
 
