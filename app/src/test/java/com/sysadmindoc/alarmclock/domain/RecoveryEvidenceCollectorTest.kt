@@ -20,8 +20,10 @@ import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -96,7 +98,7 @@ class RecoveryEvidenceCollectorTest {
     }
 
     @Test
-    fun `valid matching evidence returns PROVEN_PRESENT`() = runBlocking {
+    fun `valid matching evidence returns PROVEN_PRESENT and CONSISTENT_OBSERVATION`() = runBlocking {
         database.alarmDao().insert(testAlarm)
         authorityDao.insertMeta(testMeta)
         authorityDao.insertAuthority(readyAuthority)
@@ -105,12 +107,48 @@ class RecoveryEvidenceCollectorTest {
 
         assertEquals(42L, report.alarmId)
         assertEquals(EvidenceReadStatus.PROVEN_PRESENT, report.overallStatus)
+        assertEquals(CrossStoreCoherenceClassification.CONSISTENT_OBSERVATION, report.coherenceClassification)
         assertEquals(EvidenceReadStatus.PROVEN_PRESENT, report.roomEvidence.status)
         assertNotNull(report.roomEvidence.alarm)
         assertEquals(100L, report.roomEvidence.restoreEpoch)
         assertEquals(EvidenceReadStatus.PROVEN_PRESENT, report.localMarkerEvidence.status)
         assertEquals("token-verified-42", report.localMarkerEvidence.localId)
         assertEquals(EvidenceReadStatus.PROVEN_ABSENT, report.sessionEvidence.status)
+        assertFalse(report.globalSessionEvidence.hasGlobalActiveSession)
+    }
+
+    @Test
+    fun `authority incarnation mismatch produces CONTRADICTORY coherence`() = runBlocking {
+        database.alarmDao().insert(testAlarm)
+        authorityDao.insertMeta(testMeta)
+        authorityDao.insertAuthority(readyAuthority.copy(instanceToken = "token-STALE"))
+
+        val report = collector.collectEvidence(42L)
+
+        assertEquals(CrossStoreCoherenceClassification.CONTRADICTORY, report.coherenceClassification)
+    }
+
+    @Test
+    fun `another alarm active session produces CONTRADICTORY coherence and retains global session info`() = runBlocking {
+        database.alarmDao().insert(testAlarm)
+        authorityDao.insertMeta(testMeta)
+        authorityDao.insertAuthority(readyAuthority)
+
+        val otherAlarmSession = AppSettings(
+            activeAlarmId = 99L, // Another alarm is active!
+            activeAlarmScheduledAt = 1000L,
+            activeAlarmFireId = "fire-99",
+            activeAlarmFiredAt = System.currentTimeMillis(),
+            activeAlarmState = "FIRING"
+        )
+        coEvery { preferencesManager.getCurrentSettings() } returns otherAlarmSession
+
+        val report = collector.collectEvidence(42L)
+
+        assertEquals(CrossStoreCoherenceClassification.CONTRADICTORY, report.coherenceClassification)
+        assertTrue(report.globalSessionEvidence.hasGlobalActiveSession)
+        assertEquals(99L, report.globalSessionEvidence.activeAlarmId)
+        assertFalse(report.globalSessionEvidence.isSameAlarm)
     }
 
     @Test
