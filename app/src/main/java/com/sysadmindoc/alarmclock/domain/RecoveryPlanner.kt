@@ -149,7 +149,7 @@ class RecoveryPlanner @Inject constructor() {
         if (bridgeReport.status == BridgeStatus.NOT_EVALUATED) {
             val reason = bridgeReport.reasonCode
             val outcome = when {
-                reason.contains("CONTRADICTORY") || reason.contains("CONFLICT") || reason.contains("MULTIPLE") || reason.contains("AMBIGUOUS") || reason.contains("UNRESOLVED") -> {
+                reason.contains("CONTRADICTORY") || reason.contains("CONFLICT") || reason.contains("MULTIPLE") || reason.contains("AMBIGUOUS") || reason.contains("UNRESOLVED") || reason.contains("OTHER_ALARM") -> {
                     RecoveryPlanOutcome.BLOCKED_CONFLICT
                 }
                 else -> RecoveryPlanOutcome.BLOCKED_MISSING_EVIDENCE
