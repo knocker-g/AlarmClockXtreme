@@ -19,11 +19,14 @@ import javax.inject.Singleton
  * Adapter to safely initialize [ScheduleAuthority] rows for existing enabled [Alarm] definitions lacking authority.
  *
  * Guarantees:
+ * - Prepares candidate without DB writes or OS operations.
  * - Requires verified restoreEpoch from ScheduleAuthorityMeta (does NOT manufacture restoreEpoch).
  * - Requires verified LocalEvidenceReadResult.Success with non-blank matching localId. All other outcomes return QUARANTINE.
- * - Detects Definition edits by checking calculated definition fingerprint vs stored definitionRevision.
+ * - Re-reads current Alarm definition before admission to detect definition mutations.
  * - Recomputes target trigger time using [NextAlarmCalculator] with Pause/Holiday suppression rules.
+ * - Admits via atomic Room insertion as 'RECONCILING'; handles concurrent insertion conflicts gracefully.
  * - Returns [BootstrapDecision.QUARANTINE] for unsupported or invalid policy evidence rather than guessing an OS target.
+ * - QUARANTINE never issues OS CANCEL, preserving legacy alarm state.
  */
 @Singleton
 class ScheduleAuthorityBootstrapAdapter @Inject constructor(
@@ -45,7 +48,8 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
     }
 
     suspend fun bootstrapAuthorityForAlarm(alarmId: Long, instanceToken: String?): BootstrapDecision {
-        val alarm = alarmRepository.getById(alarmId)?.sanitized()
+        // Step 1: Prepare (inspect authoritative providers without DB/OS writes)
+        val initialAlarm = alarmRepository.getById(alarmId)?.sanitized()
             ?: return BootstrapDecision.QUARANTINE
 
         val meta = authorityDao.getMetaById(1)
@@ -63,11 +67,11 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
             return BootstrapDecision.QUARANTINE
         }
 
-        val currentDefRev = computeDefinitionRevision(alarm)
         val existing = authorityDao.getAuthorityByAlarmId(alarmId)
         if (existing != null) {
+            val currentDefRev = computeDefinitionRevision(initialAlarm)
             if (existing.definitionRevision != currentDefRev) {
-                Log.w(TAG, "Definition edit detected for alarm ${alarm.id} (stored ${existing.definitionRevision} vs current $currentDefRev)")
+                Log.w(TAG, "Definition edit detected for alarm ${initialAlarm.id} (stored ${existing.definitionRevision} vs current $currentDefRev)")
                 return BootstrapDecision.QUARANTINE
             }
             return when (existing.reconcileState) {
@@ -77,45 +81,50 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
             }
         }
 
+        // Step 2: Validate (re-read current Definition and evaluate full scheduling policy)
+        val currentAlarm = alarmRepository.getById(alarmId)?.sanitized()
+            ?: return BootstrapDecision.QUARANTINE
+
+        val preparedDefRev = computeDefinitionRevision(currentAlarm)
+
         // Evaluate Pause settings
         if (preferencesManager.getCurrentSettings().pauseUntilMillis > System.currentTimeMillis()) {
-            Log.i(TAG, "Pause mode is active; setting desiredOperation = CANCEL for alarm ${alarm.id}")
+            Log.i(TAG, "Pause mode is active; setting desiredOperation = CANCEL for alarm ${currentAlarm.id}")
             val pausedAuthority = ScheduleAuthority(
-                alarmId = alarm.id,
+                alarmId = currentAlarm.id,
                 instanceToken = instanceToken,
-                definitionRevision = currentDefRev,
+                definitionRevision = preparedDefRev,
                 scheduleRevision = 1L,
-                lifecycle = if (alarm.isEnabled) "LIVE" else "DISABLED",
+                lifecycle = if (currentAlarm.isEnabled) "LIVE" else "DISABLED",
                 desiredOperation = "CANCEL",
                 desiredTriggerMillis = null,
                 reconcileState = "RECONCILING",
                 restoreEpoch = verifiedRestoreEpoch,
                 actionKey = null
             )
-            authorityDao.insertAuthority(pausedAuthority)
-            return BootstrapDecision.RECONCILE
+            return admitAuthorityAtomically(pausedAuthority)
         }
 
         val now = ZonedDateTime.now()
-        var computedTriggerMillis = if (alarm.isEnabled) {
+        val computedTriggerMillis = if (currentAlarm.isEnabled) {
             try {
-                calculator.calculate(alarm, now)
+                calculator.calculate(currentAlarm, now)
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to compute next trigger for alarm ${alarm.id}", e)
+                Log.w(TAG, "Failed to compute next trigger for alarm ${currentAlarm.id}", e)
                 return BootstrapDecision.QUARANTINE
             }
         } else null
 
         // Evaluate Holiday suppression rule
-        if (alarm.isEnabled && alarm.skipOnHolidays && computedTriggerMillis != null) {
+        if (currentAlarm.isEnabled && currentAlarm.skipOnHolidays && computedTriggerMillis != null) {
             val date = Instant.ofEpochMilli(computedTriggerMillis).atZone(ZoneId.systemDefault()).toLocalDate()
             if (holidayRepository.isHoliday(date)) {
-                Log.i(TAG, "Target date $date is a holiday for alarm ${alarm.id}; quarantining for policy evaluation")
+                Log.i(TAG, "Target date $date is a holiday for alarm ${currentAlarm.id}; quarantining for policy evaluation")
                 return BootstrapDecision.QUARANTINE
             }
         }
 
-        val desiredOp = if (alarm.isEnabled && computedTriggerMillis != null && computedTriggerMillis > System.currentTimeMillis()) {
+        val desiredOp = if (currentAlarm.isEnabled && computedTriggerMillis != null && computedTriggerMillis > System.currentTimeMillis()) {
             "SET"
         } else {
             "CANCEL"
@@ -123,21 +132,40 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
 
         val desiredTrigger = if (desiredOp == "SET") computedTriggerMillis else null
 
-        val newAuthority = ScheduleAuthority(
-            alarmId = alarm.id,
+        val candidateAuthority = ScheduleAuthority(
+            alarmId = currentAlarm.id,
             instanceToken = instanceToken,
-            definitionRevision = currentDefRev,
+            definitionRevision = preparedDefRev,
             scheduleRevision = 1L,
-            lifecycle = if (alarm.isEnabled) "LIVE" else "DISABLED",
+            lifecycle = if (currentAlarm.isEnabled) "LIVE" else "DISABLED",
             desiredOperation = desiredOp,
             desiredTriggerMillis = desiredTrigger,
-            reconcileState = "RECONCILING", // Requires reconciliation; NOT assumed SETTLED!
+            reconcileState = "RECONCILING", // Always RECONCILING, never SETTLED!
             restoreEpoch = verifiedRestoreEpoch,
             actionKey = null
         )
 
-        authorityDao.insertAuthority(newAuthority)
-        Log.i(TAG, "Bootstrapped missing authority for alarm ${alarm.id} as RECONCILING with calculated trigger $desiredTrigger")
-        return BootstrapDecision.RECONCILE
+        // Step 3: Admit (atomic Room insertion with conflict handling)
+        return admitAuthorityAtomically(candidateAuthority)
+    }
+
+    private suspend fun admitAuthorityAtomically(candidate: ScheduleAuthority): BootstrapDecision {
+        return try {
+            authorityDao.insertAuthority(candidate)
+            Log.i(TAG, "Admitted authority for alarm ${candidate.alarmId} as RECONCILING with trigger ${candidate.desiredTriggerMillis}")
+            BootstrapDecision.RECONCILE
+        } catch (e: Exception) {
+            Log.w(TAG, "Concurrent insertion conflict for alarm ${candidate.alarmId}; re-reading DB authority", e)
+            val existingPostConflict = authorityDao.getAuthorityByAlarmId(candidate.alarmId)
+            if (existingPostConflict != null) {
+                when (existingPostConflict.reconcileState) {
+                    "SETTLED" -> BootstrapDecision.ADOPT
+                    "RECONCILING" -> BootstrapDecision.RECONCILE
+                    else -> BootstrapDecision.QUARANTINE
+                }
+            } else {
+                BootstrapDecision.QUARANTINE
+            }
+        }
     }
 }
