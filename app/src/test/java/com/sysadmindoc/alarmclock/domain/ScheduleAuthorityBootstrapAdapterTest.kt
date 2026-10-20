@@ -8,6 +8,7 @@ import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 import com.sysadmindoc.alarmclock.data.local.LocalEvidenceReadResult
 import com.sysadmindoc.alarmclock.data.local.LocalIncarnationEvidenceReader
 import com.sysadmindoc.alarmclock.data.local.ScheduleAuthorityDao
+import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.preferences.AppSettings
@@ -106,11 +107,46 @@ class ScheduleAuthorityBootstrapAdapterTest {
         coEvery { alarmRepository.getById(42L) } returns testAlarm
         authorityDao.insertMeta(ScheduleAuthorityMeta(id = 1, restoreEpoch = 100L, bootstrapState = "ENFORCED"))
 
-        // Caller passes fabricated instanceToken that mismatches "token-verified-42"
         val result = bootstrapAdapter.bootstrapAuthorityForAlarm(alarmId = 42L, instanceToken = "token-FABRICATED-99")
 
         assertEquals(BootstrapDecision.QUARANTINE, result)
         assertNull("Fabricated instanceToken must be quarantined without creating DB authority", authorityDao.getAuthorityByAlarmId(42L))
+    }
+
+    @Test
+    fun `local marker storage unavailable returns QUARANTINE`() = runBlocking {
+        coEvery { alarmRepository.getById(42L) } returns testAlarm
+        coEvery { localReader.readLocalEvidence() } returns LocalEvidenceReadResult.StorageUnavailable
+        authorityDao.insertMeta(ScheduleAuthorityMeta(id = 1, restoreEpoch = 100L, bootstrapState = "ENFORCED"))
+
+        val result = bootstrapAdapter.bootstrapAuthorityForAlarm(alarmId = 42L, instanceToken = "token-verified-42")
+
+        assertEquals(BootstrapDecision.QUARANTINE, result)
+    }
+
+    @Test
+    fun `definition edit detected during bootstrap returns QUARANTINE`() = runBlocking {
+        coEvery { alarmRepository.getById(42L) } returns testAlarm
+        authorityDao.insertMeta(ScheduleAuthorityMeta(id = 1, restoreEpoch = 100L, bootstrapState = "ENFORCED"))
+
+        // Existing authority in DB with mismatched definitionRevision = 9999L
+        val oldAuthority = ScheduleAuthority(
+            alarmId = 42L,
+            instanceToken = "token-verified-42",
+            definitionRevision = 9999L, // Mismatched definition revision!
+            scheduleRevision = 1L,
+            lifecycle = "LIVE",
+            desiredOperation = "SET",
+            desiredTriggerMillis = 1000L,
+            reconcileState = "SETTLED",
+            restoreEpoch = 100L,
+            actionKey = null
+        )
+        authorityDao.insertAuthority(oldAuthority)
+
+        val result = bootstrapAdapter.bootstrapAuthorityForAlarm(alarmId = 42L, instanceToken = "token-verified-42")
+
+        assertEquals(BootstrapDecision.QUARANTINE, result)
     }
 
     @Test
@@ -139,7 +175,7 @@ class ScheduleAuthorityBootstrapAdapterTest {
     }
 
     @Test
-    fun `holiday skip active sets desiredOperation to CANCEL on holiday date`() = runBlocking {
+    fun `holiday skip active quarantines on holiday date`() = runBlocking {
         val holidayAlarm = testAlarm.copy(skipOnHolidays = true)
         coEvery { alarmRepository.getById(42L) } returns holidayAlarm
         authorityDao.insertMeta(ScheduleAuthorityMeta(id = 1, restoreEpoch = 100L, bootstrapState = "ENFORCED"))
@@ -150,11 +186,7 @@ class ScheduleAuthorityBootstrapAdapterTest {
 
         val result = bootstrapAdapter.bootstrapAuthorityForAlarm(alarmId = 42L, instanceToken = "token-verified-42")
 
-        assertEquals(BootstrapDecision.RECONCILE, result)
-        val created = authorityDao.getAuthorityByAlarmId(42L)
-        assertNotNull(created)
-        assertEquals("CANCEL", created?.desiredOperation)
-        assertNull(created?.desiredTriggerMillis)
+        assertEquals(BootstrapDecision.QUARANTINE, result)
     }
 
     @Test

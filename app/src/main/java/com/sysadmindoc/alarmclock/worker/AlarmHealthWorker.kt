@@ -26,20 +26,24 @@ import com.sysadmindoc.alarmclock.service.AlarmService
 import com.sysadmindoc.alarmclock.util.ManufacturerCompat
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import kotlinx.coroutines.CancellationException
 
 @HiltWorker
 class AlarmHealthWorker @AssistedInject constructor(
     @Assisted context: Context,
     @Assisted workerParams: WorkerParameters,
     private val alarmRepository: AlarmRepository,
-    private val scheduleAuthorityReconciler: ScheduleAuthorityReconciler? = null
+    private val scheduleAuthorityReconciler: ScheduleAuthorityReconciler
 ) : CoroutineWorker(context, workerParams) {
 
     override suspend fun doWork(): Result {
         try {
-            scheduleAuthorityReconciler?.reconcilePendingAuthorities()
+            scheduleAuthorityReconciler.reconcilePendingAuthorities()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            android.util.Log.w("AlarmHealthWorker", "Pending ScheduleAuthority reconciliation encountered error", e)
+            android.util.Log.e("AlarmHealthWorker", "ScheduleAuthority reconciliation failed", e)
+            return Result.retry()
         }
 
         val hasEnabledAlarms = alarmRepository.getEnabled().isNotEmpty()

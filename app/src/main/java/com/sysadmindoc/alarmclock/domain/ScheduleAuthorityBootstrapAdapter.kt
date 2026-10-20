@@ -20,11 +20,10 @@ import javax.inject.Singleton
  *
  * Guarantees:
  * - Requires verified restoreEpoch from ScheduleAuthorityMeta (does NOT manufacture restoreEpoch).
- * - Validates instanceToken evidence against [LocalIncarnationEvidenceReader] (rejects fabricated tokens).
+ * - Requires verified LocalEvidenceReadResult.Success with non-blank matching localId. All other outcomes return QUARANTINE.
+ * - Detects Definition edits by checking calculated definition fingerprint vs stored definitionRevision.
  * - Recomputes target trigger time using [NextAlarmCalculator] with Pause/Holiday suppression rules.
- * - Marks bootstrapped enabled alarms as 'RECONCILING' so reconciler evaluates capability and registers OS alarm clock.
- * - Does NOT reconstruct uncommitted SNOOZED sessions from Room alone.
- * - Returns [BootstrapDecision.QUARANTINE] if required definition, instanceToken, or restoreEpoch evidence is missing/invalid.
+ * - Returns [BootstrapDecision.QUARANTINE] for unsupported or invalid policy evidence rather than guessing an OS target.
  */
 @Singleton
 class ScheduleAuthorityBootstrapAdapter @Inject constructor(
@@ -38,6 +37,11 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
 
     companion object {
         private const val TAG = "ScheduleAuthorityBootstrapAdapter"
+
+        fun computeDefinitionRevision(alarm: Alarm): Long {
+            val content = "${alarm.id}:${alarm.hour}:${alarm.minute}:${alarm.repeatDays}:${alarm.label}:${alarm.ringtoneUri}"
+            return (content.hashCode().toLong() and 0x7FFFFFFFFFFFFFFFL).coerceAtLeast(1L)
+        }
     }
 
     suspend fun bootstrapAuthorityForAlarm(alarmId: Long, instanceToken: String?): BootstrapDecision {
@@ -52,17 +56,20 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
             return BootstrapDecision.QUARANTINE // Cannot bootstrap without verified instance token!
         }
 
-        // Validate instanceToken against LocalIncarnationEvidenceReader
+        // Strict Incarnation Verification: local evidence MUST be Success with matching non-blank localId
         val localRead = localReader.readLocalEvidence()
-        if (localRead is LocalEvidenceReadResult.Success && localRead.localId != null) {
-            if (localRead.localId != instanceToken) {
-                Log.w(TAG, "Caller-supplied instanceToken '$instanceToken' mismatches local marker '${localRead.localId}'; quarantining")
-                return BootstrapDecision.QUARANTINE
-            }
+        if (localRead !is LocalEvidenceReadResult.Success || localRead.localId.isNullOrBlank() || localRead.localId != instanceToken) {
+            Log.w(TAG, "Local evidence read was NOT Success or localId mismatches instanceToken; QUARANTINING")
+            return BootstrapDecision.QUARANTINE
         }
 
+        val currentDefRev = computeDefinitionRevision(alarm)
         val existing = authorityDao.getAuthorityByAlarmId(alarmId)
         if (existing != null) {
+            if (existing.definitionRevision != currentDefRev) {
+                Log.w(TAG, "Definition edit detected for alarm ${alarm.id} (stored ${existing.definitionRevision} vs current $currentDefRev)")
+                return BootstrapDecision.QUARANTINE
+            }
             return when (existing.reconcileState) {
                 "SETTLED" -> BootstrapDecision.ADOPT
                 "RECONCILING" -> BootstrapDecision.RECONCILE
@@ -76,7 +83,7 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
             val pausedAuthority = ScheduleAuthority(
                 alarmId = alarm.id,
                 instanceToken = instanceToken,
-                definitionRevision = 1L,
+                definitionRevision = currentDefRev,
                 scheduleRevision = 1L,
                 lifecycle = if (alarm.isEnabled) "LIVE" else "DISABLED",
                 desiredOperation = "CANCEL",
@@ -95,7 +102,7 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
                 calculator.calculate(alarm, now)
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to compute next trigger for alarm ${alarm.id}", e)
-                null
+                return BootstrapDecision.QUARANTINE
             }
         } else null
 
@@ -103,8 +110,8 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
         if (alarm.isEnabled && alarm.skipOnHolidays && computedTriggerMillis != null) {
             val date = Instant.ofEpochMilli(computedTriggerMillis).atZone(ZoneId.systemDefault()).toLocalDate()
             if (holidayRepository.isHoliday(date)) {
-                Log.i(TAG, "Target date $date is a holiday; suppressing alarm ${alarm.id}")
-                computedTriggerMillis = null
+                Log.i(TAG, "Target date $date is a holiday for alarm ${alarm.id}; quarantining for policy evaluation")
+                return BootstrapDecision.QUARANTINE
             }
         }
 
@@ -119,7 +126,7 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
         val newAuthority = ScheduleAuthority(
             alarmId = alarm.id,
             instanceToken = instanceToken,
-            definitionRevision = 1L,
+            definitionRevision = currentDefRev,
             scheduleRevision = 1L,
             lifecycle = if (alarm.isEnabled) "LIVE" else "DISABLED",
             desiredOperation = desiredOp,
