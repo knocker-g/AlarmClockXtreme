@@ -311,7 +311,12 @@ class AlarmScheduler @Inject constructor(
         }
 
         repository.updateNextTrigger(sanitizedAlarm.id, triggerTime)
-        val success = scheduleAlarmClock(sanitizedAlarm.id, triggerTime)
+        val success = try {
+            scheduleAlarmClock(sanitizedAlarm.id, triggerTime)
+        } catch (e: Exception) {
+            Log.e("AlarmScheduler", "OS AlarmManager registration threw exception for alarm ${sanitizedAlarm.id}", e)
+            false
+        }
         if (!success) {
             cancelScheduledEntries(sanitizedAlarm.id)
             repository.updateNextTrigger(sanitizedAlarm.id, 0)

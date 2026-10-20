@@ -2631,7 +2631,19 @@ class AlarmService : Service() {
                         }
                     }
                     alarmScheduler.handleAlarmFired(alarmId, acceptedGen.scheduledAt)
-                    webhookEvent = WebhookEvent.AlarmDismissed
+                    webhookService.fireAsync(
+                        event = WebhookEvent.AlarmDismissed,
+                        alarmId = alarm.id,
+                        label = alarm.label,
+                        timeFormatted = wireAlarmTime(alarm),
+                        scheduledForMillis = webhookScheduledAt.takeIf { it > 0L },
+                        fireId = webhookFireId
+                    )
+                    AlarmBroadcastContract.send(
+                        this@AlarmService, AlarmBroadcastContract.ACTION_ALARM_DISMISSED,
+                        alarmId = alarm.id, label = alarm.label,
+                        displayTime = wireAlarmTime(alarm), fireId = webhookFireId
+                    )
                 } else {
                     currentSnoozeCount = nextSnoozeCount
                     persistSnoozeCount(alarmId, currentSnoozeCount)
@@ -2644,7 +2656,14 @@ class AlarmService : Service() {
                             .coerceAtLeast(1) * 60_000L
                     val snoozeEndAt = (snoozeAtMillis ?: defaultSnoozeEndAt)
                         .coerceAtLeast(snoozeStartedAt + 1_000L)
-                    if (alarmScheduler.scheduleSnoozeAt(alarm, snoozeEndAt)) {
+                    val snoozeScheduled = try {
+                        alarmScheduler.scheduleSnoozeAt(alarm, snoozeEndAt)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "OS AlarmManager registration threw exception for $acceptedGen", e)
+                        false
+                    }
+
+                    if (snoozeScheduled) {
                         SnoozeCountdownReceiver.schedule(
                             context = this@AlarmService,
                             startAtMillis = snoozeStartedAt,
@@ -2682,12 +2701,44 @@ class AlarmService : Service() {
                         when (snoozeResult) {
                             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED -> {
                                 Log.i(TAG, "Successfully committed DataStore snooze state for $acceptedGen")
+                                recordEventAsync(
+                                    alarm = alarm,
+                                    scheduledAt = acceptedGen.scheduledAt,
+                                    firedAt = alarmFiredAt,
+                                    action = AlarmEvent.ACTION_SNOOZED,
+                                    snoozeCount = currentSnoozeCount
+                                )
+                                recordIncidentAsync(
+                                    type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                                    status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                                    reasonCode = "SNOOZED",
+                                    source = "AlarmService",
+                                    alarmId = alarm.id,
+                                    fireId = acceptedGen.fireId,
+                                    scheduledAt = acceptedGen.scheduledAt
+                                )
+                                webhookEvent = WebhookEvent.AlarmSnoozed
+                                webhookService.fireAsync(
+                                    event = webhookEvent,
+                                    alarmId = alarm.id,
+                                    label = alarm.label,
+                                    timeFormatted = wireAlarmTime(alarm),
+                                    scheduledForMillis = webhookScheduledAt.takeIf { it > 0L },
+                                    fireId = webhookFireId
+                                )
+                                AlarmBroadcastContract.send(
+                                    this@AlarmService, AlarmBroadcastContract.ACTION_ALARM_SNOOZED,
+                                    alarmId = alarm.id, label = alarm.label,
+                                    displayTime = wireAlarmTime(alarm), fireId = webhookFireId
+                                )
                             }
                             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.REJECTED_STALE -> {
                                 Log.i(TAG, "Snooze state write rejected for $acceptedGen: DataStore holds newer active generation")
+                                alarmScheduler.cancel(alarm.id)
                             }
                             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT -> {
                                 Log.w(TAG, "Failed to commit DataStore snooze state for $acceptedGen: launching background retry")
+                                alarmScheduler.cancel(alarm.id)
                                 recordIncidentAsync(
                                     type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
                                     status = AlarmIncidentEvent.STATUS_FAILED,
@@ -2700,38 +2751,20 @@ class AlarmService : Service() {
                                 retrySnoozeActiveState(acceptedGen, snoozeSnapshot)
                             }
                         }
+                    } else {
+                        Log.w(TAG, "Snooze registration failed for $acceptedGen")
+                        recordIncidentAsync(
+                            type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                            status = AlarmIncidentEvent.STATUS_FAILED,
+                            reasonCode = "SNOOZE_REGISTRATION_FAILED",
+                            source = "AlarmService",
+                            alarmId = alarm.id,
+                            fireId = acceptedGen.fireId,
+                            scheduledAt = acceptedGen.scheduledAt
+                        )
+                        refreshFiringNotification(alarm)
                     }
-                    recordEventAsync(
-                        alarm = alarm,
-                        scheduledAt = acceptedGen.scheduledAt,
-                        firedAt = alarmFiredAt,
-                        action = AlarmEvent.ACTION_SNOOZED,
-                        snoozeCount = currentSnoozeCount
-                    )
-                    recordIncidentAsync(
-                        type = AlarmIncidentEvent.TYPE_USER_ACTION,
-                        status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                        reasonCode = "SNOOZED",
-                        source = "AlarmService",
-                        alarmId = alarm.id,
-                        fireId = acceptedGen.fireId,
-                        scheduledAt = acceptedGen.scheduledAt
-                    )
-                    webhookEvent = WebhookEvent.AlarmSnoozed
                 }
-                webhookService.fireAsync(
-                    event = webhookEvent,
-                    alarmId = alarm.id,
-                    label = alarm.label,
-                    timeFormatted = wireAlarmTime(alarm),
-                    scheduledForMillis = webhookScheduledAt.takeIf { it > 0L },
-                    fireId = webhookFireId
-                )
-                AlarmBroadcastContract.send(
-                    this@AlarmService, AlarmBroadcastContract.ACTION_ALARM_SNOOZED,
-                    alarmId = alarm.id, label = alarm.label,
-                    displayTime = wireAlarmTime(alarm), fireId = webhookFireId
-                )
                 wearNextAlarmBridge.publishAlarmIdle(alarm.id)
             } else {
                 recordIncidentAsync(
