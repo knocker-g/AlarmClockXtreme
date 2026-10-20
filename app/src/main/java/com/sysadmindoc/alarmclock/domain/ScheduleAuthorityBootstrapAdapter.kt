@@ -1,10 +1,16 @@
 package com.sysadmindoc.alarmclock.domain
 
 import android.util.Log
+import com.sysadmindoc.alarmclock.data.local.LocalEvidenceReadResult
+import com.sysadmindoc.alarmclock.data.local.LocalIncarnationEvidenceReader
 import com.sysadmindoc.alarmclock.data.local.ScheduleAuthorityDao
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
 import com.sysadmindoc.alarmclock.data.model.Alarm
+import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
+import com.sysadmindoc.alarmclock.data.repository.HolidayRepository
+import java.time.Instant
+import java.time.ZoneId
 import java.time.ZonedDateTime
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -14,17 +20,20 @@ import javax.inject.Singleton
  *
  * Guarantees:
  * - Requires verified restoreEpoch from ScheduleAuthorityMeta (does NOT manufacture restoreEpoch).
- * - Requires verified instanceToken evidence (does NOT manufacture instanceToken).
- * - Recomputes target trigger time from [NextAlarmCalculator] (does NOT trust legacy nextTriggerTime as truth).
+ * - Validates instanceToken evidence against [LocalIncarnationEvidenceReader] (rejects fabricated tokens).
+ * - Recomputes target trigger time using [NextAlarmCalculator] with Pause/Holiday suppression rules.
  * - Marks bootstrapped enabled alarms as 'RECONCILING' so reconciler evaluates capability and registers OS alarm clock.
  * - Does NOT reconstruct uncommitted SNOOZED sessions from Room alone.
- * - Returns [BootstrapDecision.QUARANTINE] if required definition, instanceToken, or restoreEpoch evidence is missing.
+ * - Returns [BootstrapDecision.QUARANTINE] if required definition, instanceToken, or restoreEpoch evidence is missing/invalid.
  */
 @Singleton
 class ScheduleAuthorityBootstrapAdapter @Inject constructor(
     private val authorityDao: ScheduleAuthorityDao,
     private val alarmRepository: AlarmRepository,
-    private val calculator: NextAlarmCalculator
+    private val calculator: NextAlarmCalculator,
+    private val localReader: LocalIncarnationEvidenceReader,
+    private val preferencesManager: PreferencesManager,
+    private val holidayRepository: HolidayRepository
 ) {
 
     companion object {
@@ -43,6 +52,15 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
             return BootstrapDecision.QUARANTINE // Cannot bootstrap without verified instance token!
         }
 
+        // Validate instanceToken against LocalIncarnationEvidenceReader
+        val localRead = localReader.readLocalEvidence()
+        if (localRead is LocalEvidenceReadResult.Success && localRead.localId != null) {
+            if (localRead.localId != instanceToken) {
+                Log.w(TAG, "Caller-supplied instanceToken '$instanceToken' mismatches local marker '${localRead.localId}'; quarantining")
+                return BootstrapDecision.QUARANTINE
+            }
+        }
+
         val existing = authorityDao.getAuthorityByAlarmId(alarmId)
         if (existing != null) {
             return when (existing.reconcileState) {
@@ -52,8 +70,27 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
             }
         }
 
+        // Evaluate Pause settings
+        if (preferencesManager.getCurrentSettings().pauseUntilMillis > System.currentTimeMillis()) {
+            Log.i(TAG, "Pause mode is active; setting desiredOperation = CANCEL for alarm ${alarm.id}")
+            val pausedAuthority = ScheduleAuthority(
+                alarmId = alarm.id,
+                instanceToken = instanceToken,
+                definitionRevision = 1L,
+                scheduleRevision = 1L,
+                lifecycle = if (alarm.isEnabled) "LIVE" else "DISABLED",
+                desiredOperation = "CANCEL",
+                desiredTriggerMillis = null,
+                reconcileState = "RECONCILING",
+                restoreEpoch = verifiedRestoreEpoch,
+                actionKey = null
+            )
+            authorityDao.insertAuthority(pausedAuthority)
+            return BootstrapDecision.RECONCILE
+        }
+
         val now = ZonedDateTime.now()
-        val computedTriggerMillis = if (alarm.isEnabled) {
+        var computedTriggerMillis = if (alarm.isEnabled) {
             try {
                 calculator.calculate(alarm, now)
             } catch (e: Exception) {
@@ -61,6 +98,15 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
                 null
             }
         } else null
+
+        // Evaluate Holiday suppression rule
+        if (alarm.isEnabled && alarm.skipOnHolidays && computedTriggerMillis != null) {
+            val date = Instant.ofEpochMilli(computedTriggerMillis).atZone(ZoneId.systemDefault()).toLocalDate()
+            if (holidayRepository.isHoliday(date)) {
+                Log.i(TAG, "Target date $date is a holiday; suppressing alarm ${alarm.id}")
+                computedTriggerMillis = null
+            }
+        }
 
         val desiredOp = if (alarm.isEnabled && computedTriggerMillis != null && computedTriggerMillis > System.currentTimeMillis()) {
             "SET"

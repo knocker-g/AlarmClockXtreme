@@ -5,11 +5,16 @@ import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
+import com.sysadmindoc.alarmclock.data.local.LocalEvidenceReadResult
+import com.sysadmindoc.alarmclock.data.local.LocalIncarnationEvidenceReader
 import com.sysadmindoc.alarmclock.data.local.ScheduleAuthorityDao
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta
 import com.sysadmindoc.alarmclock.data.model.Alarm
+import com.sysadmindoc.alarmclock.data.preferences.AppSettings
+import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
+import com.sysadmindoc.alarmclock.data.repository.HolidayRepository
 import io.mockk.coEvery
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
@@ -33,6 +38,9 @@ class ScheduleAuthorityReconcilerTest {
     private lateinit var bootstrapAdapter: ScheduleAuthorityBootstrapAdapter
     private lateinit var alarmRepository: AlarmRepository
     private lateinit var calculator: NextAlarmCalculator
+    private lateinit var localReader: LocalIncarnationEvidenceReader
+    private lateinit var preferencesManager: PreferencesManager
+    private lateinit var holidayRepository: HolidayRepository
     private val fakeOsSlot = mutableListOf<String>()
 
     private val initialUnreconciled = ScheduleAuthority(
@@ -58,6 +66,17 @@ class ScheduleAuthorityReconcilerTest {
         authorityDao = database.scheduleAuthorityDao()
         alarmRepository = mockk()
         calculator = mockk()
+        localReader = mockk()
+        preferencesManager = mockk()
+        holidayRepository = mockk()
+
+        coEvery { preferencesManager.getCurrentSettings() } returns AppSettings()
+        coEvery { localReader.readLocalEvidence() } returns LocalEvidenceReadResult.Success(
+            localState = MarkerState.PRESENT_VALID,
+            localId = "token-verified-99",
+            localCompletion = CompletionState.COMPLETE
+        )
+        coEvery { holidayRepository.isHoliday(any()) } returns false
         coEvery { calculator.calculate(any(), any()) } returns 5000L
 
         fakeOsSlot.clear()
@@ -85,7 +104,10 @@ class ScheduleAuthorityReconcilerTest {
         bootstrapAdapter = ScheduleAuthorityBootstrapAdapter(
             authorityDao = authorityDao,
             alarmRepository = alarmRepository,
-            calculator = calculator
+            calculator = calculator,
+            localReader = localReader,
+            preferencesManager = preferencesManager,
+            holidayRepository = holidayRepository
         )
     }
 
