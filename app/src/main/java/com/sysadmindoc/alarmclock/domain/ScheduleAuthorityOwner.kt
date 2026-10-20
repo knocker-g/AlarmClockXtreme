@@ -25,14 +25,16 @@ sealed interface OwnerResult {
  * Guarantees:
  * - OS effects must be serialized per alarmId via in-process Mutex map.
  * - Reads current ScheduleAuthority state before claim.
- * - CAS claims and increments revision by 1.
- * - Duplicate same-action submissions skip revision advance.
+ * - Only ignores duplicate actionKey if reconcileState is confirmed 'SETTLED'.
+ * - Checks exact alarm capability before claim and OS action for SET operations.
+ * - CAS claims and increments revision by 1, with Long.MAX_VALUE overflow protection.
  * - Validates settlement with matching actionKey and claimed revision.
+ * - Re-reads authority after OS action to detect post-operation convergence/superseding.
  */
 @Singleton
 class ScheduleAuthorityOwner @Inject constructor(
     private val authorityDao: ScheduleAuthorityDao,
-    private val exactPermissionChecker: () -> Boolean = { true }
+    private val exactPermissionChecker: () -> Boolean
 ) {
 
     private val mutexMap = ConcurrentHashMap<Long, Mutex>()
@@ -52,13 +54,24 @@ class ScheduleAuthorityOwner @Inject constructor(
             val authority = authorityDao.getAuthorityByAlarmId(alarmId)
                 ?: return@withLock OwnerResult.AuthorityNotFound
 
-            // Duplicate action token check: ignore duplicate submission without advancing revision
-            if (actionKey != null && authority.actionKey == actionKey) {
-                Log.i("ScheduleAuthorityOwner", "Duplicate actionKey '$actionKey' for alarm $alarmId ignored without revision advance")
+            // Duplicate action token check: ignore ONLY if already confirmed SETTLED
+            if (actionKey != null && authority.actionKey == actionKey && authority.reconcileState == "SETTLED") {
+                Log.i("ScheduleAuthorityOwner", "Duplicate actionKey '$actionKey' for alarm $alarmId already SETTLED; ignoring")
                 return@withLock OwnerResult.DuplicateIgnored
             }
 
+            // Check exact alarm permission for SET operations BEFORE claim and OS action
+            if (desiredOperation == "SET" && !exactPermissionChecker()) {
+                Log.w("ScheduleAuthorityOwner", "Exact alarm capability unavailable for alarm $alarmId")
+                return@withLock OwnerResult.PermissionBlocked(authority.scheduleRevision)
+            }
+
             val expectedRev = authority.scheduleRevision
+            if (expectedRev >= Long.MAX_VALUE) {
+                Log.e("ScheduleAuthorityOwner", "scheduleRevision overflow for alarm $alarmId")
+                return@withLock OwnerResult.Superseded(Long.MAX_VALUE)
+            }
+
             val claimedRev = expectedRev + 1L
 
             // CAS claim authority transition to RECONCILING
@@ -76,12 +89,6 @@ class ScheduleAuthorityOwner @Inject constructor(
             if (claimed != 1) {
                 val current = authorityDao.getAuthorityByAlarmId(alarmId)
                 return@withLock OwnerResult.Superseded(current?.scheduleRevision ?: expectedRev)
-            }
-
-            // Check exact alarm permission for SET operations
-            if (desiredOperation == "SET" && !exactPermissionChecker()) {
-                Log.w("ScheduleAuthorityOwner", "Exact alarm capability unavailable for alarm $alarmId")
-                return@withLock OwnerResult.PermissionBlocked(claimedRev)
             }
 
             // Apply OS action
@@ -102,6 +109,13 @@ class ScheduleAuthorityOwner @Inject constructor(
             if (!osSuccess) {
                 Log.w("ScheduleAuthorityOwner", "OS operation returned false for alarm $alarmId at rev $claimedRev")
                 return@withLock OwnerResult.OutcomeUnknown(claimedRev, IllegalStateException("OS action returned false"))
+            }
+
+            // Re-read current authority from DB after OS action to detect convergence/superseding
+            val postOsAuth = authorityDao.getAuthorityByAlarmId(alarmId)
+            if (postOsAuth != null && postOsAuth.scheduleRevision > claimedRev) {
+                Log.w("ScheduleAuthorityOwner", "Post-OS re-read detected newer revision ${postOsAuth.scheduleRevision} for alarm $alarmId")
+                return@withLock OwnerResult.Superseded(postOsAuth.scheduleRevision)
             }
 
             // Settle authority after successful OS apply
