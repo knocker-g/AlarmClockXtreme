@@ -27,14 +27,13 @@ import javax.inject.Singleton
  * - Prepares candidate without DB writes or OS operations.
  * - Requires verified restoreEpoch from ScheduleAuthorityMeta (does NOT manufacture restoreEpoch).
  * - Requires verified LocalEvidenceReadResult.Success with non-blank matching localId. All other outcomes return QUARANTINE.
- * - Reads authoritative persisted ActiveAlarmSnapshot from PreferencesManager DataStore (does NOT rely on memory alone).
- * - FIRING or SNOOZED persisted session state returns QUARANTINE.
  * - Re-reads current Alarm definition before admission to detect definition mutations.
- * - Validates instanceToken, restoreEpoch, definitionRevision, and lifecycle when checking existing authority rows.
- * - Recalculates target trigger time using [NextAlarmCalculator] with Pause/Holiday suppression rules.
+ * - Recomputes target trigger time using [NextAlarmCalculator] with Pause/Holiday suppression rules.
  * - Quarantines unsupported policy configurations (Weather pre-wake lead, SmartWake window, Hue pre-wake).
+ * - Protects active FIRING and SNOOZED sessions (quarantines uncommitted/missing session evidence).
  * - Admits initial candidate as inert 'QUARANTINE' state inside Room [withTransaction].
- * - Performs post-admission cross-store revalidation fencing and activates to 'RECONCILING' via generation-qualified CAS.
+ * - Closes promotion race by re-evaluating Definition, restoreEpoch, session evidence, and unresolved intents inside promotion [withTransaction].
+ * - Promotes to 'RECONCILING' via generation-qualified CAS inside promotion transaction.
  * - Catches SQLiteConstraintException specifically for insertion conflicts; does NOT treat generic DB failures as conflicts.
  * - Preserves CancellationException without swallowing.
  * - Returns [BootstrapDecision.QUARANTINE] for unsupported or invalid policy evidence rather than guessing an OS target.
@@ -106,33 +105,13 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
             return BootstrapDecision.QUARANTINE
         }
 
-        // Step 2: Validate Authoritative Persisted Session Evidence from PreferencesManager DataStore
+        // Step 2: Validate Active Session Evidence
+        if (isSessionActiveOrUncertain(alarmId)) {
+            Log.i(TAG, "Alarm $alarmId has active FIRING/SNOOZED session or uncertain session evidence; QUARANTINING")
+            return BootstrapDecision.QUARANTINE
+        }
+
         val currentSettings = preferencesManager.getCurrentSettings()
-        val persistedActiveId = currentSettings.activeAlarmId
-        val persistedState = currentSettings.activeAlarmState
-        val memoryActiveSnapshot = AlarmService.activeAlarm.get()
-
-        val isFiring = (persistedActiveId == alarmId && persistedState == "FIRING") ||
-                       (memoryActiveSnapshot != null && memoryActiveSnapshot.alarmId == alarmId && memoryActiveSnapshot.state == "FIRING")
-
-        val isSnoozed = (persistedActiveId == alarmId && persistedState == "SNOOZED") ||
-                        (memoryActiveSnapshot != null && memoryActiveSnapshot.alarmId == alarmId && memoryActiveSnapshot.state == "SNOOZED")
-
-        if (isFiring) {
-            Log.i(TAG, "Alarm $alarmId is currently FIRING in session evidence; preserving active session without overwriting")
-            return BootstrapDecision.QUARANTINE
-        }
-
-        if (isSnoozed) {
-            val refireAt = if (persistedActiveId == alarmId) currentSettings.activeAlarmRefireAt else (memoryActiveSnapshot?.refireAt ?: 0L)
-            if (refireAt <= System.currentTimeMillis()) {
-                Log.w(TAG, "Alarm $alarmId has expired or uncommitted SNOOZED session proof; QUARANTINING")
-                return BootstrapDecision.QUARANTINE
-            }
-            Log.i(TAG, "Alarm $alarmId is SNOOZED in session evidence; quarantining for generation-qualified snooze path")
-            return BootstrapDecision.QUARANTINE
-        }
-
         if (currentSettings.pauseUntilMillis > System.currentTimeMillis()) {
             Log.i(TAG, "Pause mode is active; setting desiredOperation = CANCEL for alarm ${initialAlarm.id}")
             val pausedAuthority = ScheduleAuthority(
@@ -147,7 +126,7 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
                 restoreEpoch = verifiedRestoreEpoch,
                 actionKey = null
             )
-            return admitAndActivateAuthority(pausedAuthority)
+            return admitAndPromoteAuthority(pausedAuthority)
         }
 
         val now = ZonedDateTime.now()
@@ -190,11 +169,32 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
             actionKey = null
         )
 
-        // Step 3: Admit as inert QUARANTINE, then activate via CAS after cross-store verification
-        return admitAndActivateAuthority(candidateAuthority)
+        // Step 3: Admit as inert QUARANTINE, then promote via Transactional CAS
+        return admitAndPromoteAuthority(candidateAuthority)
     }
 
-    private suspend fun admitAndActivateAuthority(candidate: ScheduleAuthority): BootstrapDecision {
+    private suspend fun isSessionActiveOrUncertain(alarmId: Long): Boolean {
+        val currentSettings = preferencesManager.getCurrentSettings()
+        val persistedActiveId = currentSettings.activeAlarmId
+        val persistedState = currentSettings.activeAlarmState
+        val memoryActiveSnapshot = AlarmService.activeAlarm.get()
+
+        val isFiring = (persistedActiveId == alarmId && persistedState == "FIRING") ||
+                       (memoryActiveSnapshot != null && memoryActiveSnapshot.alarmId == alarmId && memoryActiveSnapshot.state == "FIRING")
+
+        val isSnoozed = (persistedActiveId == alarmId && persistedState == "SNOOZED") ||
+                        (memoryActiveSnapshot != null && memoryActiveSnapshot.alarmId == alarmId && memoryActiveSnapshot.state == "SNOOZED")
+
+        if (isFiring || isSnoozed) return true
+
+        if (memoryActiveSnapshot != null && memoryActiveSnapshot.alarmId == alarmId && memoryActiveSnapshot.state !in setOf("FIRING", "SNOOZED")) {
+            return true
+        }
+
+        return false
+    }
+
+    private suspend fun admitAndPromoteAuthority(candidate: ScheduleAuthority): BootstrapDecision {
         val inertAdmitted = try {
             database.withTransaction {
                 // Re-verify inside Room transaction
@@ -266,33 +266,76 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
             return BootstrapDecision.QUARANTINE
         }
 
-        // Step 4: Cross-store post-admission revalidation fencing & Activation CAS
+        // Cross-store post-admission revalidation fencing
         val postRead = localReader.readLocalEvidence()
         if (postRead !is LocalEvidenceReadResult.Success || postRead.localId != candidate.instanceToken) {
             Log.w(TAG, "Post-admission local incarnation marker changed or unavailable for alarm ${candidate.alarmId}; REMAINS INERT QUARANTINE")
             return BootstrapDecision.QUARANTINE
         }
 
-        // Activation CAS: transition reconcileState from 'QUARANTINE' -> 'RECONCILING'
-        val activated = try {
-            authorityDao.activateAuthorityToReconciling(
-                alarmId = candidate.alarmId,
-                instanceToken = candidate.instanceToken,
-                restoreEpoch = candidate.restoreEpoch,
-                scheduleRevision = candidate.scheduleRevision,
-                lifecycle = candidate.lifecycle
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "Activation CAS failed for alarm ${candidate.alarmId}; REMAINS INERT QUARANTINE", e)
-            0
+        // Re-verify session eligibility before promotion
+        if (isSessionActiveOrUncertain(candidate.alarmId)) {
+            Log.w(TAG, "Active session detected immediately before promotion for alarm ${candidate.alarmId}; REMAINS INERT QUARANTINE")
+            return BootstrapDecision.QUARANTINE
         }
 
-        if (activated == 1) {
-            Log.i(TAG, "Successfully activated authority for alarm ${candidate.alarmId} from QUARANTINE to RECONCILING")
-            return BootstrapDecision.RECONCILE
+        // Final Promotion Transaction: Close promotion race inside single Room withTransaction
+        val promoted = try {
+            database.withTransaction {
+                val latestAlarmInTx = alarmRepository.getById(candidate.alarmId)?.sanitized()
+                    ?: return@withTransaction false
+
+                if (computeDefinitionRevision(latestAlarmInTx) != candidate.definitionRevision) {
+                    Log.w(TAG, "Definition edit detected in promotion transaction for alarm ${candidate.alarmId}; QUARANTINING")
+                    return@withTransaction false
+                }
+
+                val metaInTx = database.scheduleAuthorityDao().getMetaById(1)
+                if (metaInTx?.restoreEpoch != candidate.restoreEpoch) {
+                    Log.w(TAG, "Restore epoch changed in promotion transaction for alarm ${candidate.alarmId}; QUARANTINING")
+                    return@withTransaction false
+                }
+
+                val unresolvedInTx = database.durableOperationIntentDao().getUnresolvedIntentsByAlarmId(candidate.alarmId)
+                if (unresolvedInTx.isNotEmpty()) {
+                    Log.w(TAG, "Unresolved DurableIntents detected in promotion transaction for alarm ${candidate.alarmId}; QUARANTINING")
+                    return@withTransaction false
+                }
+
+                val existingInPromotionTx = database.scheduleAuthorityDao().getAuthorityByAlarmId(candidate.alarmId)
+                if (existingInPromotionTx == null ||
+                    existingInPromotionTx.instanceToken != candidate.instanceToken ||
+                    existingInPromotionTx.restoreEpoch != candidate.restoreEpoch ||
+                    existingInPromotionTx.scheduleRevision != candidate.scheduleRevision ||
+                    existingInPromotionTx.lifecycle != candidate.lifecycle ||
+                    existingInPromotionTx.reconcileState != "QUARANTINE") {
+                    Log.w(TAG, "Promotion CAS pre-condition failed in transaction for alarm ${candidate.alarmId}; QUARANTINING")
+                    return@withTransaction false
+                }
+
+                val updatedRows = database.scheduleAuthorityDao().activateAuthorityToReconciling(
+                    alarmId = candidate.alarmId,
+                    instanceToken = candidate.instanceToken,
+                    restoreEpoch = candidate.restoreEpoch,
+                    scheduleRevision = candidate.scheduleRevision,
+                    lifecycle = candidate.lifecycle
+                )
+
+                updatedRows == 1
+            }
+        } catch (e: CancellationException) {
+            throw e // DO NOT SWALLOW CANCELLATION!
+        } catch (e: Exception) {
+            Log.e(TAG, "Promotion transaction failed for alarm ${candidate.alarmId}; REMAINS INERT QUARANTINE", e)
+            false
+        }
+
+        return if (promoted) {
+            Log.i(TAG, "Successfully promoted authority for alarm ${candidate.alarmId} from QUARANTINE to RECONCILING in transaction")
+            BootstrapDecision.RECONCILE
         } else {
-            Log.w(TAG, "Activation CAS returned 0 for alarm ${candidate.alarmId}; REMAINS INERT QUARANTINE")
-            return BootstrapDecision.QUARANTINE
+            Log.w(TAG, "Promotion transaction returned false for alarm ${candidate.alarmId}; REMAINS INERT QUARANTINE")
+            BootstrapDecision.QUARANTINE
         }
     }
 }
