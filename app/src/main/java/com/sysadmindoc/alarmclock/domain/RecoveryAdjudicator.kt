@@ -29,7 +29,8 @@ data class RecoveryEvidenceSnapshot(
     val activeSession: ActiveAlarmSnapshot?,
     val localIncarnationId: String?,
     val osOutcome: OsOperationOutcome = OsOperationOutcome.NOT_ATTEMPTED,
-    val definitionExists: Boolean = false // Default false: fail closed unless explicitly proven true!
+    val definitionExists: Boolean = false, // Default false: fail closed unless explicitly proven true!
+    val evaluationTimeMillis: Long? = null // Explicit evaluation time input for deterministic Snooze expiry checking
 )
 
 data class RecoveryDecision(
@@ -44,6 +45,9 @@ data class RecoveryDecision(
  *
  * Guarantees:
  * - Read-only: does NOT perform OS operations, start Services, or mutate persistence.
+ * - Pure & Deterministic: zero hidden system clock calls (does NOT call System.currentTimeMillis()).
+ * - Requires explicit [snapshot.evaluationTimeMillis] for evaluating Snooze session expiry.
+ * - Missing evaluation time returns NEEDS_EVIDENCE ("EVALUATION_TIME_MISSING").
  * - Evaluates generation integrity across Authority, DurableIntent, ActiveAlarmSnapshot, and LocalIncarnation.
  * - UNKNOWN and NOT_ATTEMPTED OS operation outcomes are NEVER promoted to fresh OS registration success.
  * - Fail-closed: missing, unverified, or contradictory evidence returns QUARANTINE or NEEDS_EVIDENCE.
@@ -141,8 +145,12 @@ class RecoveryAdjudicator @Inject constructor() {
                         if (!scheduledAtMatches) {
                             return RecoveryDecision(RecoveryDecisionOutcome.QUARANTINE, "INTENT_SCHEDULED_AT_MISMATCH", alarmId)
                         }
-                        if (session.state == "SNOOZED" && session.refireAt <= System.currentTimeMillis()) {
-                            return RecoveryDecision(RecoveryDecisionOutcome.QUARANTINE, "EXPIRED_SNOOZED_SESSION_EVIDENCE", alarmId)
+                        if (session.state == "SNOOZED") {
+                            val evalTime = snapshot.evaluationTimeMillis
+                                ?: return RecoveryDecision(RecoveryDecisionOutcome.NEEDS_EVIDENCE, "EVALUATION_TIME_MISSING", alarmId)
+                            if (evalTime >= session.refireAt) {
+                                return RecoveryDecision(RecoveryDecisionOutcome.QUARANTINE, "EXPIRED_SNOOZED_SESSION_EVIDENCE", alarmId)
+                            }
                         }
                         if (session.state in setOf("FIRING", "SNOOZED")) {
                             return RecoveryDecision(RecoveryDecisionOutcome.RESUME_COMMITTED_SESSION_EFFECTS, "COMPLETED_INTENT_WITH_SESSION", alarmId)
@@ -158,8 +166,12 @@ class RecoveryAdjudicator @Inject constructor() {
 
         // 7. Evaluate Active Session Commit Proof
         if (session != null) {
-            if (session.state == "SNOOZED" && session.refireAt <= System.currentTimeMillis()) {
-                return RecoveryDecision(RecoveryDecisionOutcome.QUARANTINE, "EXPIRED_SNOOZED_SESSION_EVIDENCE", alarmId)
+            if (session.state == "SNOOZED") {
+                val evalTime = snapshot.evaluationTimeMillis
+                    ?: return RecoveryDecision(RecoveryDecisionOutcome.NEEDS_EVIDENCE, "EVALUATION_TIME_MISSING", alarmId)
+                if (evalTime >= session.refireAt) {
+                    return RecoveryDecision(RecoveryDecisionOutcome.QUARANTINE, "EXPIRED_SNOOZED_SESSION_EVIDENCE", alarmId)
+                }
             }
             if (session.state in setOf("FIRING", "SNOOZED")) {
                 if (auth != null && auth.reconcileState == "SETTLED") {

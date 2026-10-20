@@ -224,4 +224,72 @@ class RecoveryAdjudicatorTest {
         assertEquals(RecoveryDecisionOutcome.QUARANTINE, decision.outcome)
         assertEquals("OS_OUTCOME_UNKNOWN", decision.reasonCode)
     }
+
+    @Test
+    fun `snooze refireAt boundary before expiry produces RESUME_COMMITTED_SESSION_EFFECTS`() {
+        val activeSession = ActiveAlarmSnapshot(
+            alarmId = 42L,
+            scheduledAt = 2000L,
+            fireId = "fire-42",
+            firedAt = 2000L,
+            state = "SNOOZED",
+            refireAt = 2600L
+        )
+        val snapshot = baseSnapshot.copy(
+            activeSession = activeSession,
+            evaluationTimeMillis = 2599L // refireAt - 1ms
+        )
+        val decision = adjudicator.adjudicate(snapshot)
+        assertEquals(RecoveryDecisionOutcome.RESUME_COMMITTED_SESSION_EFFECTS, decision.outcome)
+        assertEquals("ACTIVE_SESSION_COMMITTED", decision.reasonCode)
+    }
+
+    @Test
+    fun `snooze refireAt boundary at or after expiry produces QUARANTINE`() {
+        val activeSession = ActiveAlarmSnapshot(
+            alarmId = 42L,
+            scheduledAt = 2000L,
+            fireId = "fire-42",
+            firedAt = 2000L,
+            state = "SNOOZED",
+            refireAt = 2600L
+        )
+
+        // Exact refireAt
+        val snapshotAtExpiry = baseSnapshot.copy(
+            activeSession = activeSession,
+            evaluationTimeMillis = 2600L
+        )
+        val decisionAtExpiry = adjudicator.adjudicate(snapshotAtExpiry)
+        assertEquals(RecoveryDecisionOutcome.QUARANTINE, decisionAtExpiry.outcome)
+        assertEquals("EXPIRED_SNOOZED_SESSION_EVIDENCE", decisionAtExpiry.reasonCode)
+
+        // refireAt + 1ms
+        val snapshotAfterExpiry = baseSnapshot.copy(
+            activeSession = activeSession,
+            evaluationTimeMillis = 2601L
+        )
+        val decisionAfterExpiry = adjudicator.adjudicate(snapshotAfterExpiry)
+        assertEquals(RecoveryDecisionOutcome.QUARANTINE, decisionAfterExpiry.outcome)
+        assertEquals("EXPIRED_SNOOZED_SESSION_EVIDENCE", decisionAfterExpiry.reasonCode)
+    }
+
+    @Test
+    fun `snooze evaluation with null evaluationTimeMillis produces NEEDS_EVIDENCE`() {
+        val activeSession = ActiveAlarmSnapshot(
+            alarmId = 42L,
+            scheduledAt = 2000L,
+            fireId = "fire-42",
+            firedAt = 2000L,
+            state = "SNOOZED",
+            refireAt = 2600L
+        )
+        val snapshot = baseSnapshot.copy(
+            activeSession = activeSession,
+            evaluationTimeMillis = null // Missing evaluation time!
+        )
+        val decision = adjudicator.adjudicate(snapshot)
+        assertEquals(RecoveryDecisionOutcome.NEEDS_EVIDENCE, decision.outcome)
+        assertEquals("EVALUATION_TIME_MISSING", decision.reasonCode)
+    }
 }
