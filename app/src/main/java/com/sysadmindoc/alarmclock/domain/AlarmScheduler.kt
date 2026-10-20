@@ -522,6 +522,54 @@ class AlarmScheduler @Inject constructor(
         }
     }
 
+    /**
+     * Executes raw MAIN_ALARM_SLOT exact OS registration for [alarmId] at [triggerTime].
+     * Isolated raw OS primitive used by [RealMainSlotApplier].
+     * Excludes repository mutations, widget updates, DirectBoot cache writes, and WorkManager jobs.
+     */
+    internal fun applyRawOsSet(alarmId: Long, triggerTime: Long): Boolean {
+        if (!canScheduleExactAlarms()) return false
+        val fireId = AlarmIncidentEvent.fireIdFor(alarmId, triggerTime)
+        val showAlarmClockIcon = preferencesManager.getCachedSettings().showAlarmClockIcon
+        val pendingIntent = createPendingIntent(alarmId, triggerTime, fireId)
+        return try {
+            if (showAlarmClockIcon) {
+                alarmManager.setAlarmClock(
+                    AlarmManager.AlarmClockInfo(triggerTime, createShowIntent(alarmId)),
+                    pendingIntent
+                )
+            } else {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    triggerTime,
+                    pendingIntent
+                )
+            }
+            true
+        } catch (e: Exception) {
+            Log.e("AlarmScheduler", "applyRawOsSet failed for alarm $alarmId", e)
+            false
+        }
+    }
+
+    /**
+     * Executes raw MAIN_ALARM_SLOT OS cancellation for [alarmId].
+     * Isolated raw OS primitive used by [RealMainSlotApplier].
+     * Uses [lookupPendingIntentForCancel] (FLAG_NO_CREATE) to avoid mutating intent extras or creating stray intents.
+     * Excludes repository mutations, widget updates, DirectBoot cache writes, and WorkManager jobs.
+     */
+    internal fun applyRawOsCancel(alarmId: Long): Boolean {
+        val pendingIntent = lookupPendingIntentForCancel(alarmId) ?: return true
+        return try {
+            alarmManager.cancel(pendingIntent)
+            pendingIntent.cancel()
+            true
+        } catch (e: Exception) {
+            Log.e("AlarmScheduler", "applyRawOsCancel failed for alarm $alarmId", e)
+            false
+        }
+    }
+
     private fun scheduleAlarmClock(alarmId: Long, triggerTime: Long): Boolean {
         DirectBootAlarmCache.cancelScheduledFallback(context, alarmId)
         val fireId = AlarmIncidentEvent.fireIdFor(alarmId, triggerTime)

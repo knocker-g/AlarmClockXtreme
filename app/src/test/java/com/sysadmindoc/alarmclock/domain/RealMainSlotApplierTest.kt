@@ -4,8 +4,6 @@ import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
-import com.sysadmindoc.alarmclock.data.model.Alarm
-import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
@@ -24,16 +22,7 @@ class RealMainSlotApplierTest {
 
     private lateinit var context: Context
     private lateinit var alarmScheduler: AlarmScheduler
-    private lateinit var alarmRepository: AlarmRepository
     private lateinit var applier: RealMainSlotApplier
-
-    private val testAlarm = Alarm(
-        id = 42L,
-        hour = 7,
-        minute = 30,
-        label = "Applier Test Alarm",
-        isEnabled = true
-    )
 
     private val testAuthority = ScheduleAuthority(
         alarmId = 42L,
@@ -52,29 +41,28 @@ class RealMainSlotApplierTest {
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
         alarmScheduler = mockk(relaxed = true)
-        alarmRepository = mockk()
-        applier = RealMainSlotApplier(alarmScheduler, alarmRepository)
+        applier = RealMainSlotApplier(alarmScheduler)
     }
 
     @Test
-    fun `applySlotOperation SET calls alarmScheduler scheduleAt`() = runBlocking {
-        coEvery { alarmRepository.getById(42L) } returns testAlarm
-        coEvery { alarmScheduler.scheduleAt(any(), 1700000000000L) } returns true
+    fun `applySlotOperation SET calls alarmScheduler applyRawOsSet`() = runBlocking {
+        coEvery { alarmScheduler.applyRawOsSet(42L, 1700000000000L) } returns true
 
         val result = applier.applySlotOperation(testAuthority)
 
-        assertTrue("SET operation must return true on scheduleAt success", result)
-        coVerify(exactly = 1) { alarmScheduler.scheduleAt(any(), 1700000000000L) }
+        assertTrue("SET operation must return true on applyRawOsSet success", result)
+        coVerify(exactly = 1) { alarmScheduler.applyRawOsSet(42L, 1700000000000L) }
     }
 
     @Test
-    fun `applySlotOperation CANCEL calls alarmScheduler cancel`() = runBlocking {
+    fun `applySlotOperation CANCEL calls alarmScheduler applyRawOsCancel`() = runBlocking {
         val cancelAuthority = testAuthority.copy(desiredOperation = "CANCEL", desiredTriggerMillis = null)
+        coEvery { alarmScheduler.applyRawOsCancel(42L) } returns true
 
         val result = applier.applySlotOperation(cancelAuthority)
 
-        assertTrue("CANCEL operation must return true", result)
-        coVerify(exactly = 1) { alarmScheduler.cancel(42L) }
+        assertTrue("CANCEL operation must return true on applyRawOsCancel success", result)
+        coVerify(exactly = 1) { alarmScheduler.applyRawOsCancel(42L) }
     }
 
     @Test

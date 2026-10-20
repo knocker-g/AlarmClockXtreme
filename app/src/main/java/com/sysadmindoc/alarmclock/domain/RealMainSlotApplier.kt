@@ -1,30 +1,29 @@
 package com.sysadmindoc.alarmclock.domain
 
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
-import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
  * Production implementation of [MainSlotApplier].
- * Maps current [ScheduleAuthority] desired operation and target to actual [AlarmScheduler] OS slot operations.
+ * Maps current [ScheduleAuthority] desired operation and target to RAW [MAIN_ALARM_SLOT] OS operations.
+ *
+ * Excludes supporting side effects: does NOT mutate AlarmRepository nextTriggerTime,
+ * does NOT touch DirectBoot cache, does NOT trigger widget updates, and does NOT enqueue supporting WorkManager jobs.
  */
 @Singleton
 class RealMainSlotApplier @Inject constructor(
-    private val alarmScheduler: AlarmScheduler,
-    private val alarmRepository: AlarmRepository
+    private val alarmScheduler: AlarmScheduler
 ) : MainSlotApplier {
 
     override suspend fun applySlotOperation(authority: ScheduleAuthority): Boolean {
         return when (authority.desiredOperation) {
             "SET" -> {
                 val triggerMillis = authority.desiredTriggerMillis ?: return false
-                val alarm = alarmRepository.getById(authority.alarmId)?.sanitized() ?: return false
-                alarmScheduler.scheduleAt(alarm, triggerMillis)
+                alarmScheduler.applyRawOsSet(authority.alarmId, triggerMillis)
             }
             "CANCEL" -> {
-                alarmScheduler.cancel(authority.alarmId)
-                true
+                alarmScheduler.applyRawOsCancel(authority.alarmId)
             }
             else -> false
         }
