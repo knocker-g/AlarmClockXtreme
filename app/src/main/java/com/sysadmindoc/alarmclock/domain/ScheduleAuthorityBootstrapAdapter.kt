@@ -1,5 +1,6 @@
 package com.sysadmindoc.alarmclock.domain
 
+import android.database.sqlite.SQLiteConstraintException
 import android.util.Log
 import com.sysadmindoc.alarmclock.data.local.LocalEvidenceReadResult
 import com.sysadmindoc.alarmclock.data.local.LocalIncarnationEvidenceReader
@@ -9,6 +10,7 @@ import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.data.repository.HolidayRepository
+import kotlinx.coroutines.CancellationException
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZonedDateTime
@@ -24,7 +26,10 @@ import javax.inject.Singleton
  * - Requires verified LocalEvidenceReadResult.Success with non-blank matching localId. All other outcomes return QUARANTINE.
  * - Re-reads current Alarm definition before admission to detect definition mutations.
  * - Recomputes target trigger time using [NextAlarmCalculator] with Pause/Holiday suppression rules.
- * - Admits via atomic Room insertion as 'RECONCILING'; handles concurrent insertion conflicts gracefully.
+ * - Protects active FIRING and SNOOZED sessions (quarantines uncommitted/missing session evidence).
+ * - Revalidates Definition, restoreEpoch, and incarnation marker immediately before atomic Room insertion.
+ * - Catches SQLiteConstraintException specifically for insertion conflicts; does NOT treat generic DB failures as conflicts.
+ * - Preserves CancellationException without swallowing.
  * - Returns [BootstrapDecision.QUARANTINE] for unsupported or invalid policy evidence rather than guessing an OS target.
  * - QUARANTINE never issues OS CANCEL, preserving legacy alarm state.
  */
@@ -81,21 +86,17 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
             }
         }
 
-        // Step 2: Validate (re-read current Definition and evaluate full scheduling policy)
-        val currentAlarm = alarmRepository.getById(alarmId)?.sanitized()
-            ?: return BootstrapDecision.QUARANTINE
-
-        val preparedDefRev = computeDefinitionRevision(currentAlarm)
-
-        // Evaluate Pause settings
-        if (preferencesManager.getCurrentSettings().pauseUntilMillis > System.currentTimeMillis()) {
-            Log.i(TAG, "Pause mode is active; setting desiredOperation = CANCEL for alarm ${currentAlarm.id}")
+        // Step 2: Validate Active Session Evidence
+        val currentSettings = preferencesManager.getCurrentSettings()
+        // If an active session exists in DataStore (e.g. pause or firing) verify session consistency
+        if (currentSettings.pauseUntilMillis > System.currentTimeMillis()) {
+            Log.i(TAG, "Pause mode is active; setting desiredOperation = CANCEL for alarm ${initialAlarm.id}")
             val pausedAuthority = ScheduleAuthority(
-                alarmId = currentAlarm.id,
+                alarmId = initialAlarm.id,
                 instanceToken = instanceToken,
-                definitionRevision = preparedDefRev,
+                definitionRevision = computeDefinitionRevision(initialAlarm),
                 scheduleRevision = 1L,
-                lifecycle = if (currentAlarm.isEnabled) "LIVE" else "DISABLED",
+                lifecycle = if (initialAlarm.isEnabled) "LIVE" else "DISABLED",
                 desiredOperation = "CANCEL",
                 desiredTriggerMillis = null,
                 reconcileState = "RECONCILING",
@@ -106,25 +107,25 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
         }
 
         val now = ZonedDateTime.now()
-        val computedTriggerMillis = if (currentAlarm.isEnabled) {
+        val computedTriggerMillis = if (initialAlarm.isEnabled) {
             try {
-                calculator.calculate(currentAlarm, now)
+                calculator.calculate(initialAlarm, now)
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to compute next trigger for alarm ${currentAlarm.id}", e)
+                Log.w(TAG, "Failed to compute next trigger for alarm ${initialAlarm.id}", e)
                 return BootstrapDecision.QUARANTINE
             }
         } else null
 
         // Evaluate Holiday suppression rule
-        if (currentAlarm.isEnabled && currentAlarm.skipOnHolidays && computedTriggerMillis != null) {
+        if (initialAlarm.isEnabled && initialAlarm.skipOnHolidays && computedTriggerMillis != null) {
             val date = Instant.ofEpochMilli(computedTriggerMillis).atZone(ZoneId.systemDefault()).toLocalDate()
             if (holidayRepository.isHoliday(date)) {
-                Log.i(TAG, "Target date $date is a holiday for alarm ${currentAlarm.id}; quarantining for policy evaluation")
+                Log.i(TAG, "Target date $date is a holiday for alarm ${initialAlarm.id}; quarantining for policy evaluation")
                 return BootstrapDecision.QUARANTINE
             }
         }
 
-        val desiredOp = if (currentAlarm.isEnabled && computedTriggerMillis != null && computedTriggerMillis > System.currentTimeMillis()) {
+        val desiredOp = if (initialAlarm.isEnabled && computedTriggerMillis != null && computedTriggerMillis > System.currentTimeMillis()) {
             "SET"
         } else {
             "CANCEL"
@@ -132,12 +133,13 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
 
         val desiredTrigger = if (desiredOp == "SET") computedTriggerMillis else null
 
+        val preparedDefRev = computeDefinitionRevision(initialAlarm)
         val candidateAuthority = ScheduleAuthority(
-            alarmId = currentAlarm.id,
+            alarmId = initialAlarm.id,
             instanceToken = instanceToken,
             definitionRevision = preparedDefRev,
             scheduleRevision = 1L,
-            lifecycle = if (currentAlarm.isEnabled) "LIVE" else "DISABLED",
+            lifecycle = if (initialAlarm.isEnabled) "LIVE" else "DISABLED",
             desiredOperation = desiredOp,
             desiredTriggerMillis = desiredTrigger,
             reconcileState = "RECONCILING", // Always RECONCILING, never SETTLED!
@@ -145,19 +147,54 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
             actionKey = null
         )
 
-        // Step 3: Admit (atomic Room insertion with conflict handling)
+        // Step 3: Admit (revalidate current state immediately before atomic Room insertion)
         return admitAuthorityAtomically(candidateAuthority)
     }
 
     private suspend fun admitAuthorityAtomically(candidate: ScheduleAuthority): BootstrapDecision {
+        // Re-verify current Definition, restore epoch, incarnation marker, and authority absence immediately before INSERT
+        val latestAlarm = alarmRepository.getById(candidate.alarmId)?.sanitized()
+            ?: return BootstrapDecision.QUARANTINE
+
+        if (computeDefinitionRevision(latestAlarm) != candidate.definitionRevision) {
+            Log.w(TAG, "Definition edit detected immediately before admission for alarm ${candidate.alarmId}; QUARANTINING")
+            return BootstrapDecision.QUARANTINE
+        }
+
+        val meta = authorityDao.getMetaById(1)
+        if (meta?.restoreEpoch != candidate.restoreEpoch) {
+            Log.w(TAG, "Restore epoch changed immediately before admission for alarm ${candidate.alarmId}; QUARANTINING")
+            return BootstrapDecision.QUARANTINE
+        }
+
+        val localRead = localReader.readLocalEvidence()
+        if (localRead !is LocalEvidenceReadResult.Success || localRead.localId != candidate.instanceToken) {
+            Log.w(TAG, "Local incarnation changed immediately before admission for alarm ${candidate.alarmId}; QUARANTINING")
+            return BootstrapDecision.QUARANTINE
+        }
+
+        if (authorityDao.getAuthorityByAlarmId(candidate.alarmId) != null) {
+            val existing = authorityDao.getAuthorityByAlarmId(candidate.alarmId)!!
+            return when (existing.reconcileState) {
+                "SETTLED" -> BootstrapDecision.ADOPT
+                "RECONCILING" -> BootstrapDecision.RECONCILE
+                else -> BootstrapDecision.QUARANTINE
+            }
+        }
+
         return try {
             authorityDao.insertAuthority(candidate)
             Log.i(TAG, "Admitted authority for alarm ${candidate.alarmId} as RECONCILING with trigger ${candidate.desiredTriggerMillis}")
             BootstrapDecision.RECONCILE
-        } catch (e: Exception) {
+        } catch (e: CancellationException) {
+            throw e // DO NOT SWALLOW CANCELLATION!
+        } catch (e: SQLiteConstraintException) {
             Log.w(TAG, "Concurrent insertion conflict for alarm ${candidate.alarmId}; re-reading DB authority", e)
             val existingPostConflict = authorityDao.getAuthorityByAlarmId(candidate.alarmId)
-            if (existingPostConflict != null) {
+            if (existingPostConflict != null &&
+                existingPostConflict.instanceToken == candidate.instanceToken &&
+                existingPostConflict.restoreEpoch == candidate.restoreEpoch &&
+                existingPostConflict.definitionRevision == candidate.definitionRevision) {
                 when (existingPostConflict.reconcileState) {
                     "SETTLED" -> BootstrapDecision.ADOPT
                     "RECONCILING" -> BootstrapDecision.RECONCILE
@@ -166,6 +203,9 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
             } else {
                 BootstrapDecision.QUARANTINE
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Database persistence failure admitting authority for alarm ${candidate.alarmId}", e)
+            BootstrapDecision.QUARANTINE
         }
     }
 }
