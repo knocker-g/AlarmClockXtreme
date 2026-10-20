@@ -122,10 +122,22 @@ class RecoveryDiagnosticBridgeTest {
     }
 
     @Test
+    fun `report copy cannot override isActionable or isDiagnosticOnly`() = runBlocking {
+        database.alarmDao().insert(testAlarm)
+        authorityDao.insertMeta(testMeta)
+        authorityDao.insertAuthority(readyAuthority)
+
+        val report = bridge.evaluateDiagnosticRecovery(42L)
+        val copiedReport = report.copy(status = BridgeStatus.NOT_EVALUATED)
+
+        assertTrue("Copied bridge report MUST remain diagnostic only", copiedReport.isDiagnosticOnly)
+        assertFalse("Copied bridge report MUST remain non-actionable", copiedReport.isActionable)
+    }
+
+    @Test
     fun `missing Authority returns NOT_EVALUATED with AUTHORITY_ABSENT`() = runBlocking {
         database.alarmDao().insert(testAlarm)
         authorityDao.insertMeta(testMeta)
-        // Authority NOT inserted!
 
         val report = bridge.evaluateDiagnosticRecovery(42L)
 
@@ -139,7 +151,6 @@ class RecoveryDiagnosticBridgeTest {
     fun `missing restore epoch returns NOT_EVALUATED with RESTORE_EPOCH_MISSING`() = runBlocking {
         database.alarmDao().insert(testAlarm)
         authorityDao.insertAuthority(readyAuthority)
-        // Meta NOT inserted!
 
         val report = bridge.evaluateDiagnosticRecovery(42L)
 
@@ -157,7 +168,7 @@ class RecoveryDiagnosticBridgeTest {
         coEvery { localReader.readLocalEvidence() } returns LocalEvidenceReadResult.Success(
             localState = MarkerState.PRESENT_VALID,
             localId = "token-verified-42",
-            localCompletion = CompletionState.PREPARING // Incomplete completion state!
+            localCompletion = CompletionState.PREPARING
         )
 
         val report = bridge.evaluateDiagnosticRecovery(42L)
@@ -186,7 +197,7 @@ class RecoveryDiagnosticBridgeTest {
         authorityDao.insertAuthority(readyAuthority)
 
         val otherSessionSettings = AppSettings(
-            activeAlarmId = 99L, // Another alarm is active
+            activeAlarmId = 99L,
             activeAlarmScheduledAt = 1000L,
             activeAlarmFireId = "fire-99",
             activeAlarmFiredAt = System.currentTimeMillis(),
@@ -202,13 +213,13 @@ class RecoveryDiagnosticBridgeTest {
     }
 
     @Test
-    fun `multiple unresolved intents returns NOT_EVALUATED with MULTIPLE_UNRESOLVED_INTENTS`() = runBlocking {
+    fun `multiple historical intents without unresolved returns NOT_EVALUATED with AMBIGUOUS_HISTORICAL_INTENTS`() = runBlocking {
         database.alarmDao().insert(testAlarm)
         authorityDao.insertMeta(testMeta)
         authorityDao.insertAuthority(readyAuthority)
 
         val intent1 = DurableOperationIntent(
-            operationToken = "intent-1",
+            operationToken = "intent-hist-1",
             alarmId = 42L,
             operationEpoch = 100L,
             incarnationId = "token-verified-42",
@@ -224,30 +235,29 @@ class RecoveryDiagnosticBridgeTest {
         )
 
         val intent2 = DurableOperationIntent(
-            operationToken = "intent-2",
+            operationToken = "intent-hist-2",
             alarmId = 42L,
             operationEpoch = 101L,
             incarnationId = "token-verified-42",
-            operationKind = "SNOOZE",
+            operationKind = "SET",
             expectedOwnerToken = "token-verified-42",
             expectedScheduleRevision = 1L,
             expectedRestoreEpoch = 100L,
-            phase = "IN_FLIGHT",
+            phase = "ABORTED",
             intentRevision = 1L,
             originalFireId = "fire-1",
             originalScheduledAt = 2000L,
-            candidateSnoozeAt = 2600L
+            candidateSnoozeAt = null
         )
 
         durableIntentDao.insertValidatedIntent(intent1)
         durableIntentDao.insertValidatedIntent(intent2)
 
-        // Note: Room SQLite trigger allows max 1 unresolved intent, so intent1 is COMPLETED and intent2 is IN_FLIGHT
         val report = bridge.evaluateDiagnosticRecovery(42L)
 
-        assertEquals(BridgeStatus.EVALUATED_DIAGNOSTICALLY, report.status)
-        assertNotNull(report.diagnosticDecision)
-        assertFalse("Actionable must be false even when evaluated", report.isActionable)
+        assertEquals(BridgeStatus.NOT_EVALUATED, report.status)
+        assertEquals("AMBIGUOUS_HISTORICAL_INTENTS", report.reasonCode)
+        assertNull(report.diagnosticDecision)
     }
 
     @Test

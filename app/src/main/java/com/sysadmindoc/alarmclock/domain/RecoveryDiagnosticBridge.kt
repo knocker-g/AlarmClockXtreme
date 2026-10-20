@@ -14,11 +14,12 @@ data class RecoveryDiagnosticBridgeReport(
     val alarmId: Long,
     val status: BridgeStatus,
     val reasonCode: String,
-    val isDiagnosticOnly: Boolean = true,
-    val isActionable: Boolean = false, // Hard-coded FALSE: bridge results MUST NEVER trigger OS/Session operations!
     val collectionReport: RecoveryEvidenceCollectionReport,
     val diagnosticDecision: RecoveryDecision?
-)
+) {
+    val isDiagnosticOnly: Boolean get() = true
+    val isActionable: Boolean get() = false
+}
 
 /**
  * Strictly read-only bridge between RecoveryEvidenceCollector (P2) and RecoveryAdjudicator (P1).
@@ -26,8 +27,9 @@ data class RecoveryDiagnosticBridgeReport(
  * Guarantees:
  * - Read-only: does NOT perform OS operations, start Services, or mutate persistence.
  * - Evaluates evidence admission criteria before constructing P1 snapshot.
- * - Rejects ambiguous or multiple unresolved DurableOperationIntents (does NOT select one automatically).
- * - Adjudication outcomes are DIAGNOSTIC ONLY (isActionable = false). Never invokes Owner or AlarmScheduler.
+ * - Rejects ambiguous or multiple unresolved/historical DurableOperationIntents (does NOT select by list position).
+ * - Structural diagnostic contract: [isDiagnosticOnly] is always true and [isActionable] is always false.
+ * - Adjudication outcomes are DIAGNOSTIC ONLY. Never invokes Owner or AlarmScheduler.
  */
 @Singleton
 class RecoveryDiagnosticBridge @Inject constructor(
@@ -70,8 +72,9 @@ class RecoveryDiagnosticBridge @Inject constructor(
 
         // 3. Check Room Evidence (Alarm Definition & Authority & Restore Epoch)
         val room = collectionReport.roomEvidence
-        val alarm = room.alarm
-            ?: return notEvaluated(alarmId, "ALARM_DEFINITION_MISSING", collectionReport)
+        if (room.alarm == null) {
+            return notEvaluated(alarmId, "ALARM_DEFINITION_MISSING", collectionReport)
+        }
         val auth = room.authority
             ?: return notEvaluated(alarmId, "AUTHORITY_ABSENT", collectionReport)
         val restoreEpoch = room.restoreEpoch
@@ -89,10 +92,14 @@ class RecoveryDiagnosticBridge @Inject constructor(
         }
 
         val unresolvedIntents = room.intents.filter { it.phase in setOf("PENDING", "IN_FLIGHT") }
+        val historicalIntents = room.intents.filter { it.phase !in setOf("PENDING", "IN_FLIGHT") }
+
         val candidateIntent: DurableOperationIntent? = when {
             unresolvedIntents.size == 1 -> unresolvedIntents.first()
             unresolvedIntents.size > 1 -> return notEvaluated(alarmId, "AMBIGUOUS_UNRESOLVED_INTENTS", collectionReport)
-            else -> room.intents.lastOrNull() // Resolved historical intent or null
+            historicalIntents.size == 1 -> historicalIntents.first()
+            historicalIntents.size > 1 -> return notEvaluated(alarmId, "AMBIGUOUS_HISTORICAL_INTENTS", collectionReport)
+            else -> null
         }
 
         // 6. Construct P1 Snapshot for Diagnostic Adjudication
@@ -114,8 +121,6 @@ class RecoveryDiagnosticBridge @Inject constructor(
             alarmId = alarmId,
             status = BridgeStatus.EVALUATED_DIAGNOSTICALLY,
             reasonCode = "EVALUATED_${diagnosticDecision.outcome}",
-            isDiagnosticOnly = true,
-            isActionable = false, // Hard-coded FALSE!
             collectionReport = collectionReport,
             diagnosticDecision = diagnosticDecision
         )
@@ -131,8 +136,6 @@ class RecoveryDiagnosticBridge @Inject constructor(
             alarmId = alarmId,
             status = BridgeStatus.NOT_EVALUATED,
             reasonCode = reasonCode,
-            isDiagnosticOnly = true,
-            isActionable = false,
             collectionReport = collectionReport,
             diagnosticDecision = null
         )
