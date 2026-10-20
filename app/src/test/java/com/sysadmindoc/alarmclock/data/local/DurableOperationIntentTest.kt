@@ -114,10 +114,122 @@ class DurableOperationIntentTest {
         )
     }
 
-    @Test(expected = SQLiteConstraintException::class)
-    fun `7 - Blank operationToken is rejected by SQLite trigger`(): Unit = runBlocking {
-        val blankTokenIntent = validIntent.copy(operationToken = "   ")
-        intentDao.insertRawIntent(blankTokenIntent)
+    @Test
+    fun `boundary tests - all whitespace types are rejected on INSERT for operationToken`() = runBlocking {
+        val whitespaceTypes = listOf("   ", "\t\t", "\n\n", "\u3000")
+        for ((idx, ws) in whitespaceTypes.withIndex()) {
+            var thrown = false
+            try {
+                val badIntent = validIntent.copy(operationToken = ws, alarmId = 1000L + idx)
+                intentDao.insertRawIntent(badIntent)
+            } catch (_: SQLiteConstraintException) {
+                thrown = true
+            }
+            assertTrue("INSERT with operationToken whitespace '$ws' must be rejected by SQLite trigger", thrown)
+        }
+    }
+
+    @Test
+    fun `boundary tests - all whitespace types are rejected on INSERT for incarnationId`() = runBlocking {
+        val whitespaceTypes = listOf("   ", "\t\t", "\n\n", "\u3000")
+        for ((idx, ws) in whitespaceTypes.withIndex()) {
+            var thrown = false
+            try {
+                val badIntent = validIntent.copy(operationToken = "tok-inc-$idx", incarnationId = ws, alarmId = 2000L + idx)
+                intentDao.insertRawIntent(badIntent)
+            } catch (_: SQLiteConstraintException) {
+                thrown = true
+            }
+            assertTrue("INSERT with incarnationId whitespace '$ws' must be rejected by SQLite trigger", thrown)
+        }
+    }
+
+    @Test
+    fun `boundary tests - all whitespace types are rejected on INSERT for operationKind`() = runBlocking {
+        val whitespaceTypes = listOf("   ", "\t\t", "\n\n", "\u3000")
+        for ((idx, ws) in whitespaceTypes.withIndex()) {
+            var thrown = false
+            try {
+                val badIntent = validIntent.copy(operationToken = "tok-kind-$idx", operationKind = ws, alarmId = 3000L + idx)
+                intentDao.insertRawIntent(badIntent)
+            } catch (_: SQLiteConstraintException) {
+                thrown = true
+            }
+            assertTrue("INSERT with operationKind whitespace '$ws' must be rejected by SQLite trigger", thrown)
+        }
+    }
+
+    @Test
+    fun `boundary tests - all whitespace types are rejected on UPDATE for operationToken`() = runBlocking {
+        intentDao.insertRawIntent(validIntent)
+        val whitespaceTypes = listOf("   ", "\t\t", "\n\n", "\u3000")
+
+        for (ws in whitespaceTypes) {
+            var thrown = false
+            try {
+                database.openHelper.writableDatabase.execSQL(
+                    "UPDATE durable_operation_intent SET operationToken = '$ws' WHERE alarmId = 42"
+                )
+            } catch (_: SQLiteConstraintException) {
+                thrown = true
+            }
+            assertTrue("UPDATE with operationToken whitespace '$ws' must be rejected by SQLite trigger", thrown)
+        }
+    }
+
+    @Test
+    fun `boundary tests - all whitespace types are rejected on UPDATE for incarnationId`() = runBlocking {
+        intentDao.insertRawIntent(validIntent)
+        val whitespaceTypes = listOf("   ", "\t\t", "\n\n", "\u3000")
+
+        for (ws in whitespaceTypes) {
+            var thrown = false
+            try {
+                database.openHelper.writableDatabase.execSQL(
+                    "UPDATE durable_operation_intent SET incarnationId = '$ws' WHERE operationToken = 'intent-token-100'"
+                )
+            } catch (_: SQLiteConstraintException) {
+                thrown = true
+            }
+            assertTrue("UPDATE with incarnationId whitespace '$ws' must be rejected by SQLite trigger", thrown)
+        }
+    }
+
+    @Test
+    fun `boundary tests - all whitespace types are rejected on UPDATE for operationKind`() = runBlocking {
+        intentDao.insertRawIntent(validIntent)
+        val whitespaceTypes = listOf("   ", "\t\t", "\n\n", "\u3000")
+
+        for (ws in whitespaceTypes) {
+            var thrown = false
+            try {
+                database.openHelper.writableDatabase.execSQL(
+                    "UPDATE durable_operation_intent SET operationKind = '$ws' WHERE operationToken = 'intent-token-100'"
+                )
+            } catch (_: SQLiteConstraintException) {
+                thrown = true
+            }
+            assertTrue("UPDATE with operationKind whitespace '$ws' must be rejected by SQLite trigger", thrown)
+        }
+    }
+
+    @Test
+    fun `legitimate generated identifiers are accepted by both Kotlin and SQLite`() = runBlocking {
+        val validTokens = listOf("intent-token-100", "550e8400-e29b-41d4-a716-446655440000", "CUSTOM_ACTION_KEY_123")
+        val validKinds = listOf("SET", "CANCEL", "SNOOZE", "DISMISS")
+
+        for ((idx, tok) in validTokens.withIndex()) {
+            val intent = validIntent.copy(
+                operationToken = tok,
+                incarnationId = "inc-$idx",
+                operationKind = validKinds[idx % validKinds.size],
+                alarmId = 5000L + idx
+            )
+            intentDao.insertValidatedIntent(intent)
+            val retrieved = intentDao.getIntentByToken(tok)
+            assertNotNull(retrieved)
+            assertEquals(tok, retrieved?.operationToken)
+        }
     }
 
     @Test(expected = SQLiteConstraintException::class)

@@ -69,9 +69,9 @@ object DurableIntentTriggers {
             CREATE TRIGGER IF NOT EXISTS `trigger_durable_intent_identity_insert`
             BEFORE INSERT ON `durable_operation_intent`
             FOR EACH ROW
-            WHEN length(trim(NEW.operationToken)) = 0
-              OR length(trim(NEW.incarnationId)) = 0
-              OR length(trim(NEW.operationKind)) = 0
+            WHEN length(trim(NEW.operationToken, ' ' || char(9) || char(10) || char(13) || char(0x3000))) = 0
+              OR length(trim(NEW.incarnationId, ' ' || char(9) || char(10) || char(13) || char(0x3000))) = 0
+              OR length(trim(NEW.operationKind, ' ' || char(9) || char(10) || char(13) || char(0x3000))) = 0
               OR NEW.alarmId <= 0
               OR NEW.operationEpoch <= 0
               OR NEW.intentRevision <= 0
@@ -84,9 +84,9 @@ object DurableIntentTriggers {
             CREATE TRIGGER IF NOT EXISTS `trigger_durable_intent_identity_update`
             BEFORE UPDATE ON `durable_operation_intent`
             FOR EACH ROW
-            WHEN length(trim(NEW.operationToken)) = 0
-              OR length(trim(NEW.incarnationId)) = 0
-              OR length(trim(NEW.operationKind)) = 0
+            WHEN length(trim(NEW.operationToken, ' ' || char(9) || char(10) || char(13) || char(0x3000))) = 0
+              OR length(trim(NEW.incarnationId, ' ' || char(9) || char(10) || char(13) || char(0x3000))) = 0
+              OR length(trim(NEW.operationKind, ' ' || char(9) || char(10) || char(13) || char(0x3000))) = 0
               OR NEW.alarmId <= 0
               OR NEW.operationEpoch <= 0
               OR NEW.intentRevision <= 0
