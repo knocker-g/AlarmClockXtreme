@@ -243,12 +243,24 @@ class SmartAlarmService : Service(), SensorEventListener {
     }
 
     private fun startAlarmService() {
-        // Fire early via the foreground service directly. The original exact alarm
-        // scheduled at the unmodified trigger time is still armed (this path does
-        // not consume its PendingIntent), so cancel it now to prevent a spurious
-        // second fire at the originally-scheduled minute.
-        runCatching { alarmScheduler.cancelMainScheduledAlarm(alarmId, targetTimeMs) }
-            .onFailure { android.util.Log.e("SmartAlarmService", "Failed to cancel stale alarm $alarmId", it) }
+        // Fire early via the foreground service directly ONLY if the original main
+        // alarm PendingIntent is safely cancelled. If cancellation fails or generation
+        // mismatches, do NOT launch an early duplicate alarm; the original alarm
+        // remains armed and will fire normally at its scheduled minute.
+        val mainAlarmCancelled = try {
+            alarmScheduler.cancelMainScheduledAlarm(alarmId, targetTimeMs)
+        } catch (e: Exception) {
+            android.util.Log.e("SmartAlarmService", "Failed to cancel main alarm $alarmId for early fire", e)
+            false
+        }
+
+        if (!mainAlarmCancelled) {
+            android.util.Log.w(
+                "SmartAlarmService",
+                "Main alarm $alarmId cancellation was unconfirmed or rejected for target $targetTimeMs; suppressing early fire to prevent duplicate alarm"
+            )
+            return
+        }
 
         val fireId = com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent.fireIdFor(alarmId, targetTimeMs)
         val intent = Intent(this, AlarmService::class.java).apply {
