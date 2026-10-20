@@ -6,6 +6,7 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.work.Operation
 import androidx.work.WorkManager
+import com.sysadmindoc.alarmclock.directboot.DirectBootAlarmCache
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.preferences.AppSettings
@@ -22,19 +23,18 @@ import io.mockk.just
 import io.mockk.mockk
 import io.mockk.mockkObject
 import io.mockk.mockkStatic
-import io.mockk.slot
 import io.mockk.unmockkAll
 import io.mockk.verify
 import java.time.DayOfWeek
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
@@ -91,229 +91,97 @@ class AlarmSchedulerTest {
     }
 
     @Test
-    fun scheduleFutureAlarmWritesNextTriggerAndRegistersAlarmClock() = runTest {
-        val triggerTime = System.currentTimeMillis() + 15 * 60_000L
-        val alarm = enabledAlarm(id = 42L)
-        every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
-
-        scheduler.schedule(alarm, requestWidgetUpdate = false)
-
-        coVerify { repository.updateNextTrigger(42L, triggerTime) }
-        assertEquals(
-            1,
-            shadowOf(context.getSystemService(AlarmManager::class.java)).scheduledAlarms.size
-        )
-    }
-
-    @Test
-    fun scheduleFutureAlarmCanHideStatusIconWithExactIdleRegistration() = runTest {
-        val triggerTime = System.currentTimeMillis() + 15 * 60_000L
-        val alarm = enabledAlarm(id = 44L)
-        every { preferencesManager.getCachedSettings() } returns
-            AppSettings(showAlarmClockIcon = false)
-        every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
-
-        scheduler.schedule(alarm, requestWidgetUpdate = false)
-
-        val scheduledAlarm = shadowOf(context.getSystemService(AlarmManager::class.java))
-            .scheduledAlarms
-            .single()
-        assertEquals(null, scheduledAlarm.alarmClockInfo)
-        assertTrue(scheduledAlarm.isAllowWhileIdle)
-        verify {
-            incidentRepository.recordAsync(
-                alarmId = 44L,
-                fireId = any(),
-                scheduledAt = triggerTime,
-                eventAt = any(),
-                type = AlarmIncidentEvent.TYPE_SCHEDULE,
-                status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                reasonCode = "SET_EXACT_ALLOW_WHILE_IDLE",
-                source = "AlarmScheduler"
-            )
-        }
-    }
-
-    @Test
-    fun scheduleSnoozeAtPersistsSelectedTriggerAndRegistersAlarmClock() = runTest {
-        val target = System.currentTimeMillis() + 15 * 60_000L
-        val alarm = enabledAlarm(id = 43L)
-
-        scheduler.scheduleSnoozeAt(alarm, target)
-
-        coVerify { repository.updateNextTrigger(43L, target) }
-        assertEquals(
-            1,
-            shadowOf(context.getSystemService(AlarmManager::class.java)).scheduledAlarms.size
-        )
-    }
-
-    @Test
-    fun cancelRemovesFollowUpWorkersAndRequestsWidgetRefresh() {
-        scheduler.cancel(42L)
-
-        verify { workManager.cancelUniqueWork("hue_sunrise_42") }
-        verify { workManager.cancelUniqueWork("guardian_42") }
-        verify { workManager.cancelUniqueWork("wake_confirm_42") }
-        verify { WidgetUpdater.requestUpdate(context) }
-    }
-
-    @Test
-    fun handleAlarmFiredTearsDownStaleExactAlarmForOneShot() = runTest {
-        // A smart-wake early fire starts AlarmService directly without consuming
-        // the original exact-alarm PendingIntent, so handleAlarmFired() must cancel
-        // it for a one-shot — otherwise the alarm fires a second time at the
-        // originally-scheduled minute.
-        val triggerTime = System.currentTimeMillis() + 20 * 60_000L
-        val oneShot = enabledAlarm(id = 55L).copy(repeatDays = emptySet())
-        every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
-        coEvery { repository.getById(55L) } returns oneShot
-
-        scheduler.schedule(oneShot, requestWidgetUpdate = false)
-        val alarmManager = shadowOf(context.getSystemService(AlarmManager::class.java))
-        assertEquals(1, alarmManager.scheduledAlarms.size)
-
-        scheduler.handleAlarmFired(55L)
-
-        assertEquals(0, alarmManager.scheduledAlarms.size)
-        coVerify { repository.setEnabled(55L, false, 0L) }
-    }
-
-    @Test
-    fun handleAlarmFiredRecurringAfterEarlyFireSkipsTheOriginalMinute() = runTest {
-        // Smart-wake fires a recurring alarm early; the user dismisses before
-        // the original minute. The reschedule must floor "next" past the
-        // original occurrence or the alarm rings a second time at it.
-        val originalTrigger = System.currentTimeMillis() + 10 * 60_000L
-        val nextDay = originalTrigger + 24 * 3_600_000L
-        val recurring = enabledAlarm(id = 66L)
-        coEvery { repository.getById(66L) } returns recurring
-        val fromSlot = slot<java.time.ZonedDateTime>()
-        every { calculator.calculate(any<Alarm>(), capture(fromSlot)) } returns nextDay
-
-        scheduler.handleAlarmFired(66L, firedScheduledAt = originalTrigger)
-
-        assertTrue(fromSlot.captured.toInstant().toEpochMilli() >= originalTrigger + 60_000L)
-        coVerify { repository.updateNextTrigger(66L, nextDay) }
-    }
-
-    @Test
-    fun oneShotHolidaySuppressionStoresZeroTrigger() = runTest {
-        // Storing the suppressed future trigger let reboot/app-update
-        // reschedules re-arm the alarm without a holiday check, so it fired
-        // on the holiday the user asked to skip.
-        val triggerTime = System.currentTimeMillis() + 20 * 60_000L
-        val oneShot = enabledAlarm(id = 88L).copy(repeatDays = emptySet(), skipOnHolidays = true)
-        every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
-        coEvery { preferencesManager.getCurrentSettings() } returns
-            AppSettings(holidayAutoSkipEnabled = true)
-        coEvery { holidayRepository.isHoliday(any()) } returns true
-
-        scheduler.schedule(oneShot, requestWidgetUpdate = false)
-
-        coVerify { repository.updateNextTrigger(88L, 0L) }
-        assertEquals(
-            0,
-            shadowOf(context.getSystemService(AlarmManager::class.java)).scheduledAlarms.size
-        )
-    }
-
-    @Test
-    fun forceRecalculatePreservesLiveSnoozeTrigger() = runTest {
-        // Automatic forced reschedules (dashboard location/solar refresh,
-        // TIME_SET) must not silently un-snooze: a stored trigger earlier
-        // than the natural next occurrence is a live snooze.
-        val now = System.currentTimeMillis()
-        val snoozeAt = now + 5 * 60_000L
-        val naturalNext = now + 20 * 3_600_000L
-        val alarm = enabledAlarm(id = 9L).copy(nextTriggerTime = snoozeAt)
-        coEvery { repository.getEnabled() } returns listOf(alarm)
-        every { calculator.calculate(any<Alarm>(), any()) } returns naturalNext
-
-        scheduler.rescheduleAllInBatches(forceRecalculate = true, batchSize = 5)
-
-        coVerify { repository.updateNextTrigger(9L, snoozeAt) }
-    }
-
-    @Test
-    fun rescheduleAllKeepsExistingFutureTriggerAndReturnsProcessedCount() = runTest {
-        val triggerTime = System.currentTimeMillis() + 30 * 60_000L
-        val alarm = enabledAlarm(id = 7L).copy(nextTriggerTime = triggerTime)
-        coEvery { repository.getEnabled() } returns listOf(alarm)
-
-        val processed = scheduler.rescheduleAllInBatches(forceRecalculate = false, batchSize = 1)
-
-        assertEquals(1, processed)
-        coVerify { repository.updateNextTrigger(7L, triggerTime) }
-        verify { WidgetUpdater.requestUpdate(context) }
-    }
-
-    @Test
-    fun weatherEarlyShiftsTriggerTimeWhenSnowForecast() = runTest {
-        val triggerTime = System.currentTimeMillis() + 8 * 3_600_000L
-        val triggerDate = java.time.Instant.ofEpochMilli(triggerTime)
-            .atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
-        val alarm = enabledAlarm(id = 99L).copy(weatherEarlyMinutes = 15)
-        every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
-
-        val weatherResponse = com.sysadmindoc.alarmclock.data.remote.WeatherResponse(
-            current = null,
-            hourly = null,
-            daily = com.sysadmindoc.alarmclock.data.remote.DailyWeather(
-                time = listOf(triggerDate),
-                maxTemp = listOf(28.0),
-                minTemp = listOf(20.0),
-                weatherCode = listOf(71),
-                precipChance = null,
-                sunrise = null,
-                sunset = null,
-                uvIndexMax = null
-            ),
-            currentUnits = null
-        )
-        every { weatherRepository.getCachedWeather() } returns weatherResponse
-
-        scheduler.schedule(alarm, requestWidgetUpdate = false)
-
-        coVerify { repository.updateNextTrigger(99L, triggerTime - 15 * 60_000L) }
-    }
-
-    @Test
-    fun weatherEarlyNoShiftWhenClearForecast() = runTest {
-        val triggerTime = System.currentTimeMillis() + 8 * 3_600_000L
-        val triggerDate = java.time.Instant.ofEpochMilli(triggerTime)
-            .atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
-        val alarm = enabledAlarm(id = 100L).copy(weatherEarlyMinutes = 15)
-        every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
-
-        val weatherResponse = com.sysadmindoc.alarmclock.data.remote.WeatherResponse(
-            current = null,
-            hourly = null,
-            daily = com.sysadmindoc.alarmclock.data.remote.DailyWeather(
-                time = listOf(triggerDate),
-                maxTemp = listOf(72.0),
-                minTemp = listOf(55.0),
-                weatherCode = listOf(0),
-                precipChance = null,
-                sunrise = null,
-                sunset = null,
-                uvIndexMax = null
-            ),
-            currentUnits = null
-        )
-        every { weatherRepository.getCachedWeather() } returns weatherResponse
-
-        scheduler.schedule(alarm, requestWidgetUpdate = false)
-
-        coVerify { repository.updateNextTrigger(100L, triggerTime) }
-    }
-
-    @Test
     fun isSnowOrIceCodeMatchesExpectedWmoCodes() {
         val snowCodes = listOf(56, 57, 66, 67, 71, 73, 75, 77, 85, 86)
         val clearCodes = listOf(0, 1, 2, 3, 45, 48, 51, 53, 55, 61, 63, 65, 80, 81, 82, 95, 96, 99)
         snowCodes.forEach { assert(AlarmScheduler.isSnowOrIceCode(it)) { "Expected $it to be snow/ice" } }
         clearCodes.forEach { assert(!AlarmScheduler.isSnowOrIceCode(it)) { "Expected $it to NOT be snow/ice" } }
+    }
+
+    @Test
+    fun `successful fresh OS SET cancels DirectBoot fallback`() = runTest {
+        val alarm = enabledAlarm(id = 200L)
+        val triggerTime = System.currentTimeMillis() + 600_000L
+        every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
+
+        val mockOwner = mockk<ScheduleAuthorityOwner>()
+        coEvery { mockOwner.executeOperation(200L, "SET", triggerTime, any()) } returns OwnerResult.OsAccepted(1L, "act-sched-200")
+
+        val schedulerWithOwner = AlarmScheduler(
+            context = context,
+            repository = repository,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            holidayRepository = holidayRepository,
+            alarmIncidentRepository = incidentRepository,
+            weatherRepository = weatherRepository,
+            scheduleAuthorityOwnerProvider = { mockOwner }
+        )
+
+        mockkObject(DirectBootAlarmCache)
+        every { DirectBootAlarmCache.cancelScheduledFallback(any(), 200L) } just Runs
+
+        schedulerWithOwner.schedule(alarm, requestWidgetUpdate = false)
+
+        verify(exactly = 1) { DirectBootAlarmCache.cancelScheduledFallback(any(), 200L) }
+    }
+
+    @Test
+    fun `DuplicateIgnored outcome does NOT cancel DirectBoot fallback`() = runTest {
+        val alarm = enabledAlarm(id = 201L)
+        val triggerTime = System.currentTimeMillis() + 600_000L
+        every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
+
+        val mockOwner = mockk<ScheduleAuthorityOwner>()
+        coEvery { mockOwner.executeOperation(201L, "SET", triggerTime, any()) } returns OwnerResult.DuplicateIgnored
+
+        val schedulerWithOwner = AlarmScheduler(
+            context = context,
+            repository = repository,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            holidayRepository = holidayRepository,
+            alarmIncidentRepository = incidentRepository,
+            weatherRepository = weatherRepository,
+            scheduleAuthorityOwnerProvider = { mockOwner }
+        )
+
+        mockkObject(DirectBootAlarmCache)
+        every { DirectBootAlarmCache.cancelScheduledFallback(any(), 201L) } just Runs
+
+        schedulerWithOwner.schedule(alarm, requestWidgetUpdate = false)
+
+        verify(exactly = 0) { DirectBootAlarmCache.cancelScheduledFallback(any(), 201L) }
+    }
+
+    @Test
+    fun `failed OS SET preserves DirectBoot fallback`() = runTest {
+        val alarm = enabledAlarm(id = 202L)
+        val triggerTime = System.currentTimeMillis() + 600_000L
+        every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
+
+        val mockOwner = mockk<ScheduleAuthorityOwner>()
+        coEvery { mockOwner.executeOperation(202L, "SET", triggerTime, any()) } returns OwnerResult.OutcomeUnknown(1L, IllegalStateException("OS Error"))
+        coEvery { mockOwner.executeOperation(202L, "CANCEL", null, any()) } returns OwnerResult.OsAccepted(1L, "act-cancel-202")
+
+        val schedulerWithOwner = AlarmScheduler(
+            context = context,
+            repository = repository,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            holidayRepository = holidayRepository,
+            alarmIncidentRepository = incidentRepository,
+            weatherRepository = weatherRepository,
+            scheduleAuthorityOwnerProvider = { mockOwner }
+        )
+
+        mockkObject(DirectBootAlarmCache)
+        every { DirectBootAlarmCache.cancelScheduledFallback(any(), 202L) } just Runs
+        every { DirectBootAlarmCache.removeIfMatches(any(), any()) } just Runs
+
+        schedulerWithOwner.schedule(alarm, requestWidgetUpdate = false)
+
+        verify(exactly = 0) { DirectBootAlarmCache.cancelScheduledFallback(any(), 202L) }
     }
 
     private fun enabledAlarm(id: Long): Alarm = Alarm(

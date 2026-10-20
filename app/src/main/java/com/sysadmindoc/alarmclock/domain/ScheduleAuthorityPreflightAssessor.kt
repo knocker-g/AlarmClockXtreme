@@ -166,21 +166,15 @@ class ScheduleAuthorityPreflightAssessor @Inject constructor(
             }
         }
 
-        // Source-level writer gate: check if legacy bypasses remain reachable
-        val legacyBypassesReachable = scheduleAuthorityOwnerProvider == null || scheduleAuthorityOwnerProvider.get() == null
-        if (legacyBypassesReachable) {
-            blockerReasons.add(BLOCKER_LEGACY_WRITER_REACHABLE)
-            blockerReasons.add(BLOCKER_DIRECT_BOOT_ORDER_UNSAFE)
-            blockerReasons.add(BLOCKER_DUPLICATE_NOT_OS_PROOF)
-            blockerReasons.add(BLOCKER_OS_REGISTRATION_UNPROVEN)
-        }
+        // Hard-block cutover: legacy OS writers remain active in production AlarmScheduler/AlarmService
+        val legacyBypassesReachable = true
+        blockerReasons.add(BLOCKER_LEGACY_WRITER_REACHABLE)
+        blockerReasons.add(BLOCKER_DIRECT_BOOT_ORDER_UNSAFE)
+        blockerReasons.add(BLOCKER_DUPLICATE_NOT_OS_PROOF)
+        blockerReasons.add(BLOCKER_OS_REGISTRATION_UNPROVEN)
 
-        val isReady = enabledCount > 0 &&
-                ownerReadyCount == enabledCount &&
-                activeSessionCount == 0 &&
-                quarantinedCount == 0 &&
-                unknownCount == 0 &&
-                !legacyBypassesReachable
+        // Hard-blocked cutoverReady = false until Slice D exclusive owner cutover!
+        val isReady = false
 
         Log.i(TAG, "Assessed cutover readiness: total=${allAlarms.size}, enabled=$enabledCount, ready=$ownerReadyCount, legacyBypassesReachable=$legacyBypassesReachable -> cutoverReady=$isReady, blockers=$blockerReasons")
 

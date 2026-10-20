@@ -573,7 +573,6 @@ class AlarmScheduler @Inject constructor(
     }
 
     private fun scheduleAlarmClock(alarmId: Long, triggerTime: Long): Boolean {
-        DirectBootAlarmCache.cancelScheduledFallback(context, alarmId)
         val fireId = AlarmIncidentEvent.fireIdFor(alarmId, triggerTime)
         val showAlarmClockIcon = preferencesManager.getCachedSettings().showAlarmClockIcon
         recordScheduleIncident(
@@ -584,6 +583,7 @@ class AlarmScheduler @Inject constructor(
             reasonCode = if (showAlarmClockIcon) "SET_ALARM_CLOCK" else "SET_EXACT_ALLOW_WHILE_IDLE"
         )
         val owner = scheduleAuthorityOwnerProvider?.get()
+        var freshOsRegistration = false
         val success = if (owner != null) {
             val actionKey = "act-sched-$alarmId-$triggerTime"
             val ownerRes = runBlocking {
@@ -594,12 +594,22 @@ class AlarmScheduler @Inject constructor(
                     actionKey = actionKey
                 )
             }
-            ownerRes is OwnerResult.OsAccepted || ownerRes is OwnerResult.DuplicateIgnored
+            if (ownerRes is OwnerResult.OsAccepted) {
+                freshOsRegistration = true
+                true
+            } else {
+                ownerRes is OwnerResult.DuplicateIgnored
+            }
         } else {
-            applyRawOsSet(alarmId, triggerTime)
+            val osSuccess = applyRawOsSet(alarmId, triggerTime)
+            if (osSuccess) freshOsRegistration = true
+            osSuccess
         }
 
         if (success) {
+            if (freshOsRegistration) {
+                DirectBootAlarmCache.cancelScheduledFallback(context, alarmId)
+            }
             recordScheduleIncident(
                 alarmId = alarmId,
                 fireId = fireId,
