@@ -91,6 +91,11 @@ class ScheduleAuthorityOwner @Inject constructor(
             val initialAuth = authorityDao.getAuthorityByAlarmId(alarmId)
                 ?: return@withLock OwnerResult.AuthorityNotFound
 
+            if (initialAuth.reconcileState == "QUARANTINE") {
+                Log.w(TAG, "Alarm $alarmId is QUARANTINED; rejecting operation execution")
+                return@withLock OwnerResult.Superseded(initialAuth.scheduleRevision)
+            }
+
             if (desiredOperation !in SUPPORTED_OPERATIONS) {
                 Log.e(TAG, "Unsupported desiredOperation '$desiredOperation' for alarm $alarmId")
                 return@withLock OwnerResult.OutcomeUnknown(
@@ -232,6 +237,11 @@ class ScheduleAuthorityOwner @Inject constructor(
         return mutexFor(alarmId).withLock {
             val authority = authorityDao.getAuthorityByAlarmId(alarmId)
                 ?: return@withLock OwnerResult.AuthorityNotFound
+
+            if (authority.reconcileState == "QUARANTINE") {
+                Log.w(TAG, "Boot replay skipped for alarm $alarmId: authority is QUARANTINED")
+                return@withLock OwnerResult.Superseded(authority.scheduleRevision)
+            }
 
             if (authority.lifecycle != "LIVE") {
                 Log.i(TAG, "Boot replay skipped for alarm $alarmId: lifecycle is ${authority.lifecycle}")

@@ -24,6 +24,29 @@ interface ScheduleAuthorityDao {
     @Query("UPDATE schedule_authority SET reconcileState = 'QUARANTINE' WHERE alarmId = :alarmId AND instanceToken = :instanceToken AND scheduleRevision = :scheduleRevision")
     suspend fun quarantineAuthority(alarmId: Long, instanceToken: String, scheduleRevision: Long): Int
 
+    /**
+     * Generation-qualified activation CAS transitioning inert 'QUARANTINE' authority to 'RECONCILING'.
+     * Validates matching alarmId, instanceToken, restoreEpoch, scheduleRevision, lifecycle, and current reconcileState = 'QUARANTINE'.
+     * Returns 1 if activation succeeded, or 0 if stale, mismatched, or already modified.
+     */
+    @Query("""
+        UPDATE schedule_authority
+        SET reconcileState = 'RECONCILING'
+        WHERE alarmId = :alarmId
+          AND instanceToken = :instanceToken
+          AND restoreEpoch = :restoreEpoch
+          AND scheduleRevision = :scheduleRevision
+          AND lifecycle = :lifecycle
+          AND reconcileState = 'QUARANTINE'
+    """)
+    suspend fun activateAuthorityToReconciling(
+        alarmId: Long,
+        instanceToken: String,
+        restoreEpoch: Long,
+        scheduleRevision: Long,
+        lifecycle: String
+    ): Int
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMeta(meta: ScheduleAuthorityMeta)
 
@@ -37,8 +60,8 @@ interface ScheduleAuthorityDao {
      * Generation-qualified CAS claim update for ScheduleAuthority.
      * Strictly increments scheduleRevision by 1 and sets reconcileState = 'RECONCILING'.
      *
-     * Validates matching alarmId, instanceToken, restoreEpoch, expectedLifecycle, and scheduleRevision.
-     * Returns 1 if transition succeeded, or 0 if stale, absent, or conflicting identity/revision.
+     * Validates matching alarmId, instanceToken, restoreEpoch, expectedLifecycle, scheduleRevision, and non-quarantined state.
+     * Returns 1 if transition succeeded, or 0 if stale, absent, quarantined, or conflicting.
      */
     @Query("""
         UPDATE schedule_authority
@@ -52,6 +75,7 @@ interface ScheduleAuthorityDao {
           AND restoreEpoch = :restoreEpoch
           AND scheduleRevision = :expectedRevision
           AND lifecycle = :expectedLifecycle
+          AND reconcileState IN ('SETTLED', 'RECONCILING')
     """)
     suspend fun casClaimAuthority(
         alarmId: Long,
@@ -92,7 +116,7 @@ interface ScheduleAuthorityDao {
      * Generation-qualified lifecycle update for ScheduleAuthority (e.g. LIVE <-> DISABLED).
      * Strictly increments scheduleRevision by 1.
      *
-     * Returns 1 if transition succeeded, or 0 if stale or conflicting.
+     * Returns 1 if transition succeeded, or 0 if stale, quarantined, or conflicting.
      */
     @Query("""
         UPDATE schedule_authority
@@ -107,6 +131,7 @@ interface ScheduleAuthorityDao {
           AND restoreEpoch = :restoreEpoch
           AND scheduleRevision = :expectedRevision
           AND lifecycle = :expectedLifecycle
+          AND reconcileState IN ('SETTLED', 'RECONCILING')
     """)
     suspend fun casUpdateLifecycle(
         alarmId: Long,

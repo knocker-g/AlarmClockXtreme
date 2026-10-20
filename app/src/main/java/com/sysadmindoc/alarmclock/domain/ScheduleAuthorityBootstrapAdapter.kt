@@ -33,8 +33,8 @@ import javax.inject.Singleton
  * - Validates instanceToken, restoreEpoch, definitionRevision, and lifecycle when checking existing authority rows.
  * - Recalculates target trigger time using [NextAlarmCalculator] with Pause/Holiday suppression rules.
  * - Quarantines unsupported policy configurations (Weather pre-wake lead, SmartWake window, Hue pre-wake).
- * - Revalidates Definition, restoreEpoch, incarnation marker, and unresolved DurableIntents atomically inside Room [withTransaction].
- * - Performs post-admission cross-store revalidation fencing; persists a durable 'QUARANTINE' barrier in DB if local marker changed post-admission.
+ * - Admits initial candidate as inert 'QUARANTINE' state inside Room [withTransaction].
+ * - Performs post-admission cross-store revalidation fencing and activates to 'RECONCILING' via generation-qualified CAS.
  * - Catches SQLiteConstraintException specifically for insertion conflicts; does NOT treat generic DB failures as conflicts.
  * - Preserves CancellationException without swallowing.
  * - Returns [BootstrapDecision.QUARANTINE] for unsupported or invalid policy evidence rather than guessing an OS target.
@@ -143,11 +143,11 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
                 lifecycle = expectedLifecycle,
                 desiredOperation = "CANCEL",
                 desiredTriggerMillis = null,
-                reconcileState = "RECONCILING",
+                reconcileState = "QUARANTINE", // Insert initial candidate as inert QUARANTINE!
                 restoreEpoch = verifiedRestoreEpoch,
                 actionKey = null
             )
-            return admitAuthorityAtomically(pausedAuthority)
+            return admitAndActivateAuthority(pausedAuthority)
         }
 
         val now = ZonedDateTime.now()
@@ -185,51 +185,49 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
             lifecycle = expectedLifecycle,
             desiredOperation = desiredOp,
             desiredTriggerMillis = desiredTrigger,
-            reconcileState = "RECONCILING", // Always RECONCILING, never SETTLED!
+            reconcileState = "QUARANTINE", // Insert initial candidate as inert QUARANTINE!
             restoreEpoch = verifiedRestoreEpoch,
             actionKey = null
         )
 
-        // Step 3: Admit (atomic Room withTransaction with cross-store post-admission revalidation)
-        return admitAuthorityAtomically(candidateAuthority)
+        // Step 3: Admit as inert QUARANTINE, then activate via CAS after cross-store verification
+        return admitAndActivateAuthority(candidateAuthority)
     }
 
-    private suspend fun admitAuthorityAtomically(candidate: ScheduleAuthority): BootstrapDecision {
-        val decision = try {
+    private suspend fun admitAndActivateAuthority(candidate: ScheduleAuthority): BootstrapDecision {
+        val inertAdmitted = try {
             database.withTransaction {
                 // Re-verify inside Room transaction
                 val latestAlarm = alarmRepository.getById(candidate.alarmId)?.sanitized()
-                    ?: return@withTransaction BootstrapDecision.QUARANTINE
+                    ?: return@withTransaction false
 
                 if (computeDefinitionRevision(latestAlarm) != candidate.definitionRevision) {
                     Log.w(TAG, "Definition edit detected inside transaction for alarm ${candidate.alarmId}; QUARANTINING")
-                    return@withTransaction BootstrapDecision.QUARANTINE
+                    return@withTransaction false
                 }
 
                 val meta = database.scheduleAuthorityDao().getMetaById(1)
                 if (meta?.restoreEpoch != candidate.restoreEpoch) {
                     Log.w(TAG, "Restore epoch changed inside transaction for alarm ${candidate.alarmId}; QUARANTINING")
-                    return@withTransaction BootstrapDecision.QUARANTINE
+                    return@withTransaction false
                 }
 
                 val unresolvedIntents = database.durableOperationIntentDao().getUnresolvedIntentsByAlarmId(candidate.alarmId)
                 if (unresolvedIntents.isNotEmpty()) {
                     Log.w(TAG, "Alarm ${candidate.alarmId} has unresolved DurableIntents inside transaction; QUARANTINING")
-                    return@withTransaction BootstrapDecision.QUARANTINE
+                    return@withTransaction false
                 }
 
                 val existingInTx = database.scheduleAuthorityDao().getAuthorityByAlarmId(candidate.alarmId)
                 if (existingInTx != null) {
-                    return@withTransaction when (existingInTx.reconcileState) {
-                        "SETTLED" -> BootstrapDecision.ADOPT
-                        "RECONCILING" -> BootstrapDecision.RECONCILE
-                        else -> BootstrapDecision.QUARANTINE
-                    }
+                    return@withTransaction false
                 }
 
-                database.scheduleAuthorityDao().insertAuthority(candidate)
-                Log.i(TAG, "Admitted authority inside Room transaction for alarm ${candidate.alarmId} as RECONCILING with trigger ${candidate.desiredTriggerMillis}")
-                BootstrapDecision.RECONCILE
+                // Insert initial authority as inert QUARANTINE state
+                val inertCandidate = candidate.copy(reconcileState = "QUARANTINE")
+                database.scheduleAuthorityDao().insertAuthority(inertCandidate)
+                Log.i(TAG, "Admitted inert QUARANTINE authority inside Room transaction for alarm ${candidate.alarmId}")
+                true
             }
         } catch (e: CancellationException) {
             throw e // DO NOT SWALLOW CANCELLATION!
@@ -240,33 +238,61 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
                 existingPostConflict.instanceToken == candidate.instanceToken &&
                 existingPostConflict.restoreEpoch == candidate.restoreEpoch &&
                 existingPostConflict.definitionRevision == candidate.definitionRevision) {
-                when (existingPostConflict.reconcileState) {
+                return when (existingPostConflict.reconcileState) {
                     "SETTLED" -> BootstrapDecision.ADOPT
                     "RECONCILING" -> BootstrapDecision.RECONCILE
                     else -> BootstrapDecision.QUARANTINE
                 }
             } else {
-                BootstrapDecision.QUARANTINE
+                return BootstrapDecision.QUARANTINE
             }
         } catch (e: Exception) {
             Log.e(TAG, "Database persistence failure admitting authority for alarm ${candidate.alarmId}", e)
             return BootstrapDecision.QUARANTINE
         }
 
-        if (decision == BootstrapDecision.RECONCILE) {
-            // Step 4: Cross-store post-admission revalidation fencing & durable quarantine barrier
-            val postRead = localReader.readLocalEvidence()
-            if (postRead !is LocalEvidenceReadResult.Success || postRead.localId != candidate.instanceToken) {
-                Log.w(TAG, "Post-admission local incarnation marker changed or unavailable for alarm ${candidate.alarmId}; PERSISTING DURABLE QUARANTINE BARRIER")
-                try {
-                    authorityDao.quarantineAuthority(candidate.alarmId, candidate.instanceToken, candidate.scheduleRevision)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to persist durable quarantine barrier for alarm ${candidate.alarmId}", e)
+        if (!inertAdmitted) {
+            val existing = authorityDao.getAuthorityByAlarmId(candidate.alarmId)
+            if (existing != null &&
+                existing.instanceToken == candidate.instanceToken &&
+                existing.restoreEpoch == candidate.restoreEpoch &&
+                existing.definitionRevision == candidate.definitionRevision) {
+                return when (existing.reconcileState) {
+                    "SETTLED" -> BootstrapDecision.ADOPT
+                    "RECONCILING" -> BootstrapDecision.RECONCILE
+                    else -> BootstrapDecision.QUARANTINE
                 }
-                return BootstrapDecision.QUARANTINE
             }
+            return BootstrapDecision.QUARANTINE
         }
 
-        return decision
+        // Step 4: Cross-store post-admission revalidation fencing & Activation CAS
+        val postRead = localReader.readLocalEvidence()
+        if (postRead !is LocalEvidenceReadResult.Success || postRead.localId != candidate.instanceToken) {
+            Log.w(TAG, "Post-admission local incarnation marker changed or unavailable for alarm ${candidate.alarmId}; REMAINS INERT QUARANTINE")
+            return BootstrapDecision.QUARANTINE
+        }
+
+        // Activation CAS: transition reconcileState from 'QUARANTINE' -> 'RECONCILING'
+        val activated = try {
+            authorityDao.activateAuthorityToReconciling(
+                alarmId = candidate.alarmId,
+                instanceToken = candidate.instanceToken,
+                restoreEpoch = candidate.restoreEpoch,
+                scheduleRevision = candidate.scheduleRevision,
+                lifecycle = candidate.lifecycle
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Activation CAS failed for alarm ${candidate.alarmId}; REMAINS INERT QUARANTINE", e)
+            0
+        }
+
+        if (activated == 1) {
+            Log.i(TAG, "Successfully activated authority for alarm ${candidate.alarmId} from QUARANTINE to RECONCILING")
+            return BootstrapDecision.RECONCILE
+        } else {
+            Log.w(TAG, "Activation CAS returned 0 for alarm ${candidate.alarmId}; REMAINS INERT QUARANTINE")
+            return BootstrapDecision.QUARANTINE
+        }
     }
 }

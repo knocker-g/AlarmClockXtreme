@@ -218,6 +218,23 @@ class ScheduleAuthorityOwnerTest {
     }
 
     @Test
+    fun `quarantined authority row receives Owner SET operation is rejected as Superseded`() = runBlocking {
+        val quarantinedAuthority = initialAuthority.copy(reconcileState = "QUARANTINE")
+        authorityDao.insertAuthority(quarantinedAuthority)
+
+        val result = owner.executeOperation(
+            alarmId = 42L,
+            desiredOperation = "SET",
+            desiredTriggerMillis = 2000L,
+            actionKey = "act-try-quarantine"
+        )
+
+        assertTrue("Owner operation on QUARANTINE authority must be rejected as Superseded", result is OwnerResult.Superseded)
+        val current = authorityDao.getAuthorityByAlarmId(42L)
+        assertEquals("DB state MUST remain QUARANTINE", "QUARANTINE", current?.reconcileState)
+    }
+
+    @Test
     fun `evaluateBootstrap returns QUARANTINE for absent authority or missing definition`() {
         val decisionNoAuth = owner.evaluateBootstrap(null, definitionExists = true, sessionValid = true)
         assertEquals(BootstrapDecision.QUARANTINE, decisionNoAuth)
