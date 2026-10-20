@@ -36,7 +36,7 @@ class BootRescheduleWorker @AssistedInject constructor(
         val forceRecalculate = inputData.getBoolean(KEY_FORCE_RECALCULATE, false)
 
         return try {
-            scheduleAuthorityReconciler?.reconcilePendingAuthorities()
+            scheduleAuthorityReconciler?.reconcileBootAuthorities()
             val count = alarmScheduler.rescheduleAllInBatches(
                 forceRecalculate = forceRecalculate,
                 batchSize = RESCHEDULE_BATCH_SIZE

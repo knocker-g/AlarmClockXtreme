@@ -21,6 +21,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -56,6 +57,19 @@ class ScheduleAuthorityReconcilerTest {
         actionKey = "act-rec"
     )
 
+    private val initialSettled = ScheduleAuthority(
+        alarmId = 43L,
+        instanceToken = "token-rec-43",
+        definitionRevision = 1L,
+        scheduleRevision = 1L,
+        lifecycle = "LIVE",
+        desiredOperation = "SET",
+        desiredTriggerMillis = System.currentTimeMillis() + 600_000L,
+        reconcileState = "SETTLED",
+        restoreEpoch = 100L,
+        actionKey = "act-settled"
+    )
+
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
@@ -81,12 +95,7 @@ class ScheduleAuthorityReconcilerTest {
 
         fakeOsSlot.clear()
         val slotApplier = MainSlotApplier { authority ->
-            fakeOsSlot.clear()
-            if (authority.desiredOperation == "SET") {
-                fakeOsSlot.add("SET_${authority.desiredTriggerMillis}")
-            } else {
-                fakeOsSlot.add("CANCEL")
-            }
+            fakeOsSlot.add("SET_${authority.desiredTriggerMillis}")
             true
         }
 
@@ -117,7 +126,7 @@ class ScheduleAuthorityReconcilerTest {
     }
 
     @Test
-    fun `reconciler discovers RECONCILING authority, applies OS operation, and transitions to SETTLED`() = runBlocking {
+    fun `reconcilePendingAuthorities discovers RECONCILING authority, applies OS operation, and transitions to SETTLED`() = runBlocking {
         authorityDao.insertAuthority(initialUnreconciled)
 
         val count = reconciler.reconcilePendingAuthorities()
@@ -127,6 +136,28 @@ class ScheduleAuthorityReconcilerTest {
         assertNotNull(settledAuth)
         assertEquals("SETTLED", settledAuth?.reconcileState)
         assertEquals(listOf("SET_2000"), fakeOsSlot)
+    }
+
+    @Test
+    fun `reconcilePendingAuthorities skips SETTLED authority during routine health check`() = runBlocking {
+        authorityDao.insertAuthority(initialSettled)
+
+        val count = reconciler.reconcilePendingAuthorities()
+
+        assertEquals("Routine health check must NOT re-apply SETTLED authorities", 0, count)
+        assertTrue("Fake OS slot must remain empty on routine health check for SETTLED authority", fakeOsSlot.isEmpty())
+    }
+
+    @Test
+    fun `reconcileBootAuthorities re-evaluates SETTLED authority after boot and re-applies OS slot`() = runBlocking {
+        val futureTarget = System.currentTimeMillis() + 600_000L
+        val settledBootAuth = initialSettled.copy(desiredTriggerMillis = futureTarget)
+        authorityDao.insertAuthority(settledBootAuth)
+
+        val count = reconciler.reconcileBootAuthorities()
+
+        assertEquals(1, count)
+        assertEquals("Boot recovery MUST re-register SETTLED authority in fake OS slot", listOf("SET_$futureTarget"), fakeOsSlot)
     }
 
     @Test
