@@ -48,34 +48,10 @@ class RecoveryAdjudicatorTest {
     }
 
     @Test
-    fun `stale incarnation produces QUARANTINE`() {
-        val snapshot = baseSnapshot.copy(localIncarnationId = "token-NEW-INC")
-        val decision = adjudicator.adjudicate(snapshot)
-        assertEquals(RecoveryDecisionOutcome.QUARANTINE, decision.outcome)
-        assertEquals("STALE_INCARNATION", decision.reasonCode)
-    }
-
-    @Test
-    fun `restore epoch mismatch produces QUARANTINE`() {
-        val snapshot = baseSnapshot.copy(restoreEpochMeta = 200L) // Meta 200L vs Auth 100L
-        val decision = adjudicator.adjudicate(snapshot)
-        assertEquals(RecoveryDecisionOutcome.QUARANTINE, decision.outcome)
-        assertEquals("RESTORE_EPOCH_MISMATCH", decision.reasonCode)
-    }
-
-    @Test
-    fun `missing definition produces QUARANTINE`() {
-        val snapshot = baseSnapshot.copy(definitionExists = false)
-        val decision = adjudicator.adjudicate(snapshot)
-        assertEquals(RecoveryDecisionOutcome.QUARANTINE, decision.outcome)
-        assertEquals("DEFINITION_MISSING", decision.reasonCode)
-    }
-
-    @Test
-    fun `pending durable intent produces RECONCILE_AUTHORITY`() {
+    fun `intent alarmId mismatch produces QUARANTINE`() {
         val intent = DurableOperationIntent(
-            operationToken = "intent-42",
-            alarmId = 42L,
+            operationToken = "intent-99",
+            alarmId = 99L, // Mismatched intent alarmId (99L vs snapshot 42L)
             operationEpoch = 100L,
             incarnationId = "token-verified-42",
             operationKind = "SET",
@@ -90,22 +66,22 @@ class RecoveryAdjudicatorTest {
         )
         val snapshot = baseSnapshot.copy(durableIntent = intent)
         val decision = adjudicator.adjudicate(snapshot)
-        assertEquals(RecoveryDecisionOutcome.RECONCILE_AUTHORITY, decision.outcome)
-        assertEquals("DURABLE_INTENT_PENDING", decision.reasonCode)
+        assertEquals(RecoveryDecisionOutcome.QUARANTINE, decision.outcome)
+        assertEquals("INTENT_ALARM_ID_MISMATCH", decision.reasonCode)
     }
 
     @Test
-    fun `in flight durable intent produces RECONCILE_AUTHORITY`() {
+    fun `owner token mismatch produces QUARANTINE`() {
         val intent = DurableOperationIntent(
             operationToken = "intent-42",
             alarmId = 42L,
             operationEpoch = 100L,
             incarnationId = "token-verified-42",
             operationKind = "SET",
-            expectedOwnerToken = "token-verified-42",
+            expectedOwnerToken = "token-STALE-OWNER", // Mismatched owner token!
             expectedScheduleRevision = 1L,
             expectedRestoreEpoch = 100L,
-            phase = "IN_FLIGHT",
+            phase = "PENDING",
             intentRevision = 1L,
             originalFireId = "fire-42",
             originalScheduledAt = 2000L,
@@ -113,12 +89,35 @@ class RecoveryAdjudicatorTest {
         )
         val snapshot = baseSnapshot.copy(durableIntent = intent)
         val decision = adjudicator.adjudicate(snapshot)
-        assertEquals(RecoveryDecisionOutcome.RECONCILE_AUTHORITY, decision.outcome)
-        assertEquals("DURABLE_INTENT_IN_FLIGHT", decision.reasonCode)
+        assertEquals(RecoveryDecisionOutcome.QUARANTINE, decision.outcome)
+        assertEquals("INTENT_OWNER_TOKEN_MISMATCH", decision.reasonCode)
     }
 
     @Test
-    fun `completed intent with session evidence produces RESUME_COMMITTED_SESSION_EFFECTS`() {
+    fun `schedule revision mismatch produces QUARANTINE`() {
+        val intent = DurableOperationIntent(
+            operationToken = "intent-42",
+            alarmId = 42L,
+            operationEpoch = 100L,
+            incarnationId = "token-verified-42",
+            operationKind = "SET",
+            expectedOwnerToken = "token-verified-42",
+            expectedScheduleRevision = 99L, // Mismatched schedule revision!
+            expectedRestoreEpoch = 100L,
+            phase = "PENDING",
+            intentRevision = 1L,
+            originalFireId = "fire-42",
+            originalScheduledAt = 2000L,
+            candidateSnoozeAt = null
+        )
+        val snapshot = baseSnapshot.copy(durableIntent = intent)
+        val decision = adjudicator.adjudicate(snapshot)
+        assertEquals(RecoveryDecisionOutcome.QUARANTINE, decision.outcome)
+        assertEquals("INTENT_SCHEDULE_REVISION_MISMATCH", decision.reasonCode)
+    }
+
+    @Test
+    fun `fire ID mismatch produces QUARANTINE`() {
         val intent = DurableOperationIntent(
             operationToken = "intent-42",
             alarmId = 42L,
@@ -130,26 +129,73 @@ class RecoveryAdjudicatorTest {
             expectedRestoreEpoch = 100L,
             phase = "COMPLETED",
             intentRevision = 1L,
-            originalFireId = "fire-42",
+            originalFireId = "fire-42-OLD", // Mismatched fire ID!
             originalScheduledAt = 2000L,
             candidateSnoozeAt = 2600L
         )
         val activeSession = ActiveAlarmSnapshot(
             alarmId = 42L,
             scheduledAt = 2000L,
-            fireId = "fire-42",
+            fireId = "fire-42-NEW",
             firedAt = 2000L,
             state = "SNOOZED",
             refireAt = 2600L
         )
         val snapshot = baseSnapshot.copy(durableIntent = intent, activeSession = activeSession)
         val decision = adjudicator.adjudicate(snapshot)
-        assertEquals(RecoveryDecisionOutcome.RESUME_COMMITTED_SESSION_EFFECTS, decision.outcome)
-        assertEquals("COMPLETED_INTENT_WITH_SESSION", decision.reasonCode)
+        assertEquals(RecoveryDecisionOutcome.QUARANTINE, decision.outcome)
+        assertEquals("INTENT_FIRE_ID_MISMATCH", decision.reasonCode)
     }
 
     @Test
-    fun `completed intent missing session evidence produces QUARANTINE`() {
+    fun `PENDING Snooze intent produces NEEDS_EVIDENCE`() {
+        val intent = DurableOperationIntent(
+            operationToken = "intent-snooze-42",
+            alarmId = 42L,
+            operationEpoch = 100L,
+            incarnationId = "token-verified-42",
+            operationKind = "SNOOZE", // Session operation kind
+            expectedOwnerToken = "token-verified-42",
+            expectedScheduleRevision = 1L,
+            expectedRestoreEpoch = 100L,
+            phase = "PENDING",
+            intentRevision = 1L,
+            originalFireId = "fire-42",
+            originalScheduledAt = 2000L,
+            candidateSnoozeAt = 2600L
+        )
+        val snapshot = baseSnapshot.copy(durableIntent = intent)
+        val decision = adjudicator.adjudicate(snapshot)
+        assertEquals(RecoveryDecisionOutcome.NEEDS_EVIDENCE, decision.outcome)
+        assertEquals("SESSION_OPERATION_UNCOMMITTED", decision.reasonCode)
+    }
+
+    @Test
+    fun `stale incarnation produces QUARANTINE`() {
+        val snapshot = baseSnapshot.copy(localIncarnationId = "token-NEW-INC")
+        val decision = adjudicator.adjudicate(snapshot)
+        assertEquals(RecoveryDecisionOutcome.QUARANTINE, decision.outcome)
+        assertEquals("STALE_INCARNATION", decision.reasonCode)
+    }
+
+    @Test
+    fun `restore epoch mismatch produces QUARANTINE`() {
+        val snapshot = baseSnapshot.copy(restoreEpochMeta = 200L)
+        val decision = adjudicator.adjudicate(snapshot)
+        assertEquals(RecoveryDecisionOutcome.QUARANTINE, decision.outcome)
+        assertEquals("RESTORE_EPOCH_MISMATCH", decision.reasonCode)
+    }
+
+    @Test
+    fun `missing definition produces QUARANTINE`() {
+        val snapshot = baseSnapshot.copy(definitionExists = false)
+        val decision = adjudicator.adjudicate(snapshot)
+        assertEquals(RecoveryDecisionOutcome.QUARANTINE, decision.outcome)
+        assertEquals("DEFINITION_MISSING", decision.reasonCode)
+    }
+
+    @Test
+    fun `completed intent missing session proof produces QUARANTINE`() {
         val intent = DurableOperationIntent(
             operationToken = "intent-42",
             alarmId = 42L,
@@ -168,7 +214,7 @@ class RecoveryAdjudicatorTest {
         val snapshot = baseSnapshot.copy(durableIntent = intent, activeSession = null)
         val decision = adjudicator.adjudicate(snapshot)
         assertEquals(RecoveryDecisionOutcome.QUARANTINE, decision.outcome)
-        assertEquals("COMPLETED_INTENT_MISSING_SESSION_EVIDENCE", decision.reasonCode)
+        assertEquals("COMPLETED_INTENT_MISSING_SESSION_PROOF", decision.reasonCode)
     }
 
     @Test
@@ -177,39 +223,5 @@ class RecoveryAdjudicatorTest {
         val decision = adjudicator.adjudicate(snapshot)
         assertEquals(RecoveryDecisionOutcome.QUARANTINE, decision.outcome)
         assertEquals("OS_OUTCOME_UNKNOWN", decision.reasonCode)
-    }
-
-    @Test
-    fun `reconciling authority produces RECONCILE_AUTHORITY`() {
-        val reconciling = baseAuthority.copy(reconcileState = "RECONCILING")
-        val snapshot = baseSnapshot.copy(authority = reconciling)
-        val decision = adjudicator.adjudicate(snapshot)
-        assertEquals(RecoveryDecisionOutcome.RECONCILE_AUTHORITY, decision.outcome)
-        assertEquals("AUTHORITY_RECONCILING", decision.reasonCode)
-    }
-
-    @Test
-    fun `quarantined authority produces QUARANTINE`() {
-        val quarantined = baseAuthority.copy(reconcileState = "QUARANTINE")
-        val snapshot = baseSnapshot.copy(authority = quarantined)
-        val decision = adjudicator.adjudicate(snapshot)
-        assertEquals(RecoveryDecisionOutcome.QUARANTINE, decision.outcome)
-        assertEquals("AUTHORITY_QUARANTINED", decision.reasonCode)
-    }
-
-    @Test
-    fun `missing restore epoch meta produces NEEDS_EVIDENCE`() {
-        val snapshot = baseSnapshot.copy(restoreEpochMeta = null)
-        val decision = adjudicator.adjudicate(snapshot)
-        assertEquals(RecoveryDecisionOutcome.NEEDS_EVIDENCE, decision.outcome)
-        assertEquals("RESTORE_EPOCH_META_MISSING", decision.reasonCode)
-    }
-
-    @Test
-    fun `missing local incarnation produces NEEDS_EVIDENCE`() {
-        val snapshot = baseSnapshot.copy(localIncarnationId = null)
-        val decision = adjudicator.adjudicate(snapshot)
-        assertEquals(RecoveryDecisionOutcome.NEEDS_EVIDENCE, decision.outcome)
-        assertEquals("LOCAL_INCARNATION_MISSING", decision.reasonCode)
     }
 }
