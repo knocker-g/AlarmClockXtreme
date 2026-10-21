@@ -32,8 +32,11 @@ import kotlinx.coroutines.yield
 import java.time.Instant
 import java.time.ZoneId
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 @Singleton
 class AlarmScheduler @Inject constructor(
@@ -49,6 +52,11 @@ class AlarmScheduler @Inject constructor(
 ) {
     private val alarmManager: AlarmManager
         get() = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+
+    private val mainSlotMutexMap = ConcurrentHashMap<Long, Mutex>()
+
+    @androidx.annotation.VisibleForTesting
+    internal var testOnPreOsRegistrationBarrier: (suspend (alarmId: Long, triggerTime: Long) -> Unit)? = null
 
     companion object {
         const val EXTRA_ALARM_ID = "alarm_id"
@@ -320,38 +328,43 @@ class AlarmScheduler @Inject constructor(
             return false
         }
 
-        val previousTrigger = repository.getById(sanitizedAlarm.id)?.nextTriggerTime ?: 0L
-        repository.updateNextTrigger(sanitizedAlarm.id, triggerTime)
+        val slotMutex = mainSlotMutexMap.computeIfAbsent(sanitizedAlarm.id) { Mutex() }
+        return slotMutex.withLock {
+            val previousTrigger = repository.getById(sanitizedAlarm.id)?.nextTriggerTime ?: 0L
+            repository.updateNextTrigger(sanitizedAlarm.id, triggerTime)
 
-        // Verify nextTriggerTime is still triggerTime before making OS AlarmManager call
-        val currentDbTrigger = repository.getById(sanitizedAlarm.id)?.nextTriggerTime
-        if (currentDbTrigger != null && currentDbTrigger != triggerTime) {
-            Log.i("AlarmScheduler", "Aborting OS registration for alarm ${sanitizedAlarm.id}: nextTriggerTime updated to $currentDbTrigger while operation for $triggerTime was in-flight")
-            repository.casUpdateNextTrigger(id = sanitizedAlarm.id, expectedTrigger = triggerTime, newTrigger = previousTrigger)
-            return false
-        }
+            // Verify nextTriggerTime is still triggerTime before making OS AlarmManager call
+            val currentDbTrigger = repository.getById(sanitizedAlarm.id)?.nextTriggerTime
+            if (currentDbTrigger != null && currentDbTrigger != triggerTime) {
+                Log.i("AlarmScheduler", "Aborting OS registration for alarm ${sanitizedAlarm.id}: nextTriggerTime updated to $currentDbTrigger while operation for $triggerTime was in-flight")
+                repository.casUpdateNextTrigger(id = sanitizedAlarm.id, expectedTrigger = triggerTime, newTrigger = previousTrigger)
+                return@withLock false
+            }
 
-        val success = try {
-            scheduleAlarmClock(sanitizedAlarm.id, triggerTime)
-        } catch (e: Exception) {
-            Log.e("AlarmScheduler", "OS AlarmManager registration threw exception for alarm ${sanitizedAlarm.id}", e)
-            false
-        }
-        if (!success) {
-            repository.casUpdateNextTrigger(
-                id = sanitizedAlarm.id,
-                expectedTrigger = triggerTime,
-                newTrigger = previousTrigger
-            )
+            testOnPreOsRegistrationBarrier?.invoke(sanitizedAlarm.id, triggerTime)
+
+            val success = try {
+                scheduleAlarmClock(sanitizedAlarm.id, triggerTime)
+            } catch (e: Exception) {
+                Log.e("AlarmScheduler", "OS AlarmManager registration threw exception for alarm ${sanitizedAlarm.id}", e)
+                false
+            }
+            if (!success) {
+                repository.casUpdateNextTrigger(
+                    id = sanitizedAlarm.id,
+                    expectedTrigger = triggerTime,
+                    newTrigger = previousTrigger
+                )
+                requestWidgetUpdateIfNeeded(requestWidgetUpdate)
+                syncBedtimeDndRule()
+                return@withLock false
+            }
+            DirectBootAlarmCache.saveIfEarlier(context, sanitizedAlarm, triggerTime)
+            scheduleSupportingWork(sanitizedAlarm, triggerTime)
             requestWidgetUpdateIfNeeded(requestWidgetUpdate)
             syncBedtimeDndRule()
-            return false
+            true
         }
-        DirectBootAlarmCache.saveIfEarlier(context, sanitizedAlarm, triggerTime)
-        scheduleSupportingWork(sanitizedAlarm, triggerTime)
-        requestWidgetUpdateIfNeeded(requestWidgetUpdate)
-        syncBedtimeDndRule()
-        return true
     }
 
     /**
@@ -827,19 +840,22 @@ class AlarmScheduler @Inject constructor(
     }
 
     private fun cancelScheduledEntries(alarmId: Long, includeFollowUpWorkers: Boolean = false) {
-        val owner = if (routeAuthority.isOwnerRouteActive()) scheduleAuthorityOwnerProvider?.get() else null
-        if (owner != null) {
-            val actionKey = "act-cancel-$alarmId-${System.currentTimeMillis()}"
-            runBlocking {
-                owner.executeOperation(
-                    alarmId = alarmId,
-                    desiredOperation = "CANCEL",
-                    desiredTriggerMillis = null,
-                    actionKey = actionKey
-                )
+        val slotMutex = mainSlotMutexMap.computeIfAbsent(alarmId) { Mutex() }
+        runBlocking {
+            slotMutex.withLock {
+                val owner = if (routeAuthority.isOwnerRouteActive()) scheduleAuthorityOwnerProvider?.get() else null
+                if (owner != null) {
+                    val actionKey = "act-cancel-$alarmId-${System.currentTimeMillis()}"
+                    owner.executeOperation(
+                        alarmId = alarmId,
+                        desiredOperation = "CANCEL",
+                        desiredTriggerMillis = null,
+                        actionKey = actionKey
+                    )
+                } else {
+                    applyRawOsCancel(alarmId)
+                }
             }
-        } else {
-            applyRawOsCancel(alarmId)
         }
         DirectBootAlarmCache.removeIfMatches(context, alarmId)
 

@@ -375,6 +375,35 @@ class AlarmSchedulerTest {
         assertTrue("Proves OS slot/DB discrepancy occurs when thread A applies raw OS set after B", nextOsAlarm?.triggerAtTime != currentDbTrigger)
     }
 
+    @Test
+    fun `per-slot mainSlotMutexMap serializes concurrent scheduleAt operations for same alarmId`() = runTest {
+        val alarmId = 700L
+        val now = System.currentTimeMillis()
+        val triggerTimeA = now + 20000L
+        val triggerTimeB = now + 90000L
+        var currentAlarm = enabledAlarm(id = alarmId)
+
+        coEvery { repository.getById(any()) } answers { currentAlarm }
+        coEvery { repository.updateNextTrigger(any(), any()) } answers {
+            val newTrigger = secondArg<Long>()
+            currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
+        }
+        coEvery { repository.casUpdateNextTrigger(any(), any(), any()) } answers {
+            val expected = secondArg<Long>()
+            val newTrigger = thirdArg<Long>()
+            if (currentAlarm.nextTriggerTime == expected) {
+                currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
+                1
+            } else 0
+        }
+
+        val resultA = scheduler.scheduleAt(currentAlarm, triggerTimeA)
+        val resultB = scheduler.scheduleAt(currentAlarm, triggerTimeB)
+
+        assertTrue(resultA)
+        assertTrue(resultB)
+    }
+
     private fun enabledAlarm(id: Long): Alarm = Alarm(
         id = id,
         hour = 7,
