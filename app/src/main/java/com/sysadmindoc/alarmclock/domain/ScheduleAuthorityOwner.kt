@@ -294,13 +294,18 @@ class ScheduleAuthorityOwner @Inject constructor(
 
             // Ensure reconcileState is SETTLED in DB (retaining original scheduleRevision and actionKey 100% UNCHANGED!)
             if (latestAuth.reconcileState != "SETTLED") {
-                authorityDao.settleAuthority(
+                val settledCount = authorityDao.settleAuthority(
                     alarmId = alarmId,
                     instanceToken = latestAuth.instanceToken,
                     restoreEpoch = latestAuth.restoreEpoch,
                     claimedRevision = latestAuth.scheduleRevision,
                     expectedActionKey = latestAuth.actionKey
                 )
+                if (settledCount != 1) {
+                    val freshAuth = authorityDao.getAuthorityByAlarmId(alarmId)
+                    Log.w(TAG, "Boot OS replay settleAuthority returned 0 for alarm $alarmId; superseding")
+                    return@withLock OwnerResult.Superseded(freshAuth?.scheduleRevision ?: latestAuth.scheduleRevision)
+                }
             }
 
             OwnerResult.OsAccepted(latestAuth.scheduleRevision, latestAuth.actionKey)
@@ -362,13 +367,18 @@ class ScheduleAuthorityOwner @Inject constructor(
             }
 
             if (latestAuth.reconcileState != "SETTLED") {
-                authorityDao.settleAuthority(
+                val settledCount = authorityDao.settleAuthority(
                     alarmId = alarmId,
                     instanceToken = latestAuth.instanceToken,
                     restoreEpoch = latestAuth.restoreEpoch,
                     claimedRevision = latestAuth.scheduleRevision,
                     expectedActionKey = latestAuth.actionKey
                 )
+                if (settledCount != 1) {
+                    val freshAuth = authorityDao.getAuthorityByAlarmId(alarmId)
+                    Log.w(TAG, "Reconciler replay settleAuthority returned 0 for alarm $alarmId; superseding")
+                    return@withLock OwnerResult.Superseded(freshAuth?.scheduleRevision ?: latestAuth.scheduleRevision)
+                }
             }
 
             Log.i(TAG, "Reconciler replay settled authority for alarm $alarmId at rev ${authority.scheduleRevision}")

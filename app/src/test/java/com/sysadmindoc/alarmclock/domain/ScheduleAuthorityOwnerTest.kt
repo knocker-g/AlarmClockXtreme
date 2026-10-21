@@ -527,4 +527,34 @@ class ScheduleAuthorityOwnerTest {
         assertEquals("DB state MUST become SETTLED", "SETTLED", current?.reconcileState)
         assertEquals("Fake OS slot MUST contain SET_4000", listOf("SET_4000"), fakeOsSlot)
     }
+
+    @Test
+    fun `settleAuthority CAS failure during replay returns Superseded`() = runBlocking {
+        val reconcilingAuth = initialAuthority.copy(
+            desiredTriggerMillis = 5000L,
+            reconcileState = "RECONCILING",
+            actionKey = "act-reconcile-cas-fail"
+        )
+        authorityDao.insertAuthority(reconcilingAuth)
+
+        val casFailingOwner = ScheduleAuthorityOwner(
+            authorityDao = object : com.sysadmindoc.alarmclock.data.local.ScheduleAuthorityDao by authorityDao {
+                override suspend fun settleAuthority(
+                    alarmId: Long,
+                    instanceToken: String,
+                    restoreEpoch: Long,
+                    claimedRevision: Long,
+                    expectedActionKey: String?
+                ): Int {
+                    return 0 // Simulate settleAuthority CAS returning 0 due to concurrent DB update!
+                }
+            },
+            mainSlotApplier = { fakeOsSlot.add("SET_${it.desiredTriggerMillis}"); true },
+            exactPermissionChecker = { true }
+        )
+
+        val resReplay = casFailingOwner.replayPersistedOperation(42L)
+
+        assertTrue("settleAuthority returning 0 during replay MUST return Superseded", resReplay is OwnerResult.Superseded)
+    }
 }
