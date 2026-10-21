@@ -24,6 +24,7 @@ import io.mockk.mockkStatic
 import io.mockk.unmockkAll
 import io.mockk.verify
 import java.time.DayOfWeek
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -402,6 +403,57 @@ class AlarmSchedulerTest {
 
         assertTrue(resultA)
         assertTrue(resultB)
+    }
+
+    @Test
+    fun `Test A - concurrent coroutines A and B on same alarmId are serialized by mainSlotMutexMap`() = runTest {
+        val alarmId = 701L
+        val now = System.currentTimeMillis()
+        val triggerTimeA = now + 20000L
+        val triggerTimeB = now + 90000L
+        var currentAlarm = enabledAlarm(id = alarmId)
+
+        coEvery { repository.getById(any()) } answers { currentAlarm }
+        coEvery { repository.updateNextTrigger(any(), any()) } answers {
+            val newTrigger = secondArg<Long>()
+            currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
+        }
+
+        val barrierA = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val barrierEnteredA = kotlinx.coroutines.CompletableDeferred<Unit>()
+
+        scheduler.testOnPreOsRegistrationBarrier = { id, trigger ->
+            if (id == alarmId && trigger == triggerTimeA) {
+                barrierEnteredA.complete(Unit)
+                barrierA.await()
+            }
+        }
+
+        // Launch operation A in background
+        val jobA = launch {
+            scheduler.scheduleAt(currentAlarm, triggerTimeA)
+        }
+
+        barrierEnteredA.await() // Wait for A to enter barrier inside scheduleAt mutex lock!
+
+        // Launch operation B concurrently
+        var completedB = false
+        val jobB = launch {
+            scheduler.scheduleAt(currentAlarm, triggerTimeB)
+            completedB = true
+        }
+
+        // Assert B is BLOCKED because A holds mainSlotMutexMap[701L]!
+        assertFalse("Operation B MUST NOT complete while operation A holds mainSlotMutexMap lock", completedB)
+
+        // Unblock A
+        barrierA.complete(Unit)
+        jobA.join()
+        jobB.join()
+
+        assertTrue("Operation B completes after A unlocks mainSlotMutexMap", completedB)
+        val finalDbTrigger = repository.getById(alarmId)?.nextTriggerTime
+        assertEquals("Final DB trigger MUST match operation B (90000L)", triggerTimeB, finalDbTrigger)
     }
 
     private fun enabledAlarm(id: Long): Alarm = Alarm(
