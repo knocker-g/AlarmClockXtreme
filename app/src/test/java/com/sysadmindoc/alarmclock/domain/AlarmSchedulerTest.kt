@@ -12,6 +12,7 @@ import com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.data.repository.HolidayRepository
 import com.sysadmindoc.alarmclock.directboot.DirectBootAlarmCache
+import com.sysadmindoc.alarmclock.service.BedtimeZenRuleManager
 import com.sysadmindoc.alarmclock.widget.WidgetUpdater
 import io.mockk.Runs
 import io.mockk.coEvery
@@ -25,6 +26,7 @@ import io.mockk.unmockkAll
 import io.mockk.verify
 import java.time.DayOfWeek
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -66,6 +68,9 @@ class AlarmSchedulerTest {
 
         mockkObject(WidgetUpdater)
         every { WidgetUpdater.requestUpdate(any()) } just Runs
+
+        mockkObject(BedtimeZenRuleManager)
+        every { BedtimeZenRuleManager.syncRule(any(), any(), any()) } returns mockk(relaxed = true)
 
         coEvery { preferencesManager.getCurrentSettings() } returns AppSettings()
         every { preferencesManager.getCachedSettings() } returns AppSettings()
@@ -538,6 +543,146 @@ class AlarmSchedulerTest {
         )
 
         assertFalse("Stale operation A with expectedRevision 1L MUST be rejected", resultA)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `Part 4 Real Integration Test - origin-bound token with real Owner and real CAS rules rejects stale A when B becomes current`() = runTest {
+        val alarmId = 800L
+        val now = System.currentTimeMillis()
+        val triggerTimeA = now + 20000L
+        val triggerTimeB = now + 90000L
+
+        var currentAuth = com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority(
+            alarmId = alarmId,
+            instanceToken = "inst-$alarmId",
+            definitionRevision = 1L,
+            scheduleRevision = 1L,
+            lifecycle = "LIVE",
+            desiredOperation = "SET",
+            desiredTriggerMillis = triggerTimeA,
+            reconcileState = "SETTLED",
+            restoreEpoch = 100L,
+            actionKey = "act-init"
+        )
+
+        val mockDao = mockk<com.sysadmindoc.alarmclock.data.local.ScheduleAuthorityDao>(relaxed = true)
+        coEvery { mockDao.getAuthorityByAlarmId(alarmId) } answers { currentAuth }
+        coEvery { mockDao.casClaimAuthority(any(), any(), any(), any(), any(), any(), any(), any()) } answers {
+            val expRev = arg<Long>(3)
+            val newOp = arg<String>(5)
+            val newTrig = arg<Long?>(6)
+            val newKey = arg<String?>(7)
+            if (currentAuth.scheduleRevision == expRev) {
+                currentAuth = currentAuth.copy(
+                    scheduleRevision = expRev + 1L,
+                    desiredOperation = newOp,
+                    desiredTriggerMillis = newTrig,
+                    actionKey = newKey,
+                    reconcileState = "RECONCILING"
+                )
+                1
+            } else 0
+        }
+        coEvery { mockDao.settleAuthority(any(), any(), any(), any(), any()) } answers {
+            val claimedRev = arg<Long>(3)
+            if (currentAuth.scheduleRevision == claimedRev) {
+                currentAuth = currentAuth.copy(reconcileState = "SETTLED")
+                1
+            } else 0
+        }
+
+        var currentAlarm = enabledAlarm(id = alarmId).copy(nextTriggerTime = triggerTimeA)
+        coEvery { repository.getAuthorityByAlarmId(alarmId) } answers { currentAuth }
+        coEvery { repository.getById(alarmId) } answers { currentAlarm }
+        coEvery { repository.getNextAlarm() } answers { currentAlarm }
+        coEvery { repository.updateNextTrigger(any(), any()) } answers {
+            val newTrigger = secondArg<Long>()
+            currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
+        }
+        coEvery { repository.casUpdateNextTrigger(any(), any(), any()) } returns 1
+
+        val fakeOsSlot = mutableListOf<String>()
+        val realMainSlotApplier = MainSlotApplier { auth ->
+            fakeOsSlot.add("${auth.desiredOperation}_${auth.desiredTriggerMillis}")
+            true
+        }
+
+        val realOwner = ScheduleAuthorityOwner(
+            authorityDao = mockDao,
+            mainSlotApplier = realMainSlotApplier,
+            exactPermissionChecker = { true }
+        )
+
+        val ownerRouteAuthority = mockk<ProductionSchedulingRouteAuthority>()
+        every { ownerRouteAuthority.isOwnerRouteActive() } returns true
+
+        val schedulerWithOwner = AlarmScheduler(
+            context = context,
+            repository = repository,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            holidayRepository = holidayRepository,
+            alarmIncidentRepository = incidentRepository,
+            weatherRepository = weatherRepository,
+            scheduleAuthorityOwnerProvider = { realOwner },
+            routeAuthority = ownerRouteAuthority
+        )
+
+        // Step 1: Operation A captures origin-bound authority at revision 1L
+        val originAuthA = repository.getAuthorityByAlarmId(alarmId)
+        assertNotNull(originAuthA)
+        val capturedRevisionA = originAuthA!!.scheduleRevision
+        assertEquals(1L, capturedRevisionA)
+
+        // Pause operation A before Owner admission via test barrier
+        val barrierA = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val barrierEnteredA = kotlinx.coroutines.CompletableDeferred<Unit>()
+        schedulerWithOwner.testOnPreOsRegistrationBarrier = { id, trigger ->
+            if (id == alarmId && trigger == triggerTimeA) {
+                barrierEnteredA.complete(Unit)
+                barrierA.await()
+            }
+        }
+
+        // Launch operation A on background coroutine
+        var resultA: Boolean? = null
+        val jobA = launch {
+            resultA = schedulerWithOwner.scheduleAt(
+                enabledAlarm(id = alarmId),
+                triggerTimeA,
+                expectedRevision = capturedRevisionA
+            )
+        }
+
+        barrierEnteredA.await() // Wait for A to enter barrier
+
+        // Step 2: Operation B originates, captures origin-bound revision 1L, and executes SET(B) -> advances DB to 2L
+        val originAuthB = repository.getAuthorityByAlarmId(alarmId)
+        val capturedRevisionB = originAuthB!!.scheduleRevision
+        val resB = realOwner.executeOperation(
+            alarmId = alarmId,
+            desiredOperation = "SET",
+            desiredTriggerMillis = triggerTimeB,
+            actionKey = "act-B",
+            expectedRevision = capturedRevisionB
+        )
+        assertTrue("Operation B MUST succeed and advance scheduleRevision to 2L", resB is OwnerResult.OsAccepted)
+
+        // Unblock A
+        barrierA.complete(Unit)
+        advanceUntilIdle()
+        jobA.join()
+
+        // Step 3: Assert A is REJECTED
+        assertNotNull(resultA)
+        assertFalse("Stale operation A MUST be rejected when B became current", resultA!!)
+
+        // Step 4: Verify Room DB authority and fake OS slot remain B (90000L)
+        val finalAuth = repository.getAuthorityByAlarmId(alarmId)
+        assertEquals("Final DB scheduleRevision MUST remain 2L", 2L, finalAuth?.scheduleRevision)
+        assertEquals("Final DB trigger MUST remain B (90000L)", triggerTimeB, finalAuth?.desiredTriggerMillis)
+        assertEquals("Fake OS slot MUST contain SET_90000L", listOf("SET_$triggerTimeB"), fakeOsSlot)
     }
 
     @Test

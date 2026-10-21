@@ -84,13 +84,16 @@ class AlarmScheduler @Inject constructor(
         notBeforeMillis: Long = 0L
     ) {
         val sanitizedAlarm = alarm.sanitized()
+        val originAuthority = repository.getAuthorityByAlarmId(sanitizedAlarm.id)
+        val originRevision = originAuthority?.scheduleRevision
+
         if (!sanitizedAlarm.isEnabled) {
-            cancel(sanitizedAlarm.id)
+            cancelScheduledEntries(sanitizedAlarm.id, expectedRevision = originRevision)
             return
         }
 
         if (!canScheduleExactAlarms()) {
-            cancelScheduledEntries(sanitizedAlarm.id)
+            cancelScheduledEntries(sanitizedAlarm.id, expectedRevision = originRevision)
             repository.updateNextTrigger(sanitizedAlarm.id, 0)
             requestWidgetUpdateIfNeeded(requestWidgetUpdate)
             return
@@ -243,7 +246,9 @@ class AlarmScheduler @Inject constructor(
      * Cancel a scheduled alarm and any associated workers/services.
      */
     fun cancel(alarmId: Long) {
-        cancelScheduledEntries(alarmId, includeFollowUpWorkers = true)
+        val originAuthority = runBlocking { repository.getAuthorityByAlarmId(alarmId) }
+        val originRevision = originAuthority?.scheduleRevision
+        cancelScheduledEntries(alarmId, includeFollowUpWorkers = true, expectedRevision = originRevision)
         // The occurrence is over, so its snooze tally must not carry into the
         // next one. A leftover count at or past the cap would otherwise make a
         // fresh ring open with snooze already withdrawn.
@@ -684,7 +689,7 @@ class AlarmScheduler @Inject constructor(
         }
     }
 
-    private fun scheduleAlarmClock(
+    private suspend fun scheduleAlarmClock(
         alarmId: Long,
         triggerTime: Long,
         expectedRevision: Long? = null
@@ -702,15 +707,13 @@ class AlarmScheduler @Inject constructor(
         var freshOsRegistration = false
         val success = if (owner != null) {
             val actionKey = "act-sched-$alarmId-$triggerTime"
-            val ownerRes = runBlocking {
-                owner.executeOperation(
-                    alarmId = alarmId,
-                    desiredOperation = "SET",
-                    desiredTriggerMillis = triggerTime,
-                    actionKey = actionKey,
-                    expectedRevision = expectedRevision
-                )
-            }
+            val ownerRes = owner.executeOperation(
+                alarmId = alarmId,
+                desiredOperation = "SET",
+                desiredTriggerMillis = triggerTime,
+                actionKey = actionKey,
+                expectedRevision = expectedRevision
+            )
             if (ownerRes is OwnerResult.OsAccepted) {
                 freshOsRegistration = true
                 true
