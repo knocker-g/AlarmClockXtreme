@@ -75,7 +75,7 @@ internal fun BroadcastReceiver.recordAlarmIncidentsAsync(
             }
         } finally {
             pending?.finish()
-            testOnIncidentRecordedCompletion?.invoke(events)
+            runCatching { testOnIncidentRecordedCompletion?.invoke(events) }
         }
     }
 }

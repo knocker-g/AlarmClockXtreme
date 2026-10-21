@@ -138,7 +138,6 @@ class AlarmIncidentRepository @Inject constructor(
             prune()
             id
         }.onFailure { e ->
-            println("RECORD_ERROR: ${e.message}\n${e.stackTraceToString()}")
             android.util.Log.e("AlarmIncidentRepo", "Failed to insert incident event", e)
         }.getOrNull()
     }

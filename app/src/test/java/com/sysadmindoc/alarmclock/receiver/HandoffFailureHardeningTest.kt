@@ -73,7 +73,6 @@ class HandoffFailureHardeningTest {
 
         // Verify actual persisted row in real Room SQLite DB
         val incidents = runBlocking { incidentRepo.getRecent(50) }
-        println("ALL_INCIDENTS_SNOOZE: ${incidents.map { "${it.alarmId}:${it.fireId}:${it.source}:${it.status}:${it.reasonCode}" }}")
         val failureIncident = incidents.find { it.alarmId == 101L && it.reasonCode.startsWith("SNOOZE_SERVICE_START_FAILED") }
 
         assertNotNull("Persisted failure incident MUST be present in Room DB", failureIncident)
@@ -113,7 +112,6 @@ class HandoffFailureHardeningTest {
 
         // Verify actual persisted row in real Room SQLite DB
         val incidents = runBlocking { incidentRepo.getRecent(50) }
-        println("ALL_INCIDENTS_DISMISS: ${incidents.map { "${it.alarmId}:${it.fireId}:${it.source}:${it.status}:${it.reasonCode}" }}")
         val failureIncident = incidents.find { it.alarmId == 102L && it.reasonCode.startsWith("DISMISS_SERVICE_START_FAILED") }
 
         assertNotNull("Persisted failure incident MUST be present in Room DB", failureIncident)
