@@ -393,8 +393,8 @@ class AlarmScheduler @Inject constructor(
                 false
             }
             if (!success) {
-                if (expectedRevision != null) {
-                    val rowsUpdated = repository.casUpdateNextTriggerWithAuthority(
+                if (expectedRevision != null && expectedInstanceToken != null && expectedRestoreEpoch != null && expectedDefinitionRevision != null) {
+                    val rowsUpdated = repository.casUpdateNextTriggerWithStrictAuthority(
                         id = sanitizedAlarm.id,
                         expectedTrigger = triggerTime,
                         newTrigger = previousTrigger,
@@ -407,10 +407,10 @@ class AlarmScheduler @Inject constructor(
                         requestWidgetUpdateIfNeeded(requestWidgetUpdate)
                         try { syncBedtimeDndRule() } catch (e: Exception) { Log.w("AlarmScheduler", "Failed syncBedtimeDndRule for alarm ${sanitizedAlarm.id}", e) }
                     } else {
-                        Log.i("AlarmScheduler", "Atomic CAS rollback rejected expected rev $expectedRevision for alarm ${sanitizedAlarm.id}: authority fingerprint mismatch or successor B intervened")
+                        Log.i("AlarmScheduler", "Atomic CAS rollback rejected expected rev $expectedRevision for alarm ${sanitizedAlarm.id}: strict authority fingerprint mismatch or successor B intervened")
                     }
                 } else {
-                    Log.i("AlarmScheduler", "Missing expectedRevision for alarm ${sanitizedAlarm.id}; suppressing destructive compensation")
+                    Log.i("AlarmScheduler", "Incomplete authority fingerprint for alarm ${sanitizedAlarm.id}; suppressing destructive compensation")
                 }
                 return@withLock false
             }

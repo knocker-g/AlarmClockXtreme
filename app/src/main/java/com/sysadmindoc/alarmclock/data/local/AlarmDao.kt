@@ -67,19 +67,19 @@ interface AlarmDao {
               SELECT 1 FROM schedule_authority
               WHERE alarmId = :id
                 AND scheduleRevision = :expectedRevision
-                AND (:instanceToken IS NULL OR instanceToken = :instanceToken)
-                AND (:restoreEpoch IS NULL OR restoreEpoch = :restoreEpoch)
-                AND (:definitionRevision IS NULL OR definitionRevision = :definitionRevision)
+                AND instanceToken = :instanceToken
+                AND restoreEpoch = :restoreEpoch
+                AND definitionRevision = :definitionRevision
           )
     """)
-    suspend fun casUpdateNextTriggerWithAuthority(
+    suspend fun casUpdateNextTriggerWithStrictAuthority(
         id: Long,
         expectedTrigger: Long,
         newTrigger: Long,
         expectedRevision: Long,
-        instanceToken: String? = null,
-        restoreEpoch: Long? = null,
-        definitionRevision: Long? = null
+        instanceToken: String,
+        restoreEpoch: Long,
+        definitionRevision: Long
     ): Int
 
     @Query("SELECT COUNT(*) FROM alarms WHERE `group` = :groupName AND id != :excludedId")

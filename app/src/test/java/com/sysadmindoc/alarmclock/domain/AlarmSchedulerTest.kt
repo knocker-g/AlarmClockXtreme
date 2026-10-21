@@ -990,11 +990,10 @@ class AlarmSchedulerTest {
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     @Test
-    fun `Atomic Compensation Contract Test - casUpdateNextTriggerWithRevision rejects rollback when B intervenes`() = runTest {
-        val alarmId = 870L
+    fun `Strict Authority Fingerprint Test - casUpdateNextTriggerWithStrictAuthority verifies complete fingerprint`() = runTest {
+        val alarmId = 880L
         val now = System.currentTimeMillis()
         val triggerTimeA = now + 50000L
-        val triggerTimeB = now + 30000L
 
         // Initialize actual in-memory Room Database
         val roomDb = androidx.room.Room.inMemoryDatabaseBuilder(
@@ -1011,7 +1010,7 @@ class AlarmSchedulerTest {
             com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority(
                 alarmId = alarmId,
                 instanceToken = "inst-$alarmId",
-                definitionRevision = 1L,
+                definitionRevision = 10L,
                 scheduleRevision = 1L,
                 lifecycle = "LIVE",
                 desiredOperation = "SET",
@@ -1022,85 +1021,94 @@ class AlarmSchedulerTest {
             )
         )
 
-        // 1. Verify matching expectedRevision 1L succeeds in atomic CAS
-        val updatedRowsSuccess = alarmDao.casUpdateNextTriggerWithAuthority(
+        // 1. Full fingerprint matches: update 1
+        val resMatch = alarmDao.casUpdateNextTriggerWithStrictAuthority(
             id = alarmId,
             expectedTrigger = triggerTimeA,
             newTrigger = now + 10000L,
             expectedRevision = 1L,
             instanceToken = "inst-$alarmId",
-            restoreEpoch = 100L
+            restoreEpoch = 100L,
+            definitionRevision = 10L
         )
-        assertEquals(1, updatedRowsSuccess)
+        assertEquals(1, resMatch)
         assertEquals(now + 10000L, alarmDao.getById(alarmId)?.nextTriggerTime)
 
-        // Reset alarm trigger back to triggerTimeA
+        // Reset trigger back to triggerTimeA
         alarmDao.updateNextTrigger(alarmId, triggerTimeA)
 
-        // 2. B intervenes and increments scheduleRevision to 2L
-        val authB = authDao.getAuthorityByAlarmId(alarmId)!!
-        authDao.casClaimAuthority(
-            alarmId = alarmId,
-            instanceToken = authB.instanceToken,
-            restoreEpoch = authB.restoreEpoch,
+        // 2. Wrong scheduleRevision: update 0
+        val resWrongRev = alarmDao.casUpdateNextTriggerWithStrictAuthority(
+            id = alarmId,
+            expectedTrigger = triggerTimeA,
+            newTrigger = 0L,
+            expectedRevision = 99L, // Wrong scheduleRevision
+            instanceToken = "inst-$alarmId",
+            restoreEpoch = 100L,
+            definitionRevision = 10L
+        )
+        assertEquals(0, resWrongRev)
+
+        // 3. Wrong instanceToken: update 0
+        val resWrongToken = alarmDao.casUpdateNextTriggerWithStrictAuthority(
+            id = alarmId,
+            expectedTrigger = triggerTimeA,
+            newTrigger = 0L,
             expectedRevision = 1L,
-            expectedLifecycle = authB.lifecycle,
-            desiredOperation = "SET",
-            desiredTriggerMillis = triggerTimeB,
-            actionKey = "act-B"
+            instanceToken = "inst-$alarmId-WRONG",
+            restoreEpoch = 100L,
+            definitionRevision = 10L
         )
+        assertEquals(0, resWrongToken)
 
-        // Verify B advanced scheduleRevision to 2L in real SQLite
-        assertEquals(2L, authDao.getAuthorityByAlarmId(alarmId)?.scheduleRevision)
-
-        // 3. Stale operation A attempts casUpdateNextTriggerWithAuthority with expectedRevision = 1L
-        val updatedRowsStale = alarmDao.casUpdateNextTriggerWithAuthority(
+        // 4. Wrong restoreEpoch: update 0
+        val resWrongEpoch = alarmDao.casUpdateNextTriggerWithStrictAuthority(
             id = alarmId,
             expectedTrigger = triggerTimeA,
             newTrigger = 0L,
-            expectedRevision = 1L, // Stale expectedRevision!
+            expectedRevision = 1L,
             instanceToken = "inst-$alarmId",
-            restoreEpoch = 100L
+            restoreEpoch = 999L,
+            definitionRevision = 10L
         )
+        assertEquals(0, resWrongEpoch)
 
-        // MUST return 0 updated rows because scheduleRevision is 2L in SQLite!
-        assertEquals(0, updatedRowsStale)
-
-        // Verify alarm trigger remains triggerTimeA (unmodified by stale A)
-        assertEquals(triggerTimeA, alarmDao.getById(alarmId)?.nextTriggerTime)
-
-        // 4. Mismatched instanceToken (e.g., new incarnation inst-870-NEW) is REJECTED
-        val resMismatchedToken = alarmDao.casUpdateNextTriggerWithAuthority(
+        // 5. Wrong definitionRevision: update 0
+        val resWrongDefRev = alarmDao.casUpdateNextTriggerWithStrictAuthority(
             id = alarmId,
             expectedTrigger = triggerTimeA,
             newTrigger = 0L,
-            expectedRevision = 2L,
-            instanceToken = "inst-$alarmId-NEW",
-            restoreEpoch = 100L
-        )
-        assertEquals(0, resMismatchedToken)
-
-        // 5. Mismatched restoreEpoch (e.g., device restore epoch 200L) is REJECTED
-        val resMismatchedEpoch = alarmDao.casUpdateNextTriggerWithAuthority(
-            id = alarmId,
-            expectedTrigger = triggerTimeA,
-            newTrigger = 0L,
-            expectedRevision = 2L,
+            expectedRevision = 1L,
             instanceToken = "inst-$alarmId",
-            restoreEpoch = 200L
+            restoreEpoch = 100L,
+            definitionRevision = 999L
         )
-        assertEquals(0, resMismatchedEpoch)
+        assertEquals(0, resWrongDefRev)
 
-        // 6. Missing authority record for nonexistent alarm is REJECTED
-        val resMissingAuth = alarmDao.casUpdateNextTriggerWithAuthority(
+        // 6. Missing authority: update 0
+        val resMissingAuth = alarmDao.casUpdateNextTriggerWithStrictAuthority(
             id = 9999L,
             expectedTrigger = triggerTimeA,
             newTrigger = 0L,
             expectedRevision = 1L,
             instanceToken = "inst-9999",
-            restoreEpoch = 100L
+            restoreEpoch = 100L,
+            definitionRevision = 10L
         )
         assertEquals(0, resMissingAuth)
+
+        // 7. Identical trigger / new incarnation: stale update 0
+        authDao.quarantineAuthority(alarmId, "inst-$alarmId", 1L)
+        val resIdenticalTriggerNewIncarnation = alarmDao.casUpdateNextTriggerWithStrictAuthority(
+            id = alarmId,
+            expectedTrigger = triggerTimeA,
+            newTrigger = 0L,
+            expectedRevision = 1L,
+            instanceToken = "inst-$alarmId-OLD",
+            restoreEpoch = 100L,
+            definitionRevision = 10L
+        )
+        assertEquals(0, resIdenticalTriggerNewIncarnation)
 
         roomDb.close()
     }
