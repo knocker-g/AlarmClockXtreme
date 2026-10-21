@@ -988,6 +988,86 @@ class AlarmSchedulerTest {
         roomDb.close()
     }
 
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `Atomic Compensation Contract Test - casUpdateNextTriggerWithRevision rejects rollback when B intervenes`() = runTest {
+        val alarmId = 870L
+        val now = System.currentTimeMillis()
+        val triggerTimeA = now + 50000L
+        val triggerTimeB = now + 30000L
+
+        // Initialize actual in-memory Room Database
+        val roomDb = androidx.room.Room.inMemoryDatabaseBuilder(
+            context,
+            com.sysadmindoc.alarmclock.data.local.AlarmDatabase::class.java
+        ).allowMainThreadQueries().build()
+
+        val alarmDao = roomDb.alarmDao()
+        val authDao = roomDb.scheduleAuthorityDao()
+
+        // Insert alarm row and schedule_authority row into real Room SQLite DB
+        alarmDao.insert(enabledAlarm(id = alarmId).copy(nextTriggerTime = triggerTimeA))
+        authDao.insertAuthority(
+            com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority(
+                alarmId = alarmId,
+                instanceToken = "inst-$alarmId",
+                definitionRevision = 1L,
+                scheduleRevision = 1L,
+                lifecycle = "LIVE",
+                desiredOperation = "SET",
+                desiredTriggerMillis = triggerTimeA,
+                reconcileState = "SETTLED",
+                restoreEpoch = 100L,
+                actionKey = "act-init"
+            )
+        )
+
+        // 1. Verify matching expectedRevision 1L succeeds in atomic CAS
+        val updatedRowsSuccess = alarmDao.casUpdateNextTriggerWithRevision(
+            id = alarmId,
+            expectedTrigger = triggerTimeA,
+            newTrigger = now + 10000L,
+            expectedRevision = 1L
+        )
+        assertEquals(1, updatedRowsSuccess)
+        assertEquals(now + 10000L, alarmDao.getById(alarmId)?.nextTriggerTime)
+
+        // Reset alarm trigger back to triggerTimeA
+        alarmDao.updateNextTrigger(alarmId, triggerTimeA)
+
+        // 2. B intervenes and increments scheduleRevision to 2L
+        val authB = authDao.getAuthorityByAlarmId(alarmId)!!
+        authDao.casClaimAuthority(
+            alarmId = alarmId,
+            instanceToken = authB.instanceToken,
+            restoreEpoch = authB.restoreEpoch,
+            expectedRevision = 1L,
+            expectedLifecycle = authB.lifecycle,
+            desiredOperation = "SET",
+            desiredTriggerMillis = triggerTimeB,
+            actionKey = "act-B"
+        )
+
+        // Verify B advanced scheduleRevision to 2L in real SQLite
+        assertEquals(2L, authDao.getAuthorityByAlarmId(alarmId)?.scheduleRevision)
+
+        // 3. Stale operation A attempts casUpdateNextTriggerWithRevision with expectedRevision = 1L
+        val updatedRowsStale = alarmDao.casUpdateNextTriggerWithRevision(
+            id = alarmId,
+            expectedTrigger = triggerTimeA,
+            newTrigger = 0L,
+            expectedRevision = 1L // Stale expectedRevision!
+        )
+
+        // MUST return 0 updated rows because scheduleRevision is 2L in SQLite!
+        assertEquals(0, updatedRowsStale)
+
+        // Verify alarm trigger remains triggerTimeA (unmodified by stale A)
+        assertEquals(triggerTimeA, alarmDao.getById(alarmId)?.nextTriggerTime)
+
+        roomDb.close()
+    }
+
     @Test
     fun `Discriminator B - same target timestamp with different generation proves value-level equality limitation`() = runTest {
         val alarmId = 702L

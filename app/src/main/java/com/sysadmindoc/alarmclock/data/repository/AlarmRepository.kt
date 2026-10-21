@@ -81,6 +81,19 @@ class AlarmRepository @Inject constructor(
     suspend fun casUpdateNextTrigger(id: Long, expectedTrigger: Long, newTrigger: Long): Int =
         dao.casUpdateNextTrigger(id, expectedTrigger, newTrigger)
 
+    suspend fun casUpdateNextTriggerWithRevision(
+        id: Long,
+        expectedTrigger: Long,
+        newTrigger: Long,
+        expectedRevision: Long?
+    ): Int {
+        return if (expectedRevision != null) {
+            dao.casUpdateNextTriggerWithRevision(id, expectedTrigger, newTrigger, expectedRevision)
+        } else {
+            0
+        }
+    }
+
     suspend fun nextSortOrder(): Int = dao.maxSortOrder() + AlarmDao.SORT_ORDER_STEP
 
     suspend fun updateSortOrders(idsInOrder: List<Long>) =

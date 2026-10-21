@@ -384,18 +384,21 @@ class AlarmScheduler @Inject constructor(
                 false
             }
             if (!success) {
-                val currentAuth = repository.getAuthorityByAlarmId(sanitizedAlarm.id)
-                val isSuperseded = expectedRevision != null && currentAuth != null && currentAuth.scheduleRevision > expectedRevision
-                if (!isSuperseded) {
-                    repository.casUpdateNextTrigger(
+                if (expectedRevision != null) {
+                    val rowsUpdated = repository.casUpdateNextTriggerWithRevision(
                         id = sanitizedAlarm.id,
                         expectedTrigger = triggerTime,
-                        newTrigger = previousTrigger
+                        newTrigger = previousTrigger,
+                        expectedRevision = expectedRevision
                     )
-                    requestWidgetUpdateIfNeeded(requestWidgetUpdate)
-                    try { syncBedtimeDndRule() } catch (e: Exception) { Log.w("AlarmScheduler", "Failed syncBedtimeDndRule for alarm ${sanitizedAlarm.id}", e) }
+                    if (rowsUpdated > 0) {
+                        requestWidgetUpdateIfNeeded(requestWidgetUpdate)
+                        try { syncBedtimeDndRule() } catch (e: Exception) { Log.w("AlarmScheduler", "Failed syncBedtimeDndRule for alarm ${sanitizedAlarm.id}", e) }
+                    } else {
+                        Log.i("AlarmScheduler", "Atomic CAS rollback rejected expected rev $expectedRevision for alarm ${sanitizedAlarm.id}: successor B has intervened")
+                    }
                 } else {
-                    Log.i("AlarmScheduler", "Preserving successor authority rev ${currentAuth.scheduleRevision} > expected $expectedRevision for alarm ${sanitizedAlarm.id} after superseded operation for $triggerTime")
+                    Log.i("AlarmScheduler", "Missing expectedRevision for alarm ${sanitizedAlarm.id}; suppressing destructive compensation")
                 }
                 return@withLock false
             }
