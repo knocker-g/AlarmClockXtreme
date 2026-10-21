@@ -339,11 +339,21 @@ class AlarmScheduler @Inject constructor(
 
             if (targetGen != null) {
                 val currentDbTrigger = repository.getById(sanitizedAlarm.id)?.nextTriggerTime ?: 0L
-                if (currentDbTrigger > 0L) {
-                    val currentFireId = AlarmIncidentEvent.fireIdFor(sanitizedAlarm.id, currentDbTrigger)
-                    if (targetGen.fireId != currentFireId) {
-                        Log.i("AlarmScheduler", "Aborting stale scheduleAt for alarm ${sanitizedAlarm.id}: targetGen $targetGen does not match current generation fireId $currentFireId")
+                val activeSettings = preferencesManager.getCachedSettings()
+                val isActiveFiringSession = activeSettings.activeAlarmId == sanitizedAlarm.id &&
+                    (activeSettings.activeAlarmScheduledAt == targetGen.scheduledAt || targetGen.scheduledAt <= System.currentTimeMillis())
+
+                if (!isActiveFiringSession && currentDbTrigger > 0L) {
+                    if (currentDbTrigger > targetGen.scheduledAt) {
+                        Log.i("AlarmScheduler", "Aborting stale scheduleAt for alarm ${sanitizedAlarm.id}: targetGen $targetGen is older than current DB trigger $currentDbTrigger")
                         return@withLock false
+                    }
+                    if (currentDbTrigger == targetGen.scheduledAt) {
+                        val currentFireId = AlarmIncidentEvent.fireIdFor(sanitizedAlarm.id, currentDbTrigger)
+                        if (targetGen.fireId != currentFireId) {
+                            Log.i("AlarmScheduler", "Aborting stale scheduleAt for alarm ${sanitizedAlarm.id}: targetGen fireId ${targetGen.fireId} does not match current DB fireId $currentFireId")
+                            return@withLock false
+                        }
                     }
                 }
             }
@@ -377,9 +387,9 @@ class AlarmScheduler @Inject constructor(
                 return@withLock false
             }
             DirectBootAlarmCache.saveIfEarlier(context, sanitizedAlarm, triggerTime)
-            scheduleSupportingWork(sanitizedAlarm, triggerTime)
+            try { scheduleSupportingWork(sanitizedAlarm, triggerTime) } catch (_: Exception) {}
             requestWidgetUpdateIfNeeded(requestWidgetUpdate)
-            syncBedtimeDndRule()
+            try { syncBedtimeDndRule() } catch (_: Exception) {}
             true
         }
     }
@@ -866,12 +876,9 @@ class AlarmScheduler @Inject constructor(
             slotMutex.withLock {
                 if (targetGen != null) {
                     val currentAlarm = repository.getById(alarmId)
-                    if (currentAlarm != null && currentAlarm.nextTriggerTime > 0L) {
-                        val currentFireId = AlarmIncidentEvent.fireIdFor(alarmId, currentAlarm.nextTriggerTime)
-                        if (targetGen.fireId != currentFireId) {
-                            Log.i("AlarmScheduler", "Aborting stale cancelScheduledEntries for alarm $alarmId: targetGen $targetGen does not match current DB generation $currentFireId")
-                            return@withLock
-                        }
+                    if (currentAlarm != null && currentAlarm.nextTriggerTime > targetGen.scheduledAt) {
+                        Log.i("AlarmScheduler", "Aborting stale cancelScheduledEntries for alarm $alarmId: targetGen $targetGen is older than current DB trigger ${currentAlarm.nextTriggerTime}")
+                        return@withLock
                     }
                 }
                 val owner = if (routeAuthority.isOwnerRouteActive()) scheduleAuthorityOwnerProvider?.get() else null

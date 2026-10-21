@@ -50,6 +50,7 @@ class AlarmServiceSnoozeTest {
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
+        org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(true)
         alarmScheduler = mockk(relaxed = true)
         alarmRepository = mockk(relaxed = true)
         calculator = mockk(relaxed = true)
@@ -130,6 +131,55 @@ class AlarmServiceSnoozeTest {
 
         val success = alarmScheduler.scheduleSnoozeAt(testAlarm, System.currentTimeMillis() + 600_000L)
         assertTrue("Successful OS registration MUST return true", success)
+    }
+
+    @Test
+    fun `Priority 1 - valid Snooze request succeeds when DB nextTriggerTime has advanced past FIRING scheduledAt`() = runBlocking {
+        val alarmId = 42L
+        val firingScheduledAt = 1000L
+        val advancedDbNextTrigger = 86400000L // Tomorrow's trigger in DB!
+        val genA = AlarmGeneration(alarmId, firingScheduledAt, "fire-42-1000")
+        var currentAlarm = testAlarm.copy(nextTriggerTime = advancedDbNextTrigger)
+
+        coEvery { alarmRepository.getById(any()) } answers { currentAlarm }
+        coEvery { alarmRepository.getNextAlarm() } answers { currentAlarm }
+        coEvery { alarmRepository.updateNextTrigger(any(), any()) } answers {
+            val newTrigger = secondArg<Long>()
+            currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
+        }
+        coEvery { alarmRepository.casUpdateNextTrigger(any(), any(), any()) } answers {
+            val expected = secondArg<Long>()
+            val newTrigger = thirdArg<Long>()
+            if (currentAlarm.nextTriggerTime == expected) {
+                currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
+                1
+            } else 0
+        }
+
+        val appSettings = AppSettings(
+            activeAlarmId = alarmId,
+            activeAlarmScheduledAt = firingScheduledAt,
+            activeAlarmFireId = "fire-42-1000",
+            activeAlarmState = "FIRING"
+        )
+        coEvery { preferencesManager.getCachedSettings() } returns appSettings
+        coEvery { preferencesManager.getCurrentSettings() } returns appSettings
+
+        // Real AlarmScheduler instance using test context & repository
+        val realScheduler = AlarmScheduler(
+            context = context,
+            repository = alarmRepository,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            holidayRepository = mockk(relaxed = true),
+            alarmIncidentRepository = mockk(relaxed = true),
+            weatherRepository = mockk(relaxed = true)
+        )
+
+        val snoozeEndAt = System.currentTimeMillis() + 600_000L
+        val snoozeScheduled = realScheduler.scheduleSnoozeAt(currentAlarm, snoozeEndAt, targetGen = genA)
+
+        assertTrue("Valid Snooze for active FIRING generation MUST succeed even when DB nextTriggerTime has advanced to tomorrow", snoozeScheduled)
     }
 
     @Test
