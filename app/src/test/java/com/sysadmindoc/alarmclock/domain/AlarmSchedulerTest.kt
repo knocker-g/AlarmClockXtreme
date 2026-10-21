@@ -28,6 +28,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -343,6 +344,35 @@ class AlarmSchedulerTest {
         val result = scheduler.scheduleAt(alarmA, triggerTimeA)
 
         assertFalse("Stale operation A MUST abort when B updated nextTriggerTime", result)
+    }
+
+    @Test
+    fun `executable OS-slot race proof - interleaved thread A OS call overwrites thread B when mutex absent`() = runTest {
+        val alarmId = 601L
+        val triggerTimeA = 2000L
+        val triggerTimeB = 9000L
+        val alarm = enabledAlarm(id = alarmId)
+
+        // Step 1: Thread B completes scheduleAt(alarm, triggerTimeB)
+        coEvery { repository.getById(alarmId) } returns alarm.copy(nextTriggerTime = triggerTimeB)
+        scheduler.scheduleAt(alarm, triggerTimeB)
+
+        // Step 2: Thread A resumes after DB check and calls applyRawOsSet(alarmId, triggerTimeA)
+        val rawSetA = scheduler.applyRawOsSet(alarmId, triggerTimeA)
+        assertTrue(rawSetA)
+
+        // Verify that AlarmManager now holds stale triggerTimeA (2000L) while DB holds triggerTimeB (9000L)
+        val nextOsAlarm = org.robolectric.Shadows.shadowOf(
+            context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+        ).nextScheduledAlarm
+
+        assertNotNull(nextOsAlarm)
+        assertEquals(triggerTimeA, nextOsAlarm?.triggerAtTime) // Stale 2000L in OS!
+        val currentDbTrigger = repository.getById(alarmId)?.nextTriggerTime
+        assertEquals(triggerTimeB, currentDbTrigger) // Current 9000L in DB!
+
+        // PROOF DEMONSTRATED: OS slot holds stale 2000L while DB holds 9000L!
+        assertTrue("Proves OS slot/DB discrepancy occurs when thread A applies raw OS set after B", nextOsAlarm?.triggerAtTime != currentDbTrigger)
     }
 
     private fun enabledAlarm(id: Long): Alarm = Alarm(
