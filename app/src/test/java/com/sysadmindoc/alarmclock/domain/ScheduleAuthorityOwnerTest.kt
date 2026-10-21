@@ -489,4 +489,42 @@ class ScheduleAuthorityOwnerTest {
         val current = authorityDao.getAuthorityByAlarmId(42L)
         assertEquals("DB scheduleRevision MUST remain 1L", 1L, current?.scheduleRevision)
     }
+
+    @Test
+    fun `Phase 4 Test F - Stale replay cannot replace current B when DB holds SETTLED B`() = runBlocking {
+        authorityDao.insertAuthority(initialAuthority) // DB at revision 1L
+
+        // B executes operation SET(B) -> advances scheduleRevision to 2L
+        val resB = owner.executeOperation(
+            alarmId = 42L,
+            desiredOperation = "SET",
+            desiredTriggerMillis = 9000L,
+            actionKey = "act-B",
+            expectedRevision = 1L
+        )
+        assertTrue("Operation B must be accepted", resB is OwnerResult.OsAccepted)
+
+        // Stale replay of A arrives for a SETTLED authority row that holds B
+        val resReplay = owner.replayPersistedOperation(42L)
+
+        assertEquals("Replay of SETTLED authority MUST return DuplicateIgnored without overwriting OS slot", OwnerResult.DuplicateIgnored, resReplay)
+        assertEquals("Fake OS slot MUST remain B (SET_9000)", listOf("SET_9000"), fakeOsSlot)
+    }
+
+    @Test
+    fun `Phase 4 Test G - Authorized recovery replay succeeds for pending RECONCILING authority`() = runBlocking {
+        val reconcilingAuthority = initialAuthority.copy(
+            desiredTriggerMillis = 4000L,
+            reconcileState = "RECONCILING",
+            actionKey = "act-reconcile-recovery"
+        )
+        authorityDao.insertAuthority(reconcilingAuthority)
+
+        val resReplay = owner.replayPersistedOperation(42L)
+
+        assertTrue("Authorized recovery replay MUST return OsAccepted", resReplay is OwnerResult.OsAccepted)
+        val current = authorityDao.getAuthorityByAlarmId(42L)
+        assertEquals("DB state MUST become SETTLED", "SETTLED", current?.reconcileState)
+        assertEquals("Fake OS slot MUST contain SET_4000", listOf("SET_4000"), fakeOsSlot)
+    }
 }

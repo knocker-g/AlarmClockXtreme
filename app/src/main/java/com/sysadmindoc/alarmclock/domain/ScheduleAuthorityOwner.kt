@@ -86,8 +86,7 @@ class ScheduleAuthorityOwner @Inject constructor(
         desiredOperation: String,
         desiredTriggerMillis: Long?,
         actionKey: String?,
-        expectedRevision: Long? = null,
-        bypassRevisionCheck: Boolean = false
+        expectedRevision: Long? = null
     ): OwnerResult {
         return mutexFor(alarmId).withLock {
             val initialAuth = authorityDao.getAuthorityByAlarmId(alarmId)
@@ -119,11 +118,9 @@ class ScheduleAuthorityOwner @Inject constructor(
                 // If RECONCILING, proceed to re-apply OS action for current authority
             } else {
                 // Fail-Closed Caller-Qualified Stale Admission Gate for new actions:
-                if (!bypassRevisionCheck) {
-                    if (expectedRevision == null || initialAuth.scheduleRevision != expectedRevision) {
-                        Log.w(TAG, "Caller expectedRevision $expectedRevision does not match current DB revision ${initialAuth.scheduleRevision} for alarm $alarmId; superseding")
-                        return@withLock OwnerResult.Superseded(initialAuth.scheduleRevision)
-                    }
+                if (expectedRevision == null || initialAuth.scheduleRevision != expectedRevision) {
+                    Log.w(TAG, "Caller expectedRevision $expectedRevision does not match current DB revision ${initialAuth.scheduleRevision} for alarm $alarmId; superseding")
+                    return@withLock OwnerResult.Superseded(initialAuth.scheduleRevision)
                 }
                 // Check exact alarm permission for SET operations BEFORE claim
                 if (desiredOperation == "SET" && !exactPermissionChecker()) {
@@ -307,6 +304,75 @@ class ScheduleAuthorityOwner @Inject constructor(
             }
 
             OwnerResult.OsAccepted(latestAuth.scheduleRevision, latestAuth.actionKey)
+        }
+    }
+
+    /**
+     * Dedicated reconciliation replay contract for currently pending 'RECONCILING' authorities.
+     * Re-applies OS slot operation using current ScheduleAuthority state WITHOUT creating new operation.
+     */
+    suspend fun replayPersistedOperation(alarmId: Long): OwnerResult {
+        return mutexFor(alarmId).withLock {
+            val authority = authorityDao.getAuthorityByAlarmId(alarmId)
+                ?: return@withLock OwnerResult.AuthorityNotFound
+
+            if (authority.reconcileState == "QUARANTINE") {
+                Log.w(TAG, "Reconciler replay skipped for alarm $alarmId: authority is QUARANTINED")
+                return@withLock OwnerResult.Superseded(authority.scheduleRevision)
+            }
+
+            if (authority.reconcileState != "RECONCILING") {
+                Log.i(TAG, "Reconciler replay skipped for alarm $alarmId: state is ${authority.reconcileState}")
+                return@withLock OwnerResult.DuplicateIgnored
+            }
+
+            if (authority.desiredOperation !in SUPPORTED_OPERATIONS) {
+                Log.e(TAG, "Unsupported desiredOperation '${authority.desiredOperation}' for reconciler replay on alarm $alarmId")
+                return@withLock OwnerResult.OutcomeUnknown(
+                    authority.scheduleRevision,
+                    IllegalArgumentException("Unsupported desiredOperation: '${authority.desiredOperation}'")
+                )
+            }
+
+            if (authority.desiredOperation == "SET" && !exactPermissionChecker()) {
+                Log.w(TAG, "Exact alarm capability unavailable for alarm $alarmId at rev ${authority.scheduleRevision}")
+                return@withLock OwnerResult.PermissionBlocked(authority.scheduleRevision)
+            }
+
+            val osSuccess = try {
+                mainSlotApplier.applySlotOperation(authority)
+            } catch (e: CancellationException) {
+                Log.w(TAG, "OS operation cancelled for alarm $alarmId at rev ${authority.scheduleRevision}")
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "OS mainSlotApplier threw exception for alarm $alarmId at rev ${authority.scheduleRevision}", e)
+                return@withLock OwnerResult.OutcomeUnknown(authority.scheduleRevision, e)
+            }
+
+            if (!osSuccess) {
+                Log.w(TAG, "Reconciler replay OS apply failed for alarm $alarmId at rev ${authority.scheduleRevision}")
+                return@withLock OwnerResult.OutcomeUnknown(authority.scheduleRevision, IllegalStateException("Reconciler replay OS mainSlotApplier returned false"))
+            }
+
+            val latestAuth = authorityDao.getAuthorityByAlarmId(alarmId)
+            if (latestAuth == null || latestAuth.scheduleRevision != authority.scheduleRevision ||
+                latestAuth.instanceToken != authority.instanceToken || latestAuth.restoreEpoch != authority.restoreEpoch) {
+                Log.w(TAG, "Reconciler replay detected changed revision/incarnation for alarm $alarmId; superseding")
+                return@withLock OwnerResult.Superseded(latestAuth?.scheduleRevision ?: authority.scheduleRevision)
+            }
+
+            if (latestAuth.reconcileState != "SETTLED") {
+                authorityDao.settleAuthority(
+                    alarmId = alarmId,
+                    instanceToken = latestAuth.instanceToken,
+                    restoreEpoch = latestAuth.restoreEpoch,
+                    claimedRevision = latestAuth.scheduleRevision,
+                    expectedActionKey = latestAuth.actionKey
+                )
+            }
+
+            Log.i(TAG, "Reconciler replay settled authority for alarm $alarmId at rev ${authority.scheduleRevision}")
+            OwnerResult.OsAccepted(authority.scheduleRevision, authority.actionKey)
         }
     }
 }

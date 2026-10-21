@@ -42,14 +42,7 @@ class ScheduleAuthorityReconciler @Inject constructor(
             if (currentAuth.reconcileState != "RECONCILING") continue
 
             Log.i(TAG, "Reconciling pending authority for alarm ${currentAuth.alarmId} at rev ${currentAuth.scheduleRevision}")
-            val result = owner.executeOperation(
-                alarmId = currentAuth.alarmId,
-                desiredOperation = currentAuth.desiredOperation,
-                desiredTriggerMillis = currentAuth.desiredTriggerMillis,
-                actionKey = currentAuth.actionKey,
-                expectedRevision = currentAuth.scheduleRevision,
-                bypassRevisionCheck = true
-            )
+            val result = owner.replayPersistedOperation(currentAuth.alarmId)
 
             if (result is OwnerResult.OsAccepted || result is OwnerResult.DuplicateIgnored) {
                 reconciledCount++
