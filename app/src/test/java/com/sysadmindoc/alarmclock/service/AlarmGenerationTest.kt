@@ -3250,14 +3250,22 @@ class AlarmGenerationTest {
     fun coldStartSnoozedStateRestoresCleanlyWithoutReTriggering(): Unit = runBlocking {
         val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
 
-        // 1. Persist active alarm genA (433L) in SNOOZED state to DataStore
+        // 1. Persist active alarm genA (433L) in FIRING state then transition to SNOOZED state in DataStore
         val pmSetup = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
         val genA = AlarmGeneration(433L, 1000L, "fire-433-snoozed-restoration")
-        val snapshotA = AlarmService.Companion.ActiveAlarmSnapshot(
+        val firingSnapshotA = AlarmService.Companion.ActiveAlarmSnapshot(
             alarmId = genA.alarmId,
             scheduledAt = genA.scheduledAt,
             fireId = genA.fireId,
             firedAt = 1000L,
+            state = "FIRING",
+            refireAt = 0L
+        )
+        val ackFiring = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        assertTrue(pmSetup.enqueueActiveAlarmUpdate(firingSnapshotA, genA, ackFiring))
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackFiring.await())
+
+        val snapshotA = firingSnapshotA.copy(
             state = "SNOOZED",
             refireAt = System.currentTimeMillis() + 600_000L
         )
@@ -3450,14 +3458,22 @@ class AlarmGenerationTest {
     fun coldStartRedundantSnoozeIsRejectedWhenAlreadySnoozed(): Unit = runBlocking {
         val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
 
-        // 1. Persist active alarm genA (440L) in SNOOZED state with snoozeCount = 1
+        // 1. Persist active alarm genA (440L) in FIRING state then transition to SNOOZED state with snoozeCount = 1
         val pmSetup = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
         val genA = AlarmGeneration(440L, 1000L, "fire-440-already-snoozed")
-        val snapshotA = AlarmService.Companion.ActiveAlarmSnapshot(
+        val firingSnapshotA = AlarmService.Companion.ActiveAlarmSnapshot(
             alarmId = genA.alarmId,
             scheduledAt = genA.scheduledAt,
             fireId = genA.fireId,
             firedAt = 1000L,
+            state = "FIRING",
+            refireAt = 0L
+        )
+        val ackFiring = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        assertTrue(pmSetup.enqueueActiveAlarmUpdate(firingSnapshotA, genA, ackFiring))
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackFiring.await())
+
+        val snapshotA = firingSnapshotA.copy(
             state = "SNOOZED",
             refireAt = System.currentTimeMillis() + 600_000L
         )

@@ -311,6 +311,30 @@ class AlarmServiceSnoozeTest {
     }
 
     @Test
+    fun `DataStore ActiveAlarmWriterPolicy - SNOOZED update rejected when stored active session is absent`() {
+        val targetGenA = AlarmGeneration(42L, 1000L, "fire-42")
+        val snapshotA = ActiveAlarmSnapshot(
+            alarmId = 42L,
+            scheduledAt = 1000L,
+            fireId = "fire-42",
+            firedAt = 1000L,
+            state = "SNOOZED",
+            refireAt = 1600L
+        )
+
+        // Stored session is ABSENT (storedId = null or 0L)
+        val allowedNull = PreferencesManager.ActiveAlarmWriterPolicy.shouldExecuteUpdate(
+            storedId = null,
+            storedScheduledAt = 0L,
+            storedFireId = "",
+            requestSnapshot = snapshotA,
+            targetGen = targetGenA
+        )
+
+        assertFalse("SNOOZED update MUST be rejected when stored active session is absent", allowedNull)
+    }
+
+    @Test
     fun `DataStore ActiveAlarmWriterPolicy - new START B FIRING state replaces A`() {
         val snapshotB = ActiveAlarmSnapshot(
             alarmId = 99L,

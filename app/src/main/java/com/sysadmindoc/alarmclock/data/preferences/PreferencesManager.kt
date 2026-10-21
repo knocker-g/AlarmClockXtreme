@@ -509,17 +509,22 @@ class PreferencesManager @Inject constructor(
                     }
                 }
             } else if (requestSnapshot.state == "SNOOZED") {
-                // Generation-Qualified Session Transition: SNOOZED update MUST specify targetGen
+                // Generation-Qualified Session Transition: SNOOZED update MUST specify explicit targetGen
                 val target = targetGen ?: return false
-                val snapshotGen = AlarmGeneration(requestSnapshot.alarmId, requestSnapshot.scheduledAt, requestSnapshot.fireId)
+                val snapshotGen = AlarmGeneration(
+                    requestSnapshot.alarmId,
+                    requestSnapshot.scheduledAt,
+                    requestSnapshot.fireId
+                )
                 if (!snapshotGen.matches(target)) {
                     return false // Request snapshot does NOT match targetGen -> REJECT!
                 }
-                if (storedId != null && storedId > 0L) {
-                    val storedGen = AlarmGeneration(storedId, storedScheduledAt, storedFireId)
-                    if (!storedGen.matches(target)) {
-                        return false // DataStore holds a DIFFERENT active generation -> REJECT SNOOZED update!
-                    }
+                if (storedId == null || storedId <= 0L) {
+                    return false // Stored active session is ABSENT -> REJECT SNOOZED creation without prior session!
+                }
+                val storedGen = AlarmGeneration(storedId, storedScheduledAt, storedFireId)
+                if (!storedGen.matches(target)) {
+                    return false // DataStore holds a DIFFERENT active generation -> REJECT SNOOZED update!
                 }
             }
             return true
