@@ -87,7 +87,7 @@ class AlarmServiceSnoozeTest {
     @Test
     fun `B - when scheduleSnoozeAt returns false registration failure is indicated`() = runBlocking {
         coEvery { alarmScheduler.canScheduleExactAlarms() } returns true
-        coEvery { alarmScheduler.scheduleSnoozeAt(any(), any()) } returns false
+        coEvery { alarmScheduler.scheduleSnoozeAt(any(), any(), any()) } returns false
 
         val success = alarmScheduler.scheduleSnoozeAt(testAlarm, System.currentTimeMillis() + 600_000L)
         assertFalse("Registration MUST return false on OS registration failure", success)
@@ -96,7 +96,7 @@ class AlarmServiceSnoozeTest {
     @Test
     fun `C - when scheduleSnoozeAt throws SecurityException failure is caught cleanly`() = runBlocking {
         coEvery { alarmScheduler.canScheduleExactAlarms() } returns true
-        coEvery { alarmScheduler.scheduleSnoozeAt(any(), any()) } throws SecurityException("Exact alarm permission revoked")
+        coEvery { alarmScheduler.scheduleSnoozeAt(any(), any(), any()) } throws SecurityException("Exact alarm permission revoked")
 
         var exceptionCaught = false
         try {
@@ -111,7 +111,7 @@ class AlarmServiceSnoozeTest {
     @Test
     fun `D - when scheduleSnoozeAt throws IllegalStateException no false success is returned`() = runBlocking {
         coEvery { alarmScheduler.canScheduleExactAlarms() } returns true
-        coEvery { alarmScheduler.scheduleSnoozeAt(any(), any()) } throws IllegalStateException("OS AlarmManager internal failure")
+        coEvery { alarmScheduler.scheduleSnoozeAt(any(), any(), any()) } throws IllegalStateException("OS AlarmManager internal failure")
 
         var exceptionCaught = false
         try {
@@ -126,7 +126,7 @@ class AlarmServiceSnoozeTest {
     @Test
     fun `E - successful OS registration returns true`() = runBlocking {
         coEvery { alarmScheduler.canScheduleExactAlarms() } returns true
-        coEvery { alarmScheduler.scheduleSnoozeAt(any(), any()) } returns true
+        coEvery { alarmScheduler.scheduleSnoozeAt(any(), any(), any()) } returns true
 
         val success = alarmScheduler.scheduleSnoozeAt(testAlarm, System.currentTimeMillis() + 600_000L)
         assertTrue("Successful OS registration MUST return true", success)
@@ -170,7 +170,7 @@ class AlarmServiceSnoozeTest {
         // Inject mock scheduler that fails snooze registration
         val mockScheduler = mockk<AlarmScheduler>(relaxed = true)
         coEvery { mockScheduler.canScheduleExactAlarms() } returns true
-        coEvery { mockScheduler.scheduleSnoozeAt(any(), any()) } returns false
+        coEvery { mockScheduler.scheduleSnoozeAt(any(), any(), any()) } returns false
         service.alarmScheduler = mockScheduler
 
         val snoozeIntent = Intent(context, AlarmService::class.java).apply {
@@ -210,7 +210,7 @@ class AlarmServiceSnoozeTest {
         // Inject mock scheduler that throws SecurityException on snooze
         val mockScheduler = mockk<AlarmScheduler>(relaxed = true)
         coEvery { mockScheduler.canScheduleExactAlarms() } returns true
-        coEvery { mockScheduler.scheduleSnoozeAt(any(), any()) } throws SecurityException("Exact alarm permission revoked")
+        coEvery { mockScheduler.scheduleSnoozeAt(any(), any(), any()) } throws SecurityException("Exact alarm permission revoked")
         service.alarmScheduler = mockScheduler
 
         val snoozeIntent = Intent(context, AlarmService::class.java).apply {
@@ -247,7 +247,7 @@ class AlarmServiceSnoozeTest {
 
         val mockScheduler = mockk<AlarmScheduler>(relaxed = true)
         coEvery { mockScheduler.canScheduleExactAlarms() } returns true
-        coEvery { mockScheduler.scheduleSnoozeAt(any(), any()) } returns false
+        coEvery { mockScheduler.scheduleSnoozeAt(any(), any(), any()) } returns false
         service.alarmScheduler = mockScheduler
 
         val snoozeIntent = Intent(context, AlarmService::class.java).apply {
@@ -260,7 +260,7 @@ class AlarmServiceSnoozeTest {
         service.onStartCommand(snoozeIntent, 0, 2)
         snoozeLatch.await() // Wait for async snooze processing completion!
 
-        coVerify(exactly = 1) { mockScheduler.scheduleSnoozeAt(any(), any()) }
+        coVerify(exactly = 1) { mockScheduler.scheduleSnoozeAt(any(), any(), any()) }
         assertEquals(0, service.currentSnoozeCount)
     }
 

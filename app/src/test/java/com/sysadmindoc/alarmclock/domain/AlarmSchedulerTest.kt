@@ -472,6 +472,38 @@ class AlarmSchedulerTest {
     }
 
     @Test
+    fun `Phase 1 Test A - stale generation A scheduleAt with targetGen is rejected when B is active`() = runTest {
+        val alarmId = 705L
+        val triggerTimeA = System.currentTimeMillis() + 20000L
+        val triggerTimeB = System.currentTimeMillis() + 90000L
+        val genA = com.sysadmindoc.alarmclock.service.AlarmGeneration(alarmId, triggerTimeA, "fire-705-A")
+        val alarmB = enabledAlarm(id = alarmId).copy(nextTriggerTime = triggerTimeB)
+
+        // DB currently holds generation B (90000L)
+        coEvery { repository.getById(alarmId) } returns alarmB
+
+        // Stale A attempts scheduleAt with targetGen = genA
+        val resultA = scheduler.scheduleAt(enabledAlarm(id = alarmId), triggerTimeA, targetGen = genA)
+
+        assertFalse("Stale operation A scheduleAt MUST be rejected when DB holds generation B", resultA)
+    }
+
+    @Test
+    fun `Phase 1 Test C - same target timestamp with different fireId generation tokens is rejected`() = runTest {
+        val alarmId = 707L
+        val sameTarget = System.currentTimeMillis() + 60000L
+        val genA = com.sysadmindoc.alarmclock.service.AlarmGeneration(alarmId, sameTarget, "fire-707-GEN-A")
+
+        val alarmB = enabledAlarm(id = alarmId).copy(nextTriggerTime = sameTarget)
+        coEvery { repository.getById(alarmId) } returns alarmB
+
+        // Stale A attempts scheduleAt with targetGen = genA while DB holds genB's fireId
+        val resultA = scheduler.scheduleAt(enabledAlarm(id = alarmId), sameTarget, targetGen = genA)
+
+        assertFalse("Stale A with different fireId token MUST be rejected even if triggerTime matches", resultA)
+    }
+
+    @Test
     fun `Discriminator B - same target timestamp with different generation proves value-level equality limitation`() = runTest {
         val alarmId = 702L
         val sameTarget = System.currentTimeMillis() + 60000L

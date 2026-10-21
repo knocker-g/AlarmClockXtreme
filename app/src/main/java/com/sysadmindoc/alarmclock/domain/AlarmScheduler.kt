@@ -279,7 +279,11 @@ class AlarmScheduler @Inject constructor(
      * reboot reschedules the same occurrence instead of reverting to the
      * alarm's normal repeat calculation.
      */
-    suspend fun scheduleSnoozeAt(alarm: Alarm, snoozeAtMillis: Long): Boolean {
+    internal suspend fun scheduleSnoozeAt(
+        alarm: Alarm,
+        snoozeAtMillis: Long,
+        targetGen: com.sysadmindoc.alarmclock.service.AlarmGeneration? = null
+    ): Boolean {
         if (snoozeAtMillis <= System.currentTimeMillis()) {
             val sanitizedAlarm = alarm.sanitized()
             val fireId = AlarmIncidentEvent.fireIdFor(sanitizedAlarm.id, snoozeAtMillis)
@@ -304,17 +308,18 @@ class AlarmScheduler @Inject constructor(
             )
             return false
         }
-        return scheduleAt(alarm, snoozeAtMillis)
+        return scheduleAt(alarm, snoozeAtMillis, targetGen = targetGen)
     }
 
     /**
      * Register a precomputed trigger time without recalculating it.
      * Useful for snooze, skip-next, quick alarms, and restored exact alarms.
      */
-    suspend fun scheduleAt(
+    internal suspend fun scheduleAt(
         alarm: Alarm,
         triggerTime: Long,
-        requestWidgetUpdate: Boolean = true
+        requestWidgetUpdate: Boolean = true,
+        targetGen: com.sysadmindoc.alarmclock.service.AlarmGeneration? = null
     ): Boolean {
         val sanitizedAlarm = alarm.sanitized()
         if (!canScheduleExactAlarms()) {
@@ -331,6 +336,18 @@ class AlarmScheduler @Inject constructor(
         val slotMutex = mainSlotMutexMap.computeIfAbsent(sanitizedAlarm.id) { Mutex() }
         return slotMutex.withLock {
             val previousTrigger = repository.getById(sanitizedAlarm.id)?.nextTriggerTime ?: 0L
+
+            if (targetGen != null) {
+                val currentDbTrigger = repository.getById(sanitizedAlarm.id)?.nextTriggerTime ?: 0L
+                if (currentDbTrigger > 0L) {
+                    val currentFireId = AlarmIncidentEvent.fireIdFor(sanitizedAlarm.id, currentDbTrigger)
+                    if (targetGen.fireId != currentFireId) {
+                        Log.i("AlarmScheduler", "Aborting stale scheduleAt for alarm ${sanitizedAlarm.id}: targetGen $targetGen does not match current generation fireId $currentFireId")
+                        return@withLock false
+                    }
+                }
+            }
+
             repository.updateNextTrigger(sanitizedAlarm.id, triggerTime)
 
             // Verify nextTriggerTime is still triggerTime before making OS AlarmManager call
@@ -839,10 +856,24 @@ class AlarmScheduler @Inject constructor(
         )
     }
 
-    private fun cancelScheduledEntries(alarmId: Long, includeFollowUpWorkers: Boolean = false) {
+    private fun cancelScheduledEntries(
+        alarmId: Long,
+        includeFollowUpWorkers: Boolean = false,
+        targetGen: com.sysadmindoc.alarmclock.service.AlarmGeneration? = null
+    ) {
         val slotMutex = mainSlotMutexMap.computeIfAbsent(alarmId) { Mutex() }
         runBlocking {
             slotMutex.withLock {
+                if (targetGen != null) {
+                    val currentAlarm = repository.getById(alarmId)
+                    if (currentAlarm != null && currentAlarm.nextTriggerTime > 0L) {
+                        val currentFireId = AlarmIncidentEvent.fireIdFor(alarmId, currentAlarm.nextTriggerTime)
+                        if (targetGen.fireId != currentFireId) {
+                            Log.i("AlarmScheduler", "Aborting stale cancelScheduledEntries for alarm $alarmId: targetGen $targetGen does not match current DB generation $currentFireId")
+                            return@withLock
+                        }
+                    }
+                }
                 val owner = if (routeAuthority.isOwnerRouteActive()) scheduleAuthorityOwnerProvider?.get() else null
                 if (owner != null) {
                     val actionKey = "act-cancel-$alarmId-${System.currentTimeMillis()}"

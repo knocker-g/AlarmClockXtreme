@@ -2663,7 +2663,7 @@ class AlarmService : Service() {
 
         // Attempt exact OS registration
         val snoozeScheduled = try {
-            alarmScheduler.scheduleSnoozeAt(alarm, snoozeEndAt)
+            alarmScheduler.scheduleSnoozeAt(alarm, snoozeEndAt, targetGen = acceptedGen)
         } catch (e: Exception) {
             Log.e(TAG, "OS AlarmManager registration threw exception for $acceptedGen", e)
             false
