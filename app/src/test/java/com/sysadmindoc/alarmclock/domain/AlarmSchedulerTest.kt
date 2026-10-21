@@ -859,6 +859,135 @@ class AlarmSchedulerTest {
         roomDb.close()
     }
 
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `Part 3 Real Database Test - B earlier than A - stale A cleanup preserves B earlier trigger when B is successor revision`() = runTest {
+        val alarmId = 860L
+        val now = System.currentTimeMillis()
+        val triggerTimeA = now + 90000L // A is LATER (90s)
+        val triggerTimeB = now + 20000L // B is EARLIER (20s)
+
+        // Initialize actual in-memory Room Database and ScheduleAuthorityDao
+        val roomDb = androidx.room.Room.inMemoryDatabaseBuilder(
+            context,
+            com.sysadmindoc.alarmclock.data.local.AlarmDatabase::class.java
+        ).allowMainThreadQueries().build()
+
+        val realDao = roomDb.scheduleAuthorityDao()
+
+        // Insert initial ScheduleAuthority row into actual Room SQLite table
+        realDao.insertAuthority(
+            com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority(
+                alarmId = alarmId,
+                instanceToken = "inst-$alarmId",
+                definitionRevision = 1L,
+                scheduleRevision = 1L,
+                lifecycle = "LIVE",
+                desiredOperation = "SET",
+                desiredTriggerMillis = triggerTimeA,
+                reconcileState = "SETTLED",
+                restoreEpoch = 100L,
+                actionKey = "act-init"
+            )
+        )
+
+        val fakeOsSlot = mutableListOf<String>()
+        val realMainSlotApplier = MainSlotApplier { auth ->
+            fakeOsSlot.add("${auth.desiredOperation}_${auth.desiredTriggerMillis}")
+            true
+        }
+
+        val realOwner = ScheduleAuthorityOwner(
+            authorityDao = realDao,
+            mainSlotApplier = realMainSlotApplier,
+            exactPermissionChecker = { true }
+        )
+
+        val ownerRouteAuthority = mockk<ProductionSchedulingRouteAuthority>()
+        every { ownerRouteAuthority.isOwnerRouteActive() } returns true
+
+        var currentAlarm = enabledAlarm(id = alarmId).copy(nextTriggerTime = triggerTimeA)
+        coEvery { repository.getAuthorityByAlarmId(alarmId) } answers {
+            kotlinx.coroutines.runBlocking { realDao.getAuthorityByAlarmId(alarmId) }
+        }
+        coEvery { repository.getById(alarmId) } answers { currentAlarm }
+        coEvery { repository.getNextAlarm() } answers { currentAlarm }
+        coEvery { repository.updateNextTrigger(any(), any()) } answers {
+            val newTrigger = secondArg<Long>()
+            currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
+        }
+        coEvery { repository.casUpdateNextTrigger(any(), any(), any()) } returns 1
+
+        val schedulerWithOwner = AlarmScheduler(
+            context = context,
+            repository = repository,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            holidayRepository = holidayRepository,
+            alarmIncidentRepository = incidentRepository,
+            weatherRepository = weatherRepository,
+            scheduleAuthorityOwnerProvider = { realOwner },
+            routeAuthority = ownerRouteAuthority
+        )
+
+        // Step 1: Operation A captures origin-bound authority revision 1L from real Room DB
+        val originAuthA = realDao.getAuthorityByAlarmId(alarmId)
+        assertNotNull(originAuthA)
+        val capturedRevisionA = originAuthA!!.scheduleRevision
+        assertEquals(1L, capturedRevisionA)
+
+        // Pause operation A before OS registration via barrier
+        val barrierA = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val barrierEnteredA = kotlinx.coroutines.CompletableDeferred<Unit>()
+        schedulerWithOwner.testOnPreOsRegistrationBarrier = { id, trigger ->
+            if (id == alarmId && trigger == triggerTimeA) {
+                barrierEnteredA.complete(Unit)
+                barrierA.await()
+            }
+        }
+
+        var resultA: Boolean? = null
+        val jobA = launch {
+            resultA = schedulerWithOwner.scheduleAt(
+                currentAlarm,
+                triggerTimeA,
+                expectedRevision = capturedRevisionA
+            )
+        }
+
+        barrierEnteredA.await() // Wait for A to reach barrier
+
+        // Step 2: Operation B (earlier trigger 20s) originates, captures revision 1L, and executes SET(B) -> advances real Room DB to 2L
+        val originAuthB = realDao.getAuthorityByAlarmId(alarmId)
+        val capturedRevisionB = originAuthB!!.scheduleRevision
+        currentAlarm = currentAlarm.copy(nextTriggerTime = triggerTimeB)
+        val resB = realOwner.executeOperation(
+            alarmId = alarmId,
+            desiredOperation = "SET",
+            desiredTriggerMillis = triggerTimeB,
+            actionKey = "act-B-earlier",
+            expectedRevision = capturedRevisionB
+        )
+        assertTrue("Operation B (earlier trigger) MUST succeed in real Room DB and advance scheduleRevision to 2L", resB is OwnerResult.OsAccepted)
+
+        // Unblock A
+        barrierA.complete(Unit)
+        advanceUntilIdle()
+        jobA.join()
+
+        // Step 3: Assert A is REJECTED
+        assertNotNull(resultA)
+        assertFalse("Stale operation A MUST be rejected when B became current", resultA!!)
+
+        // Step 4: Verify real Room DB authority and fake OS slot remain B's earlier trigger (triggerTimeB) and scheduleRevision 2L
+        val finalAuth = realDao.getAuthorityByAlarmId(alarmId)
+        assertEquals("Final real Room DB scheduleRevision MUST remain 2L", 2L, finalAuth?.scheduleRevision)
+        assertEquals("Final real Room DB trigger MUST remain B's earlier trigger (20s)", triggerTimeB, finalAuth?.desiredTriggerMillis)
+        assertEquals("Fake OS slot MUST contain SET_B_earlier", listOf("SET_$triggerTimeB"), fakeOsSlot)
+
+        roomDb.close()
+    }
+
     @Test
     fun `Discriminator B - same target timestamp with different generation proves value-level equality limitation`() = runTest {
         val alarmId = 702L
