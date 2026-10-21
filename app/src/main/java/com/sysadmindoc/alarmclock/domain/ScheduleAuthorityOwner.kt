@@ -86,7 +86,8 @@ class ScheduleAuthorityOwner @Inject constructor(
         desiredOperation: String,
         desiredTriggerMillis: Long?,
         actionKey: String?,
-        expectedRevision: Long? = null
+        expectedRevision: Long? = null,
+        bypassRevisionCheck: Boolean = false
     ): OwnerResult {
         return mutexFor(alarmId).withLock {
             val initialAuth = authorityDao.getAuthorityByAlarmId(alarmId)
@@ -94,12 +95,6 @@ class ScheduleAuthorityOwner @Inject constructor(
 
             if (initialAuth.reconcileState == "QUARANTINE") {
                 Log.w(TAG, "Alarm $alarmId is QUARANTINED; rejecting operation execution")
-                return@withLock OwnerResult.Superseded(initialAuth.scheduleRevision)
-            }
-
-            // Caller-Qualified Stale Admission Gate:
-            if (expectedRevision != null && initialAuth.scheduleRevision != expectedRevision) {
-                Log.w(TAG, "Stale caller revision $expectedRevision does not match current DB revision ${initialAuth.scheduleRevision} for alarm $alarmId; superseding")
                 return@withLock OwnerResult.Superseded(initialAuth.scheduleRevision)
             }
 
@@ -123,6 +118,13 @@ class ScheduleAuthorityOwner @Inject constructor(
                 }
                 // If RECONCILING, proceed to re-apply OS action for current authority
             } else {
+                // Fail-Closed Caller-Qualified Stale Admission Gate for new actions:
+                if (!bypassRevisionCheck) {
+                    if (expectedRevision == null || initialAuth.scheduleRevision != expectedRevision) {
+                        Log.w(TAG, "Caller expectedRevision $expectedRevision does not match current DB revision ${initialAuth.scheduleRevision} for alarm $alarmId; superseding")
+                        return@withLock OwnerResult.Superseded(initialAuth.scheduleRevision)
+                    }
+                }
                 // Check exact alarm permission for SET operations BEFORE claim
                 if (desiredOperation == "SET" && !exactPermissionChecker()) {
                     Log.w(TAG, "Exact alarm capability unavailable for alarm $alarmId")

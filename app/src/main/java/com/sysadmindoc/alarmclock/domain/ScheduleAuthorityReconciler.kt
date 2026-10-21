@@ -46,7 +46,9 @@ class ScheduleAuthorityReconciler @Inject constructor(
                 alarmId = currentAuth.alarmId,
                 desiredOperation = currentAuth.desiredOperation,
                 desiredTriggerMillis = currentAuth.desiredTriggerMillis,
-                actionKey = currentAuth.actionKey
+                actionKey = currentAuth.actionKey,
+                expectedRevision = currentAuth.scheduleRevision,
+                bypassRevisionCheck = true
             )
 
             if (result is OwnerResult.OsAccepted || result is OwnerResult.DuplicateIgnored) {

@@ -97,7 +97,8 @@ class ScheduleAuthorityOwnerTest {
             alarmId = 42L,
             desiredOperation = "SNOOZE", // Unsupported OS operation!
             desiredTriggerMillis = 2000L,
-            actionKey = "act-unsupported"
+            actionKey = "act-unsupported",
+            expectedRevision = 1L
         )
 
         assertTrue("Unsupported operation must return OutcomeUnknown", result is OwnerResult.OutcomeUnknown)
@@ -124,7 +125,8 @@ class ScheduleAuthorityOwnerTest {
             alarmId = 42L,
             desiredOperation = "SET",
             desiredTriggerMillis = 2000L,
-            actionKey = "act-inc-change"
+            actionKey = "act-inc-change",
+            expectedRevision = 1L
         )
 
         assertTrue("Changed incarnation during convergence must return Superseded", result is OwnerResult.Superseded)
@@ -149,7 +151,8 @@ class ScheduleAuthorityOwnerTest {
             alarmId = 42L,
             desiredOperation = "SET",
             desiredTriggerMillis = 2000L,
-            actionKey = "act-epoch-change"
+            actionKey = "act-epoch-change",
+            expectedRevision = 1L
         )
 
         assertTrue("Changed restoreEpoch during convergence must return Superseded", result is OwnerResult.Superseded)
@@ -182,7 +185,8 @@ class ScheduleAuthorityOwnerTest {
             alarmId = 42L,
             desiredOperation = "SET",
             desiredTriggerMillis = 2000L,
-            actionKey = "act-retry-limit"
+            actionKey = "act-retry-limit",
+            expectedRevision = 1L
         )
 
         assertTrue("Unboundedly changing revisions must reach retry limit and return OutcomeUnknown", result is OwnerResult.OutcomeUnknown)
@@ -208,7 +212,8 @@ class ScheduleAuthorityOwnerTest {
                 alarmId = 42L,
                 desiredOperation = "SET",
                 desiredTriggerMillis = 2000L,
-                actionKey = "act-cancel"
+                actionKey = "act-cancel",
+                expectedRevision = 1L
             )
         } catch (_: CancellationException) {
             cancellationThrown = true
@@ -226,7 +231,8 @@ class ScheduleAuthorityOwnerTest {
             alarmId = 42L,
             desiredOperation = "SET",
             desiredTriggerMillis = 2000L,
-            actionKey = "act-try-quarantine"
+            actionKey = "act-try-quarantine",
+            expectedRevision = 1L
         )
 
         assertTrue("Owner operation on QUARANTINE authority must be rejected as Superseded", result is OwnerResult.Superseded)
@@ -322,7 +328,8 @@ class ScheduleAuthorityOwnerTest {
             alarmId = 42L,
             desiredOperation = "SET",
             desiredTriggerMillis = 9000L,
-            actionKey = "act-blocked"
+            actionKey = "act-blocked",
+            expectedRevision = 1L
         )
 
         assertTrue("Operation must return PermissionBlocked", result is OwnerResult.PermissionBlocked)
@@ -335,9 +342,9 @@ class ScheduleAuthorityOwnerTest {
     fun `OS sequence SET(A), CANCEL(B), SET(C) converges to final OS slot SET_3000`() = runBlocking {
         authorityDao.insertAuthority(initialAuthority)
 
-        owner.executeOperation(alarmId = 42L, desiredOperation = "SET", desiredTriggerMillis = 2000L, actionKey = "act-a")
-        owner.executeOperation(alarmId = 42L, desiredOperation = "CANCEL", desiredTriggerMillis = null, actionKey = "act-b")
-        val resC = owner.executeOperation(alarmId = 42L, desiredOperation = "SET", desiredTriggerMillis = 3000L, actionKey = "act-c")
+        owner.executeOperation(alarmId = 42L, desiredOperation = "SET", desiredTriggerMillis = 2000L, actionKey = "act-a", expectedRevision = 1L)
+        owner.executeOperation(alarmId = 42L, desiredOperation = "CANCEL", desiredTriggerMillis = null, actionKey = "act-b", expectedRevision = 2L)
+        val resC = owner.executeOperation(alarmId = 42L, desiredOperation = "SET", desiredTriggerMillis = 3000L, actionKey = "act-c", expectedRevision = 3L)
 
         assertTrue("Final operation SET(C) must succeed", resC is OwnerResult.OsAccepted)
 
@@ -364,7 +371,8 @@ class ScheduleAuthorityOwnerTest {
             alarmId = 42L,
             desiredOperation = "SET",
             desiredTriggerMillis = 9000L,
-            actionKey = "act-fail"
+            actionKey = "act-fail",
+            expectedRevision = 1L
         )
 
         assertTrue("Failing OS applier must return OutcomeUnknown", result is OwnerResult.OutcomeUnknown)
@@ -398,7 +406,8 @@ class ScheduleAuthorityOwnerTest {
             alarmId = 42L,
             desiredOperation = "SET",
             desiredTriggerMillis = 9000L,
-            actionKey = "act-B"
+            actionKey = "act-B",
+            expectedRevision = 1L
         )
         assertTrue("Operation B must be accepted", resB is OwnerResult.OsAccepted)
 
@@ -427,7 +436,8 @@ class ScheduleAuthorityOwnerTest {
             alarmId = 42L,
             desiredOperation = "SET",
             desiredTriggerMillis = 9000L,
-            actionKey = "act-B"
+            actionKey = "act-B",
+            expectedRevision = 1L
         )
         assertTrue("Operation B must be accepted", resB is OwnerResult.OsAccepted)
 
@@ -461,5 +471,22 @@ class ScheduleAuthorityOwnerTest {
         assertTrue("Valid operation with matching expectedRevision MUST succeed", resCurrent is OwnerResult.OsAccepted)
         val current = authorityDao.getAuthorityByAlarmId(42L)
         assertEquals("DB scheduleRevision MUST advance to 2L", 2L, current?.scheduleRevision)
+    }
+
+    @Test
+    fun `Phase 4 Test A - Missing caller revision expectedRevision == null is Fail-Closed rejected`() = runBlocking {
+        authorityDao.insertAuthority(initialAuthority) // DB at revision 1L
+
+        val resNullRevision = owner.executeOperation(
+            alarmId = 42L,
+            desiredOperation = "SET",
+            desiredTriggerMillis = 2000L,
+            actionKey = "act-missing-revision",
+            expectedRevision = null // Missing expectedRevision on live operation!
+        )
+
+        assertTrue("Missing caller expectedRevision MUST be Fail-Closed rejected as Superseded", resNullRevision is OwnerResult.Superseded)
+        val current = authorityDao.getAuthorityByAlarmId(42L)
+        assertEquals("DB scheduleRevision MUST remain 1L", 1L, current?.scheduleRevision)
     }
 }
