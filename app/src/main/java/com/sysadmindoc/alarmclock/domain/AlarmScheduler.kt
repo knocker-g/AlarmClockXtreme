@@ -282,7 +282,8 @@ class AlarmScheduler @Inject constructor(
     internal suspend fun scheduleSnoozeAt(
         alarm: Alarm,
         snoozeAtMillis: Long,
-        targetGen: com.sysadmindoc.alarmclock.service.AlarmGeneration? = null
+        targetGen: com.sysadmindoc.alarmclock.service.AlarmGeneration? = null,
+        expectedRevision: Long? = null
     ): Boolean {
         if (snoozeAtMillis <= System.currentTimeMillis()) {
             val sanitizedAlarm = alarm.sanitized()
@@ -308,7 +309,7 @@ class AlarmScheduler @Inject constructor(
             )
             return false
         }
-        return scheduleAt(alarm, snoozeAtMillis, targetGen = targetGen)
+        return scheduleAt(alarm, snoozeAtMillis, targetGen = targetGen, expectedRevision = expectedRevision)
     }
 
     /**
@@ -319,7 +320,8 @@ class AlarmScheduler @Inject constructor(
         alarm: Alarm,
         triggerTime: Long,
         requestWidgetUpdate: Boolean = true,
-        targetGen: com.sysadmindoc.alarmclock.service.AlarmGeneration? = null
+        targetGen: com.sysadmindoc.alarmclock.service.AlarmGeneration? = null,
+        expectedRevision: Long? = null
     ): Boolean {
         val sanitizedAlarm = alarm.sanitized()
         if (!canScheduleExactAlarms()) {
@@ -374,7 +376,7 @@ class AlarmScheduler @Inject constructor(
             testOnPreOsRegistrationBarrier?.invoke(sanitizedAlarm.id, triggerTime)
 
             val success = try {
-                scheduleAlarmClock(sanitizedAlarm.id, triggerTime)
+                scheduleAlarmClock(sanitizedAlarm.id, triggerTime, expectedRevision = expectedRevision)
             } catch (e: Exception) {
                 Log.e("AlarmScheduler", "OS AlarmManager registration threw exception for alarm ${sanitizedAlarm.id}", e)
                 false
@@ -682,7 +684,11 @@ class AlarmScheduler @Inject constructor(
         }
     }
 
-    private fun scheduleAlarmClock(alarmId: Long, triggerTime: Long): Boolean {
+    private fun scheduleAlarmClock(
+        alarmId: Long,
+        triggerTime: Long,
+        expectedRevision: Long? = null
+    ): Boolean {
         val fireId = AlarmIncidentEvent.fireIdFor(alarmId, triggerTime)
         val showAlarmClockIcon = preferencesManager.getCachedSettings().showAlarmClockIcon
         recordScheduleIncident(
@@ -696,14 +702,13 @@ class AlarmScheduler @Inject constructor(
         var freshOsRegistration = false
         val success = if (owner != null) {
             val actionKey = "act-sched-$alarmId-$triggerTime"
-            val expectedRev = (runBlocking { repository.getAuthorityByAlarmId(alarmId) })?.scheduleRevision ?: 1L
             val ownerRes = runBlocking {
                 owner.executeOperation(
                     alarmId = alarmId,
                     desiredOperation = "SET",
                     desiredTriggerMillis = triggerTime,
                     actionKey = actionKey,
-                    expectedRevision = expectedRev
+                    expectedRevision = expectedRevision
                 )
             }
             if (ownerRes is OwnerResult.OsAccepted) {
@@ -874,7 +879,8 @@ class AlarmScheduler @Inject constructor(
     private fun cancelScheduledEntries(
         alarmId: Long,
         includeFollowUpWorkers: Boolean = false,
-        targetGen: com.sysadmindoc.alarmclock.service.AlarmGeneration? = null
+        targetGen: com.sysadmindoc.alarmclock.service.AlarmGeneration? = null,
+        expectedRevision: Long? = null
     ) {
         val slotMutex = mainSlotMutexMap.computeIfAbsent(alarmId) { Mutex() }
         runBlocking {
@@ -889,13 +895,12 @@ class AlarmScheduler @Inject constructor(
                 val owner = if (routeAuthority.isOwnerRouteActive()) scheduleAuthorityOwnerProvider?.get() else null
                 if (owner != null) {
                     val actionKey = "act-cancel-$alarmId-${System.currentTimeMillis()}"
-                    val expectedRev = repository.getAuthorityByAlarmId(alarmId)?.scheduleRevision ?: 1L
                     owner.executeOperation(
                         alarmId = alarmId,
                         desiredOperation = "CANCEL",
                         desiredTriggerMillis = null,
                         actionKey = actionKey,
-                        expectedRevision = expectedRev
+                        expectedRevision = expectedRevision
                     )
                 } else {
                     applyRawOsCancel(alarmId)

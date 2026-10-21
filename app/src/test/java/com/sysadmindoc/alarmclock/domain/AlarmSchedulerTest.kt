@@ -504,6 +504,43 @@ class AlarmSchedulerTest {
     }
 
     @Test
+    fun `Required Real Test - stale operation A with expectedRevision 1L is rejected when B becomes current at revision 2L`() = runTest {
+        val alarmId = 710L
+        val now = System.currentTimeMillis()
+        val triggerTimeA = now + 20000L
+
+        val mockOwner = mockk<ScheduleAuthorityOwner>()
+        val ownerRouteAuthority = mockk<ProductionSchedulingRouteAuthority>()
+        every { ownerRouteAuthority.isOwnerRouteActive() } returns true
+
+        // Stale operation A presents expectedRevision = 1L when DB has advanced to revision 2L
+        coEvery {
+            mockOwner.executeOperation(alarmId, "SET", triggerTimeA, any(), expectedRevision = 1L)
+        } returns OwnerResult.Superseded(2L)
+
+        val schedulerWithOwner = AlarmScheduler(
+            context = context,
+            repository = repository,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            holidayRepository = holidayRepository,
+            alarmIncidentRepository = incidentRepository,
+            weatherRepository = weatherRepository,
+            scheduleAuthorityOwnerProvider = { mockOwner },
+            routeAuthority = ownerRouteAuthority
+        )
+
+        // Stale A calls scheduleAt passing expectedRevision = 1L
+        val resultA = schedulerWithOwner.scheduleAt(
+            enabledAlarm(id = alarmId),
+            triggerTimeA,
+            expectedRevision = 1L
+        )
+
+        assertFalse("Stale operation A with expectedRevision 1L MUST be rejected", resultA)
+    }
+
+    @Test
     fun `Discriminator B - same target timestamp with different generation proves value-level equality limitation`() = runTest {
         val alarmId = 702L
         val sameTarget = System.currentTimeMillis() + 60000L
