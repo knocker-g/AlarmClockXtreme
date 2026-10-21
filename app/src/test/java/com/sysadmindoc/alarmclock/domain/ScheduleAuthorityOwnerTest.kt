@@ -388,4 +388,43 @@ class ScheduleAuthorityOwnerTest {
         val overflowResult = result as OwnerResult.Superseded
         assertEquals(Long.MAX_VALUE, overflowResult.currentRevision)
     }
+
+    @Test
+    fun `Discriminator A - stale A with new actionKey is rejected after B becomes current`() = runBlocking {
+        authorityDao.insertAuthority(initialAuthority)
+
+        // B executes operation SET(B) -> advances scheduleRevision to 2L
+        val resB = owner.executeOperation(alarmId = 42L, desiredOperation = "SET", desiredTriggerMillis = 9000L, actionKey = "act-B")
+        assertTrue(resB is OwnerResult.OsAccepted)
+
+        // Stale A attempts executeOperation using a new actionKey but stale revision 1L expected
+        val staleOwner = ScheduleAuthorityOwner(
+            authorityDao = object : com.sysadmindoc.alarmclock.data.local.ScheduleAuthorityDao by authorityDao {
+                override suspend fun casClaimAuthority(
+                    alarmId: Long,
+                    instanceToken: String,
+                    restoreEpoch: Long,
+                    expectedRevision: Long,
+                    expectedLifecycle: String,
+                    desiredOperation: String,
+                    desiredTriggerMillis: Long?,
+                    actionKey: String?
+                ): Int {
+                    // Force casClaimAuthority to fail by simulating expectedRevision 1L vs actual 2L in DB
+                    return authorityDao.casClaimAuthority(
+                        alarmId, instanceToken, restoreEpoch, expectedRevision = 1L, expectedLifecycle, desiredOperation, desiredTriggerMillis, actionKey
+                    )
+                }
+            },
+            mainSlotApplier = { fakeOsSlot.add("SET_${it.desiredTriggerMillis}"); true },
+            exactPermissionChecker = { true }
+        )
+
+        val resStaleA = staleOwner.executeOperation(alarmId = 42L, desiredOperation = "SET", desiredTriggerMillis = 2000L, actionKey = "act-stale-A")
+
+        assertTrue("Stale operation A MUST return Superseded", resStaleA is OwnerResult.Superseded)
+        val current = authorityDao.getAuthorityByAlarmId(42L)
+        assertEquals("DB trigger MUST remain B (9000L)", 9000L, current?.desiredTriggerMillis)
+        assertEquals("Fake OS slot MUST remain B (SET_9000)", listOf("SET_9000"), fakeOsSlot)
+    }
 }
