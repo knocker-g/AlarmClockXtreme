@@ -105,6 +105,52 @@ class AlarmRepository @Inject constructor(
         }
     }
 
+    suspend fun casUpdateNextTriggerInitialWithAuthority(
+        id: Long,
+        newTrigger: Long,
+        expectedRevision: Long?,
+        instanceToken: String?,
+        restoreEpoch: Long?,
+        definitionRevision: Long?
+    ): Int {
+        return if (expectedRevision != null && instanceToken != null && restoreEpoch != null && definitionRevision != null) {
+            dao.casUpdateNextTriggerInitialWithAuthority(
+                id = id,
+                newTrigger = newTrigger,
+                expectedRevision = expectedRevision,
+                instanceToken = instanceToken,
+                restoreEpoch = restoreEpoch,
+                definitionRevision = definitionRevision
+            )
+        } else {
+            0
+        }
+    }
+
+    suspend fun casSetEnabledWithStrictAuthority(
+        id: Long,
+        enabled: Boolean,
+        nextTrigger: Long,
+        expectedRevision: Long?,
+        instanceToken: String?,
+        restoreEpoch: Long?,
+        definitionRevision: Long?
+    ): Int {
+        return if (expectedRevision != null && instanceToken != null && restoreEpoch != null && definitionRevision != null) {
+            dao.casSetEnabledWithStrictAuthority(
+                id = id,
+                enabled = enabled,
+                nextTrigger = nextTrigger,
+                expectedRevision = expectedRevision,
+                instanceToken = instanceToken,
+                restoreEpoch = restoreEpoch,
+                definitionRevision = definitionRevision
+            )
+        } else {
+            0
+        }
+    }
+
     suspend fun nextSortOrder(): Int = dao.maxSortOrder() + AlarmDao.SORT_ORDER_STEP
 
     suspend fun updateSortOrders(idsInOrder: List<Long>) =

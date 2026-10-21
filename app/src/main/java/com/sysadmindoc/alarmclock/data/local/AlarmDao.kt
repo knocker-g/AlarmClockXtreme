@@ -82,6 +82,51 @@ interface AlarmDao {
         definitionRevision: Long
     ): Int
 
+    @Query("""
+        UPDATE alarms
+        SET nextTriggerTime = :newTrigger
+        WHERE id = :id
+          AND EXISTS (
+              SELECT 1 FROM schedule_authority
+              WHERE alarmId = :id
+                AND scheduleRevision = :expectedRevision
+                AND instanceToken = :instanceToken
+                AND restoreEpoch = :restoreEpoch
+                AND definitionRevision = :definitionRevision
+          )
+    """)
+    suspend fun casUpdateNextTriggerInitialWithAuthority(
+        id: Long,
+        newTrigger: Long,
+        expectedRevision: Long,
+        instanceToken: String,
+        restoreEpoch: Long,
+        definitionRevision: Long
+    ): Int
+
+    @Query("""
+        UPDATE alarms
+        SET isEnabled = :enabled, nextTriggerTime = :nextTrigger
+        WHERE id = :id
+          AND EXISTS (
+              SELECT 1 FROM schedule_authority
+              WHERE alarmId = :id
+                AND scheduleRevision = :expectedRevision
+                AND instanceToken = :instanceToken
+                AND restoreEpoch = :restoreEpoch
+                AND definitionRevision = :definitionRevision
+          )
+    """)
+    suspend fun casSetEnabledWithStrictAuthority(
+        id: Long,
+        enabled: Boolean,
+        nextTrigger: Long,
+        expectedRevision: Long,
+        instanceToken: String,
+        restoreEpoch: Long,
+        definitionRevision: Long
+    ): Int
+
     @Query("SELECT COUNT(*) FROM alarms WHERE `group` = :groupName AND id != :excludedId")
     suspend fun countAlarmsByGroup(groupName: String, excludedId: Long): Int
 

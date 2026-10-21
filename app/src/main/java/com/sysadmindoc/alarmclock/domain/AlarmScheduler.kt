@@ -97,7 +97,11 @@ class AlarmScheduler @Inject constructor(
 
         if (!canScheduleExactAlarms()) {
             cancelScheduledEntries(sanitizedAlarm.id, expectedRevision = originRevision)
-            repository.updateNextTrigger(sanitizedAlarm.id, 0)
+            if (routeAuthority.isOwnerRouteActive() && originRevision != null) {
+                repository.casUpdateNextTriggerInitialWithAuthority(sanitizedAlarm.id, 0, originRevision, originInstanceToken, originRestoreEpoch, originDefinitionRevision)
+            } else {
+                repository.updateNextTrigger(sanitizedAlarm.id, 0)
+            }
             requestWidgetUpdateIfNeeded(requestWidgetUpdate)
             return
         }
@@ -109,8 +113,12 @@ class AlarmScheduler @Inject constructor(
         // after the timestamp will re-arm the alarm.
         val currentSettings = preferencesManager.getCurrentSettings()
         if (currentSettings.isPaused()) {
-            cancelScheduledEntries(sanitizedAlarm.id)
-            repository.updateNextTrigger(sanitizedAlarm.id, 0)
+            cancelScheduledEntries(sanitizedAlarm.id, expectedRevision = originRevision)
+            if (routeAuthority.isOwnerRouteActive() && originRevision != null) {
+                repository.casUpdateNextTriggerInitialWithAuthority(sanitizedAlarm.id, 0, originRevision, originInstanceToken, originRestoreEpoch, originDefinitionRevision)
+            } else {
+                repository.updateNextTrigger(sanitizedAlarm.id, 0)
+            }
             requestWidgetUpdateIfNeeded(requestWidgetUpdate)
             return
         }
@@ -124,11 +132,19 @@ class AlarmScheduler @Inject constructor(
             calculator.calculate(sanitizedAlarm)
         }
         if (triggerTime <= System.currentTimeMillis()) {
-            cancelScheduledEntries(sanitizedAlarm.id)
+            cancelScheduledEntries(sanitizedAlarm.id, expectedRevision = originRevision)
             if (sanitizedAlarm.isRecurringSchedule) {
-                repository.updateNextTrigger(sanitizedAlarm.id, 0)
+                if (routeAuthority.isOwnerRouteActive() && originRevision != null) {
+                    repository.casUpdateNextTriggerInitialWithAuthority(sanitizedAlarm.id, 0, originRevision, originInstanceToken, originRestoreEpoch, originDefinitionRevision)
+                } else {
+                    repository.updateNextTrigger(sanitizedAlarm.id, 0)
+                }
             } else {
-                repository.setEnabled(sanitizedAlarm.id, enabled = false, nextTrigger = 0)
+                if (routeAuthority.isOwnerRouteActive() && originRevision != null) {
+                    repository.casSetEnabledWithStrictAuthority(sanitizedAlarm.id, enabled = false, nextTrigger = 0, originRevision, originInstanceToken, originRestoreEpoch, originDefinitionRevision)
+                } else {
+                    repository.setEnabled(sanitizedAlarm.id, enabled = false, nextTrigger = 0)
+                }
             }
             requestWidgetUpdateIfNeeded(requestWidgetUpdate)
             return
@@ -374,7 +390,22 @@ class AlarmScheduler @Inject constructor(
                 }
             }
 
-            repository.updateNextTrigger(sanitizedAlarm.id, triggerTime)
+            if (routeAuthority.isOwnerRouteActive() && expectedRevision != null) {
+                val initialRows = repository.casUpdateNextTriggerInitialWithAuthority(
+                    id = sanitizedAlarm.id,
+                    newTrigger = triggerTime,
+                    expectedRevision = expectedRevision,
+                    instanceToken = expectedInstanceToken,
+                    restoreEpoch = expectedRestoreEpoch,
+                    definitionRevision = expectedDefinitionRevision
+                )
+                if (initialRows == 0) {
+                    Log.i("AlarmScheduler", "Aborting initial write for alarm ${sanitizedAlarm.id}: authority fingerprint mismatch or successor B intervened")
+                    return@withLock false
+                }
+            } else {
+                repository.updateNextTrigger(sanitizedAlarm.id, triggerTime)
+            }
 
             // Verify nextTriggerTime is still triggerTime before making OS AlarmManager call
             val currentDbTrigger = repository.getById(sanitizedAlarm.id)?.nextTriggerTime

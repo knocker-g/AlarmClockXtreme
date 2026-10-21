@@ -161,6 +161,7 @@ class AlarmSchedulerTest {
         coEvery { repository.updateNextTrigger(200L, any()) } answers {
             currentAlarm200 = currentAlarm200.copy(nextTriggerTime = secondArg())
         }
+        coEvery { repository.casUpdateNextTriggerInitialWithAuthority(any(), any(), any(), any(), any(), any()) } returns 1
 
         val mockAuth = com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority(
             alarmId = 200L, instanceToken = "inst-200", definitionRevision = 1L, scheduleRevision = 1L,
@@ -641,6 +642,12 @@ class AlarmSchedulerTest {
             val newTrigger = secondArg<Long>()
             currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
         }
+        coEvery { repository.casUpdateNextTriggerInitialWithAuthority(any(), any(), any(), any(), any(), any()) } answers {
+            val newTrigger = secondArg<Long>()
+            currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
+            1
+        }
+        coEvery { repository.casUpdateNextTriggerWithStrictAuthority(any(), any(), any(), any(), any(), any(), any()) } returns 1
         coEvery { repository.casUpdateNextTrigger(any(), any(), any()) } returns 1
 
         val fakeOsSlot = mutableListOf<String>()
@@ -785,6 +792,12 @@ class AlarmSchedulerTest {
             val newTrigger = secondArg<Long>()
             currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
         }
+        coEvery { repository.casUpdateNextTriggerInitialWithAuthority(any(), any(), any(), any(), any(), any()) } answers {
+            val newTrigger = secondArg<Long>()
+            currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
+            1
+        }
+        coEvery { repository.casUpdateNextTriggerWithStrictAuthority(any(), any(), any(), any(), any(), any(), any()) } returns 1
         coEvery { repository.casUpdateNextTrigger(any(), any(), any()) } returns 1
 
         val schedulerWithOwner = AlarmScheduler(
@@ -916,6 +929,12 @@ class AlarmSchedulerTest {
             val newTrigger = secondArg<Long>()
             currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
         }
+        coEvery { repository.casUpdateNextTriggerInitialWithAuthority(any(), any(), any(), any(), any(), any()) } answers {
+            val newTrigger = secondArg<Long>()
+            currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
+            1
+        }
+        coEvery { repository.casUpdateNextTriggerWithStrictAuthority(any(), any(), any(), any(), any(), any(), any()) } returns 1
         coEvery { repository.casUpdateNextTrigger(any(), any(), any()) } returns 1
 
         val schedulerWithOwner = AlarmScheduler(
@@ -1109,6 +1128,113 @@ class AlarmSchedulerTest {
             definitionRevision = 10L
         )
         assertEquals(0, resIdenticalTriggerNewIncarnation)
+
+        roomDb.close()
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `Pre-Owner Atomic Writes Test - casUpdateNextTriggerInitialWithAuthority and casSetEnabledWithStrictAuthority protect pre-OS writes`() = runTest {
+        val alarmId = 890L
+        val now = System.currentTimeMillis()
+        val triggerTimeA = now + 50000L
+        val triggerTimeB = now + 30000L
+
+        // Initialize actual in-memory Room Database
+        val roomDb = androidx.room.Room.inMemoryDatabaseBuilder(
+            context,
+            com.sysadmindoc.alarmclock.data.local.AlarmDatabase::class.java
+        ).allowMainThreadQueries().build()
+
+        val alarmDao = roomDb.alarmDao()
+        val authDao = roomDb.scheduleAuthorityDao()
+
+        // Insert alarm row and schedule_authority row into real Room SQLite DB
+        alarmDao.insert(enabledAlarm(id = alarmId).copy(nextTriggerTime = triggerTimeA))
+        authDao.insertAuthority(
+            com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority(
+                alarmId = alarmId,
+                instanceToken = "inst-$alarmId",
+                definitionRevision = 10L,
+                scheduleRevision = 1L,
+                lifecycle = "LIVE",
+                desiredOperation = "SET",
+                desiredTriggerMillis = triggerTimeA,
+                reconcileState = "SETTLED",
+                restoreEpoch = 100L,
+                actionKey = "act-init"
+            )
+        )
+
+        // 1. Current generation initial write succeeds (updates 1 row)
+        val initialMatch = alarmDao.casUpdateNextTriggerInitialWithAuthority(
+            id = alarmId,
+            newTrigger = triggerTimeA,
+            expectedRevision = 1L,
+            instanceToken = "inst-$alarmId",
+            restoreEpoch = 100L,
+            definitionRevision = 10L
+        )
+        assertEquals(1, initialMatch)
+
+        // 2. B intervenes and increments scheduleRevision to 2L
+        authDao.casClaimAuthority(
+            alarmId = alarmId,
+            instanceToken = "inst-$alarmId",
+            restoreEpoch = 100L,
+            expectedRevision = 1L,
+            expectedLifecycle = "LIVE",
+            desiredOperation = "SET",
+            desiredTriggerMillis = triggerTimeB,
+            actionKey = "act-B"
+        )
+
+        // 3. Stale A initial write after B is REJECTED (updates 0 rows)
+        val staleInitialWrite = alarmDao.casUpdateNextTriggerInitialWithAuthority(
+            id = alarmId,
+            newTrigger = triggerTimeA,
+            expectedRevision = 1L, // Stale!
+            instanceToken = "inst-$alarmId",
+            restoreEpoch = 100L,
+            definitionRevision = 10L
+        )
+        assertEquals(0, staleInitialWrite)
+
+        // 4. Stale A early zeroing after B is REJECTED (updates 0 rows)
+        val staleZeroing = alarmDao.casUpdateNextTriggerInitialWithAuthority(
+            id = alarmId,
+            newTrigger = 0L,
+            expectedRevision = 1L, // Stale!
+            instanceToken = "inst-$alarmId",
+            restoreEpoch = 100L,
+            definitionRevision = 10L
+        )
+        assertEquals(0, staleZeroing)
+
+        // 5. Stale A expired one-shot setEnabled(false) vs newer B is REJECTED (updates 0 rows)
+        val staleSetEnabled = alarmDao.casSetEnabledWithStrictAuthority(
+            id = alarmId,
+            enabled = false,
+            nextTrigger = 0L,
+            expectedRevision = 1L, // Stale!
+            instanceToken = "inst-$alarmId",
+            restoreEpoch = 100L,
+            definitionRevision = 10L
+        )
+        assertEquals(0, staleSetEnabled)
+
+        // 6. Valid current generation setEnabled(false) with revision 2L succeeds (updates 1 row)
+        val validSetEnabled = alarmDao.casSetEnabledWithStrictAuthority(
+            id = alarmId,
+            enabled = false,
+            nextTrigger = 0L,
+            expectedRevision = 2L, // Current revision 2L!
+            instanceToken = "inst-$alarmId",
+            restoreEpoch = 100L,
+            definitionRevision = 10L
+        )
+        assertEquals(1, validSetEnabled)
+        assertEquals(false, alarmDao.getById(alarmId)?.isEnabled)
 
         roomDb.close()
     }
