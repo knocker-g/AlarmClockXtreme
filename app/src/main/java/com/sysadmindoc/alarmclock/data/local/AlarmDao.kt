@@ -55,6 +55,9 @@ interface AlarmDao {
     @Query("UPDATE alarms SET nextTriggerTime = :nextTrigger WHERE id = :id")
     suspend fun updateNextTrigger(id: Long, nextTrigger: Long)
 
+    @Query("UPDATE alarms SET nextTriggerTime = :newTrigger WHERE id = :id AND nextTriggerTime = :expectedTrigger")
+    suspend fun casUpdateNextTrigger(id: Long, expectedTrigger: Long, newTrigger: Long): Int
+
     @Query("SELECT COUNT(*) FROM alarms WHERE `group` = :groupName AND id != :excludedId")
     suspend fun countAlarmsByGroup(groupName: String, excludedId: Long): Int
 

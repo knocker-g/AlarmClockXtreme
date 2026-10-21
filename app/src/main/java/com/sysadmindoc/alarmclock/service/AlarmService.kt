@@ -2797,6 +2797,7 @@ class AlarmService : Service() {
                 retrySnoozeActiveState(acceptedGen, snoozeSnapshot)
             }
         }
+        testOnSnoozeActionCompletionLatch?.complete(Unit)
     }
 
     private suspend fun dismissAlarm(

@@ -229,4 +229,37 @@ class AlarmServiceSnoozeTest {
         assertEquals(42L, currentGen?.alarmId)
         assertEquals("fire-42", currentGen?.fireId)
     }
+
+    @Test
+    fun `Robolectric AlarmService - async snooze completion latch verifies scheduleSnoozeAt invocation`() = runBlocking {
+        val service = createInjectedService()
+        val snoozeLatch = kotlinx.coroutines.CompletableDeferred<Unit>()
+        service.testOnSnoozeActionCompletionLatch = snoozeLatch
+
+        val startIntent = Intent(context, AlarmService::class.java).apply {
+            action = AlarmService.ACTION_START_ALARM
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, 42L)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 1000L)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "fire-42")
+        }
+        service.onStartCommand(startIntent, 0, 1)
+
+        val mockScheduler = mockk<AlarmScheduler>(relaxed = true)
+        coEvery { mockScheduler.canScheduleExactAlarms() } returns true
+        coEvery { mockScheduler.scheduleSnoozeAt(any(), any()) } returns false
+        service.alarmScheduler = mockScheduler
+
+        val snoozeIntent = Intent(context, AlarmService::class.java).apply {
+            action = AlarmService.ACTION_SNOOZE
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, 42L)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 1000L)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "fire-42")
+        }
+
+        service.onStartCommand(snoozeIntent, 0, 2)
+        snoozeLatch.await() // Wait for async snooze processing completion!
+
+        coVerify(exactly = 1) { mockScheduler.scheduleSnoozeAt(any(), any()) }
+        assertEquals(0, service.currentSnoozeCount)
+    }
 }
