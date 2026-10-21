@@ -183,6 +183,109 @@ class AlarmServiceSnoozeTest {
     }
 
     @Test
+    fun `Negative 2 - FIRING B in active session rejects stale Snooze A`() = runBlocking {
+        val alarmId = 42L
+        val genA = AlarmGeneration(alarmId, 1000L, "fire-42-1000")
+        val genB = AlarmGeneration(alarmId, 5000L, "fire-42-5000")
+        var currentAlarm = testAlarm.copy(nextTriggerTime = 9000L)
+
+        coEvery { alarmRepository.getById(any()) } answers { currentAlarm }
+
+        // Active session holds FIRING B (5000L)
+        val appSettings = AppSettings(
+            activeAlarmId = alarmId,
+            activeAlarmScheduledAt = genB.scheduledAt,
+            activeAlarmFireId = genB.fireId,
+            activeAlarmState = "FIRING"
+        )
+        coEvery { preferencesManager.getCachedSettings() } returns appSettings
+
+        val realScheduler = AlarmScheduler(
+            context = context,
+            repository = alarmRepository,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            holidayRepository = mockk(relaxed = true),
+            alarmIncidentRepository = mockk(relaxed = true),
+            weatherRepository = mockk(relaxed = true)
+        )
+
+        val snoozeEndAt = System.currentTimeMillis() + 600_000L
+        val snoozeScheduled = realScheduler.scheduleSnoozeAt(currentAlarm, snoozeEndAt, targetGen = genA)
+
+        assertFalse("Stale Snooze A MUST be rejected when active session holds FIRING B", snoozeScheduled)
+        assertEquals(9000L, currentAlarm.nextTriggerTime)
+    }
+
+    @Test
+    fun `Negative 3 - same scheduledAt but different fireId rejects old A`() = runBlocking {
+        val alarmId = 42L
+        val sameScheduledAt = 1000L
+        val genA = AlarmGeneration(alarmId, sameScheduledAt, "fire-42-GEN-A")
+        val genB = AlarmGeneration(alarmId, sameScheduledAt, "fire-42-GEN-B")
+        var currentAlarm = testAlarm.copy(nextTriggerTime = 9000L)
+
+        coEvery { alarmRepository.getById(any()) } answers { currentAlarm }
+
+        // Active session holds genB's fireId
+        val appSettings = AppSettings(
+            activeAlarmId = alarmId,
+            activeAlarmScheduledAt = sameScheduledAt,
+            activeAlarmFireId = genB.fireId,
+            activeAlarmState = "FIRING"
+        )
+        coEvery { preferencesManager.getCachedSettings() } returns appSettings
+
+        val realScheduler = AlarmScheduler(
+            context = context,
+            repository = alarmRepository,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            holidayRepository = mockk(relaxed = true),
+            alarmIncidentRepository = mockk(relaxed = true),
+            weatherRepository = mockk(relaxed = true)
+        )
+
+        val snoozeEndAt = System.currentTimeMillis() + 600_000L
+        val snoozeScheduled = realScheduler.scheduleSnoozeAt(currentAlarm, snoozeEndAt, targetGen = genA)
+
+        assertFalse("Old A with mismatched fireId MUST be rejected even if scheduledAt matches", snoozeScheduled)
+    }
+
+    @Test
+    fun `Negative 4 - non-FIRING stored state (SNOOZED) rejects new Snooze authorization`() = runBlocking {
+        val alarmId = 42L
+        val genA = AlarmGeneration(alarmId, 1000L, "fire-42-1000")
+        var currentAlarm = testAlarm.copy(nextTriggerTime = 9000L)
+
+        coEvery { alarmRepository.getById(any()) } answers { currentAlarm }
+
+        // Active session holds SNOOZED state (not FIRING)
+        val appSettings = AppSettings(
+            activeAlarmId = alarmId,
+            activeAlarmScheduledAt = genA.scheduledAt,
+            activeAlarmFireId = genA.fireId,
+            activeAlarmState = "SNOOZED"
+        )
+        coEvery { preferencesManager.getCachedSettings() } returns appSettings
+
+        val realScheduler = AlarmScheduler(
+            context = context,
+            repository = alarmRepository,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            holidayRepository = mockk(relaxed = true),
+            alarmIncidentRepository = mockk(relaxed = true),
+            weatherRepository = mockk(relaxed = true)
+        )
+
+        val snoozeEndAt = System.currentTimeMillis() + 600_000L
+        val snoozeScheduled = realScheduler.scheduleSnoozeAt(currentAlarm, snoozeEndAt, targetGen = genA)
+
+        assertFalse("Non-FIRING stored state (SNOOZED) MUST NOT authorize new Snooze when DB is ahead", snoozeScheduled)
+    }
+
+    @Test
     fun `G - OS registration failure in scheduleAt preserves previous nextTriggerTime without destructive erasure`() = runBlocking {
         val previousTrigger = 5000L
         val alarmWithTrigger = testAlarm.copy(nextTriggerTime = previousTrigger)

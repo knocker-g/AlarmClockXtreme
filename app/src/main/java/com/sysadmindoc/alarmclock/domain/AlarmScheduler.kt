@@ -340,8 +340,11 @@ class AlarmScheduler @Inject constructor(
             if (targetGen != null) {
                 val currentDbTrigger = repository.getById(sanitizedAlarm.id)?.nextTriggerTime ?: 0L
                 val activeSettings = preferencesManager.getCachedSettings()
-                val isActiveFiringSession = activeSettings.activeAlarmId == sanitizedAlarm.id &&
-                    (activeSettings.activeAlarmScheduledAt == targetGen.scheduledAt || targetGen.scheduledAt <= System.currentTimeMillis())
+
+                val isActiveFiringSession = activeSettings.activeAlarmId == targetGen.alarmId &&
+                    activeSettings.activeAlarmScheduledAt == targetGen.scheduledAt &&
+                    activeSettings.activeAlarmFireId == targetGen.fireId &&
+                    activeSettings.activeAlarmState == "FIRING"
 
                 if (!isActiveFiringSession && currentDbTrigger > 0L) {
                     if (currentDbTrigger > targetGen.scheduledAt) {
@@ -383,13 +386,13 @@ class AlarmScheduler @Inject constructor(
                     newTrigger = previousTrigger
                 )
                 requestWidgetUpdateIfNeeded(requestWidgetUpdate)
-                syncBedtimeDndRule()
+                try { syncBedtimeDndRule() } catch (e: Exception) { Log.w("AlarmScheduler", "Failed syncBedtimeDndRule for alarm ${sanitizedAlarm.id}", e) }
                 return@withLock false
             }
             DirectBootAlarmCache.saveIfEarlier(context, sanitizedAlarm, triggerTime)
-            try { scheduleSupportingWork(sanitizedAlarm, triggerTime) } catch (_: Exception) {}
+            try { scheduleSupportingWork(sanitizedAlarm, triggerTime) } catch (e: Exception) { Log.w("AlarmScheduler", "Failed scheduleSupportingWork for alarm ${sanitizedAlarm.id}", e) }
             requestWidgetUpdateIfNeeded(requestWidgetUpdate)
-            try { syncBedtimeDndRule() } catch (_: Exception) {}
+            try { syncBedtimeDndRule() } catch (e: Exception) { Log.w("AlarmScheduler", "Failed syncBedtimeDndRule for alarm ${sanitizedAlarm.id}", e) }
             true
         }
     }
