@@ -685,6 +685,135 @@ class AlarmSchedulerTest {
         assertEquals("Fake OS slot MUST contain SET_90000L", listOf("SET_$triggerTimeB"), fakeOsSlot)
     }
 
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `Part 3 Real Database Test - real Room DB and real ScheduleAuthorityOwner rejects stale A without DAO mocks`() = runTest {
+        val alarmId = 850L
+        val now = System.currentTimeMillis()
+        val triggerTimeA = now + 20000L
+        val triggerTimeB = now + 90000L
+
+        // Initialize actual in-memory Room Database and ScheduleAuthorityDao
+        val roomDb = androidx.room.Room.inMemoryDatabaseBuilder(
+            context,
+            com.sysadmindoc.alarmclock.data.local.AlarmDatabase::class.java
+        ).allowMainThreadQueries().build()
+
+        val realDao = roomDb.scheduleAuthorityDao()
+
+        // Insert initial ScheduleAuthority row into actual Room SQLite table
+        realDao.insertAuthority(
+            com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority(
+                alarmId = alarmId,
+                instanceToken = "inst-$alarmId",
+                definitionRevision = 1L,
+                scheduleRevision = 1L,
+                lifecycle = "LIVE",
+                desiredOperation = "SET",
+                desiredTriggerMillis = triggerTimeA,
+                reconcileState = "SETTLED",
+                restoreEpoch = 100L,
+                actionKey = "act-init"
+            )
+        )
+
+        val fakeOsSlot = mutableListOf<String>()
+        val realMainSlotApplier = MainSlotApplier { auth ->
+            fakeOsSlot.add("${auth.desiredOperation}_${auth.desiredTriggerMillis}")
+            true
+        }
+
+        val realOwner = ScheduleAuthorityOwner(
+            authorityDao = realDao,
+            mainSlotApplier = realMainSlotApplier,
+            exactPermissionChecker = { true }
+        )
+
+        val ownerRouteAuthority = mockk<ProductionSchedulingRouteAuthority>()
+        every { ownerRouteAuthority.isOwnerRouteActive() } returns true
+
+        var currentAlarm = enabledAlarm(id = alarmId).copy(nextTriggerTime = triggerTimeA)
+        coEvery { repository.getAuthorityByAlarmId(alarmId) } answers {
+            kotlinx.coroutines.runBlocking { realDao.getAuthorityByAlarmId(alarmId) }
+        }
+        coEvery { repository.getById(alarmId) } answers { currentAlarm }
+        coEvery { repository.getNextAlarm() } answers { currentAlarm }
+        coEvery { repository.updateNextTrigger(any(), any()) } answers {
+            val newTrigger = secondArg<Long>()
+            currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
+        }
+        coEvery { repository.casUpdateNextTrigger(any(), any(), any()) } returns 1
+
+        val schedulerWithOwner = AlarmScheduler(
+            context = context,
+            repository = repository,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            holidayRepository = holidayRepository,
+            alarmIncidentRepository = incidentRepository,
+            weatherRepository = weatherRepository,
+            scheduleAuthorityOwnerProvider = { realOwner },
+            routeAuthority = ownerRouteAuthority
+        )
+
+        // Step 1: Operation A captures origin-bound authority revision 1L from real Room DB
+        val originAuthA = realDao.getAuthorityByAlarmId(alarmId)
+        assertNotNull(originAuthA)
+        val capturedRevisionA = originAuthA!!.scheduleRevision
+        assertEquals(1L, capturedRevisionA)
+
+        // Pause operation A before Owner admission via barrier
+        val barrierA = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val barrierEnteredA = kotlinx.coroutines.CompletableDeferred<Unit>()
+        schedulerWithOwner.testOnPreOsRegistrationBarrier = { id, trigger ->
+            if (id == alarmId && trigger == triggerTimeA) {
+                barrierEnteredA.complete(Unit)
+                barrierA.await()
+            }
+        }
+
+        // Launch operation A on background coroutine
+        var resultA: Boolean? = null
+        val jobA = launch {
+            resultA = schedulerWithOwner.scheduleAt(
+                currentAlarm,
+                triggerTimeA,
+                expectedRevision = capturedRevisionA
+            )
+        }
+
+        barrierEnteredA.await() // Wait for A to reach barrier
+
+        // Step 2: Operation B originates, captures revision 1L from real Room DB, and executes SET(B) -> advances real Room DB to 2L
+        val originAuthB = realDao.getAuthorityByAlarmId(alarmId)
+        val capturedRevisionB = originAuthB!!.scheduleRevision
+        val resB = realOwner.executeOperation(
+            alarmId = alarmId,
+            desiredOperation = "SET",
+            desiredTriggerMillis = triggerTimeB,
+            actionKey = "act-B",
+            expectedRevision = capturedRevisionB
+        )
+        assertTrue("Operation B MUST succeed in real Room DB and advance scheduleRevision to 2L", resB is OwnerResult.OsAccepted)
+
+        // Unblock A
+        barrierA.complete(Unit)
+        advanceUntilIdle()
+        jobA.join()
+
+        // Step 3: Assert A is REJECTED by real Room DAO CAS
+        assertNotNull(resultA)
+        assertFalse("Stale operation A MUST be rejected by real Room DAO CAS when B became current", resultA!!)
+
+        // Step 4: Verify real Room DB authority and fake OS slot remain B (90000L)
+        val finalAuth = realDao.getAuthorityByAlarmId(alarmId)
+        assertEquals("Final real Room DB scheduleRevision MUST remain 2L", 2L, finalAuth?.scheduleRevision)
+        assertEquals("Final real Room DB trigger MUST remain B (90000L)", triggerTimeB, finalAuth?.desiredTriggerMillis)
+        assertEquals("Fake OS slot MUST contain SET_90000L", listOf("SET_$triggerTimeB"), fakeOsSlot)
+
+        roomDb.close()
+    }
+
     @Test
     fun `Discriminator B - same target timestamp with different generation proves value-level equality limitation`() = runTest {
         val alarmId = 702L

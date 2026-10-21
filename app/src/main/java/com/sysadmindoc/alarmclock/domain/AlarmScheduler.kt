@@ -387,13 +387,18 @@ class AlarmScheduler @Inject constructor(
                 false
             }
             if (!success) {
-                repository.casUpdateNextTrigger(
-                    id = sanitizedAlarm.id,
-                    expectedTrigger = triggerTime,
-                    newTrigger = previousTrigger
-                )
-                requestWidgetUpdateIfNeeded(requestWidgetUpdate)
-                try { syncBedtimeDndRule() } catch (e: Exception) { Log.w("AlarmScheduler", "Failed syncBedtimeDndRule for alarm ${sanitizedAlarm.id}", e) }
+                val currentDb = repository.getById(sanitizedAlarm.id)?.nextTriggerTime ?: 0L
+                if (currentDb <= triggerTime) {
+                    repository.casUpdateNextTrigger(
+                        id = sanitizedAlarm.id,
+                        expectedTrigger = triggerTime,
+                        newTrigger = previousTrigger
+                    )
+                    requestWidgetUpdateIfNeeded(requestWidgetUpdate)
+                    try { syncBedtimeDndRule() } catch (e: Exception) { Log.w("AlarmScheduler", "Failed syncBedtimeDndRule for alarm ${sanitizedAlarm.id}", e) }
+                } else {
+                    Log.i("AlarmScheduler", "Preserving newer DB trigger $currentDb for alarm ${sanitizedAlarm.id} after superseded operation for $triggerTime")
+                }
                 return@withLock false
             }
             DirectBootAlarmCache.saveIfEarlier(context, sanitizedAlarm, triggerTime)
