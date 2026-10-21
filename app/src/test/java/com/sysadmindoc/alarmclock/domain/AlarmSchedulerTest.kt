@@ -151,7 +151,7 @@ class AlarmSchedulerTest {
         every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
 
         val mockOwner = mockk<ScheduleAuthorityOwner>()
-        coEvery { mockOwner.executeOperation(200L, "SET", triggerTime, any()) } returns OwnerResult.OsAccepted(1L, "act-sched-200")
+        coEvery { mockOwner.executeOperation(200L, "SET", triggerTime, any(), any()) } returns OwnerResult.OsAccepted(1L, "act-sched-200")
 
         val ownerRouteAuthority = mockk<ProductionSchedulingRouteAuthority>()
         every { ownerRouteAuthority.isOwnerRouteActive() } returns true
@@ -183,7 +183,7 @@ class AlarmSchedulerTest {
         every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
 
         val mockOwner = mockk<ScheduleAuthorityOwner>()
-        coEvery { mockOwner.executeOperation(201L, "SET", triggerTime, any()) } returns OwnerResult.DuplicateIgnored
+        coEvery { mockOwner.executeOperation(201L, "SET", triggerTime, any(), any()) } returns OwnerResult.DuplicateIgnored
 
         val ownerRouteAuthority = mockk<ProductionSchedulingRouteAuthority>()
         every { ownerRouteAuthority.isOwnerRouteActive() } returns true
@@ -215,8 +215,8 @@ class AlarmSchedulerTest {
         every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
 
         val mockOwner = mockk<ScheduleAuthorityOwner>()
-        coEvery { mockOwner.executeOperation(202L, "SET", triggerTime, any()) } returns OwnerResult.OutcomeUnknown(1L, IllegalStateException("OS Error"))
-        coEvery { mockOwner.executeOperation(202L, "CANCEL", null, any()) } returns OwnerResult.OsAccepted(1L, "act-cancel-202")
+        coEvery { mockOwner.executeOperation(202L, "SET", triggerTime, any(), any()) } returns OwnerResult.OutcomeUnknown(1L, IllegalStateException("OS Error"))
+        coEvery { mockOwner.executeOperation(202L, "CANCEL", null, any(), any()) } returns OwnerResult.OsAccepted(1L, "act-cancel-202")
 
         val ownerRouteAuthority = mockk<ProductionSchedulingRouteAuthority>()
         every { ownerRouteAuthority.isOwnerRouteActive() } returns true

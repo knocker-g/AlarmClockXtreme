@@ -696,12 +696,14 @@ class AlarmScheduler @Inject constructor(
         var freshOsRegistration = false
         val success = if (owner != null) {
             val actionKey = "act-sched-$alarmId-$triggerTime"
+            val expectedRev = (runBlocking { repository.getAuthorityByAlarmId(alarmId) })?.scheduleRevision ?: 1L
             val ownerRes = runBlocking {
                 owner.executeOperation(
                     alarmId = alarmId,
                     desiredOperation = "SET",
                     desiredTriggerMillis = triggerTime,
-                    actionKey = actionKey
+                    actionKey = actionKey,
+                    expectedRevision = expectedRev
                 )
             }
             if (ownerRes is OwnerResult.OsAccepted) {
@@ -887,11 +889,13 @@ class AlarmScheduler @Inject constructor(
                 val owner = if (routeAuthority.isOwnerRouteActive()) scheduleAuthorityOwnerProvider?.get() else null
                 if (owner != null) {
                     val actionKey = "act-cancel-$alarmId-${System.currentTimeMillis()}"
+                    val expectedRev = repository.getAuthorityByAlarmId(alarmId)?.scheduleRevision ?: 1L
                     owner.executeOperation(
                         alarmId = alarmId,
                         desiredOperation = "CANCEL",
                         desiredTriggerMillis = null,
-                        actionKey = actionKey
+                        actionKey = actionKey,
+                        expectedRevision = expectedRev
                     )
                 } else {
                     applyRawOsCancel(alarmId)
