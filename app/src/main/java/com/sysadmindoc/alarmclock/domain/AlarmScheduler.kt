@@ -86,6 +86,9 @@ class AlarmScheduler @Inject constructor(
         val sanitizedAlarm = alarm.sanitized()
         val originAuthority = repository.getAuthorityByAlarmId(sanitizedAlarm.id)
         val originRevision = originAuthority?.scheduleRevision
+        val originInstanceToken = originAuthority?.instanceToken
+        val originRestoreEpoch = originAuthority?.restoreEpoch
+        val originDefinitionRevision = originAuthority?.definitionRevision
 
         if (!sanitizedAlarm.isEnabled) {
             cancelScheduledEntries(sanitizedAlarm.id, expectedRevision = originRevision)
@@ -231,7 +234,10 @@ class AlarmScheduler @Inject constructor(
             sanitizedAlarm,
             triggerTime,
             requestWidgetUpdate = requestWidgetUpdate,
-            expectedRevision = originRevision
+            expectedRevision = originRevision,
+            expectedInstanceToken = originInstanceToken,
+            expectedRestoreEpoch = originRestoreEpoch,
+            expectedDefinitionRevision = originDefinitionRevision
         )
         if (!success) {
             Log.i("AlarmScheduler", "schedule() for alarm ${sanitizedAlarm.id} at trigger $triggerTime was unfulfilled or superseded; preserving current DB state")
@@ -323,7 +329,10 @@ class AlarmScheduler @Inject constructor(
         triggerTime: Long,
         requestWidgetUpdate: Boolean = true,
         targetGen: com.sysadmindoc.alarmclock.service.AlarmGeneration? = null,
-        expectedRevision: Long? = null
+        expectedRevision: Long? = null,
+        expectedInstanceToken: String? = null,
+        expectedRestoreEpoch: Long? = null,
+        expectedDefinitionRevision: Long? = null
     ): Boolean {
         val sanitizedAlarm = alarm.sanitized()
         if (!canScheduleExactAlarms()) {
@@ -385,17 +394,20 @@ class AlarmScheduler @Inject constructor(
             }
             if (!success) {
                 if (expectedRevision != null) {
-                    val rowsUpdated = repository.casUpdateNextTriggerWithRevision(
+                    val rowsUpdated = repository.casUpdateNextTriggerWithAuthority(
                         id = sanitizedAlarm.id,
                         expectedTrigger = triggerTime,
                         newTrigger = previousTrigger,
-                        expectedRevision = expectedRevision
+                        expectedRevision = expectedRevision,
+                        instanceToken = expectedInstanceToken,
+                        restoreEpoch = expectedRestoreEpoch,
+                        definitionRevision = expectedDefinitionRevision
                     )
                     if (rowsUpdated > 0) {
                         requestWidgetUpdateIfNeeded(requestWidgetUpdate)
                         try { syncBedtimeDndRule() } catch (e: Exception) { Log.w("AlarmScheduler", "Failed syncBedtimeDndRule for alarm ${sanitizedAlarm.id}", e) }
                     } else {
-                        Log.i("AlarmScheduler", "Atomic CAS rollback rejected expected rev $expectedRevision for alarm ${sanitizedAlarm.id}: successor B has intervened")
+                        Log.i("AlarmScheduler", "Atomic CAS rollback rejected expected rev $expectedRevision for alarm ${sanitizedAlarm.id}: authority fingerprint mismatch or successor B intervened")
                     }
                 } else {
                     Log.i("AlarmScheduler", "Missing expectedRevision for alarm ${sanitizedAlarm.id}; suppressing destructive compensation")

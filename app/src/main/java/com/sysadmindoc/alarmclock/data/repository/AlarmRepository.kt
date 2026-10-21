@@ -81,14 +81,25 @@ class AlarmRepository @Inject constructor(
     suspend fun casUpdateNextTrigger(id: Long, expectedTrigger: Long, newTrigger: Long): Int =
         dao.casUpdateNextTrigger(id, expectedTrigger, newTrigger)
 
-    suspend fun casUpdateNextTriggerWithRevision(
+    suspend fun casUpdateNextTriggerWithAuthority(
         id: Long,
         expectedTrigger: Long,
         newTrigger: Long,
-        expectedRevision: Long?
+        expectedRevision: Long?,
+        instanceToken: String? = null,
+        restoreEpoch: Long? = null,
+        definitionRevision: Long? = null
     ): Int {
         return if (expectedRevision != null) {
-            dao.casUpdateNextTriggerWithRevision(id, expectedTrigger, newTrigger, expectedRevision)
+            dao.casUpdateNextTriggerWithAuthority(
+                id = id,
+                expectedTrigger = expectedTrigger,
+                newTrigger = newTrigger,
+                expectedRevision = expectedRevision,
+                instanceToken = instanceToken,
+                restoreEpoch = restoreEpoch,
+                definitionRevision = definitionRevision
+            )
         } else {
             0
         }

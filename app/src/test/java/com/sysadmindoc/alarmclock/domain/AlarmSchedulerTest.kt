@@ -1023,11 +1023,13 @@ class AlarmSchedulerTest {
         )
 
         // 1. Verify matching expectedRevision 1L succeeds in atomic CAS
-        val updatedRowsSuccess = alarmDao.casUpdateNextTriggerWithRevision(
+        val updatedRowsSuccess = alarmDao.casUpdateNextTriggerWithAuthority(
             id = alarmId,
             expectedTrigger = triggerTimeA,
             newTrigger = now + 10000L,
-            expectedRevision = 1L
+            expectedRevision = 1L,
+            instanceToken = "inst-$alarmId",
+            restoreEpoch = 100L
         )
         assertEquals(1, updatedRowsSuccess)
         assertEquals(now + 10000L, alarmDao.getById(alarmId)?.nextTriggerTime)
@@ -1051,12 +1053,14 @@ class AlarmSchedulerTest {
         // Verify B advanced scheduleRevision to 2L in real SQLite
         assertEquals(2L, authDao.getAuthorityByAlarmId(alarmId)?.scheduleRevision)
 
-        // 3. Stale operation A attempts casUpdateNextTriggerWithRevision with expectedRevision = 1L
-        val updatedRowsStale = alarmDao.casUpdateNextTriggerWithRevision(
+        // 3. Stale operation A attempts casUpdateNextTriggerWithAuthority with expectedRevision = 1L
+        val updatedRowsStale = alarmDao.casUpdateNextTriggerWithAuthority(
             id = alarmId,
             expectedTrigger = triggerTimeA,
             newTrigger = 0L,
-            expectedRevision = 1L // Stale expectedRevision!
+            expectedRevision = 1L, // Stale expectedRevision!
+            instanceToken = "inst-$alarmId",
+            restoreEpoch = 100L
         )
 
         // MUST return 0 updated rows because scheduleRevision is 2L in SQLite!
@@ -1064,6 +1068,39 @@ class AlarmSchedulerTest {
 
         // Verify alarm trigger remains triggerTimeA (unmodified by stale A)
         assertEquals(triggerTimeA, alarmDao.getById(alarmId)?.nextTriggerTime)
+
+        // 4. Mismatched instanceToken (e.g., new incarnation inst-870-NEW) is REJECTED
+        val resMismatchedToken = alarmDao.casUpdateNextTriggerWithAuthority(
+            id = alarmId,
+            expectedTrigger = triggerTimeA,
+            newTrigger = 0L,
+            expectedRevision = 2L,
+            instanceToken = "inst-$alarmId-NEW",
+            restoreEpoch = 100L
+        )
+        assertEquals(0, resMismatchedToken)
+
+        // 5. Mismatched restoreEpoch (e.g., device restore epoch 200L) is REJECTED
+        val resMismatchedEpoch = alarmDao.casUpdateNextTriggerWithAuthority(
+            id = alarmId,
+            expectedTrigger = triggerTimeA,
+            newTrigger = 0L,
+            expectedRevision = 2L,
+            instanceToken = "inst-$alarmId",
+            restoreEpoch = 200L
+        )
+        assertEquals(0, resMismatchedEpoch)
+
+        // 6. Missing authority record for nonexistent alarm is REJECTED
+        val resMissingAuth = alarmDao.casUpdateNextTriggerWithAuthority(
+            id = 9999L,
+            expectedTrigger = triggerTimeA,
+            newTrigger = 0L,
+            expectedRevision = 1L,
+            instanceToken = "inst-9999",
+            restoreEpoch = 100L
+        )
+        assertEquals(0, resMissingAuth)
 
         roomDb.close()
     }
