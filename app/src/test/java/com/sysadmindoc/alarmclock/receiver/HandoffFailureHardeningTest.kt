@@ -3,29 +3,59 @@ package com.sysadmindoc.alarmclock.receiver
 import android.content.Context
 import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
+import com.sysadmindoc.alarmclock.AlarmClockApp
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
+import com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.service.AlarmService
-import io.mockk.coVerify
-import io.mockk.mockk
+import dagger.hilt.android.EntryPointAccessors
+import io.mockk.every
 import io.mockk.spyk
+import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
 class HandoffFailureHardeningTest {
 
     private val context: Context = ApplicationProvider.getApplicationContext()
+    private lateinit var incidentRepo: AlarmIncidentRepository
+
+    @Before
+    fun setUp() {
+        val entryPoint = EntryPointAccessors.fromApplication(
+            context.applicationContext,
+            AlarmClockApp.AppEntryPoint::class.java
+        )
+        incidentRepo = entryPoint.alarmIncidentRepository()
+    }
+
+    @After
+    fun tearDown() {
+        testOnIncidentRecordedCompletion = null
+    }
 
     @Test
-    fun `SnoozeReceiver service-start exception records durable STATUS_FAILED incident`() {
+    fun `SnoozeReceiver service-start exception persists durable STATUS_FAILED incident in Room DB`() {
         val spyContext = spyk(context) {
-            io.mockk.every { startForegroundService(any()) } throws IllegalStateException("Background start restricted")
+            every { applicationContext } returns context.applicationContext
+            every { startForegroundService(any()) } throws IllegalStateException("Background start restricted")
+        }
+
+        val latch = CountDownLatch(1)
+        testOnIncidentRecordedCompletion = {
+            latch.countDown()
         }
 
         val intent = Intent().apply {
@@ -38,14 +68,34 @@ class HandoffFailureHardeningTest {
         val receiver = SnoozeReceiver()
         receiver.onReceive(spyContext, intent)
 
-        // Verify receiver entered catch block and recorded STATUS_FAILED incident without throwing
-        io.mockk.verify(exactly = 1) { spyContext.startForegroundService(any()) }
+        // Wait deterministically for async background incident insertion to complete
+        assertTrue("Incident recording timed out", latch.await(5, TimeUnit.SECONDS))
+
+        // Verify actual persisted row in real Room SQLite DB
+        val incidents = runBlocking { incidentRepo.getRecent(50) }
+        println("ALL_INCIDENTS_SNOOZE: ${incidents.map { "${it.alarmId}:${it.fireId}:${it.source}:${it.status}:${it.reasonCode}" }}")
+        val failureIncident = incidents.find { it.alarmId == 101L && it.reasonCode.startsWith("SNOOZE_SERVICE_START_FAILED") }
+
+        assertNotNull("Persisted failure incident MUST be present in Room DB", failureIncident)
+        assertEquals(101L, failureIncident!!.alarmId)
+        assertTrue("fireId must not be blank, was: ${failureIncident.fireId}", failureIncident.fireId.isNotBlank())
+        assertEquals("scheduledAt mismatch", 1000L, failureIncident.scheduledAt)
+        assertEquals("type mismatch", AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, failureIncident.type)
+        assertEquals("status mismatch", AlarmIncidentEvent.STATUS_FAILED, failureIncident.status)
+        assertTrue("reasonCode must start with SNOOZE_SERVICE_START_FAILED, was: ${failureIncident.reasonCode}", failureIncident.reasonCode.startsWith("SNOOZE_SERVICE_START_FAILED"))
+        assertEquals("source mismatch", "SnoozeReceiver", failureIncident.source)
     }
 
     @Test
-    fun `DismissReceiver service-start exception records durable STATUS_FAILED incident`() {
+    fun `DismissReceiver service-start exception persists durable STATUS_FAILED incident in Room DB`() {
         val spyContext = spyk(context) {
-            io.mockk.every { startForegroundService(any()) } throws IllegalStateException("Background start restricted")
+            every { applicationContext } returns context.applicationContext
+            every { startForegroundService(any()) } throws IllegalStateException("Background start restricted")
+        }
+
+        val latch = CountDownLatch(1)
+        testOnIncidentRecordedCompletion = {
+            latch.countDown()
         }
 
         val intent = Intent().apply {
@@ -58,8 +108,22 @@ class HandoffFailureHardeningTest {
         val receiver = DismissReceiver()
         receiver.onReceive(spyContext, intent)
 
-        // Verify receiver entered catch block and recorded STATUS_FAILED incident without throwing
-        io.mockk.verify(exactly = 1) { spyContext.startForegroundService(any()) }
+        // Wait deterministically for async background incident insertion to complete
+        assertTrue("Incident recording timed out", latch.await(5, TimeUnit.SECONDS))
+
+        // Verify actual persisted row in real Room SQLite DB
+        val incidents = runBlocking { incidentRepo.getRecent(50) }
+        println("ALL_INCIDENTS_DISMISS: ${incidents.map { "${it.alarmId}:${it.fireId}:${it.source}:${it.status}:${it.reasonCode}" }}")
+        val failureIncident = incidents.find { it.alarmId == 102L && it.reasonCode.startsWith("DISMISS_SERVICE_START_FAILED") }
+
+        assertNotNull("Persisted failure incident MUST be present in Room DB", failureIncident)
+        assertEquals(102L, failureIncident!!.alarmId)
+        assertTrue("fireId must not be blank, was: ${failureIncident.fireId}", failureIncident.fireId.isNotBlank())
+        assertEquals("scheduledAt mismatch", 2000L, failureIncident.scheduledAt)
+        assertEquals("type mismatch", AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, failureIncident.type)
+        assertEquals("status mismatch", AlarmIncidentEvent.STATUS_FAILED, failureIncident.status)
+        assertTrue("reasonCode must start with DISMISS_SERVICE_START_FAILED, was: ${failureIncident.reasonCode}", failureIncident.reasonCode.startsWith("DISMISS_SERVICE_START_FAILED"))
+        assertEquals("source mismatch", "DismissReceiver", failureIncident.source)
     }
 
     @Test
