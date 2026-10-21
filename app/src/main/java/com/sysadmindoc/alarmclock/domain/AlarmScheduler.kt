@@ -313,6 +313,7 @@ class AlarmScheduler @Inject constructor(
             return false
         }
 
+        val previousTrigger = repository.getById(sanitizedAlarm.id)?.nextTriggerTime ?: 0L
         repository.updateNextTrigger(sanitizedAlarm.id, triggerTime)
         val success = try {
             scheduleAlarmClock(sanitizedAlarm.id, triggerTime)
@@ -321,8 +322,7 @@ class AlarmScheduler @Inject constructor(
             false
         }
         if (!success) {
-            cancelScheduledEntries(sanitizedAlarm.id)
-            repository.updateNextTrigger(sanitizedAlarm.id, 0)
+            repository.updateNextTrigger(sanitizedAlarm.id, previousTrigger)
             requestWidgetUpdateIfNeeded(requestWidgetUpdate)
             syncBedtimeDndRule()
             return false
