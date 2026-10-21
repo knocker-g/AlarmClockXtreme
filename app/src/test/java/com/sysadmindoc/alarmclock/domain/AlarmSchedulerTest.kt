@@ -421,11 +421,15 @@ class AlarmSchedulerTest {
 
         val barrierA = kotlinx.coroutines.CompletableDeferred<Unit>()
         val barrierEnteredA = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val osSetOrder = mutableListOf<Long>()
 
         scheduler.testOnPreOsRegistrationBarrier = { id, trigger ->
             if (id == alarmId && trigger == triggerTimeA) {
                 barrierEnteredA.complete(Unit)
                 barrierA.await()
+            }
+            if (id == alarmId) {
+                osSetOrder.add(trigger)
             }
         }
 
@@ -452,8 +456,37 @@ class AlarmSchedulerTest {
         jobB.join()
 
         assertTrue("Operation B completes after A unlocks mainSlotMutexMap", completedB)
+
+        // Assert ordered OS SET execution: A executed first (triggerTimeA), B executed second (triggerTimeB)
+        assertEquals(2, osSetOrder.size)
+        assertEquals(triggerTimeA, osSetOrder[0])
+        assertEquals(triggerTimeB, osSetOrder[1])
+
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+        val scheduledAlarms = org.robolectric.Shadows.shadowOf(alarmManager).scheduledAlarms
+        assertFalse(scheduledAlarms.isEmpty())
+        assertEquals("Final OS trigger MUST match operation B", triggerTimeB, scheduledAlarms.last().triggerAtTime)
+
         val finalDbTrigger = repository.getById(alarmId)?.nextTriggerTime
-        assertEquals("Final DB trigger MUST match operation B (90000L)", triggerTimeB, finalDbTrigger)
+        assertEquals("Final DB trigger MUST match operation B", triggerTimeB, finalDbTrigger)
+    }
+
+    @Test
+    fun `Discriminator B - same target timestamp with different generation proves value-level equality limitation`() = runTest {
+        val alarmId = 702L
+        val sameTarget = System.currentTimeMillis() + 60000L
+        val alarmA = enabledAlarm(id = alarmId).copy(nextTriggerTime = sameTarget)
+
+        coEvery { repository.getById(alarmId) } returns alarmA
+
+        val resultA = scheduler.scheduleAt(alarmA, sameTarget)
+        val resultB = scheduler.scheduleAt(alarmA, sameTarget)
+
+        assertTrue(resultA)
+        assertTrue(resultB)
+
+        // Demonstrates that value-level nextTriggerTime equality alone cannot distinguish generation A from B
+        assertEquals(sameTarget, repository.getById(alarmId)?.nextTriggerTime)
     }
 
     private fun enabledAlarm(id: Long): Alarm = Alarm(
