@@ -2,21 +2,27 @@ package com.sysadmindoc.alarmclock.service
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import com.sysadmindoc.alarmclock.data.model.Alarm
+import com.sysadmindoc.alarmclock.data.preferences.AppSettings
+import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
+import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.domain.NextAlarmCalculator
-import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
@@ -28,6 +34,7 @@ class AlarmServiceSnoozeTest {
     private lateinit var alarmScheduler: AlarmScheduler
     private lateinit var alarmRepository: AlarmRepository
     private lateinit var calculator: NextAlarmCalculator
+    private lateinit var preferencesManager: PreferencesManager
 
     private val testAlarm = Alarm(
         id = 42L,
@@ -45,8 +52,27 @@ class AlarmServiceSnoozeTest {
         alarmScheduler = mockk(relaxed = true)
         alarmRepository = mockk(relaxed = true)
         calculator = mockk(relaxed = true)
+        preferencesManager = mockk(relaxed = true)
 
+        coEvery { preferencesManager.getCurrentSettings() } returns AppSettings()
+        every { preferencesManager.getCachedSettings() } returns AppSettings()
         coEvery { alarmRepository.getById(42L) } returns testAlarm
+    }
+
+    private fun createInjectedService(): AlarmService {
+        val controller = Robolectric.buildService(AlarmService::class.java)
+        val service = controller.get()
+        service.repository = alarmRepository
+        service.alarmScheduler = alarmScheduler
+        service.eventRepository = mockk(relaxed = true)
+        service.alarmIncidentRepository = mockk(relaxed = true)
+        service.preferencesManager = preferencesManager
+        service.webhookService = mockk(relaxed = true)
+        service.wearNextAlarmBridge = mockk(relaxed = true)
+        service.dismissActionExecutor = mockk(relaxed = true)
+        service.weatherRepository = mockk(relaxed = true)
+        service.calendarRepository = mockk(relaxed = true)
+        return service
     }
 
     @Test
@@ -116,5 +142,91 @@ class AlarmServiceSnoozeTest {
 
         assertFalse("Failed scheduleAt MUST return false", success)
         coVerify(exactly = 0) { alarmRepository.updateNextTrigger(42L, 0) }
+    }
+
+    @Test
+    fun `Robolectric AlarmService - snooze failure keeps active FIRING generation audible and active without stopSelf`() = runBlocking {
+        val service = createInjectedService()
+        var stopSelfCalled = false
+        service.testOnStopSelfCalled = { stopSelfCalled = true }
+
+        val startIntent = Intent(context, AlarmService::class.java).apply {
+            action = AlarmService.ACTION_START_ALARM
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, 42L)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 1000L)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "fire-42")
+        }
+
+        // Start service into FIRING generation
+        service.onStartCommand(startIntent, 0, 1)
+
+        val activeGen = service.currentGeneration()
+        assertNotNull(activeGen)
+        assertEquals(42L, activeGen?.alarmId)
+        assertEquals(1000L, activeGen?.scheduledAt)
+        assertEquals("fire-42", activeGen?.fireId)
+
+        // Inject mock scheduler that fails snooze registration
+        val mockScheduler = mockk<AlarmScheduler>(relaxed = true)
+        coEvery { mockScheduler.canScheduleExactAlarms() } returns true
+        coEvery { mockScheduler.scheduleSnoozeAt(any(), any()) } returns false
+        service.alarmScheduler = mockScheduler
+
+        val snoozeIntent = Intent(context, AlarmService::class.java).apply {
+            action = AlarmService.ACTION_SNOOZE
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, 42L)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 1000L)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "fire-42")
+        }
+
+        service.onStartCommand(snoozeIntent, 0, 2)
+
+        // Verify FIRING generation remains active, snooze count = 0, stopSelf NOT called!
+        assertFalse("stopSelf MUST NOT be called when exact Snooze registration fails", stopSelfCalled)
+        assertEquals(0, service.currentSnoozeCount)
+        val currentGen = service.currentGeneration()
+        assertNotNull(currentGen)
+        assertEquals(42L, currentGen?.alarmId)
+        assertEquals("fire-42", currentGen?.fireId)
+    }
+
+    @Test
+    fun `Robolectric AlarmService - snooze SecurityException keeps active FIRING generation audible and active`() = runBlocking {
+        val service = createInjectedService()
+        var stopSelfCalled = false
+        service.testOnStopSelfCalled = { stopSelfCalled = true }
+
+        val startIntent = Intent(context, AlarmService::class.java).apply {
+            action = AlarmService.ACTION_START_ALARM
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, 42L)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 1000L)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "fire-42")
+        }
+
+        // Start service into FIRING generation
+        service.onStartCommand(startIntent, 0, 1)
+
+        // Inject mock scheduler that throws SecurityException on snooze
+        val mockScheduler = mockk<AlarmScheduler>(relaxed = true)
+        coEvery { mockScheduler.canScheduleExactAlarms() } returns true
+        coEvery { mockScheduler.scheduleSnoozeAt(any(), any()) } throws SecurityException("Exact alarm permission revoked")
+        service.alarmScheduler = mockScheduler
+
+        val snoozeIntent = Intent(context, AlarmService::class.java).apply {
+            action = AlarmService.ACTION_SNOOZE
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, 42L)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 1000L)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "fire-42")
+        }
+
+        service.onStartCommand(snoozeIntent, 0, 2)
+
+        // Verify FIRING generation remains active, snooze count = 0, stopSelf NOT called!
+        assertFalse("stopSelf MUST NOT be called when exact Snooze throws SecurityException", stopSelfCalled)
+        assertEquals(0, service.currentSnoozeCount)
+        val currentGen = service.currentGeneration()
+        assertNotNull(currentGen)
+        assertEquals(42L, currentGen?.alarmId)
+        assertEquals("fire-42", currentGen?.fireId)
     }
 }

@@ -211,7 +211,7 @@ class AlarmService : Service() {
     @Volatile
     private var backupSoundOriginalGeneration: AlarmGeneration? = null
     private var flashlightJob: Job? = null
-    private var currentSnoozeCount: Int = 0
+    internal var currentSnoozeCount: Int = 0
     private var currentWakeConfirmRefireCount: Int = 0
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val preemptionPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -318,7 +318,7 @@ class AlarmService : Service() {
         }
     }
 
-    private fun currentGeneration(): AlarmGeneration? {
+    internal fun currentGeneration(): AlarmGeneration? {
         if (currentAlarmId <= 0L || currentScheduledAt <= 0L || currentFireId.isBlank()) return null
         return AlarmGeneration(currentAlarmId, currentScheduledAt, currentFireId)
     }
@@ -2773,11 +2773,9 @@ class AlarmService : Service() {
                 }
                 com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.REJECTED_STALE -> {
                     Log.i(TAG, "Snooze state write rejected for $acceptedGen: DataStore holds newer active generation")
-                    alarmScheduler.cancel(alarm.id)
                 }
                 com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT -> {
                     Log.w(TAG, "Failed to commit DataStore snooze state for $acceptedGen: launching background retry")
-                    alarmScheduler.cancel(alarm.id)
                     recordIncidentAsync(
                         type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
                         status = AlarmIncidentEvent.STATUS_FAILED,

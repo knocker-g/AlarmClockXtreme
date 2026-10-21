@@ -299,16 +299,12 @@ class AlarmScheduler @Inject constructor(
     ): Boolean {
         val sanitizedAlarm = alarm.sanitized()
         if (!canScheduleExactAlarms()) {
-            cancelScheduledEntries(sanitizedAlarm.id)
-            repository.updateNextTrigger(sanitizedAlarm.id, 0)
             requestWidgetUpdateIfNeeded(requestWidgetUpdate)
             return false
         }
         // v1.11.6 (roadmap N6): respect "Pause alarms" for snooze + quick-add
         // paths too — snoozing inside a pause window shouldn't sneak past it.
         if (preferencesManager.getCurrentSettings().isPaused()) {
-            cancelScheduledEntries(sanitizedAlarm.id)
-            repository.updateNextTrigger(sanitizedAlarm.id, 0)
             requestWidgetUpdateIfNeeded(requestWidgetUpdate)
             return false
         }
