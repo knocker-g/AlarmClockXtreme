@@ -391,40 +391,75 @@ class ScheduleAuthorityOwnerTest {
 
     @Test
     fun `Discriminator A - stale A with new actionKey is rejected after B becomes current`() = runBlocking {
-        authorityDao.insertAuthority(initialAuthority)
+        authorityDao.insertAuthority(initialAuthority) // DB at revision 1L
 
         // B executes operation SET(B) -> advances scheduleRevision to 2L
-        val resB = owner.executeOperation(alarmId = 42L, desiredOperation = "SET", desiredTriggerMillis = 9000L, actionKey = "act-B")
-        assertTrue(resB is OwnerResult.OsAccepted)
-
-        // Stale A attempts executeOperation using a new actionKey but stale revision 1L expected
-        val staleOwner = ScheduleAuthorityOwner(
-            authorityDao = object : com.sysadmindoc.alarmclock.data.local.ScheduleAuthorityDao by authorityDao {
-                override suspend fun casClaimAuthority(
-                    alarmId: Long,
-                    instanceToken: String,
-                    restoreEpoch: Long,
-                    expectedRevision: Long,
-                    expectedLifecycle: String,
-                    desiredOperation: String,
-                    desiredTriggerMillis: Long?,
-                    actionKey: String?
-                ): Int {
-                    // Force casClaimAuthority to fail by simulating expectedRevision 1L vs actual 2L in DB
-                    return authorityDao.casClaimAuthority(
-                        alarmId, instanceToken, restoreEpoch, expectedRevision = 1L, expectedLifecycle, desiredOperation, desiredTriggerMillis, actionKey
-                    )
-                }
-            },
-            mainSlotApplier = { fakeOsSlot.add("SET_${it.desiredTriggerMillis}"); true },
-            exactPermissionChecker = { true }
+        val resB = owner.executeOperation(
+            alarmId = 42L,
+            desiredOperation = "SET",
+            desiredTriggerMillis = 9000L,
+            actionKey = "act-B"
         )
+        assertTrue("Operation B must be accepted", resB is OwnerResult.OsAccepted)
 
-        val resStaleA = staleOwner.executeOperation(alarmId = 42L, desiredOperation = "SET", desiredTriggerMillis = 2000L, actionKey = "act-stale-A")
+        // Stale A (who held expectedRevision 1L before B ran) attempts executeOperation using new actionKey and expectedRevision = 1L
+        val resStaleA = owner.executeOperation(
+            alarmId = 42L,
+            desiredOperation = "SET",
+            desiredTriggerMillis = 2000L,
+            actionKey = "act-stale-A",
+            expectedRevision = 1L // Stale expected revision!
+        )
 
         assertTrue("Stale operation A MUST return Superseded", resStaleA is OwnerResult.Superseded)
         val current = authorityDao.getAuthorityByAlarmId(42L)
+        assertEquals("DB scheduleRevision MUST remain 2L", 2L, current?.scheduleRevision)
         assertEquals("DB trigger MUST remain B (9000L)", 9000L, current?.desiredTriggerMillis)
         assertEquals("Fake OS slot MUST remain B (SET_9000)", listOf("SET_9000"), fakeOsSlot)
+    }
+
+    @Test
+    fun `Phase 3 Test B - stale CANCEL A with expectedRevision 1L is rejected when B is current`() = runBlocking {
+        authorityDao.insertAuthority(initialAuthority) // DB at revision 1L
+
+        // B executes operation SET(B) -> advances scheduleRevision to 2L
+        val resB = owner.executeOperation(
+            alarmId = 42L,
+            desiredOperation = "SET",
+            desiredTriggerMillis = 9000L,
+            actionKey = "act-B"
+        )
+        assertTrue("Operation B must be accepted", resB is OwnerResult.OsAccepted)
+
+        // Stale A attempts CANCEL with expectedRevision = 1L
+        val resCancelA = owner.executeOperation(
+            alarmId = 42L,
+            desiredOperation = "CANCEL",
+            desiredTriggerMillis = null,
+            actionKey = "act-cancel-A",
+            expectedRevision = 1L
+        )
+
+        assertTrue("Stale CANCEL A MUST return Superseded", resCancelA is OwnerResult.Superseded)
+        val current = authorityDao.getAuthorityByAlarmId(42L)
+        assertEquals("DB trigger MUST remain B (9000L)", 9000L, current?.desiredTriggerMillis)
+        assertEquals("Fake OS slot MUST remain B (SET_9000)", listOf("SET_9000"), fakeOsSlot)
+    }
+
+    @Test
+    fun `Phase 3 Test D - valid current caller SET succeeds when expectedRevision matches DB`() = runBlocking {
+        authorityDao.insertAuthority(initialAuthority) // DB at revision 1L
+
+        val resCurrent = owner.executeOperation(
+            alarmId = 42L,
+            desiredOperation = "SET",
+            desiredTriggerMillis = 2000L,
+            actionKey = "act-valid",
+            expectedRevision = 1L
+        )
+
+        assertTrue("Valid operation with matching expectedRevision MUST succeed", resCurrent is OwnerResult.OsAccepted)
+        val current = authorityDao.getAuthorityByAlarmId(42L)
+        assertEquals("DB scheduleRevision MUST advance to 2L", 2L, current?.scheduleRevision)
     }
 }

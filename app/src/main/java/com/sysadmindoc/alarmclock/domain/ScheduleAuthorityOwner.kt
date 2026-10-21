@@ -85,7 +85,8 @@ class ScheduleAuthorityOwner @Inject constructor(
         alarmId: Long,
         desiredOperation: String,
         desiredTriggerMillis: Long?,
-        actionKey: String?
+        actionKey: String?,
+        expectedRevision: Long? = null
     ): OwnerResult {
         return mutexFor(alarmId).withLock {
             val initialAuth = authorityDao.getAuthorityByAlarmId(alarmId)
@@ -93,6 +94,12 @@ class ScheduleAuthorityOwner @Inject constructor(
 
             if (initialAuth.reconcileState == "QUARANTINE") {
                 Log.w(TAG, "Alarm $alarmId is QUARANTINED; rejecting operation execution")
+                return@withLock OwnerResult.Superseded(initialAuth.scheduleRevision)
+            }
+
+            // Caller-Qualified Stale Admission Gate:
+            if (expectedRevision != null && initialAuth.scheduleRevision != expectedRevision) {
+                Log.w(TAG, "Stale caller revision $expectedRevision does not match current DB revision ${initialAuth.scheduleRevision} for alarm $alarmId; superseding")
                 return@withLock OwnerResult.Superseded(initialAuth.scheduleRevision)
             }
 
