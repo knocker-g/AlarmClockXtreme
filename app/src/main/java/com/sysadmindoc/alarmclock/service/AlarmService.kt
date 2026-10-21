@@ -2716,16 +2716,17 @@ class AlarmService : Service() {
 
         when (snoozeResult) {
             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED -> {
-                // PERSISTENCE CONFIRMED COMMITTED: Now update memory state, perform owner-guarded teardown and side effects
-                activeAlarm.set(snoozeSnapshot)
-                if (!performOwnerGuardedTeardown(acceptedGen)) {
-                    Log.i(TAG, "Post-commit teardown skipped for $acceptedGen: generation superseded")
-                    return
-                }
-
+                // PERSISTENCE CONFIRMED COMMITTED: Verify generation on Main thread before teardown or memory update
                 withContext(Dispatchers.Main.immediate) {
                     if (currentGeneration()?.matches(acceptedGen) != true) {
                         Log.i(TAG, "Aborting post-commit side effects for $acceptedGen: active generation is ${currentGeneration()}")
+                        return@withContext
+                    }
+
+                    activeAlarm.set(snoozeSnapshot)
+
+                    if (!performOwnerGuardedTeardown(acceptedGen)) {
+                        Log.i(TAG, "Post-commit teardown skipped for $acceptedGen: generation superseded")
                         return@withContext
                     }
 

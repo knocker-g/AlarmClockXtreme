@@ -508,6 +508,19 @@ class PreferencesManager @Inject constructor(
                         return false // DataStore holds a DIFFERENT active generation -> REJECT clear!
                     }
                 }
+            } else if (requestSnapshot.state == "SNOOZED") {
+                // Generation-Qualified Session Transition: SNOOZED update MUST specify targetGen
+                val target = targetGen ?: return false
+                val snapshotGen = AlarmGeneration(requestSnapshot.alarmId, requestSnapshot.scheduledAt, requestSnapshot.fireId)
+                if (!snapshotGen.matches(target)) {
+                    return false // Request snapshot does NOT match targetGen -> REJECT!
+                }
+                if (storedId != null && storedId > 0L) {
+                    val storedGen = AlarmGeneration(storedId, storedScheduledAt, storedFireId)
+                    if (!storedGen.matches(target)) {
+                        return false // DataStore holds a DIFFERENT active generation -> REJECT SNOOZED update!
+                    }
+                }
             }
             return true
         }

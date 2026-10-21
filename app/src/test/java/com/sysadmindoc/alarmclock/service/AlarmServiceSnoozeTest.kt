@@ -10,6 +10,7 @@ import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.domain.NextAlarmCalculator
+import com.sysadmindoc.alarmclock.service.AlarmService.Companion.ActiveAlarmSnapshot
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -261,5 +262,73 @@ class AlarmServiceSnoozeTest {
 
         coVerify(exactly = 1) { mockScheduler.scheduleSnoozeAt(any(), any()) }
         assertEquals(0, service.currentSnoozeCount)
+    }
+
+    @Test
+    fun `DataStore ActiveAlarmWriterPolicy - SNOOZED update without targetGen is rejected`() {
+        val snapshot = ActiveAlarmSnapshot(
+            alarmId = 42L,
+            scheduledAt = 1000L,
+            fireId = "fire-42",
+            firedAt = 1000L,
+            state = "SNOOZED",
+            refireAt = 1600L
+        )
+
+        val allowed = PreferencesManager.ActiveAlarmWriterPolicy.shouldExecuteUpdate(
+            storedId = 42L,
+            storedScheduledAt = 1000L,
+            storedFireId = "fire-42",
+            requestSnapshot = snapshot,
+            targetGen = null // Null targetGen!
+        )
+
+        assertFalse("SNOOZED update without targetGen MUST be rejected", allowed)
+    }
+
+    @Test
+    fun `DataStore ActiveAlarmWriterPolicy - SNOOZED update for stale generation A rejected when stored holds B`() {
+        val targetGenA = AlarmGeneration(42L, 1000L, "fire-42")
+        val snapshotA = ActiveAlarmSnapshot(
+            alarmId = 42L,
+            scheduledAt = 1000L,
+            fireId = "fire-42",
+            firedAt = 1000L,
+            state = "SNOOZED",
+            refireAt = 1600L
+        )
+
+        // DataStore holds newer active generation B
+        val allowed = PreferencesManager.ActiveAlarmWriterPolicy.shouldExecuteUpdate(
+            storedId = 99L,
+            storedScheduledAt = 5000L,
+            storedFireId = "fire-99",
+            requestSnapshot = snapshotA,
+            targetGen = targetGenA
+        )
+
+        assertFalse("Delayed SNOOZED update for stale A MUST be rejected when DataStore holds B", allowed)
+    }
+
+    @Test
+    fun `DataStore ActiveAlarmWriterPolicy - new START B FIRING state replaces A`() {
+        val snapshotB = ActiveAlarmSnapshot(
+            alarmId = 99L,
+            scheduledAt = 5000L,
+            fireId = "fire-99",
+            firedAt = 5000L,
+            state = "FIRING",
+            refireAt = 0L
+        )
+
+        val allowed = PreferencesManager.ActiveAlarmWriterPolicy.shouldExecuteUpdate(
+            storedId = 42L,
+            storedScheduledAt = 1000L,
+            storedFireId = "fire-42",
+            requestSnapshot = snapshotB,
+            targetGen = null
+        )
+
+        assertTrue("New FIRING start B MUST replace A", allowed)
     }
 }

@@ -272,20 +272,31 @@ class AlarmScheduler @Inject constructor(
      * alarm's normal repeat calculation.
      */
     suspend fun scheduleSnoozeAt(alarm: Alarm, snoozeAtMillis: Long): Boolean {
-        val snoozeTime = snoozeAtMillis.coerceAtLeast(System.currentTimeMillis() + 1_000L)
-        if (!canScheduleExactAlarms()) {
+        if (snoozeAtMillis <= System.currentTimeMillis()) {
             val sanitizedAlarm = alarm.sanitized()
-            val fireId = AlarmIncidentEvent.fireIdFor(sanitizedAlarm.id, snoozeTime)
+            val fireId = AlarmIncidentEvent.fireIdFor(sanitizedAlarm.id, snoozeAtMillis)
             recordScheduleIncident(
                 alarmId = sanitizedAlarm.id,
                 fireId = fireId,
-                triggerTime = snoozeTime,
+                triggerTime = snoozeAtMillis,
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "SNOOZE_AT_INVALID_PAST_TARGET"
+            )
+            return false
+        }
+        if (!canScheduleExactAlarms()) {
+            val sanitizedAlarm = alarm.sanitized()
+            val fireId = AlarmIncidentEvent.fireIdFor(sanitizedAlarm.id, snoozeAtMillis)
+            recordScheduleIncident(
+                alarmId = sanitizedAlarm.id,
+                fireId = fireId,
+                triggerTime = snoozeAtMillis,
                 status = AlarmIncidentEvent.STATUS_FAILED,
                 reasonCode = "SNOOZE_AT_EXACT_PERMISSION_REVOKED"
             )
             return false
         }
-        return scheduleAt(alarm, snoozeTime)
+        return scheduleAt(alarm, snoozeAtMillis)
     }
 
     /**
