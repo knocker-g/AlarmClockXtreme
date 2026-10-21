@@ -153,10 +153,24 @@ class AlarmSchedulerTest {
     fun `successful fresh OS SET cancels DirectBoot fallback when OWNER_EXCLUSIVE route active`() = runTest {
         val alarm = enabledAlarm(id = 200L)
         val triggerTime = System.currentTimeMillis() + 600_000L
+        every { calculator.calculate(any<Alarm>()) } returns triggerTime
         every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
 
+        var currentAlarm200 = enabledAlarm(id = 200L).copy(nextTriggerTime = triggerTime)
+        coEvery { repository.getById(200L) } answers { currentAlarm200 }
+        coEvery { repository.updateNextTrigger(200L, any()) } answers {
+            currentAlarm200 = currentAlarm200.copy(nextTriggerTime = secondArg())
+        }
+
+        val mockAuth = com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority(
+            alarmId = 200L, instanceToken = "inst-200", definitionRevision = 1L, scheduleRevision = 1L,
+            lifecycle = "LIVE", desiredOperation = "SET", desiredTriggerMillis = triggerTime,
+            reconcileState = "SETTLED", restoreEpoch = 100L, actionKey = "act-init"
+        )
+        coEvery { repository.getAuthorityByAlarmId(200L) } returns mockAuth
+
         val mockOwner = mockk<ScheduleAuthorityOwner>()
-        coEvery { mockOwner.executeOperation(200L, "SET", triggerTime, any(), any()) } returns OwnerResult.OsAccepted(1L, "act-sched-200")
+        coEvery { mockOwner.executeOperation(eq(200L), eq("SET"), eq(triggerTime), any(), any()) } returns OwnerResult.OsAccepted(1L, "act-sched-200")
 
         val ownerRouteAuthority = mockk<ProductionSchedulingRouteAuthority>()
         every { ownerRouteAuthority.isOwnerRouteActive() } returns true
@@ -175,6 +189,7 @@ class AlarmSchedulerTest {
 
         mockkObject(DirectBootAlarmCache)
         every { DirectBootAlarmCache.cancelScheduledFallback(any(), 200L) } just Runs
+        every { DirectBootAlarmCache.saveIfEarlier(any(), any(), any()) } just Runs
 
         schedulerWithOwner.schedule(alarm, requestWidgetUpdate = false)
 
@@ -185,10 +200,24 @@ class AlarmSchedulerTest {
     fun `DuplicateIgnored outcome does NOT cancel DirectBoot fallback when OWNER_EXCLUSIVE route active`() = runTest {
         val alarm = enabledAlarm(id = 201L)
         val triggerTime = System.currentTimeMillis() + 600_000L
+        every { calculator.calculate(any<Alarm>()) } returns triggerTime
         every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
 
+        var currentAlarm201 = enabledAlarm(id = 201L).copy(nextTriggerTime = triggerTime)
+        coEvery { repository.getById(201L) } answers { currentAlarm201 }
+        coEvery { repository.updateNextTrigger(201L, any()) } answers {
+            currentAlarm201 = currentAlarm201.copy(nextTriggerTime = secondArg())
+        }
+
+        val mockAuth = com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority(
+            alarmId = 201L, instanceToken = "inst-201", definitionRevision = 1L, scheduleRevision = 1L,
+            lifecycle = "LIVE", desiredOperation = "SET", desiredTriggerMillis = triggerTime,
+            reconcileState = "SETTLED", restoreEpoch = 100L, actionKey = "act-init"
+        )
+        coEvery { repository.getAuthorityByAlarmId(201L) } returns mockAuth
+
         val mockOwner = mockk<ScheduleAuthorityOwner>()
-        coEvery { mockOwner.executeOperation(201L, "SET", triggerTime, any(), any()) } returns OwnerResult.DuplicateIgnored
+        coEvery { mockOwner.executeOperation(eq(201L), eq("SET"), eq(triggerTime), any(), any()) } returns OwnerResult.DuplicateIgnored
 
         val ownerRouteAuthority = mockk<ProductionSchedulingRouteAuthority>()
         every { ownerRouteAuthority.isOwnerRouteActive() } returns true
@@ -217,11 +246,24 @@ class AlarmSchedulerTest {
     fun `failed OS SET preserves DirectBoot fallback when OWNER_EXCLUSIVE route active`() = runTest {
         val alarm = enabledAlarm(id = 202L)
         val triggerTime = System.currentTimeMillis() + 600_000L
+        every { calculator.calculate(any<Alarm>()) } returns triggerTime
         every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
 
+        var currentAlarm202 = enabledAlarm(id = 202L).copy(nextTriggerTime = triggerTime)
+        coEvery { repository.getById(202L) } answers { currentAlarm202 }
+        coEvery { repository.updateNextTrigger(202L, any()) } answers {
+            currentAlarm202 = currentAlarm202.copy(nextTriggerTime = secondArg())
+        }
+
+        val mockAuth = com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority(
+            alarmId = 202L, instanceToken = "inst-202", definitionRevision = 1L, scheduleRevision = 1L,
+            lifecycle = "LIVE", desiredOperation = "SET", desiredTriggerMillis = triggerTime,
+            reconcileState = "SETTLED", restoreEpoch = 100L, actionKey = "act-init"
+        )
+        coEvery { repository.getAuthorityByAlarmId(202L) } returns mockAuth
+
         val mockOwner = mockk<ScheduleAuthorityOwner>()
-        coEvery { mockOwner.executeOperation(202L, "SET", triggerTime, any(), any()) } returns OwnerResult.OutcomeUnknown(1L, IllegalStateException("OS Error"))
-        coEvery { mockOwner.executeOperation(202L, "CANCEL", null, any(), any()) } returns OwnerResult.OsAccepted(1L, "act-cancel-202")
+        coEvery { mockOwner.executeOperation(eq(202L), eq("SET"), eq(triggerTime), any(), any()) } returns OwnerResult.OutcomeUnknown(1L, IllegalStateException("OS Error"))
 
         val ownerRouteAuthority = mockk<ProductionSchedulingRouteAuthority>()
         every { ownerRouteAuthority.isOwnerRouteActive() } returns true
@@ -240,7 +282,6 @@ class AlarmSchedulerTest {
 
         mockkObject(DirectBootAlarmCache)
         every { DirectBootAlarmCache.cancelScheduledFallback(any(), 202L) } just Runs
-        every { DirectBootAlarmCache.removeIfMatches(any(), any()) } just Runs
 
         schedulerWithOwner.schedule(alarm, requestWidgetUpdate = false)
 
@@ -733,6 +774,8 @@ class AlarmSchedulerTest {
         every { ownerRouteAuthority.isOwnerRouteActive() } returns true
 
         var currentAlarm = enabledAlarm(id = alarmId).copy(nextTriggerTime = triggerTimeA)
+        every { calculator.calculate(any()) } returns triggerTimeB
+        every { calculator.calculate(any(), any()) } returns triggerTimeB
         coEvery { repository.getAuthorityByAlarmId(alarmId) } answers {
             kotlinx.coroutines.runBlocking { realDao.getAuthorityByAlarmId(alarmId) }
         }
@@ -787,6 +830,7 @@ class AlarmSchedulerTest {
         // Step 2: Operation B originates, captures revision 1L from real Room DB, and executes SET(B) -> advances real Room DB to 2L
         val originAuthB = realDao.getAuthorityByAlarmId(alarmId)
         val capturedRevisionB = originAuthB!!.scheduleRevision
+        currentAlarm = currentAlarm.copy(nextTriggerTime = triggerTimeB)
         val resB = realOwner.executeOperation(
             alarmId = alarmId,
             desiredOperation = "SET",
@@ -805,11 +849,12 @@ class AlarmSchedulerTest {
         assertNotNull(resultA)
         assertFalse("Stale operation A MUST be rejected by real Room DAO CAS when B became current", resultA!!)
 
-        // Step 4: Verify real Room DB authority and fake OS slot remain B (90000L)
+        // Step 4: Verify real Room DB authority and fake OS slot remain B (triggerTimeB) and currentAlarm nextTriggerTime is preserved
         val finalAuth = realDao.getAuthorityByAlarmId(alarmId)
         assertEquals("Final real Room DB scheduleRevision MUST remain 2L", 2L, finalAuth?.scheduleRevision)
-        assertEquals("Final real Room DB trigger MUST remain B (90000L)", triggerTimeB, finalAuth?.desiredTriggerMillis)
-        assertEquals("Fake OS slot MUST contain SET_90000L", listOf("SET_$triggerTimeB"), fakeOsSlot)
+        assertEquals("Final real Room DB trigger MUST remain B", triggerTimeB, finalAuth?.desiredTriggerMillis)
+        assertEquals("Fake OS slot MUST contain SET_B", listOf("SET_$triggerTimeB"), fakeOsSlot)
+        assertEquals("Current DB nextTriggerTime MUST remain B", triggerTimeB, currentAlarm.nextTriggerTime)
 
         roomDb.close()
     }

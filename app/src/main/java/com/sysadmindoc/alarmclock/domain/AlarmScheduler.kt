@@ -227,19 +227,16 @@ class AlarmScheduler @Inject constructor(
             }
         }
 
-        repository.updateNextTrigger(sanitizedAlarm.id, triggerTime)
-        val success = scheduleAlarmClock(sanitizedAlarm.id, triggerTime)
+        val success = scheduleAt(
+            sanitizedAlarm,
+            triggerTime,
+            requestWidgetUpdate = requestWidgetUpdate,
+            expectedRevision = originRevision
+        )
         if (!success) {
-            cancelScheduledEntries(sanitizedAlarm.id)
-            repository.updateNextTrigger(sanitizedAlarm.id, 0)
-            requestWidgetUpdateIfNeeded(requestWidgetUpdate)
-            syncBedtimeDndRule()
+            Log.i("AlarmScheduler", "schedule() for alarm ${sanitizedAlarm.id} at trigger $triggerTime was unfulfilled or superseded; preserving current DB state")
             return
         }
-        DirectBootAlarmCache.saveIfEarlier(context, sanitizedAlarm, triggerTime)
-        scheduleSupportingWork(sanitizedAlarm, triggerTime)
-        requestWidgetUpdateIfNeeded(requestWidgetUpdate)
-        syncBedtimeDndRule()
     }
 
     /**
