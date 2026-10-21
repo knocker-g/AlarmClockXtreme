@@ -292,4 +292,50 @@ class RecoveryAdjudicatorTest {
         assertEquals(RecoveryDecisionOutcome.NEEDS_EVIDENCE, decision.outcome)
         assertEquals("EVALUATION_TIME_MISSING", decision.reasonCode)
     }
+
+    @Test
+    fun `snooze evaluation with nonpositive evaluationTimeMillis fails closed`() {
+        val activeSession = ActiveAlarmSnapshot(
+            alarmId = 42L,
+            scheduledAt = 2000L,
+            fireId = "fire-42",
+            firedAt = 2000L,
+            state = "SNOOZED",
+            refireAt = 2600L
+        )
+        val snapshotZero = baseSnapshot.copy(
+            activeSession = activeSession,
+            evaluationTimeMillis = 0L
+        )
+        val decisionZero = adjudicator.adjudicate(snapshotZero)
+        assertEquals(RecoveryDecisionOutcome.NEEDS_EVIDENCE, decisionZero.outcome)
+        assertEquals("EVALUATION_TIME_INVALID", decisionZero.reasonCode)
+
+        val snapshotNegative = baseSnapshot.copy(
+            activeSession = activeSession,
+            evaluationTimeMillis = -100L
+        )
+        val decisionNegative = adjudicator.adjudicate(snapshotNegative)
+        assertEquals(RecoveryDecisionOutcome.NEEDS_EVIDENCE, decisionNegative.outcome)
+        assertEquals("EVALUATION_TIME_INVALID", decisionNegative.reasonCode)
+    }
+
+    @Test
+    fun `FIRING session with null evaluation time preserves prior valid non-Snooze behavior`() {
+        val activeSession = ActiveAlarmSnapshot(
+            alarmId = 42L,
+            scheduledAt = 2000L,
+            fireId = "fire-42",
+            firedAt = 2000L,
+            state = "FIRING",
+            refireAt = 0L
+        )
+        val snapshot = baseSnapshot.copy(
+            activeSession = activeSession,
+            evaluationTimeMillis = null
+        )
+        val decision = adjudicator.adjudicate(snapshot)
+        assertEquals(RecoveryDecisionOutcome.RESUME_COMMITTED_SESSION_EFFECTS, decision.outcome)
+        assertEquals("ACTIVE_SESSION_COMMITTED", decision.reasonCode)
+    }
 }

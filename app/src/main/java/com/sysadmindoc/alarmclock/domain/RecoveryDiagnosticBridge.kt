@@ -106,10 +106,6 @@ class RecoveryDiagnosticBridge @Inject constructor(
         }
 
         // 6. Construct P1 Snapshot for Diagnostic Adjudication
-        val evalTime = evaluationTimeMillis
-            ?: collectionReport.sessionEvidence.snapshot?.firedAt
-            ?: System.currentTimeMillis()
-
         val snapshot = RecoveryEvidenceSnapshot(
             alarmId = alarmId,
             authority = auth,
@@ -119,7 +115,7 @@ class RecoveryDiagnosticBridge @Inject constructor(
             localIncarnationId = localMarker.localId,
             osOutcome = OsOperationOutcome.NOT_ATTEMPTED,
             definitionExists = true,
-            evaluationTimeMillis = evalTime
+            evaluationTimeMillis = evaluationTimeMillis
         )
 
         val diagnosticDecision = adjudicator.adjudicate(snapshot)

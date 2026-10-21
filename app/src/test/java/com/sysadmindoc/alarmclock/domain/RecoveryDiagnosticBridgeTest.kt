@@ -261,6 +261,76 @@ class RecoveryDiagnosticBridgeTest {
     }
 
     @Test
+    fun `snooze evaluation at refireAt minus 1ms produces RESUME_COMMITTED_SESSION_EFFECTS`() = runBlocking {
+        database.alarmDao().insert(testAlarm)
+        authorityDao.insertMeta(testMeta)
+        authorityDao.insertAuthority(readyAuthority)
+
+        val snoozedSettings = AppSettings(
+            activeAlarmId = 42L,
+            activeAlarmScheduledAt = 2000L,
+            activeAlarmFireId = "fire-42",
+            activeAlarmFiredAt = 2100L,
+            activeAlarmState = "SNOOZED",
+            activeAlarmRefireAt = 2600L
+        )
+        coEvery { preferencesManager.getCurrentSettings() } returns snoozedSettings
+
+        val report = bridge.evaluateDiagnosticRecovery(alarmId = 42L, evaluationTimeMillis = 2599L)
+
+        assertEquals(BridgeStatus.EVALUATED_DIAGNOSTICALLY, report.status)
+        assertEquals(RecoveryDecisionOutcome.RESUME_COMMITTED_SESSION_EFFECTS, report.diagnosticDecision?.outcome)
+        assertEquals("ACTIVE_SESSION_COMMITTED", report.diagnosticDecision?.reasonCode)
+    }
+
+    @Test
+    fun `snooze evaluation at refireAt produces EXPIRED_SNOOZED_SESSION_EVIDENCE QUARANTINE`() = runBlocking {
+        database.alarmDao().insert(testAlarm)
+        authorityDao.insertMeta(testMeta)
+        authorityDao.insertAuthority(readyAuthority)
+
+        val snoozedSettings = AppSettings(
+            activeAlarmId = 42L,
+            activeAlarmScheduledAt = 2000L,
+            activeAlarmFireId = "fire-42",
+            activeAlarmFiredAt = 2100L,
+            activeAlarmState = "SNOOZED",
+            activeAlarmRefireAt = 2600L
+        )
+        coEvery { preferencesManager.getCurrentSettings() } returns snoozedSettings
+
+        val report = bridge.evaluateDiagnosticRecovery(alarmId = 42L, evaluationTimeMillis = 2600L)
+
+        assertEquals(BridgeStatus.EVALUATED_DIAGNOSTICALLY, report.status)
+        assertEquals(RecoveryDecisionOutcome.QUARANTINE, report.diagnosticDecision?.outcome)
+        assertEquals("EXPIRED_SNOOZED_SESSION_EVIDENCE", report.diagnosticDecision?.reasonCode)
+    }
+
+    @Test
+    fun `snooze evaluation with null evaluationTimeMillis produces EVALUATED_NEEDS_EVIDENCE and does NOT substitute firedAt`() = runBlocking {
+        database.alarmDao().insert(testAlarm)
+        authorityDao.insertMeta(testMeta)
+        authorityDao.insertAuthority(readyAuthority)
+
+        val snoozedSettings = AppSettings(
+            activeAlarmId = 42L,
+            activeAlarmScheduledAt = 2000L,
+            activeAlarmFireId = "fire-42",
+            activeAlarmFiredAt = 2100L, // firedAt = 2100L
+            activeAlarmState = "SNOOZED",
+            activeAlarmRefireAt = 2600L
+        )
+        coEvery { preferencesManager.getCurrentSettings() } returns snoozedSettings
+
+        // Pass evaluationTimeMillis = null explicitly!
+        val report = bridge.evaluateDiagnosticRecovery(alarmId = 42L, evaluationTimeMillis = null)
+
+        assertEquals(BridgeStatus.EVALUATED_DIAGNOSTICALLY, report.status)
+        assertEquals(RecoveryDecisionOutcome.NEEDS_EVIDENCE, report.diagnosticDecision?.outcome)
+        assertEquals("EVALUATION_TIME_MISSING", report.diagnosticDecision?.reasonCode)
+    }
+
+    @Test
     fun `actionable-looking P1 decision remains strictly non-actionable in bridge report`() = runBlocking {
         database.alarmDao().insert(testAlarm)
         authorityDao.insertMeta(testMeta)
