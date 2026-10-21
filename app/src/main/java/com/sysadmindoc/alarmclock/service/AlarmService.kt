@@ -1282,7 +1282,11 @@ class AlarmService : Service() {
         targetGen: AlarmGeneration? = null,
         ack: CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>? = null
     ): Boolean {
-        activeAlarm.set(snapshot)
+        // Do NOT mutate activeAlarm in memory before DataStore ACK for Snooze state.
+        // Memory update for SNOOZED occurs only upon confirmed COMMITTED result.
+        if (snapshot == null || snapshot.state == "FIRING") {
+            activeAlarm.set(snapshot)
+        }
         val enqueued = preferencesManager.enqueueActiveAlarmUpdate(snapshot, targetGen, ack)
         if (!enqueued) {
             Log.w(TAG, "Failed to enqueue active alarm update to PreferencesManager")
@@ -2712,7 +2716,8 @@ class AlarmService : Service() {
 
         when (snoozeResult) {
             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED -> {
-                // PERSISTENCE CONFIRMED COMMITTED: Now perform owner-guarded teardown and side effects
+                // PERSISTENCE CONFIRMED COMMITTED: Now update memory state, perform owner-guarded teardown and side effects
+                activeAlarm.set(snoozeSnapshot)
                 if (!performOwnerGuardedTeardown(acceptedGen)) {
                     Log.i(TAG, "Post-commit teardown skipped for $acceptedGen: generation superseded")
                     return
