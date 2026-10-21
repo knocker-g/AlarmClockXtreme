@@ -2607,6 +2607,9 @@ class AlarmService : Service() {
                     com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED -> {
                         Log.i(TAG, "Successfully committed DataStore auto-dismiss clear for $acceptedGen")
                     }
+                    com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.IDEMPOTENT_NOOP -> {
+                        Log.i(TAG, "Auto-dismiss clear was idempotent no-op for $acceptedGen")
+                    }
                     com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.REJECTED_STALE -> {
                         Log.i(TAG, "Auto-dismiss clear rejected for $acceptedGen: DataStore holds newer active generation")
                     }
@@ -2781,6 +2784,9 @@ class AlarmService : Service() {
                     stopSelf()
                 }
             }
+            com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.IDEMPOTENT_NOOP -> {
+                Log.i(TAG, "Snooze state update was idempotent no-op for $acceptedGen")
+            }
             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.REJECTED_STALE -> {
                 Log.i(TAG, "Snooze state write rejected for $acceptedGen: DataStore holds newer active generation")
             }
@@ -2868,6 +2874,9 @@ class AlarmService : Service() {
                 when (clearResult) {
                     com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED -> {
                         Log.i(TAG, "Successfully committed DataStore active alarm clear for $acceptedGen")
+                    }
+                    com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.IDEMPOTENT_NOOP -> {
+                        Log.i(TAG, "Active alarm clear was idempotent no-op for $acceptedGen")
                     }
                     com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.REJECTED_STALE -> {
                         Log.i(TAG, "Active alarm clear rejected for $acceptedGen: DataStore holds newer active generation")
@@ -2987,6 +2996,10 @@ class AlarmService : Service() {
                             )
                             committed = true
                         }
+                        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.IDEMPOTENT_NOOP -> {
+                            Log.i(TAG, "Active alarm clear retry was idempotent no-op for $acceptedGen")
+                            committed = true
+                        }
                         com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.REJECTED_STALE -> {
                             Log.i(TAG, "Active alarm clear retry rejected for $acceptedGen: DataStore holds newer active generation")
                             staleRejected = true
@@ -3054,6 +3067,10 @@ class AlarmService : Service() {
                                 fireId = acceptedGen.fireId,
                                 scheduledAt = acceptedGen.scheduledAt
                             )
+                            committed = true
+                        }
+                        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.IDEMPOTENT_NOOP -> {
+                            Log.i(TAG, "Snooze state retry was idempotent no-op for $acceptedGen")
                             committed = true
                         }
                         com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.REJECTED_STALE -> {

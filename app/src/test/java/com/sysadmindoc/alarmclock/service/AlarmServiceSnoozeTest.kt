@@ -335,6 +335,56 @@ class AlarmServiceSnoozeTest {
     }
 
     @Test
+    fun `DataStore ActiveAlarmWriterPolicy - identical SNOOZED A replay is classified as IDEMPOTENT_NOOP`() {
+        val targetGenA = AlarmGeneration(42L, 1000L, "fire-42")
+        val snapshotA = ActiveAlarmSnapshot(
+            alarmId = 42L,
+            scheduledAt = 1000L,
+            fireId = "fire-42",
+            firedAt = 1000L,
+            state = "SNOOZED",
+            refireAt = 1600L
+        )
+
+        val decision = PreferencesManager.ActiveAlarmWriterPolicy.evaluateUpdate(
+            storedId = 42L,
+            storedScheduledAt = 1000L,
+            storedFireId = "fire-42",
+            storedState = "SNOOZED",
+            storedRefireAt = 1600L, // Identical refireAt!
+            requestSnapshot = snapshotA,
+            targetGen = targetGenA
+        )
+
+        assertEquals(PreferencesManager.WriterPolicyDecision.IDEMPOTENT_NOOP, decision)
+    }
+
+    @Test
+    fun `DataStore ActiveAlarmWriterPolicy - SNOOZED A with different refireAt is REJECT_STALE`() {
+        val targetGenA = AlarmGeneration(42L, 1000L, "fire-42")
+        val snapshotA = ActiveAlarmSnapshot(
+            alarmId = 42L,
+            scheduledAt = 1000L,
+            fireId = "fire-42",
+            firedAt = 1000L,
+            state = "SNOOZED",
+            refireAt = 1600L
+        )
+
+        val decision = PreferencesManager.ActiveAlarmWriterPolicy.evaluateUpdate(
+            storedId = 42L,
+            storedScheduledAt = 1000L,
+            storedFireId = "fire-42",
+            storedState = "SNOOZED",
+            storedRefireAt = 9999L, // Different refireAt!
+            requestSnapshot = snapshotA,
+            targetGen = targetGenA
+        )
+
+        assertEquals(PreferencesManager.WriterPolicyDecision.REJECT_STALE, decision)
+    }
+
+    @Test
     fun `DataStore ActiveAlarmWriterPolicy - new START B FIRING state replaces A`() {
         val snapshotB = ActiveAlarmSnapshot(
             alarmId = 99L,
