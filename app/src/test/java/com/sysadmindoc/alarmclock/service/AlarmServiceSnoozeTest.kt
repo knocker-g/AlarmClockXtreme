@@ -385,6 +385,56 @@ class AlarmServiceSnoozeTest {
     }
 
     @Test
+    fun `DataStore ActiveAlarmWriterPolicy - SNOOZED update with nonpositive refireAt is REJECT_STALE`() {
+        val targetGenA = AlarmGeneration(42L, 1000L, "fire-42")
+        val snapshotZeroRefire = ActiveAlarmSnapshot(
+            alarmId = 42L,
+            scheduledAt = 1000L,
+            fireId = "fire-42",
+            firedAt = 1000L,
+            state = "SNOOZED",
+            refireAt = 0L // RefireAt <= 0L!
+        )
+
+        val decision = PreferencesManager.ActiveAlarmWriterPolicy.evaluateUpdate(
+            storedId = 42L,
+            storedScheduledAt = 1000L,
+            storedFireId = "fire-42",
+            storedState = "FIRING",
+            storedRefireAt = 0L,
+            requestSnapshot = snapshotZeroRefire,
+            targetGen = targetGenA
+        )
+
+        assertEquals(PreferencesManager.WriterPolicyDecision.REJECT_STALE, decision)
+    }
+
+    @Test
+    fun `DataStore ActiveAlarmWriterPolicy - SNOOZED update when storedState is invalid is REJECT_STALE`() {
+        val targetGenA = AlarmGeneration(42L, 1000L, "fire-42")
+        val snapshotA = ActiveAlarmSnapshot(
+            alarmId = 42L,
+            scheduledAt = 1000L,
+            fireId = "fire-42",
+            firedAt = 1000L,
+            state = "SNOOZED",
+            refireAt = 1600L
+        )
+
+        val decisionBlankState = PreferencesManager.ActiveAlarmWriterPolicy.evaluateUpdate(
+            storedId = 42L,
+            storedScheduledAt = 1000L,
+            storedFireId = "fire-42",
+            storedState = "", // Blank storedState!
+            storedRefireAt = 0L,
+            requestSnapshot = snapshotA,
+            targetGen = targetGenA
+        )
+
+        assertEquals(PreferencesManager.WriterPolicyDecision.REJECT_STALE, decisionBlankState)
+    }
+
+    @Test
     fun `DataStore ActiveAlarmWriterPolicy - new START B FIRING state replaces A`() {
         val snapshotB = ActiveAlarmSnapshot(
             alarmId = 99L,

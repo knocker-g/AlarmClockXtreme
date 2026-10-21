@@ -518,6 +518,11 @@ class PreferencesManager @Inject constructor(
                     }
                 }
             } else if (requestSnapshot.state == "SNOOZED") {
+                // SNOOZED update MUST have a valid positive refireAt
+                if (requestSnapshot.refireAt <= 0L) {
+                    return WriterPolicyDecision.REJECT_STALE
+                }
+
                 // Generation-Qualified Session Transition: SNOOZED update MUST specify explicit targetGen
                 val target = targetGen ?: return WriterPolicyDecision.REJECT_STALE
                 val snapshotGen = AlarmGeneration(
@@ -534,6 +539,11 @@ class PreferencesManager @Inject constructor(
                 val storedGen = AlarmGeneration(storedId, storedScheduledAt, storedFireId)
                 if (!storedGen.matches(target)) {
                     return WriterPolicyDecision.REJECT_STALE // DataStore holds a DIFFERENT active generation -> REJECT SNOOZED update!
+                }
+
+                // Stored active session MUST be in a legal current state (FIRING or SNOOZED)
+                if (storedState !in setOf("FIRING", "SNOOZED")) {
+                    return WriterPolicyDecision.REJECT_STALE // Invalid/unknown/blank stored state -> REJECT!
                 }
 
                 // Check stored state for SNOOZED transition:
