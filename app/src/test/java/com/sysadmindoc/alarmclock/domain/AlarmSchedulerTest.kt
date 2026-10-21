@@ -328,6 +328,23 @@ class AlarmSchedulerTest {
         assertFalse("RestoreEpoch mismatch MUST reject cancellation", canceled)
     }
 
+    @Test
+    fun `stale operation A detects nextTrigger updated by B and aborts OS registration`() = runTest {
+        val alarmA = enabledAlarm(id = 500L).copy(nextTriggerTime = 1000L)
+        val triggerTimeA = 2000L
+        val triggerTimeB = 9000L
+
+        // First getById returns alarmA, second getById (after updateNextTrigger) returns alarm updated by B
+        coEvery { repository.getById(500L) } returnsMany listOf(
+            alarmA,
+            alarmA.copy(nextTriggerTime = triggerTimeB)
+        )
+
+        val result = scheduler.scheduleAt(alarmA, triggerTimeA)
+
+        assertFalse("Stale operation A MUST abort when B updated nextTriggerTime", result)
+    }
+
     private fun enabledAlarm(id: Long): Alarm = Alarm(
         id = id,
         hour = 7,

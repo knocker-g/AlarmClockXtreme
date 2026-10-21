@@ -322,6 +322,15 @@ class AlarmScheduler @Inject constructor(
 
         val previousTrigger = repository.getById(sanitizedAlarm.id)?.nextTriggerTime ?: 0L
         repository.updateNextTrigger(sanitizedAlarm.id, triggerTime)
+
+        // Verify nextTriggerTime is still triggerTime before making OS AlarmManager call
+        val currentDbTrigger = repository.getById(sanitizedAlarm.id)?.nextTriggerTime
+        if (currentDbTrigger != null && currentDbTrigger != triggerTime) {
+            Log.i("AlarmScheduler", "Aborting OS registration for alarm ${sanitizedAlarm.id}: nextTriggerTime updated to $currentDbTrigger while operation for $triggerTime was in-flight")
+            repository.casUpdateNextTrigger(id = sanitizedAlarm.id, expectedTrigger = triggerTime, newTrigger = previousTrigger)
+            return false
+        }
+
         val success = try {
             scheduleAlarmClock(sanitizedAlarm.id, triggerTime)
         } catch (e: Exception) {
