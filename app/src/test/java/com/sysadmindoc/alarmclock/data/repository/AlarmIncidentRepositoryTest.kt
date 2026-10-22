@@ -100,13 +100,13 @@ class AlarmIncidentRepositoryTest {
     }
 
     @Test
-    fun occurrenceDeliveryCountIgnoresRequestedAndFailedForegroundServiceIncidents() = runBlocking {
+    fun occurrenceDeliveryCountRequiresStatusSucceededOnProvenDeliveryTypes() = runBlocking {
         val dao = FakeAlarmIncidentEventDao()
         val repository = AlarmIncidentRepository(dao, MinimalContext())
         val alarmId = 42L
         val scheduledAt = 1000L
 
-        fun makeIncident(type: String, status: String): AlarmIncidentEvent {
+        fun makeIncident(type: String, status: String, reasonCode: String = "TEST"): AlarmIncidentEvent {
             return AlarmIncidentEvent(
                 fireId = "alarm-42-1000",
                 alarmId = alarmId,
@@ -115,7 +115,7 @@ class AlarmIncidentRepositoryTest {
                 elapsedMs = 500L,
                 type = type,
                 status = status,
-                reasonCode = "TEST",
+                reasonCode = reasonCode,
                 source = "test",
                 sdkInt = 35,
                 standbyBucket = "ACTIVE_10",
@@ -133,16 +133,18 @@ class AlarmIncidentRepositoryTest {
         dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_FAILED))
         // Record an UNKNOWN status incident
         dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_UNKNOWN))
-        // Record a BROADCAST arrival incident without accepted FGS/Notification/Audio
+        // Record a RECEIVED FGS incident before startAlarm (START_COMMAND_RECEIVED recorded before startForeground or audio)
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_RECEIVED, reasonCode = "START_COMMAND_RECEIVED"))
+        // Record a BROADCAST arrival incident
         dao.insert(makeIncident(AlarmIncidentEvent.TYPE_BROADCAST, AlarmIncidentEvent.STATUS_RECEIVED))
 
-        // REQUESTED, FAILED, UNKNOWN, and BROADCAST-only do NOT count as positive user-facing delivery proof
+        // None of these prove user-facing alarm delivery
         assertEquals(0, repository.occurrenceDeliveryCount(alarmId, scheduledAt))
 
-        // Record a RECEIVED FGS incident (accepted start command!)
-        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_RECEIVED))
+        // Record a STATUS_SUCCEEDED FOREGROUND_PROMOTION incident (startForeground succeeded!)
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_PROMOTION, AlarmIncidentEvent.STATUS_SUCCEEDED))
 
-        // RECEIVED counts as positive delivery proof!
+        // STATUS_SUCCEEDED proves user-facing delivery!
         assertEquals(1, repository.occurrenceDeliveryCount(alarmId, scheduledAt))
     }
 
@@ -195,14 +197,12 @@ class AlarmIncidentRepositoryTest {
         ): Int = inserted.count {
             it.alarmId == alarmId &&
                 it.scheduledAt == scheduledAt &&
+                it.status == AlarmIncidentEvent.STATUS_SUCCEEDED &&
                 it.type in listOf(
-                    AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                    AlarmIncidentEvent.TYPE_FOREGROUND_PROMOTION,
                     AlarmIncidentEvent.TYPE_NOTIFICATION,
-                    AlarmIncidentEvent.TYPE_AUDIO
-                ) &&
-                it.status in listOf(
-                    AlarmIncidentEvent.STATUS_SUCCEEDED,
-                    AlarmIncidentEvent.STATUS_RECEIVED
+                    AlarmIncidentEvent.TYPE_AUDIO,
+                    AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE
                 )
         }
 

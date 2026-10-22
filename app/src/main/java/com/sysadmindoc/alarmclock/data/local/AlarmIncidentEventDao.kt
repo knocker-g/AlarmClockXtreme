@@ -31,18 +31,19 @@ interface AlarmIncidentEventDao {
 
     /**
      * Count positive accepted delivery evidence for a specific alarm occurrence.
-     * Uses an EXPLICIT FAIL-CLOSED ALLOWLIST for positive delivery statuses ('SUCCEEDED', 'RECEIVED')
-     * across proven delivery event types ('FOREGROUND_SERVICE', 'NOTIFICATION', 'AUDIO').
+     * Requires status = 'SUCCEEDED' across user-facing delivery event types
+     * ('FOREGROUND_PROMOTION', 'NOTIFICATION', 'AUDIO') or 'FOREGROUND_SERVICE' with status = 'SUCCEEDED'.
      *
-     * Excludes 'REQUESTED', 'FAILED', 'UNKNOWN', 'SKIPPED' or any unlisted/unrecognized status.
+     * STATUS_RECEIVED (e.g. START_COMMAND_RECEIVED recorded before startForeground or startAlarm)
+     * and STATUS_REQUESTED/STATUS_FAILED/STATUS_UNKNOWN do NOT prove user-facing delivery.
      */
     @Query(
         """
         SELECT COUNT(*) FROM alarm_incident_events
         WHERE alarmId = :alarmId
           AND scheduledAt = :scheduledAt
-          AND type IN ('FOREGROUND_SERVICE', 'NOTIFICATION', 'AUDIO')
-          AND status IN ('SUCCEEDED', 'RECEIVED')
+          AND status = 'SUCCEEDED'
+          AND type IN ('FOREGROUND_PROMOTION', 'NOTIFICATION', 'AUDIO', 'FOREGROUND_SERVICE')
         """
     )
     suspend fun countPositiveAcceptedDeliveryByOccurrence(
