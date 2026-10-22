@@ -67,7 +67,7 @@ class AlarmIncidentRepository @Inject constructor(
      */
     suspend fun occurrenceDeliveryCount(alarmId: Long, scheduledAt: Long): Int {
         return broadcastDeliveryCount(alarmId, scheduledAt) +
-            dao.countByOccurrenceAndType(
+            dao.countAcceptedByOccurrenceAndType(
                 alarmId = alarmId,
                 scheduledAt = scheduledAt,
                 type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE

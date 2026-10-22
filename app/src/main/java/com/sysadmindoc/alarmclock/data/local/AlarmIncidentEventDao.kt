@@ -29,6 +29,25 @@ interface AlarmIncidentEventDao {
     )
     suspend fun countByOccurrenceAndType(alarmId: Long, scheduledAt: Long, type: String): Int
 
+    /**
+     * Count accepted/delivered foreground service incidents for a specific alarm occurrence.
+     * Excludes status 'REQUESTED' (merely requested, not accepted) and 'FAILED' (service start failed).
+     */
+    @Query(
+        """
+        SELECT COUNT(*) FROM alarm_incident_events
+        WHERE alarmId = :alarmId
+          AND scheduledAt = :scheduledAt
+          AND type = :type
+          AND status NOT IN ('REQUESTED', 'FAILED')
+        """
+    )
+    suspend fun countAcceptedByOccurrenceAndType(
+        alarmId: Long,
+        scheduledAt: Long,
+        type: String
+    ): Int
+
     @Query("DELETE FROM alarm_incident_events WHERE eventAt < :beforeMs")
     suspend fun deleteOlderThan(beforeMs: Long)
 

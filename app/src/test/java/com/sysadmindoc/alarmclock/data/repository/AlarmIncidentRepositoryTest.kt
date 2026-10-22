@@ -99,6 +99,49 @@ class AlarmIncidentRepositoryTest {
         assertFalse(dao.deleteOlderThanCalled)
     }
 
+    @Test
+    fun occurrenceDeliveryCountIgnoresRequestedAndFailedForegroundServiceIncidents() = runBlocking {
+        val dao = FakeAlarmIncidentEventDao()
+        val repository = AlarmIncidentRepository(dao, MinimalContext())
+        val alarmId = 42L
+        val scheduledAt = 1000L
+
+        fun makeIncident(type: String, status: String): AlarmIncidentEvent {
+            return AlarmIncidentEvent(
+                fireId = "alarm-42-1000",
+                alarmId = alarmId,
+                scheduledAt = scheduledAt,
+                eventAt = 1005L,
+                elapsedMs = 500L,
+                type = type,
+                status = status,
+                reasonCode = "TEST",
+                source = "test",
+                sdkInt = 35,
+                standbyBucket = "ACTIVE_10",
+                exactAlarmAllowed = "TRUE",
+                notificationPermissionGranted = "TRUE",
+                fullScreenIntentAllowed = "TRUE",
+                batteryOptimizationsIgnored = "TRUE",
+                algorithmVersion = AlarmIncidentEvent.VALUE_NONE
+            )
+        }
+
+        // Record a REQUESTED FGS incident (merely requested, not accepted)
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_REQUESTED))
+        // Record a FAILED FGS incident (service start failed)
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_FAILED))
+
+        // REQUESTED and FAILED do NOT count as positive delivery proof
+        assertEquals(0, repository.occurrenceDeliveryCount(alarmId, scheduledAt))
+
+        // Record a SUCCEEDED FGS incident (accepted delivery!)
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_SUCCEEDED))
+
+        // SUCCEEDED counts as positive delivery proof!
+        assertEquals(1, repository.occurrenceDeliveryCount(alarmId, scheduledAt))
+    }
+
     private class MinimalContext : ContextWrapper(null) {
         override fun getPackageName(): String = "com.sysadmindoc.alarmclock"
 
@@ -140,6 +183,17 @@ class AlarmIncidentRepositoryTest {
             type: String
         ): Int = inserted.count {
             it.alarmId == alarmId && it.scheduledAt == scheduledAt && it.type == type
+        }
+
+        override suspend fun countAcceptedByOccurrenceAndType(
+            alarmId: Long,
+            scheduledAt: Long,
+            type: String
+        ): Int = inserted.count {
+            it.alarmId == alarmId &&
+                it.scheduledAt == scheduledAt &&
+                it.type == type &&
+                it.status !in listOf(AlarmIncidentEvent.STATUS_REQUESTED, AlarmIncidentEvent.STATUS_FAILED)
         }
 
         override suspend fun deleteOlderThan(beforeMs: Long) {
