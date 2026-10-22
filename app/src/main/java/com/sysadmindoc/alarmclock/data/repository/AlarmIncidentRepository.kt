@@ -66,12 +66,10 @@ class AlarmIncidentRepository @Inject constructor(
      * that was already ringing and the fire watchdog re-fired it on top.
      */
     suspend fun occurrenceDeliveryCount(alarmId: Long, scheduledAt: Long): Int {
-        return broadcastDeliveryCount(alarmId, scheduledAt) +
-            dao.countAcceptedByOccurrenceAndType(
-                alarmId = alarmId,
-                scheduledAt = scheduledAt,
-                type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE
-            )
+        return dao.countPositiveAcceptedDeliveryByOccurrence(
+            alarmId = alarmId,
+            scheduledAt = scheduledAt
+        )
     }
 
     fun recordAsync(

@@ -30,22 +30,24 @@ interface AlarmIncidentEventDao {
     suspend fun countByOccurrenceAndType(alarmId: Long, scheduledAt: Long, type: String): Int
 
     /**
-     * Count accepted/delivered foreground service incidents for a specific alarm occurrence.
-     * Excludes status 'REQUESTED' (merely requested, not accepted) and 'FAILED' (service start failed).
+     * Count positive accepted delivery evidence for a specific alarm occurrence.
+     * Uses an EXPLICIT FAIL-CLOSED ALLOWLIST for positive delivery statuses ('SUCCEEDED', 'RECEIVED')
+     * across proven delivery event types ('FOREGROUND_SERVICE', 'NOTIFICATION', 'AUDIO').
+     *
+     * Excludes 'REQUESTED', 'FAILED', 'UNKNOWN', 'SKIPPED' or any unlisted/unrecognized status.
      */
     @Query(
         """
         SELECT COUNT(*) FROM alarm_incident_events
         WHERE alarmId = :alarmId
           AND scheduledAt = :scheduledAt
-          AND type = :type
-          AND status NOT IN ('REQUESTED', 'FAILED')
+          AND type IN ('FOREGROUND_SERVICE', 'NOTIFICATION', 'AUDIO')
+          AND status IN ('SUCCEEDED', 'RECEIVED')
         """
     )
-    suspend fun countAcceptedByOccurrenceAndType(
+    suspend fun countPositiveAcceptedDeliveryByOccurrence(
         alarmId: Long,
-        scheduledAt: Long,
-        type: String
+        scheduledAt: Long
     ): Int
 
     @Query("DELETE FROM alarm_incident_events WHERE eventAt < :beforeMs")

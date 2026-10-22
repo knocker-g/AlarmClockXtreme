@@ -131,14 +131,18 @@ class AlarmIncidentRepositoryTest {
         dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_REQUESTED))
         // Record a FAILED FGS incident (service start failed)
         dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_FAILED))
+        // Record an UNKNOWN status incident
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_UNKNOWN))
+        // Record a BROADCAST arrival incident without accepted FGS/Notification/Audio
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_BROADCAST, AlarmIncidentEvent.STATUS_RECEIVED))
 
-        // REQUESTED and FAILED do NOT count as positive delivery proof
+        // REQUESTED, FAILED, UNKNOWN, and BROADCAST-only do NOT count as positive user-facing delivery proof
         assertEquals(0, repository.occurrenceDeliveryCount(alarmId, scheduledAt))
 
-        // Record a SUCCEEDED FGS incident (accepted delivery!)
-        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_SUCCEEDED))
+        // Record a RECEIVED FGS incident (accepted start command!)
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_RECEIVED))
 
-        // SUCCEEDED counts as positive delivery proof!
+        // RECEIVED counts as positive delivery proof!
         assertEquals(1, repository.occurrenceDeliveryCount(alarmId, scheduledAt))
     }
 
@@ -185,15 +189,21 @@ class AlarmIncidentRepositoryTest {
             it.alarmId == alarmId && it.scheduledAt == scheduledAt && it.type == type
         }
 
-        override suspend fun countAcceptedByOccurrenceAndType(
+        override suspend fun countPositiveAcceptedDeliveryByOccurrence(
             alarmId: Long,
-            scheduledAt: Long,
-            type: String
+            scheduledAt: Long
         ): Int = inserted.count {
             it.alarmId == alarmId &&
                 it.scheduledAt == scheduledAt &&
-                it.type == type &&
-                it.status !in listOf(AlarmIncidentEvent.STATUS_REQUESTED, AlarmIncidentEvent.STATUS_FAILED)
+                it.type in listOf(
+                    AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                    AlarmIncidentEvent.TYPE_NOTIFICATION,
+                    AlarmIncidentEvent.TYPE_AUDIO
+                ) &&
+                it.status in listOf(
+                    AlarmIncidentEvent.STATUS_SUCCEEDED,
+                    AlarmIncidentEvent.STATUS_RECEIVED
+                )
         }
 
         override suspend fun deleteOlderThan(beforeMs: Long) {
