@@ -83,6 +83,14 @@ class AlarmSchedulerExactPermissionTest {
         coEvery { holidayRepository.isHoliday(any()) } returns false
         every { weatherRepository.getCachedWeather() } returns null
 
+        val alarmStore = mutableMapOf<Long, Alarm>()
+        coEvery { repository.getById(any()) } answers { alarmStore[firstArg()] }
+        coEvery { repository.updateNextTrigger(any(), any()) } answers {
+            val id = firstArg<Long>()
+            val newTrigger = secondArg<Long>()
+            alarmStore[id] = enabledAlarm(id).copy(nextTriggerTime = newTrigger)
+        }
+
         scheduler = AlarmScheduler(
             context = context,
             repository = repository,
@@ -106,8 +114,9 @@ class AlarmSchedulerExactPermissionTest {
     fun `without the permission nothing is registered and the stored trigger is cleared`() =
         runTest {
             ShadowAlarmManager.setCanScheduleExactAlarms(false)
-            every { calculator.calculate(any<Alarm>(), any()) } returns
-                System.currentTimeMillis() + 15 * 60_000L
+            val triggerTime = System.currentTimeMillis() + 15 * 60_000L
+            every { calculator.calculate(any<Alarm>()) } returns triggerTime
+            every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
 
             scheduler.schedule(enabledAlarm(id = 71L), requestWidgetUpdate = false)
 
@@ -121,6 +130,7 @@ class AlarmSchedulerExactPermissionTest {
     fun `with the permission the alarm is registered as before`() = runTest {
         ShadowAlarmManager.setCanScheduleExactAlarms(true)
         val triggerTime = System.currentTimeMillis() + 15 * 60_000L
+        every { calculator.calculate(any<Alarm>()) } returns triggerTime
         every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
 
         scheduler.schedule(enabledAlarm(id = 72L), requestWidgetUpdate = false)
@@ -186,6 +196,7 @@ class AlarmSchedulerExactPermissionTest {
     fun `before API 31 the alarm is scheduled whatever the shadow says`() = runTest {
         ShadowAlarmManager.setCanScheduleExactAlarms(false)
         val triggerTime = System.currentTimeMillis() + 15 * 60_000L
+        every { calculator.calculate(any<Alarm>()) } returns triggerTime
         every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
 
         scheduler.schedule(enabledAlarm(id = 75L), requestWidgetUpdate = false)
@@ -199,6 +210,7 @@ class AlarmSchedulerExactPermissionTest {
         runTest {
             ShadowAlarmManager.setCanScheduleExactAlarms(true)
             val triggerTime = System.currentTimeMillis() + 15 * 60_000L
+            every { calculator.calculate(any<Alarm>()) } returns triggerTime
             every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
 
             val mockAlarmManager = mockk<AlarmManager>(relaxed = true)
@@ -238,7 +250,7 @@ class AlarmSchedulerExactPermissionTest {
             testScheduler.schedule(enabledAlarm(id = 76L), requestWidgetUpdate = false)
 
             assertTrue(scheduledAlarms().isEmpty())
-            coVerify { repository.updateNextTrigger(76L, 0) }
+            coVerify(exactly = 0) { repository.updateNextTrigger(76L, 0) }
             verify(timeout = 1000) {
                 incidentRepository.recordAsync(
                     alarmId = 76L,

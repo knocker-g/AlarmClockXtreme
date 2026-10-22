@@ -716,6 +716,13 @@ class AlarmScheduler @Inject constructor(
             true
         } catch (e: Exception) {
             Log.e("AlarmScheduler", "applyRawOsSet failed for alarm $alarmId", e)
+            recordScheduleIncident(
+                alarmId = alarmId,
+                fireId = fireId,
+                triggerTime = triggerTime,
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "EXACT_SCHEDULE_FAILED_${e.javaClass.simpleName}"
+            )
             false
         }
     }

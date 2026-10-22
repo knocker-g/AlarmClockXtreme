@@ -75,6 +75,42 @@ class V29CompatibilityDiagnosticTest {
             "CREATE TABLE IF NOT EXISTS `alarms` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `hour` INTEGER NOT NULL, `minute` INTEGER NOT NULL, `label` TEXT NOT NULL, `isEnabled` INTEGER NOT NULL, `repeatDays` TEXT NOT NULL, `ringtoneUri` TEXT NOT NULL, `vibrationEnabled` INTEGER NOT NULL, `vibrationIntensity` INTEGER NOT NULL, `volume` INTEGER NOT NULL, `overrideSystemVolume` INTEGER NOT NULL, `gradualVolumeSeconds` INTEGER NOT NULL, `snoozeDurationMinutes` INTEGER NOT NULL, `maxSnoozeCount` INTEGER NOT NULL, `showOnLockScreen` INTEGER NOT NULL, `challengeType` TEXT NOT NULL, `group` TEXT NOT NULL, `flashWake` INTEGER NOT NULL, `vibrationPattern` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `nextTriggerTime` INTEGER NOT NULL, `ttsEnabled` INTEGER NOT NULL, `walkStepsRequired` INTEGER NOT NULL, `wakeConfirmEnabled` INTEGER NOT NULL, `wakeConfirmDelayMinutes` INTEGER NOT NULL, `smartAlarmEnabled` INTEGER NOT NULL, `smartAlarmWindowMinutes` INTEGER NOT NULL, `skipOnHolidays` INTEGER NOT NULL, `nfcTagId` TEXT NOT NULL, `barcodeValue` TEXT NOT NULL, `spotifyUri` TEXT NOT NULL, `hueEnabled` INTEGER NOT NULL, `huePreWakeMinutes` INTEGER NOT NULL, `photoMatchUri` TEXT NOT NULL, `challengeChain` TEXT NOT NULL, `progressiveSnooze` INTEGER NOT NULL, `backupSoundEnabled` INTEGER NOT NULL, `backupSoundDelaySec` INTEGER NOT NULL, `sunriseSimulation` INTEGER NOT NULL, `sunriseMinutes` INTEGER NOT NULL, `specificDate` TEXT NOT NULL, `profileName` TEXT NOT NULL, `earlyDismissMinutes` INTEGER NOT NULL, `guardianEnabled` INTEGER NOT NULL, `guardianPhone` TEXT NOT NULL, `guardianDelaySec` INTEGER NOT NULL, `locationDismissEnabled` INTEGER NOT NULL, `locationDismissLat` REAL NOT NULL, `locationDismissLng` REAL NOT NULL, `locationDismissRadius` INTEGER NOT NULL, `wifiDismissSsid` TEXT NOT NULL, `internetRadioUrl` TEXT NOT NULL, `flashlightStrobe` INTEGER NOT NULL, `morningRoutine` TEXT NOT NULL, `hardwareButtonAction` TEXT NOT NULL, `dismissAtRingtoneEnd` INTEGER NOT NULL, `holdToDismissEnabled` INTEGER NOT NULL, `ringtonePool` TEXT NOT NULL, `solarOffsetMinutes` INTEGER NOT NULL, `solarAnchor` TEXT NOT NULL, `vibrationDelaySeconds` INTEGER NOT NULL, `weatherEarlyMinutes` INTEGER NOT NULL, `requiredSquats` INTEGER NOT NULL, `dismissActionType` TEXT NOT NULL, `dismissActionPayload` TEXT NOT NULL, `firingBackgroundImageEnabled` INTEGER NOT NULL, `firingBackgroundImageUri` TEXT NOT NULL, `firingBackgroundBlurEnabled` INTEGER NOT NULL, `sortOrder` INTEGER NOT NULL, `shiftPattern` TEXT NOT NULL, `shiftPatternStartDate` TEXT NOT NULL, `timezonePolicy` TEXT NOT NULL, `fixedTimezoneId` TEXT NOT NULL)"
         )
         sqliteDb.execSQL(
+            "CREATE TABLE IF NOT EXISTS `alarm_events` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `alarmId` INTEGER NOT NULL, `alarmLabel` TEXT NOT NULL, `scheduledTime` INTEGER NOT NULL, `firedAt` INTEGER NOT NULL, `action` TEXT NOT NULL, `actionAt` INTEGER NOT NULL, `challengeType` TEXT NOT NULL, `challengeSolveTimeMs` INTEGER NOT NULL, `challengeRetryCount` INTEGER NOT NULL, `snoozeCount` INTEGER NOT NULL, `dayOfWeek` INTEGER NOT NULL)"
+        )
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_alarm_events_action` ON `alarm_events` (`action`)")
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_alarm_events_firedAt` ON `alarm_events` (`firedAt`)")
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_alarm_events_alarmId_firedAt` ON `alarm_events` (`alarmId`, `firedAt`)")
+
+        sqliteDb.execSQL(
+            "CREATE TABLE IF NOT EXISTS `actigraphy_sessions` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `alarmId` INTEGER NOT NULL, `startedAt` INTEGER NOT NULL, `endedAt` INTEGER NOT NULL, `targetTime` INTEGER NOT NULL, `totalMinutes` INTEGER NOT NULL, `awakeMinutes` INTEGER NOT NULL, `lightMinutes` INTEGER NOT NULL, `deepMinutes` INTEGER NOT NULL, `averageSleepIndex` REAL NOT NULL, `firedEarly` INTEGER NOT NULL, `algorithm` TEXT NOT NULL, `decisionReason` TEXT NOT NULL, `observedMinutesBeforeDecision` INTEGER NOT NULL, `smartWakeMode` TEXT NOT NULL)"
+        )
+
+        sqliteDb.execSQL(
+            "CREATE TABLE IF NOT EXISTS `alarm_incident_events` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `fireId` TEXT NOT NULL, `alarmId` INTEGER NOT NULL, `scheduledAt` INTEGER NOT NULL, `eventAt` INTEGER NOT NULL, `elapsedMs` INTEGER NOT NULL, `type` TEXT NOT NULL, `status` TEXT NOT NULL, `reasonCode` TEXT NOT NULL, `source` TEXT NOT NULL, `sdkInt` INTEGER NOT NULL, `standbyBucket` TEXT NOT NULL, `exactAlarmAllowed` TEXT NOT NULL, `notificationPermissionGranted` TEXT NOT NULL, `fullScreenIntentAllowed` TEXT NOT NULL, `batteryOptimizationsIgnored` TEXT NOT NULL, `algorithmVersion` TEXT NOT NULL)"
+        )
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_alarm_incident_events_alarmId` ON `alarm_incident_events` (`alarmId`)")
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_alarm_incident_events_fireId` ON `alarm_incident_events` (`fireId`)")
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_alarm_incident_events_eventAt` ON `alarm_incident_events` (`eventAt`)")
+
+        sqliteDb.execSQL(
+            "CREATE TABLE IF NOT EXISTS `snore_events` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `sessionStartedAt` INTEGER NOT NULL, `startedAt` INTEGER NOT NULL, `endedAt` INTEGER NOT NULL, `durationMillis` INTEGER NOT NULL, `peakDb` REAL NOT NULL, `averageDb` REAL NOT NULL, `windowCount` INTEGER NOT NULL, `source` TEXT NOT NULL)"
+        )
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_snore_events_sessionStartedAt` ON `snore_events` (`sessionStartedAt`)")
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_snore_events_startedAt` ON `snore_events` (`startedAt`)")
+
+        sqliteDb.execSQL(
+            "CREATE TABLE IF NOT EXISTS `pre_sleep_tag_entries` (`localDate` TEXT NOT NULL, `tagKey` TEXT NOT NULL, `loggedAt` INTEGER NOT NULL, PRIMARY KEY(`localDate`, `tagKey`))"
+        )
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_pre_sleep_tag_entries_localDate` ON `pre_sleep_tag_entries` (`localDate`)")
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_pre_sleep_tag_entries_tagKey` ON `pre_sleep_tag_entries` (`tagKey`)")
+
+        sqliteDb.execSQL(
+            "CREATE TABLE IF NOT EXISTS `alarm_groups` (`name` TEXT NOT NULL, PRIMARY KEY(`name`))"
+        )
+        sqliteDb.execSQL(
+            "CREATE TABLE IF NOT EXISTS `news_sources` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `feedUrl` TEXT NOT NULL, `sortOrder` INTEGER NOT NULL)"
+        )
+        sqliteDb.execSQL(
             "CREATE TABLE IF NOT EXISTS `schedule_authority` (`alarmId` INTEGER NOT NULL, `instanceToken` TEXT NOT NULL, `definitionRevision` INTEGER NOT NULL, `scheduleRevision` INTEGER NOT NULL, `lifecycle` TEXT NOT NULL, `desiredOperation` TEXT NOT NULL, `desiredTriggerMillis` INTEGER, `reconcileState` TEXT NOT NULL, `restoreEpoch` INTEGER NOT NULL, `actionKey` TEXT, PRIMARY KEY(`alarmId`))"
         )
         sqliteDb.execSQL(
@@ -142,12 +178,13 @@ class V29CompatibilityDiagnosticTest {
         val database = Room.databaseBuilder(context, AlarmDatabase::class.java, "alarm_clock.db")
             .allowMainThreadQueries()
             .setJournalMode(RoomDatabase.JournalMode.TRUNCATE)
+            .addMigrations(AlarmDatabase.MIGRATION_29_30, AlarmDatabase.MIGRATION_30_31)
             .addCallback(AlarmDatabase.DATABASE_CALLBACK)
             .build()
 
         val reopenedDb = database.openHelper.writableDatabase
         assertTrue("Room must open existing v29 DB without schema error", reopenedDb.isOpen)
-        assertEquals(29, reopenedDb.version)
+        assertEquals(31, reopenedDb.version)
 
         // 3. VERIFY: Does CREATE TRIGGER IF NOT EXISTS replace the existing trigger definition?
         val reopenedCursor = reopenedDb.query("SELECT sql FROM sqlite_master WHERE name = 'trigger_durable_intent_identity_insert'")
@@ -155,28 +192,26 @@ class V29CompatibilityDiagnosticTest {
         val currentTriggerSql = reopenedCursor.getString(0)
         reopenedCursor.close()
 
-        // OBSERVED FACT: SQLite CREATE TRIGGER IF NOT EXISTS does NOT overwrite existing triggers!
+        // VERIFY: MIGRATION_29_30 replaced legacy triggers with canonical triggers containing 0x3000
         val triggerWasReplaced = currentTriggerSql.contains("0x3000")
-        assertFalse("OBSERVED FACT: CREATE TRIGGER IF NOT EXISTS does NOT replace existing triggers in SQLite", triggerWasReplaced)
+        assertTrue("Canonical trigger installed by MIGRATION_29_30 MUST contain 0x3000", triggerWasReplaced)
 
-        // 4. VERIFY: Does DurableIntentTriggerVerifier detect trigger drift?
+        // 4. VERIFY: Does DurableIntentTriggerVerifier confirm valid canonical triggers post-migration?
         val verifierResult = verifier.verifyTriggers(reopenedDb)
-        assertTrue("Verifier MUST detect trigger drift on existing v29 DB", verifierResult is TriggerVerificationResult.Invalid)
-        val invalidResult = verifierResult as TriggerVerificationResult.Invalid
-        assertTrue(invalidResult.missingOrAlteredTriggers.any { it.contains("trigger_durable_intent_identity_insert") })
+        assertTrue("Verifier MUST confirm valid canonical triggers post-migration", verifierResult is TriggerVerificationResult.Valid)
 
-        // 5. VERIFY: Does ideographic space \u3000 bypass old trigger on unmigrated v29 DB?
-        var ideographicSpaceBypassedOldTrigger = false
+        // 5. VERIFY: Ideographic space \u3000 is REJECTED by canonical triggers post-migration
+        var ideographicSpaceBypassedTrigger = false
         try {
             reopenedDb.execSQL(
                 "INSERT INTO durable_operation_intent (operationToken, alarmId, operationEpoch, incarnationId, operationKind, phase, intentRevision) " +
                     "VALUES ('\u3000', 99, 1, 'inc-99', 'SET', 'PENDING', 1)"
             )
-            ideographicSpaceBypassedOldTrigger = true
+            ideographicSpaceBypassedTrigger = true
         } catch (_: SQLiteConstraintException) {
-            ideographicSpaceBypassedOldTrigger = false
+            ideographicSpaceBypassedTrigger = false
         }
-        assertTrue("OBSERVED FACT: Ideographic space \\u3000 BYPASSES old SQLite trigger when unmigrated", ideographicSpaceBypassedOldTrigger)
+        assertFalse("Canonical trigger MUST reject ideographic space \u3000", ideographicSpaceBypassedTrigger)
 
         // 6. VERIFY: Existing records are preserved 100%
         val alarm = database.alarmDao().getAll().first()
