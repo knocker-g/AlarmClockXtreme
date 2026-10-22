@@ -80,7 +80,7 @@ class DirectBootAlarmService : Service() {
             true
         )
 
-        startForeground(NOTIFICATION_ID, buildNotification(label, timeLabel))
+        startForeground(NOTIFICATION_ID, buildNotification(timeLabel))
         DirectBootAlarmCache.recordFired(
             context = this,
             alarmId = alarmId,
@@ -94,7 +94,7 @@ class DirectBootAlarmService : Service() {
         handler.postDelayed(autoStop, AUTO_STOP_MS)
     }
 
-    private fun buildNotification(label: String, timeLabel: String): Notification {
+    private fun buildNotification(timeLabel: String): Notification {
         val stopIntent = Intent(this, DirectBootAlarmService::class.java).apply {
             action = ACTION_STOP
             putExtra(DirectBootAlarmReceiver.EXTRA_ALARM_ID, currentAlarmId)
@@ -107,7 +107,6 @@ class DirectBootAlarmService : Service() {
         )
 
         val text = when {
-            label.isNotBlank() -> label
             timeLabel.isNotBlank() -> timeLabel
             else -> getString(R.string.direct_boot_alarm_title)
         }
