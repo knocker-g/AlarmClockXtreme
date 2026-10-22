@@ -14,7 +14,10 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
+@RunWith(RobolectricTestRunner::class)
 class AlarmIncidentRepositoryTest {
 
     @Test
@@ -99,6 +102,112 @@ class AlarmIncidentRepositoryTest {
         assertFalse(dao.deleteOlderThanCalled)
     }
 
+    @Test
+    fun occurrenceDeliveryCountRequiresExactProducerTupleForProvenDelivery() = runBlocking {
+        val dao = FakeAlarmIncidentEventDao()
+        val repository = AlarmIncidentRepository(dao, MinimalContext())
+        val alarmId = 42L
+        val scheduledAt = 1000L
+
+        fun makeIncident(type: String, status: String, reasonCode: String = "TEST"): AlarmIncidentEvent {
+            return AlarmIncidentEvent(
+                fireId = "alarm-42-1000",
+                alarmId = alarmId,
+                scheduledAt = scheduledAt,
+                eventAt = 1005L,
+                elapsedMs = 500L,
+                type = type,
+                status = status,
+                reasonCode = reasonCode,
+                source = "test",
+                sdkInt = 35,
+                standbyBucket = "ACTIVE_10",
+                exactAlarmAllowed = "TRUE",
+                notificationPermissionGranted = "TRUE",
+                fullScreenIntentAllowed = "TRUE",
+                batteryOptimizationsIgnored = "TRUE",
+                algorithmVersion = AlarmIncidentEvent.VALUE_NONE
+            )
+        }
+
+        // Record a REQUESTED FGS incident (merely requested, not accepted)
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_REQUESTED))
+        // Record a FAILED FGS incident (service start failed)
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_FAILED))
+        // Record an UNKNOWN status incident
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_UNKNOWN))
+        // Record a RECEIVED FGS incident before startAlarm (START_COMMAND_RECEIVED recorded before startForeground or audio)
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_RECEIVED, reasonCode = "START_COMMAND_RECEIVED"))
+        // Record a BROADCAST arrival incident
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_BROADCAST, AlarmIncidentEvent.STATUS_RECEIVED))
+
+        // Record SUCCEEDED events that are NOT proven user-facing delivery
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_PROMOTION, AlarmIncidentEvent.STATUS_SUCCEEDED, reasonCode = "PLACEHOLDER_FOREGROUND_STARTED"))
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_SUCCEEDED, reasonCode = "DUPLICATE_START_COMMAND_IGNORED"))
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_AUDIO, AlarmIncidentEvent.STATUS_SUCCEEDED, reasonCode = "BACKUP_SOUND_ESCALATED"))
+
+        // None of these prove user-facing alarm delivery
+        assertEquals(0, repository.occurrenceDeliveryCount(alarmId, scheduledAt))
+
+        // Record an ALARM_NOTIFICATION_POSTED incident (real firing notification posted!)
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_NOTIFICATION, AlarmIncidentEvent.STATUS_SUCCEEDED, reasonCode = "ALARM_NOTIFICATION_POSTED"))
+
+        // ALARM_NOTIFICATION_POSTED counts as positive delivery proof!
+        assertEquals(1, repository.occurrenceDeliveryCount(alarmId, scheduledAt))
+    }
+
+    @Test
+    fun realRoomSqliteExecutionTestForPositiveDeliveryProof() = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val roomDb = androidx.room.Room.inMemoryDatabaseBuilder(
+            context,
+            com.sysadmindoc.alarmclock.data.local.AlarmDatabase::class.java
+        ).allowMainThreadQueries().build()
+
+        val realDao = roomDb.alarmIncidentEventDao()
+        val repository = AlarmIncidentRepository(realDao, MinimalContext())
+        val alarmId = 42L
+        val scheduledAt = 1000L
+
+        fun makeIncident(type: String, status: String, reasonCode: String): AlarmIncidentEvent {
+            return AlarmIncidentEvent(
+                fireId = "alarm-42-1000",
+                alarmId = alarmId,
+                scheduledAt = scheduledAt,
+                eventAt = 1005L,
+                elapsedMs = 500L,
+                type = type,
+                status = status,
+                reasonCode = reasonCode,
+                source = "test",
+                sdkInt = 35,
+                standbyBucket = "ACTIVE_10",
+                exactAlarmAllowed = "TRUE",
+                notificationPermissionGranted = "TRUE",
+                fullScreenIntentAllowed = "TRUE",
+                batteryOptimizationsIgnored = "TRUE",
+                algorithmVersion = AlarmIncidentEvent.VALUE_NONE
+            )
+        }
+
+        // 1. Non-delivery / unproven incidents inserted into real Room SQLite DB
+        realDao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_REQUESTED, "START_FOREGROUND_SERVICE"))
+        realDao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_RECEIVED, "START_COMMAND_RECEIVED"))
+        realDao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_PROMOTION, AlarmIncidentEvent.STATUS_SUCCEEDED, "PLACEHOLDER_FOREGROUND_STARTED"))
+        realDao.insert(makeIncident(AlarmIncidentEvent.TYPE_AUDIO, AlarmIncidentEvent.STATUS_SUCCEEDED, "BACKUP_SOUND_ESCALATED"))
+
+        // Real Room SQL query evaluates to 0
+        assertEquals(0, repository.occurrenceDeliveryCount(alarmId, scheduledAt))
+
+        // 2. Proven user-facing delivery incidents inserted into real Room SQLite DB
+        realDao.insert(makeIncident(AlarmIncidentEvent.TYPE_NOTIFICATION, AlarmIncidentEvent.STATUS_SUCCEEDED, "ALARM_NOTIFICATION_POSTED"))
+
+        // Real Room SQL query evaluates to 1
+        assertEquals(1, repository.occurrenceDeliveryCount(alarmId, scheduledAt))
+
+        roomDb.close()
+    }
+
     private class MinimalContext : ContextWrapper(null) {
         override fun getPackageName(): String = "com.sysadmindoc.alarmclock"
 
@@ -140,6 +249,25 @@ class AlarmIncidentRepositoryTest {
             type: String
         ): Int = inserted.count {
             it.alarmId == alarmId && it.scheduledAt == scheduledAt && it.type == type
+        }
+
+        override suspend fun countPositiveAcceptedDeliveryByOccurrence(
+            alarmId: Long,
+            scheduledAt: Long
+        ): Int = inserted.count {
+            it.alarmId == alarmId &&
+                it.scheduledAt == scheduledAt &&
+                it.status == AlarmIncidentEvent.STATUS_SUCCEEDED &&
+                (
+                    (it.type == AlarmIncidentEvent.TYPE_NOTIFICATION && it.reasonCode == "ALARM_NOTIFICATION_POSTED") ||
+                    (it.type == AlarmIncidentEvent.TYPE_AUDIO && it.reasonCode in listOf(
+                        "MEDIA3_PLAYER_STARTED",
+                        "MEDIA_PLAYER_STARTED",
+                        "DEFAULT_FALLBACK_STARTED",
+                        "MEDIA3_INTERNET_RADIO_STARTED",
+                        "SPOTIFY_PLAYBACK_CONFIRMED"
+                    ))
+                )
         }
 
         override suspend fun deleteOlderThan(beforeMs: Long) {
