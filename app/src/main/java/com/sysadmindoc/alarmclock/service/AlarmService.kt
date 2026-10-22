@@ -1169,7 +1169,7 @@ class AlarmService : Service() {
         )
 
         val timeText = displayAlarmTime(alarm)
-        val hideLabel = preferencesManager.getCachedSettings().hideAlarmLabelsOnPublicSurfaces
+        val hideLabel = preferencesManager.shouldHideLabelsOnPublicSurfaces()
 
         return NotificationCompat.Builder(this, CHANNEL_ALARM)
             .setSmallIcon(R.drawable.ic_alarm)
@@ -3437,7 +3437,7 @@ class AlarmService : Service() {
         val timeStr = displayAlarmTime(alarm)
         val label = AlarmPublicText.requiredAlarmLabel(
             label = alarm.label,
-            hideLabel = preferencesManager.getCachedSettings().hideAlarmLabelsOnPublicSurfaces
+            hideLabel = preferencesManager.shouldHideLabelsOnPublicSurfaces()
         )
 
         val notification = NotificationCompat.Builder(this, CHANNEL_MISSED)
