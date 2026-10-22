@@ -14,7 +14,10 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
+@RunWith(RobolectricTestRunner::class)
 class AlarmIncidentRepositoryTest {
 
     @Test
@@ -153,6 +156,58 @@ class AlarmIncidentRepositoryTest {
         assertEquals(1, repository.occurrenceDeliveryCount(alarmId, scheduledAt))
     }
 
+    @Test
+    fun realRoomSqliteExecutionTestForPositiveDeliveryProof() = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val roomDb = androidx.room.Room.inMemoryDatabaseBuilder(
+            context,
+            com.sysadmindoc.alarmclock.data.local.AlarmDatabase::class.java
+        ).allowMainThreadQueries().build()
+
+        val realDao = roomDb.alarmIncidentEventDao()
+        val repository = AlarmIncidentRepository(realDao, MinimalContext())
+        val alarmId = 42L
+        val scheduledAt = 1000L
+
+        fun makeIncident(type: String, status: String, reasonCode: String): AlarmIncidentEvent {
+            return AlarmIncidentEvent(
+                fireId = "alarm-42-1000",
+                alarmId = alarmId,
+                scheduledAt = scheduledAt,
+                eventAt = 1005L,
+                elapsedMs = 500L,
+                type = type,
+                status = status,
+                reasonCode = reasonCode,
+                source = "test",
+                sdkInt = 35,
+                standbyBucket = "ACTIVE_10",
+                exactAlarmAllowed = "TRUE",
+                notificationPermissionGranted = "TRUE",
+                fullScreenIntentAllowed = "TRUE",
+                batteryOptimizationsIgnored = "TRUE",
+                algorithmVersion = AlarmIncidentEvent.VALUE_NONE
+            )
+        }
+
+        // 1. Non-delivery / unproven incidents inserted into real Room SQLite DB
+        realDao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_REQUESTED, "START_FOREGROUND_SERVICE"))
+        realDao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_RECEIVED, "START_COMMAND_RECEIVED"))
+        realDao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_PROMOTION, AlarmIncidentEvent.STATUS_SUCCEEDED, "PLACEHOLDER_FOREGROUND_STARTED"))
+        realDao.insert(makeIncident(AlarmIncidentEvent.TYPE_AUDIO, AlarmIncidentEvent.STATUS_SUCCEEDED, "BACKUP_SOUND_ESCALATED"))
+
+        // Real Room SQL query evaluates to 0
+        assertEquals(0, repository.occurrenceDeliveryCount(alarmId, scheduledAt))
+
+        // 2. Proven user-facing delivery incidents inserted into real Room SQLite DB
+        realDao.insert(makeIncident(AlarmIncidentEvent.TYPE_NOTIFICATION, AlarmIncidentEvent.STATUS_SUCCEEDED, "ALARM_NOTIFICATION_POSTED"))
+
+        // Real Room SQL query evaluates to 1
+        assertEquals(1, repository.occurrenceDeliveryCount(alarmId, scheduledAt))
+
+        roomDb.close()
+    }
+
     private class MinimalContext : ContextWrapper(null) {
         override fun getPackageName(): String = "com.sysadmindoc.alarmclock"
 
@@ -211,8 +266,7 @@ class AlarmIncidentRepositoryTest {
                         "DEFAULT_FALLBACK_STARTED",
                         "MEDIA3_INTERNET_RADIO_STARTED",
                         "SPOTIFY_PLAYBACK_CONFIRMED"
-                    )) ||
-                    (it.type == AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE && it.reasonCode == "DIRECT_BOOT_FIRED")
+                    ))
                 )
         }
 

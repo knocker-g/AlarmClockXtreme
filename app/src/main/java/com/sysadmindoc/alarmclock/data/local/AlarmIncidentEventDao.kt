@@ -38,7 +38,6 @@ interface AlarmIncidentEventDao {
      * - ('AUDIO', 'SUCCEEDED', 'DEFAULT_FALLBACK_STARTED')
      * - ('AUDIO', 'SUCCEEDED', 'MEDIA3_INTERNET_RADIO_STARTED')
      * - ('AUDIO', 'SUCCEEDED', 'SPOTIFY_PLAYBACK_CONFIRMED')
-     * - ('FOREGROUND_SERVICE', 'SUCCEEDED', 'DIRECT_BOOT_FIRED')
      *
      * Excludes START_COMMAND_RECEIVED, PLACEHOLDER_FOREGROUND_STARTED, volume/media-session updates,
      * duplicate command suppression, requested, failed, or unknown events.
@@ -58,7 +57,6 @@ interface AlarmIncidentEventDao {
                 'MEDIA3_INTERNET_RADIO_STARTED',
                 'SPOTIFY_PLAYBACK_CONFIRMED'
             ))
-            OR (type = 'FOREGROUND_SERVICE' AND reasonCode = 'DIRECT_BOOT_FIRED')
           )
         """
     )
