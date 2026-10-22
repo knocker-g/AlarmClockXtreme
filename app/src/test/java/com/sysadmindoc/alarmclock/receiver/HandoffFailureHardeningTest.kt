@@ -14,6 +14,7 @@ import io.mockk.spyk
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -31,20 +32,27 @@ class HandoffFailureHardeningTest {
 
     private val context: Context = ApplicationProvider.getApplicationContext()
     private lateinit var incidentRepo: AlarmIncidentRepository
+    private lateinit var inMemoryDb: com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 
     @Before
     fun setUp() {
-        context.deleteDatabase("alarm_clock.db")
-        val entryPoint = EntryPointAccessors.fromApplication(
-            context.applicationContext,
-            AlarmClockApp.AppEntryPoint::class.java
+        inMemoryDb = androidx.room.Room.inMemoryDatabaseBuilder(
+            context,
+            com.sysadmindoc.alarmclock.data.local.AlarmDatabase::class.java
+        ).allowMainThreadQueries().build()
+
+        incidentRepo = AlarmIncidentRepository(
+            dao = inMemoryDb.alarmIncidentEventDao(),
+            context = context
         )
-        incidentRepo = entryPoint.alarmIncidentRepository()
+        testIncidentRepository = incidentRepo
     }
 
     @After
     fun tearDown() {
         testOnIncidentRecordedCompletion = null
+        testIncidentRepository = null
+        inMemoryDb.close()
     }
 
     @Test
@@ -71,6 +79,7 @@ class HandoffFailureHardeningTest {
 
         // Wait deterministically for async background incident insertion to complete
         assertTrue("Incident recording timed out", latch.await(5, TimeUnit.SECONDS))
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
 
         // Verify actual persisted row in real Room SQLite DB
         val incidents = runBlocking { incidentRepo.getRecent(50) }
@@ -110,6 +119,7 @@ class HandoffFailureHardeningTest {
 
         // Wait deterministically for async background incident insertion to complete
         assertTrue("Incident recording timed out", latch.await(5, TimeUnit.SECONDS))
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
 
         // Verify actual persisted row in real Room SQLite DB
         val incidents = runBlocking { incidentRepo.getRecent(50) }
@@ -179,5 +189,107 @@ class HandoffFailureHardeningTest {
         assertEquals(104L, failureIncident!!.alarmId)
         assertEquals(AlarmIncidentEvent.STATUS_FAILED, failureIncident.status)
         assertEquals(0, runBlocking { incidentRepo.occurrenceDeliveryCount(104L, 4000L) })
+    }
+
+    @Test
+    fun `AlarmReceiver startForegroundService fails but fallback succeeds persists positive delivery proof and suppresses watchdog`() {
+        val shadowApp = org.robolectric.Shadows.shadowOf(context.applicationContext as android.app.Application)
+        shadowApp.grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+
+        val entryPoint = EntryPointAccessors.fromApplication(
+            context.applicationContext,
+            AlarmClockApp.AppEntryPoint::class.java
+        )
+        runBlocking {
+            entryPoint.alarmRepository().save(
+                com.sysadmindoc.alarmclock.data.model.Alarm(
+                    id = 105L,
+                    hour = 7,
+                    minute = 30,
+                    label = "Morning Test",
+                    isEnabled = true
+                )
+            )
+        }
+
+        val spyContext = spyk(context) {
+            every { applicationContext } returns context.applicationContext
+            every { startForegroundService(any()) } throws IllegalStateException("Background start restricted")
+        }
+
+        val latch = CountDownLatch(1)
+        testOnIncidentRecordedCompletion = {
+            latch.countDown()
+        }
+
+        val intent = Intent().apply {
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, 105L)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 5000L)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "fire-105")
+        }
+
+        val receiver = AlarmReceiver()
+        receiver.onReceive(spyContext, intent)
+
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        assertTrue("Incident recording timed out", latch.await(5, TimeUnit.SECONDS))
+
+        val incidents = runBlocking { incidentRepo.getRecent(50) }
+        val successIncident = incidents.find { it.alarmId == 105L && it.status == AlarmIncidentEvent.STATUS_SUCCEEDED }
+
+        assertNotNull("Persisted success incident MUST be present in Room DB", successIncident)
+        assertEquals(105L, successIncident!!.alarmId)
+        assertEquals(AlarmIncidentEvent.TYPE_NOTIFICATION, successIncident.type)
+        assertEquals(AlarmIncidentEvent.STATUS_SUCCEEDED, successIncident.status)
+        assertEquals("ALARM_NOTIFICATION_POSTED", successIncident.reasonCode)
+
+        val deliveryCount = runBlocking { incidentRepo.occurrenceDeliveryCount(105L, 5000L) }
+        assertEquals(1, deliveryCount)
+
+        val watchdogDecision = com.sysadmindoc.alarmclock.worker.FireWatchdogPolicy.decide(
+            repeatMissedEnabled = true,
+            alarmExists = true,
+            isEnabled = true,
+            deliveryCount = deliveryCount,
+            scheduledAtMs = 5000L,
+            nowMs = 5000L + com.sysadmindoc.alarmclock.worker.FireWatchdogPolicy.WATCHDOG_DELAY_MS
+        )
+        assertEquals(com.sysadmindoc.alarmclock.worker.FireWatchdogPolicy.Decision.SKIP_ALREADY_FIRED, watchdogDecision)
+        assertFalse(watchdogDecision.shouldRefire)
+    }
+
+    @Test
+    fun `AlarmReceiver startForegroundService succeeds no fallback called and records STATUS_REQUESTED incident`() {
+        val spyContext = spyk(context) {
+            every { applicationContext } returns context.applicationContext
+            every { startForegroundService(any()) } returns io.mockk.mockk()
+        }
+
+        val latch = CountDownLatch(1)
+        testOnIncidentRecordedCompletion = {
+            latch.countDown()
+        }
+
+        val intent = Intent().apply {
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, 106L)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 6000L)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "fire-106")
+        }
+
+        val receiver = AlarmReceiver()
+        receiver.onReceive(spyContext, intent)
+
+        assertTrue("Incident recording timed out", latch.await(5, TimeUnit.SECONDS))
+
+        val incidents = runBlocking { incidentRepo.getRecent(50) }
+        val requestedIncident = incidents.find { it.alarmId == 106L && it.status == AlarmIncidentEvent.STATUS_REQUESTED }
+
+        assertNotNull("Persisted requested incident MUST be present in Room DB", requestedIncident)
+        assertEquals(106L, requestedIncident!!.alarmId)
+        assertEquals(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, requestedIncident.type)
+        assertEquals(AlarmIncidentEvent.STATUS_REQUESTED, requestedIncident.status)
+
+        val deliveryCount = runBlocking { incidentRepo.occurrenceDeliveryCount(106L, 6000L) }
+        assertEquals(0, deliveryCount)
     }
 }

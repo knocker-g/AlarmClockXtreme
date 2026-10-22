@@ -49,6 +49,9 @@ internal fun BroadcastReceiver.recordAlarmIncidentAsync(
 @org.jetbrains.annotations.VisibleForTesting
 internal var testOnIncidentRecordedCompletion: ((List<ReceiverAlarmIncident>) -> Unit)? = null
 
+@org.jetbrains.annotations.VisibleForTesting
+internal var testIncidentRepository: com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository? = null
+
 internal fun BroadcastReceiver.recordAlarmIncidentsAsync(
     context: Context,
     events: List<ReceiverAlarmIncident>
@@ -56,12 +59,13 @@ internal fun BroadcastReceiver.recordAlarmIncidentsAsync(
     val pending = try { goAsync() } catch (_: Exception) { null }
     CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
         try {
-            val entryPoint = EntryPointAccessors.fromApplication(
+            val repository = testIncidentRepository ?: EntryPointAccessors.fromApplication(
                 context.applicationContext,
                 AlarmClockApp.AppEntryPoint::class.java
-            )
+            ).alarmIncidentRepository()
+
             events.forEach { event ->
-                entryPoint.alarmIncidentRepository().record(
+                repository.record(
                     alarmId = event.alarmId,
                     fireId = event.fireId.ifBlank {
                         AlarmIncidentEvent.fireIdFor(event.alarmId, event.scheduledAt)
