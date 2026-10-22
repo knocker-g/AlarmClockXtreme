@@ -86,7 +86,7 @@ class AlarmReceiver : BroadcastReceiver() {
 
                     val isCurrentOccurrence = alarm != null &&
                         alarm.isEnabled &&
-                        alarm.nextTriggerTime == scheduledAt &&
+                        scheduledAt > 0L &&
                         deliveryCount == 0
 
                     if (isCurrentOccurrence) {
@@ -120,11 +120,24 @@ class AlarmReceiver : BroadcastReceiver() {
                             )
                         }
                     } else {
-                        Log.w("AlarmReceiver", "Skipping fallback for alarm $alarmId: stale or duplicate occurrence (dbTrigger ${alarm?.nextTriggerTime}, deliveryCount $deliveryCount)")
+                        Log.w("AlarmReceiver", "Skipping fallback for alarm $alarmId: stale, disabled or duplicate occurrence (deliveryCount $deliveryCount)")
                     }
 
-                    // Record all incidents asynchronously inside the coroutine
-                    recordAlarmIncidentsAsync(context, incidents)
+                    // Record all incidents directly using suspend repository API before pending.finish()
+                    incidents.forEach { event ->
+                        incidentRepo.record(
+                            alarmId = event.alarmId,
+                            fireId = event.fireId.ifBlank {
+                                AlarmIncidentEvent.fireIdFor(event.alarmId, event.scheduledAt)
+                            },
+                            scheduledAt = event.scheduledAt,
+                            type = event.type,
+                            status = event.status,
+                            reasonCode = event.reasonCode,
+                            source = event.source
+                        )
+                    }
+                    runCatching { testOnIncidentRecordedCompletion?.invoke(incidents) }
                 } catch (fallbackError: Exception) {
                     Log.e("AlarmReceiver", "Asynchronous fallback recovery failed for alarm $alarmId", fallbackError)
                 } finally {

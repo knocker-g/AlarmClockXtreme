@@ -17,6 +17,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -297,5 +298,53 @@ class HandoffFailureHardeningTest {
 
         val deliveryCount = runBlocking { incidentRepo.occurrenceDeliveryCount(106L, 6000L) }
         assertEquals(0, deliveryCount)
+    }
+
+    @Test
+    fun `AlarmReceiver FGS start fails on disabled alarm skips fallback and records no positive delivery proof`() {
+        val shadowApp = org.robolectric.Shadows.shadowOf(context.applicationContext as android.app.Application)
+        shadowApp.grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+
+        val scheduledAt = System.currentTimeMillis() - 1000L
+        runBlocking {
+            alarmRepo.save(
+                com.sysadmindoc.alarmclock.data.model.Alarm(
+                    id = 108L,
+                    hour = 7,
+                    minute = 30,
+                    label = "Disabled Test",
+                    isEnabled = false,
+                    nextTriggerTime = 0L
+                )
+            )
+        }
+
+        val spyContext = spyk(context) {
+            every { applicationContext } returns context.applicationContext
+            every { startForegroundService(any()) } throws IllegalStateException("Background start restricted")
+        }
+
+        val latch = CountDownLatch(1)
+        testOnIncidentRecordedCompletion = {
+            latch.countDown()
+        }
+
+        val intent = Intent().apply {
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, 108L)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, scheduledAt)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "fire-108")
+        }
+
+        val receiver = AlarmReceiver()
+        receiver.onReceive(spyContext, intent)
+
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        assertTrue("Incident recording timed out", latch.await(5, TimeUnit.SECONDS))
+
+        val incidents = runBlocking { incidentRepo.getRecent(50) }
+        val successIncident = incidents.find { it.alarmId == 108L && it.status == AlarmIncidentEvent.STATUS_SUCCEEDED }
+
+        assertNull("Disabled alarm MUST NOT post fallback or record STATUS_SUCCEEDED", successIncident)
+        assertEquals(0, runBlocking { incidentRepo.occurrenceDeliveryCount(108L, scheduledAt) })
     }
 }
