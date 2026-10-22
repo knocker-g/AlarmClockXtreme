@@ -100,7 +100,7 @@ class AlarmIncidentRepositoryTest {
     }
 
     @Test
-    fun occurrenceDeliveryCountRequiresReasonCodeAllowlistForProvenDelivery() = runBlocking {
+    fun occurrenceDeliveryCountRequiresExactProducerTupleForProvenDelivery() = runBlocking {
         val dao = FakeAlarmIncidentEventDao()
         val repository = AlarmIncidentRepository(dao, MinimalContext())
         val alarmId = 42L
@@ -146,10 +146,10 @@ class AlarmIncidentRepositoryTest {
         // None of these prove user-facing alarm delivery
         assertEquals(0, repository.occurrenceDeliveryCount(alarmId, scheduledAt))
 
-        // Record a STATUS_SUCCEEDED NOTIFICATION_POSTED incident (real firing notification posted!)
-        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_NOTIFICATION, AlarmIncidentEvent.STATUS_SUCCEEDED, reasonCode = "NOTIFICATION_POSTED"))
+        // Record an ALARM_NOTIFICATION_POSTED incident (real firing notification posted!)
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_NOTIFICATION, AlarmIncidentEvent.STATUS_SUCCEEDED, reasonCode = "ALARM_NOTIFICATION_POSTED"))
 
-        // NOTIFICATION_POSTED counts as positive delivery proof!
+        // ALARM_NOTIFICATION_POSTED counts as positive delivery proof!
         assertEquals(1, repository.occurrenceDeliveryCount(alarmId, scheduledAt))
     }
 
@@ -203,10 +203,16 @@ class AlarmIncidentRepositoryTest {
             it.alarmId == alarmId &&
                 it.scheduledAt == scheduledAt &&
                 it.status == AlarmIncidentEvent.STATUS_SUCCEEDED &&
-                it.reasonCode in listOf(
-                    "NOTIFICATION_POSTED",
-                    "AUDIO_PLAYBACK_STARTED",
-                    "DIRECT_BOOT_FIRED"
+                (
+                    (it.type == AlarmIncidentEvent.TYPE_NOTIFICATION && it.reasonCode == "ALARM_NOTIFICATION_POSTED") ||
+                    (it.type == AlarmIncidentEvent.TYPE_AUDIO && it.reasonCode in listOf(
+                        "MEDIA3_PLAYER_STARTED",
+                        "MEDIA_PLAYER_STARTED",
+                        "DEFAULT_FALLBACK_STARTED",
+                        "MEDIA3_INTERNET_RADIO_STARTED",
+                        "SPOTIFY_PLAYBACK_CONFIRMED"
+                    )) ||
+                    (it.type == AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE && it.reasonCode == "DIRECT_BOOT_FIRED")
                 )
         }
 

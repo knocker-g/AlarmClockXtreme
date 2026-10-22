@@ -31,14 +31,17 @@ interface AlarmIncidentEventDao {
 
     /**
      * Count positive accepted delivery evidence for a specific alarm occurrence.
-     * Uses an EXPLICIT ALLOWLIST for proven user-facing delivery reasonCodes:
-     * - 'NOTIFICATION_POSTED': Real labelled firing notification posted to user.
-     * - 'AUDIO_PLAYBACK_STARTED': Real alarm audio started playing to user.
-     * - 'DIRECT_BOOT_FIRED': Real Direct Boot alarm fired to user.
+     * Uses an EXPLICIT TUPLE ALLOWLIST matching exact verified user-facing delivery producer call sites:
+     * - ('NOTIFICATION', 'SUCCEEDED', 'ALARM_NOTIFICATION_POSTED')
+     * - ('AUDIO', 'SUCCEEDED', 'MEDIA3_PLAYER_STARTED')
+     * - ('AUDIO', 'SUCCEEDED', 'MEDIA_PLAYER_STARTED')
+     * - ('AUDIO', 'SUCCEEDED', 'DEFAULT_FALLBACK_STARTED')
+     * - ('AUDIO', 'SUCCEEDED', 'MEDIA3_INTERNET_RADIO_STARTED')
+     * - ('AUDIO', 'SUCCEEDED', 'SPOTIFY_PLAYBACK_CONFIRMED')
+     * - ('FOREGROUND_SERVICE', 'SUCCEEDED', 'DIRECT_BOOT_FIRED')
      *
-     * Requires status = 'SUCCEEDED'. Excludes placeholder foreground promotion,
-     * duplicate command suppression, volume escalation, media session, requested,
-     * failed, or any unlisted reasonCode.
+     * Excludes START_COMMAND_RECEIVED, PLACEHOLDER_FOREGROUND_STARTED, volume/media-session updates,
+     * duplicate command suppression, requested, failed, or unknown events.
      */
     @Query(
         """
@@ -46,7 +49,17 @@ interface AlarmIncidentEventDao {
         WHERE alarmId = :alarmId
           AND scheduledAt = :scheduledAt
           AND status = 'SUCCEEDED'
-          AND reasonCode IN ('NOTIFICATION_POSTED', 'AUDIO_PLAYBACK_STARTED', 'DIRECT_BOOT_FIRED')
+          AND (
+            (type = 'NOTIFICATION' AND reasonCode = 'ALARM_NOTIFICATION_POSTED')
+            OR (type = 'AUDIO' AND reasonCode IN (
+                'MEDIA3_PLAYER_STARTED',
+                'MEDIA_PLAYER_STARTED',
+                'DEFAULT_FALLBACK_STARTED',
+                'MEDIA3_INTERNET_RADIO_STARTED',
+                'SPOTIFY_PLAYBACK_CONFIRMED'
+            ))
+            OR (type = 'FOREGROUND_SERVICE' AND reasonCode = 'DIRECT_BOOT_FIRED')
+          )
         """
     )
     suspend fun countPositiveAcceptedDeliveryByOccurrence(
