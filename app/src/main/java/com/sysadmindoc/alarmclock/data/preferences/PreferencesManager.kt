@@ -482,6 +482,7 @@ class PreferencesManager @Inject constructor(
     internal enum class ActiveAlarmUpdateResult {
         COMMITTED,
         REJECTED_STALE,
+        IDEMPOTENT_NOOP,
         FAILED_COMMIT
     }
 
@@ -491,7 +492,73 @@ class PreferencesManager @Inject constructor(
         val ack: CompletableDeferred<ActiveAlarmUpdateResult>? = null
     )
 
+    internal enum class WriterPolicyDecision {
+        ALLOW_UPDATE,
+        REJECT_STALE,
+        IDEMPOTENT_NOOP
+    }
+
     internal object ActiveAlarmWriterPolicy {
+        fun evaluateUpdate(
+            storedId: Long?,
+            storedScheduledAt: Long,
+            storedFireId: String,
+            storedState: String,
+            storedRefireAt: Long,
+            requestSnapshot: ActiveAlarmSnapshot?,
+            targetGen: AlarmGeneration?
+        ): WriterPolicyDecision {
+            if (requestSnapshot == null) {
+                // Fail-Closed: Clear request MUST specify targetGen to establish ownership
+                val target = targetGen ?: return WriterPolicyDecision.REJECT_STALE
+                if (storedId != null && storedId > 0L) {
+                    val storedGen = AlarmGeneration(storedId, storedScheduledAt, storedFireId)
+                    if (!storedGen.matches(target)) {
+                        return WriterPolicyDecision.REJECT_STALE
+                    }
+                }
+            } else if (requestSnapshot.state == "SNOOZED") {
+                // SNOOZED update MUST have a valid positive refireAt
+                if (requestSnapshot.refireAt <= 0L) {
+                    return WriterPolicyDecision.REJECT_STALE
+                }
+
+                // Generation-Qualified Session Transition: SNOOZED update MUST specify explicit targetGen
+                val target = targetGen ?: return WriterPolicyDecision.REJECT_STALE
+                val snapshotGen = AlarmGeneration(
+                    requestSnapshot.alarmId,
+                    requestSnapshot.scheduledAt,
+                    requestSnapshot.fireId
+                )
+                if (!snapshotGen.matches(target)) {
+                    return WriterPolicyDecision.REJECT_STALE // Request snapshot does NOT match targetGen -> REJECT!
+                }
+                if (storedId == null || storedId <= 0L) {
+                    return WriterPolicyDecision.REJECT_STALE // Stored active session is ABSENT -> REJECT SNOOZED creation without prior session!
+                }
+                val storedGen = AlarmGeneration(storedId, storedScheduledAt, storedFireId)
+                if (!storedGen.matches(target)) {
+                    return WriterPolicyDecision.REJECT_STALE // DataStore holds a DIFFERENT active generation -> REJECT SNOOZED update!
+                }
+
+                // Stored active session MUST be in a legal current state (FIRING or SNOOZED)
+                if (storedState !in setOf("FIRING", "SNOOZED")) {
+                    return WriterPolicyDecision.REJECT_STALE // Invalid/unknown/blank stored state -> REJECT!
+                }
+
+                // Check stored state for SNOOZED transition:
+                if (storedState == "SNOOZED") {
+                    if (storedRefireAt == requestSnapshot.refireAt) {
+                        return WriterPolicyDecision.IDEMPOTENT_NOOP // Identical replay -> IDEMPOTENT_NOOP!
+                    } else {
+                        return WriterPolicyDecision.REJECT_STALE // Different refireAt -> REJECT!
+                    }
+                }
+            }
+            return WriterPolicyDecision.ALLOW_UPDATE
+        }
+
+        @Deprecated("Use evaluateUpdate for full decision classification")
         fun shouldExecuteUpdate(
             storedId: Long?,
             storedScheduledAt: Long,
@@ -499,17 +566,9 @@ class PreferencesManager @Inject constructor(
             requestSnapshot: ActiveAlarmSnapshot?,
             targetGen: AlarmGeneration?
         ): Boolean {
-            if (requestSnapshot == null) {
-                // Fail-Closed: Clear request MUST specify targetGen to establish ownership
-                val target = targetGen ?: return false
-                if (storedId != null && storedId > 0L) {
-                    val storedGen = AlarmGeneration(storedId, storedScheduledAt, storedFireId)
-                    if (!storedGen.matches(target)) {
-                        return false // DataStore holds a DIFFERENT active generation -> REJECT clear!
-                    }
-                }
-            }
-            return true
+            return evaluateUpdate(
+                storedId, storedScheduledAt, storedFireId, "", 0L, requestSnapshot, targetGen
+            ) == WriterPolicyDecision.ALLOW_UPDATE
         }
     }
 
@@ -554,16 +613,28 @@ class PreferencesManager @Inject constructor(
                 testFaultInjector?.invoke()
                 val old = prefs.toSettings().sanitized()
 
-                if (!ActiveAlarmWriterPolicy.shouldExecuteUpdate(
-                        storedId = old.activeAlarmId,
-                        storedScheduledAt = old.activeAlarmScheduledAt,
-                        storedFireId = old.activeAlarmFireId,
-                        requestSnapshot = request.snapshot,
-                        targetGen = request.targetGen
-                    )
-                ) {
-                    updateResult = ActiveAlarmUpdateResult.REJECTED_STALE
-                    return@edit
+                val policyDecision = ActiveAlarmWriterPolicy.evaluateUpdate(
+                    storedId = old.activeAlarmId,
+                    storedScheduledAt = old.activeAlarmScheduledAt,
+                    storedFireId = old.activeAlarmFireId,
+                    storedState = old.activeAlarmState,
+                    storedRefireAt = old.activeAlarmRefireAt,
+                    requestSnapshot = request.snapshot,
+                    targetGen = request.targetGen
+                )
+
+                when (policyDecision) {
+                    WriterPolicyDecision.REJECT_STALE -> {
+                        updateResult = ActiveAlarmUpdateResult.REJECTED_STALE
+                        return@edit
+                    }
+                    WriterPolicyDecision.IDEMPOTENT_NOOP -> {
+                        updateResult = ActiveAlarmUpdateResult.IDEMPOTENT_NOOP
+                        return@edit
+                    }
+                    WriterPolicyDecision.ALLOW_UPDATE -> {
+                        // Proceed with edit
+                    }
                 }
 
                 val snapshot = request.snapshot

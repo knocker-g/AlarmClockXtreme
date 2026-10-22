@@ -2839,6 +2839,119 @@ class AlarmGenerationTest {
     }
 
     @Test
+    @org.robolectric.annotation.Config(sdk = [31])
+    fun snoozeAlarmFailsClosedBeforeTeardownWhenExactPermissionRevoked(): Unit = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+
+        // 1. Persist active alarm genA (501L) in FIRING state to DataStore
+        val pmSetup = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
+        val genA = AlarmGeneration(501L, 1000L, "alarm-501-snooze-preflight")
+        val snapshotA = AlarmService.Companion.ActiveAlarmSnapshot(
+            alarmId = genA.alarmId,
+            scheduledAt = genA.scheduledAt,
+            fireId = genA.fireId,
+            firedAt = 1000L,
+            state = "FIRING"
+        )
+        val ackA = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        assertTrue(pmSetup.enqueueActiveAlarmUpdate(snapshotA, genA, ackA))
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackA.await())
+
+        // 2. Set ShadowAlarmManager exact alarm capability to FALSE
+        org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(false)
+
+        val controller = org.robolectric.Robolectric.buildService(AlarmService::class.java)
+        val service = controller.create().get()
+
+        try {
+            service.preferencesManager = pmSetup
+            service.repository.save(com.sysadmindoc.alarmclock.data.model.Alarm(id = genA.alarmId, hour = 7, minute = 0))
+
+            // Start alarm firing session for genA
+            val startIntent = Intent(service, AlarmService::class.java).apply {
+                action = AlarmService.ACTION_START_ALARM
+                putExtra(AlarmScheduler.EXTRA_ALARM_ID, genA.alarmId)
+                putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, genA.scheduledAt)
+                putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, genA.fireId)
+            }
+            service.onStartCommand(startIntent, 0, 1)
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            assertEquals(501L, service.currentAlarmId)
+
+            val completionLatch = kotlinx.coroutines.CompletableDeferred<Unit>()
+            service.testOnSnoozeActionCompletionLatch = completionLatch
+
+            // Deliver SNOOZE intent when exact permission is revoked
+            val snoozeIntent = Intent(service, AlarmService::class.java).apply {
+                action = AlarmService.ACTION_SNOOZE
+                putExtra(AlarmScheduler.EXTRA_ALARM_ID, genA.alarmId)
+                putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, genA.scheduledAt)
+                putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, genA.fireId)
+            }
+            service.onStartCommand(snoozeIntent, 0, 2)
+            kotlinx.coroutines.withTimeout(5000L) {
+                completionLatch.await()
+            }
+
+            // SLICE 2A PREFLIGHT VERIFICATION:
+            // 1. Service remains active and firing for genA (501L) — NOT stopped, NOT torn down!
+            assertEquals(501L, service.currentAlarmId)
+            assertFalse("Service must not be stopped by self on snooze preflight failure", org.robolectric.Shadows.shadowOf(service).isStoppedBySelf)
+
+            // 2. Snooze count was NOT incremented (remains 0)
+            assertEquals(0, service.testColdStartSnoozeCount.get())
+
+            // 3. DataStore active state remains FIRING on disk (not SNOOZED)
+            assertEquals("FIRING", pmSetup.getCurrentSettings().activeAlarmState)
+            assertEquals(501L, pmSetup.getCurrentSettings().activeAlarmId)
+
+            // 4. Generation-qualified STATUS_FAILED incident recorded in Room DB
+            var failureIncident: com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent? = null
+            val startMs = System.currentTimeMillis()
+            while (failureIncident == null && System.currentTimeMillis() - startMs < 5000L) {
+                org.robolectric.shadows.ShadowLooper.idleMainLooper()
+                val recent = service.alarmIncidentRepository.getRecent()
+                failureIncident = recent.firstOrNull {
+                    it.alarmId == 501L && it.reasonCode == "SNOOZE_REGISTRATION_FAILED"
+                }
+                if (failureIncident == null) {
+                    kotlinx.coroutines.yield()
+                }
+            }
+            assertNotNull("SNOOZE_REGISTRATION_FAILED incident must be recorded", failureIncident)
+            assertEquals(com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent.STATUS_FAILED, failureIncident?.status)
+            assertEquals(genA.fireId, failureIncident?.fireId)
+            assertEquals(genA.scheduledAt, failureIncident?.scheduledAt)
+
+            // 5. NO SNOOZED success incident recorded
+            val recentIncidents = service.alarmIncidentRepository.getRecent()
+            val falseSuccessIncident = recentIncidents.firstOrNull {
+                it.alarmId == 501L && it.reasonCode == "SNOOZED" && it.status == com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent.STATUS_SUCCEEDED
+            }
+            assertNull("No SNOOZED success incident must be recorded on failure", falseSuccessIncident)
+
+            // 6. NO ALARM_SNOOZED broadcast sent
+            val application = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
+            val broadcasts = org.robolectric.Shadows.shadowOf(application).broadcastIntents
+            val snoozeBroadcast = broadcasts.firstOrNull { it.action == "com.sysadmindoc.alarmclock.action.ALARM_SNOOZED" }
+            assertNull("No ALARM_SNOOZED broadcast must be sent on failure", snoozeBroadcast)
+
+            // 7. NO ACTION_SNOOZED history event recorded in Room DB
+            val recentEvents = service.eventRepository.observeRecent().first()
+            val falseSnoozedEvent = recentEvents.firstOrNull {
+                it.alarmId == 501L && it.action == com.sysadmindoc.alarmclock.data.local.entity.AlarmEvent.ACTION_SNOOZED
+            }
+            assertNull("No ACTION_SNOOZED history event must be recorded on failure", falseSnoozedEvent)
+        } finally {
+            org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(true)
+            val ackClear = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+            pmSetup.enqueueActiveAlarmUpdate(null, targetGen = genA, ack = ackClear)
+            ackClear.await()
+            controller.destroy()
+        }
+    }
+
+    @Test
     fun snoozeAlarmAwaitsDataStoreCommitAckBeforeStopSelf(): Unit = runBlocking {
         val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
 
@@ -3137,14 +3250,22 @@ class AlarmGenerationTest {
     fun coldStartSnoozedStateRestoresCleanlyWithoutReTriggering(): Unit = runBlocking {
         val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
 
-        // 1. Persist active alarm genA (433L) in SNOOZED state to DataStore
+        // 1. Persist active alarm genA (433L) in FIRING state then transition to SNOOZED state in DataStore
         val pmSetup = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
         val genA = AlarmGeneration(433L, 1000L, "fire-433-snoozed-restoration")
-        val snapshotA = AlarmService.Companion.ActiveAlarmSnapshot(
+        val firingSnapshotA = AlarmService.Companion.ActiveAlarmSnapshot(
             alarmId = genA.alarmId,
             scheduledAt = genA.scheduledAt,
             fireId = genA.fireId,
             firedAt = 1000L,
+            state = "FIRING",
+            refireAt = 0L
+        )
+        val ackFiring = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        assertTrue(pmSetup.enqueueActiveAlarmUpdate(firingSnapshotA, genA, ackFiring))
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackFiring.await())
+
+        val snapshotA = firingSnapshotA.copy(
             state = "SNOOZED",
             refireAt = System.currentTimeMillis() + 600_000L
         )
@@ -3337,14 +3458,22 @@ class AlarmGenerationTest {
     fun coldStartRedundantSnoozeIsRejectedWhenAlreadySnoozed(): Unit = runBlocking {
         val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
 
-        // 1. Persist active alarm genA (440L) in SNOOZED state with snoozeCount = 1
+        // 1. Persist active alarm genA (440L) in FIRING state then transition to SNOOZED state with snoozeCount = 1
         val pmSetup = com.sysadmindoc.alarmclock.data.preferences.PreferencesManager(context)
         val genA = AlarmGeneration(440L, 1000L, "fire-440-already-snoozed")
-        val snapshotA = AlarmService.Companion.ActiveAlarmSnapshot(
+        val firingSnapshotA = AlarmService.Companion.ActiveAlarmSnapshot(
             alarmId = genA.alarmId,
             scheduledAt = genA.scheduledAt,
             fireId = genA.fireId,
             firedAt = 1000L,
+            state = "FIRING",
+            refireAt = 0L
+        )
+        val ackFiring = kotlinx.coroutines.CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        assertTrue(pmSetup.enqueueActiveAlarmUpdate(firingSnapshotA, genA, ackFiring))
+        assertEquals(com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED, ackFiring.await())
+
+        val snapshotA = firingSnapshotA.copy(
             state = "SNOOZED",
             refireAt = System.currentTimeMillis() + 600_000L
         )
@@ -3404,7 +3533,7 @@ class AlarmGenerationTest {
         kotlinx.coroutines.withTimeout(timeoutMs) {
             while (!latch.isCompleted) {
                 org.robolectric.shadows.ShadowLooper.idleMainLooper()
-                kotlinx.coroutines.delay(50)
+                kotlinx.coroutines.yield()
             }
         }
     }

@@ -25,6 +25,7 @@ class AlarmRepository @Inject constructor(
     suspend fun getEnabled(): List<Alarm> = dao.getEnabled()
     suspend fun getNextAlarm(): Alarm? = dao.getNextAlarm()
     suspend fun getAll(): List<Alarm> = dao.getAll()
+    suspend fun getAuthorityByAlarmId(alarmId: Long) = database.scheduleAuthorityDao().getAuthorityByAlarmId(alarmId)
 
     suspend fun save(alarm: Alarm): Long {
         val sanitized = alarm.sanitized()
@@ -76,6 +77,79 @@ class AlarmRepository @Inject constructor(
 
     suspend fun updateNextTrigger(id: Long, nextTrigger: Long) =
         dao.updateNextTrigger(id, nextTrigger)
+
+    suspend fun casUpdateNextTrigger(id: Long, expectedTrigger: Long, newTrigger: Long): Int =
+        dao.casUpdateNextTrigger(id, expectedTrigger, newTrigger)
+
+    suspend fun casUpdateNextTriggerWithStrictAuthority(
+        id: Long,
+        expectedTrigger: Long,
+        newTrigger: Long,
+        expectedRevision: Long?,
+        instanceToken: String?,
+        restoreEpoch: Long?,
+        definitionRevision: Long?
+    ): Int {
+        return if (expectedRevision != null && instanceToken != null && restoreEpoch != null && definitionRevision != null) {
+            dao.casUpdateNextTriggerWithStrictAuthority(
+                id = id,
+                expectedTrigger = expectedTrigger,
+                newTrigger = newTrigger,
+                expectedRevision = expectedRevision,
+                instanceToken = instanceToken,
+                restoreEpoch = restoreEpoch,
+                definitionRevision = definitionRevision
+            )
+        } else {
+            0
+        }
+    }
+
+    suspend fun casUpdateNextTriggerInitialWithAuthority(
+        id: Long,
+        newTrigger: Long,
+        expectedRevision: Long?,
+        instanceToken: String?,
+        restoreEpoch: Long?,
+        definitionRevision: Long?
+    ): Int {
+        return if (expectedRevision != null && instanceToken != null && restoreEpoch != null && definitionRevision != null) {
+            dao.casUpdateNextTriggerInitialWithAuthority(
+                id = id,
+                newTrigger = newTrigger,
+                expectedRevision = expectedRevision,
+                instanceToken = instanceToken,
+                restoreEpoch = restoreEpoch,
+                definitionRevision = definitionRevision
+            )
+        } else {
+            0
+        }
+    }
+
+    suspend fun casSetEnabledWithStrictAuthority(
+        id: Long,
+        enabled: Boolean,
+        nextTrigger: Long,
+        expectedRevision: Long?,
+        instanceToken: String?,
+        restoreEpoch: Long?,
+        definitionRevision: Long?
+    ): Int {
+        return if (expectedRevision != null && instanceToken != null && restoreEpoch != null && definitionRevision != null) {
+            dao.casSetEnabledWithStrictAuthority(
+                id = id,
+                enabled = enabled,
+                nextTrigger = nextTrigger,
+                expectedRevision = expectedRevision,
+                instanceToken = instanceToken,
+                restoreEpoch = restoreEpoch,
+                definitionRevision = definitionRevision
+            )
+        } else {
+            0
+        }
+    }
 
     suspend fun nextSortOrder(): Int = dao.maxSortOrder() + AlarmDao.SORT_ORDER_STEP
 

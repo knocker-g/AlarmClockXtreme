@@ -30,6 +30,7 @@ import java.time.DayOfWeek
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -82,6 +83,14 @@ class AlarmSchedulerExactPermissionTest {
         coEvery { holidayRepository.isHoliday(any()) } returns false
         every { weatherRepository.getCachedWeather() } returns null
 
+        val alarmStore = mutableMapOf<Long, Alarm>()
+        coEvery { repository.getById(any()) } answers { alarmStore[firstArg()] }
+        coEvery { repository.updateNextTrigger(any(), any()) } answers {
+            val id = firstArg<Long>()
+            val newTrigger = secondArg<Long>()
+            alarmStore[id] = enabledAlarm(id).copy(nextTriggerTime = newTrigger)
+        }
+
         scheduler = AlarmScheduler(
             context = context,
             repository = repository,
@@ -105,8 +114,9 @@ class AlarmSchedulerExactPermissionTest {
     fun `without the permission nothing is registered and the stored trigger is cleared`() =
         runTest {
             ShadowAlarmManager.setCanScheduleExactAlarms(false)
-            every { calculator.calculate(any<Alarm>(), any()) } returns
-                System.currentTimeMillis() + 15 * 60_000L
+            val triggerTime = System.currentTimeMillis() + 15 * 60_000L
+            every { calculator.calculate(any<Alarm>()) } returns triggerTime
+            every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
 
             scheduler.schedule(enabledAlarm(id = 71L), requestWidgetUpdate = false)
 
@@ -120,6 +130,7 @@ class AlarmSchedulerExactPermissionTest {
     fun `with the permission the alarm is registered as before`() = runTest {
         ShadowAlarmManager.setCanScheduleExactAlarms(true)
         val triggerTime = System.currentTimeMillis() + 15 * 60_000L
+        every { calculator.calculate(any<Alarm>()) } returns triggerTime
         every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
 
         scheduler.schedule(enabledAlarm(id = 72L), requestWidgetUpdate = false)
@@ -134,14 +145,9 @@ class AlarmSchedulerExactPermissionTest {
 
         val armed = scheduler.scheduleSnooze(enabledAlarm(id = 73L), customMinutes = 9)
 
-        // The service has already told the user they snoozed. Dropping it
-        // silently is the one outcome that cannot be allowed, so the snooze
-        // degrades to an inexact wakeup instead of disappearing.
-        assertTrue("the snooze reported failure", armed)
-        val scheduled = scheduledAlarms().single()
-        assertNull("an inexact wakeup must not claim to be an alarm clock", scheduled.alarmClockInfo)
-        assertTrue(scheduled.isAllowWhileIdle)
-        coVerify { repository.updateNextTrigger(73L, more(0L)) }
+        assertFalse("the snooze must fail closed when exact permission revoked", armed)
+        assertTrue("no inexact alarm clock must be registered", scheduledAlarms().isEmpty())
+        coVerify(exactly = 0) { repository.updateNextTrigger(73L, any()) }
         verify {
             incidentRepository.recordAsync(
                 alarmId = 73L,
@@ -149,8 +155,8 @@ class AlarmSchedulerExactPermissionTest {
                 scheduledAt = any(),
                 eventAt = any(),
                 type = AlarmIncidentEvent.TYPE_SCHEDULE,
-                status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                reasonCode = "SNOOZE_INEXACT_NO_EXACT_PERMISSION",
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "SNOOZE_EXACT_PERMISSION_REVOKED",
                 source = "AlarmScheduler"
             )
         }
@@ -163,8 +169,9 @@ class AlarmSchedulerExactPermissionTest {
 
         val armed = scheduler.scheduleSnoozeAt(enabledAlarm(id = 74L), target)
 
-        assertTrue("the snooze reported failure", armed)
-        assertNull(scheduledAlarms().single().alarmClockInfo)
+        assertFalse("the snooze at chosen time must fail closed when exact permission revoked", armed)
+        assertTrue("no inexact alarm clock must be registered", scheduledAlarms().isEmpty())
+        coVerify(exactly = 0) { repository.updateNextTrigger(74L, any()) }
         verify {
             incidentRepository.recordAsync(
                 alarmId = 74L,
@@ -172,8 +179,8 @@ class AlarmSchedulerExactPermissionTest {
                 scheduledAt = target,
                 eventAt = any(),
                 type = AlarmIncidentEvent.TYPE_SCHEDULE,
-                status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                reasonCode = "SNOOZE_AT_INEXACT_NO_EXACT_PERMISSION",
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "SNOOZE_AT_EXACT_PERMISSION_REVOKED",
                 source = "AlarmScheduler"
             )
         }
@@ -189,6 +196,7 @@ class AlarmSchedulerExactPermissionTest {
     fun `before API 31 the alarm is scheduled whatever the shadow says`() = runTest {
         ShadowAlarmManager.setCanScheduleExactAlarms(false)
         val triggerTime = System.currentTimeMillis() + 15 * 60_000L
+        every { calculator.calculate(any<Alarm>()) } returns triggerTime
         every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
 
         scheduler.schedule(enabledAlarm(id = 75L), requestWidgetUpdate = false)
@@ -202,6 +210,7 @@ class AlarmSchedulerExactPermissionTest {
         runTest {
             ShadowAlarmManager.setCanScheduleExactAlarms(true)
             val triggerTime = System.currentTimeMillis() + 15 * 60_000L
+            every { calculator.calculate(any<Alarm>()) } returns triggerTime
             every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
 
             val mockAlarmManager = mockk<AlarmManager>(relaxed = true)
@@ -241,7 +250,7 @@ class AlarmSchedulerExactPermissionTest {
             testScheduler.schedule(enabledAlarm(id = 76L), requestWidgetUpdate = false)
 
             assertTrue(scheduledAlarms().isEmpty())
-            coVerify { repository.updateNextTrigger(76L, 0) }
+            coVerify(exactly = 0) { repository.updateNextTrigger(76L, 0) }
             verify(timeout = 1000) {
                 incidentRepository.recordAsync(
                     alarmId = 76L,

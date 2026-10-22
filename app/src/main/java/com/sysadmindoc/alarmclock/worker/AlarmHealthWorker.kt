@@ -21,19 +21,34 @@ import androidx.work.WorkerParameters
 import com.sysadmindoc.alarmclock.MainActivity
 import com.sysadmindoc.alarmclock.R
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
+import com.sysadmindoc.alarmclock.domain.ScheduleAuthorityReconciler
 import com.sysadmindoc.alarmclock.service.AlarmService
 import com.sysadmindoc.alarmclock.util.ManufacturerCompat
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import kotlinx.coroutines.CancellationException
 
 @HiltWorker
 class AlarmHealthWorker @AssistedInject constructor(
     @Assisted context: Context,
     @Assisted workerParams: WorkerParameters,
-    private val alarmRepository: AlarmRepository
+    private val alarmRepository: AlarmRepository,
+    private val scheduleAuthorityReconciler: ScheduleAuthorityReconciler,
+    private val routeAuthority: com.sysadmindoc.alarmclock.domain.ProductionSchedulingRouteAuthority = com.sysadmindoc.alarmclock.domain.ProductionSchedulingRouteAuthority()
 ) : CoroutineWorker(context, workerParams) {
 
     override suspend fun doWork(): Result {
+        try {
+            if (routeAuthority.isOwnerRouteActive()) {
+                scheduleAuthorityReconciler.reconcilePendingAuthorities()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            android.util.Log.e("AlarmHealthWorker", "ScheduleAuthority reconciliation failed", e)
+            return Result.retry()
+        }
+
         val hasEnabledAlarms = alarmRepository.getEnabled().isNotEmpty()
         if (!hasEnabledAlarms) {
             cancelWarningNotification()

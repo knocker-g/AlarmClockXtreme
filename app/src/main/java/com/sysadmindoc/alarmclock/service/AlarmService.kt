@@ -211,7 +211,7 @@ class AlarmService : Service() {
     @Volatile
     private var backupSoundOriginalGeneration: AlarmGeneration? = null
     private var flashlightJob: Job? = null
-    private var currentSnoozeCount: Int = 0
+    internal var currentSnoozeCount: Int = 0
     private var currentWakeConfirmRefireCount: Int = 0
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val preemptionPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -229,6 +229,8 @@ class AlarmService : Service() {
     internal var testOnDismissRetryFinishedCallback: (() -> Unit)? = null
     @VisibleForTesting
     internal var testOnSnoozeRetryFinishedCallback: (() -> Unit)? = null
+    @VisibleForTesting
+    internal var testOnSnoozeActionCompletionLatch: CompletableDeferred<Unit>? = null
     @VisibleForTesting
     internal val testColdStartSnoozeCount = java.util.concurrent.atomic.AtomicInteger(0)
     @VisibleForTesting
@@ -316,7 +318,7 @@ class AlarmService : Service() {
         }
     }
 
-    private fun currentGeneration(): AlarmGeneration? {
+    internal fun currentGeneration(): AlarmGeneration? {
         if (currentAlarmId <= 0L || currentScheduledAt <= 0L || currentFireId.isBlank()) return null
         return AlarmGeneration(currentAlarmId, currentScheduledAt, currentFireId)
     }
@@ -616,6 +618,7 @@ class AlarmService : Service() {
                                     snoozeAlarm(alarmId, acceptedGen, customMinutes, snoozeAtMillis)
                                 } finally {
                                     snoozeActionInFlight.set(false)
+                                    testOnSnoozeActionCompletionLatch?.complete(Unit)
                                 }
                             }
                         } else {
@@ -1279,7 +1282,11 @@ class AlarmService : Service() {
         targetGen: AlarmGeneration? = null,
         ack: CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>? = null
     ): Boolean {
-        activeAlarm.set(snapshot)
+        // Do NOT mutate activeAlarm in memory before DataStore ACK for Snooze state.
+        // Memory update for SNOOZED occurs only upon confirmed COMMITTED result.
+        if (snapshot == null || snapshot.state == "FIRING") {
+            activeAlarm.set(snapshot)
+        }
         val enqueued = preferencesManager.enqueueActiveAlarmUpdate(snapshot, targetGen, ack)
         if (!enqueued) {
             Log.w(TAG, "Failed to enqueue active alarm update to PreferencesManager")
@@ -2501,182 +2508,244 @@ class AlarmService : Service() {
             return
         }
 
-        if (!performOwnerGuardedTeardown(acceptedGen)) {
+        // KNO-127 Slice 2A: Exact capability preflight fail-closed check.
+        // If exact alarm capability is revoked or unavailable, reject snooze BEFORE
+        // owner-guarded teardown so audio playback stays active and audible.
+        if (!alarmScheduler.canScheduleExactAlarms()) {
+            if (currentGeneration()?.matches(acceptedGen) == true) {
+                recordIncidentAsync(
+                    type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                    status = AlarmIncidentEvent.STATUS_FAILED,
+                    reasonCode = "SNOOZE_REGISTRATION_FAILED",
+                    source = "AlarmService",
+                    alarmId = alarmId,
+                    fireId = acceptedGen.fireId,
+                    scheduledAt = acceptedGen.scheduledAt
+                )
+                if (capped != null) {
+                    refreshFiringNotification(capped)
+                }
+            }
             return
         }
 
         val alarm = repository.getById(alarmId)?.sanitized()
+        if (alarm == null) {
+            recordIncidentAsync(
+                type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "SNOOZE_ALARM_ROW_MISSING",
+                source = "AlarmService",
+                alarmId = alarmId,
+                fireId = acceptedGen.fireId,
+                scheduledAt = acceptedGen.scheduledAt
+            )
+            return
+        }
 
-        withContext(Dispatchers.Main.immediate) {
-            if (currentGeneration()?.matches(acceptedGen) != true) {
-                Log.i(TAG, "Aborting post-repository snoozeAlarm for $acceptedGen: active generation is ${currentGeneration()}")
-                return@withContext
+        // Check if cap policy dictates AUTO_DISMISS
+        val isAutoDismiss = SnoozeCapPolicy.outcomeFor(alarm, currentSnoozeCount) == SnoozeCapOutcome.AUTO_DISMISS
+
+        if (isAutoDismiss) {
+            if (!performOwnerGuardedTeardown(acceptedGen)) {
+                return
             }
-
-            if (alarm != null) {
+            withContext(Dispatchers.Main.immediate) {
+                if (currentGeneration()?.matches(acceptedGen) != true) {
+                    return@withContext
+                }
                 val webhookScheduledAt = acceptedGen.scheduledAt
                 val webhookFireId = acceptedGen.fireId
-                // Snoozing means the user interacted with the alarm, so cancel any pending
-                // Guardian Angel call/SMS — they're plainly awake enough to hit snooze.
-                // The next fire after snooze will re-arm Guardian if still configured.
-                if (alarm.guardianEnabled) {
-                    WorkManager.getInstance(applicationContext)
-                        .cancelUniqueWork("guardian_${alarm.id}")
-                }
-                val nextSnoozeCount = currentSnoozeCount + 1
-                // v1.6.3: Track which event was actually persisted so the webhook
-                // emits the matching event name. The previous code recorded
-                // ACTION_DISMISSED when the snooze cap was hit but still fired the
-                // "snoozed" webhook — Tasker integrations got the wrong event.
-                val webhookEvent: WebhookEvent
-                if (SnoozeCapPolicy.outcomeFor(alarm, currentSnoozeCount) ==
-                    SnoozeCapOutcome.AUTO_DISMISS
-                ) {
-                    // Max snoozes reached - treat as dismiss
-                    currentSnoozeCount = alarm.maxSnoozeCount
-                    recordEventAsync(
+                currentSnoozeCount = alarm.maxSnoozeCount
+                recordEventAsync(
+                    alarm = alarm,
+                    scheduledAt = acceptedGen.scheduledAt,
+                    firedAt = alarmFiredAt,
+                    action = AlarmEvent.ACTION_DISMISSED,
+                    snoozeCount = currentSnoozeCount
+                )
+                recordIncidentAsync(
+                    type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                    status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                    reasonCode = "MAX_SNOOZE_DISMISSED",
+                    source = "AlarmService",
+                    alarmId = alarm.id,
+                    fireId = acceptedGen.fireId,
+                    scheduledAt = acceptedGen.scheduledAt
+                )
+                if (AlarmPostDismissController.shouldScheduleWakeConfirmation(alarm)) {
+                    scheduleWakeConfirmation(
                         alarm = alarm,
-                        scheduledAt = acceptedGen.scheduledAt,
-                        firedAt = alarmFiredAt,
-                        action = AlarmEvent.ACTION_DISMISSED,
-                        snoozeCount = currentSnoozeCount
-                    )
-                    recordIncidentAsync(
-                        type = AlarmIncidentEvent.TYPE_USER_ACTION,
-                        status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                        reasonCode = "MAX_SNOOZE_DISMISSED",
-                        source = "AlarmService",
-                        alarmId = alarm.id,
                         fireId = acceptedGen.fireId,
                         scheduledAt = acceptedGen.scheduledAt
                     )
-                    // A user who snoozed to the cap is the strongest still-asleep
-                    // signal there is — the cap-exhaustion auto-dismiss must not
-                    // skip the wake-confirmation follow-up a real dismiss gets.
-                    if (AlarmPostDismissController.shouldScheduleWakeConfirmation(alarm)) {
-                        scheduleWakeConfirmation(
-                            alarm = alarm,
+                }
+                clearAlarmRuntimeState(alarmId)
+                currentSnoozeCount = 0
+                currentAlarmId = -1
+
+                val dismissAck = CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+                val enqueued = updateActiveAlarm(null, targetGen = acceptedGen, ack = dismissAck)
+
+                val clearResult = if (enqueued) {
+                    try {
+                        withTimeout(3000L) { dismissAck.await() }
+                    } catch (_: TimeoutCancellationException) {
+                        Log.w(TAG, "DataStore auto-dismiss clear timed out for $acceptedGen: commit outcome unconfirmed")
+                        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.w(TAG, "DataStore auto-dismiss clear failed for $acceptedGen", e)
+                        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT
+                    }
+                } else {
+                    com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT
+                }
+
+                when (clearResult) {
+                    com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED -> {
+                        Log.i(TAG, "Successfully committed DataStore auto-dismiss clear for $acceptedGen")
+                    }
+                    com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.IDEMPOTENT_NOOP -> {
+                        Log.i(TAG, "Auto-dismiss clear was idempotent no-op for $acceptedGen")
+                    }
+                    com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.REJECTED_STALE -> {
+                        Log.i(TAG, "Auto-dismiss clear rejected for $acceptedGen: DataStore holds newer active generation")
+                    }
+                    com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT -> {
+                        Log.w(TAG, "Failed to commit DataStore auto-dismiss clear for $acceptedGen: launching background retry")
+                        recordIncidentAsync(
+                            type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                            status = AlarmIncidentEvent.STATUS_FAILED,
+                            reasonCode = "CAP_DISMISS_PERSISTENCE_FAILED",
+                            source = "AlarmService",
+                            alarmId = acceptedGen.alarmId,
                             fireId = acceptedGen.fireId,
                             scheduledAt = acceptedGen.scheduledAt
                         )
+                        retryDismissTerminalClear(acceptedGen)
                     }
-                    clearAlarmRuntimeState(alarmId)
-                    currentSnoozeCount = 0
-                    currentAlarmId = -1
+                }
+                alarmScheduler.handleAlarmFired(alarmId, acceptedGen.scheduledAt)
+                webhookService.fireAsync(
+                    event = WebhookEvent.AlarmDismissed,
+                    alarmId = alarm.id,
+                    label = alarm.label,
+                    timeFormatted = wireAlarmTime(alarm),
+                    scheduledForMillis = webhookScheduledAt.takeIf { it > 0L },
+                    fireId = webhookFireId
+                )
+                AlarmBroadcastContract.send(
+                    this@AlarmService, AlarmBroadcastContract.ACTION_ALARM_DISMISSED,
+                    alarmId = alarm.id, label = alarm.label,
+                    displayTime = wireAlarmTime(alarm), fireId = webhookFireId
+                )
+                wearNextAlarmBridge.publishAlarmIdle(alarm.id)
+                if (isForeground.compareAndSet(true, false)) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                }
+                testOnStopSelfCalled?.invoke()
+                stopSelf()
+            }
+            return
+        }
 
-                    val dismissAck = CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
-                    val enqueued = updateActiveAlarm(null, targetGen = acceptedGen, ack = dismissAck)
+        // Ordinary Snooze Path: Attempt exact Snooze registration BEFORE audio/haptics teardown or Service stop!
+        val nextSnoozeCount = currentSnoozeCount + 1
+        val effectiveSnooze = if (alarm.progressiveSnooze && customMinutes == null && snoozeAtMillis == null) {
+            (alarm.snoozeDurationMinutes - nextSnoozeCount).coerceAtLeast(1)
+        } else customMinutes
+        val snoozeStartedAt = System.currentTimeMillis()
+        val defaultSnoozeEndAt = snoozeStartedAt +
+            (effectiveSnooze ?: alarm.snoozeDurationMinutes).coerceAtLeast(1) * 60_000L
+        val snoozeEndAt = (snoozeAtMillis ?: defaultSnoozeEndAt).coerceAtLeast(snoozeStartedAt + 1_000L)
 
-                    val clearResult = if (enqueued) {
-                        try {
-                            withTimeout(3000L) {
-                                dismissAck.await()
-                            }
-                        } catch (_: TimeoutCancellationException) {
-                            Log.w(TAG, "DataStore auto-dismiss clear timed out for $acceptedGen: commit outcome unconfirmed")
-                            com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            Log.w(TAG, "DataStore auto-dismiss clear failed for $acceptedGen", e)
-                            com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT
-                        }
-                    } else {
-                        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT
+        // Attempt exact OS registration
+        val snoozeScheduled = try {
+            alarmScheduler.scheduleSnoozeAt(alarm, snoozeEndAt, targetGen = acceptedGen)
+        } catch (e: Exception) {
+            Log.e(TAG, "OS AlarmManager registration threw exception for $acceptedGen", e)
+            false
+        }
+
+        if (!snoozeScheduled) {
+            // EXACT SNOOZE REGISTRATION FAILED:
+            // Do NOT tear down audio/haptics! Do NOT stop Service! Do NOT increment snooze count or cancel Guardian!
+            // Keep FIRING generation active and audible with functional controls!
+            Log.w(TAG, "Exact Snooze registration failed for $acceptedGen; keeping FIRING generation active and audible")
+            if (currentGeneration()?.matches(acceptedGen) == true) {
+                recordIncidentAsync(
+                    type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                    status = AlarmIncidentEvent.STATUS_FAILED,
+                    reasonCode = "SNOOZE_REGISTRATION_FAILED",
+                    source = "AlarmService",
+                    alarmId = alarm.id,
+                    fireId = acceptedGen.fireId,
+                    scheduledAt = acceptedGen.scheduledAt
+                )
+                refreshFiringNotification(alarm)
+            }
+            return
+        }
+
+        // EXACT SNOOZE REGISTRATION SUCCEEDED: Enqueue DataStore snooze state update BEFORE teardown!
+        val snoozeSnapshot = ActiveAlarmSnapshot(
+            alarmId = alarm.id,
+            scheduledAt = acceptedGen.scheduledAt,
+            fireId = acceptedGen.fireId,
+            firedAt = alarmFiredAt,
+            state = "SNOOZED",
+            refireAt = snoozeEndAt
+        )
+        val snoozeAck = CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
+        val enqueued = updateActiveAlarm(snoozeSnapshot, targetGen = acceptedGen, ack = snoozeAck)
+
+        val snoozeResult = if (enqueued) {
+            try {
+                withTimeout(3000L) { snoozeAck.await() }
+            } catch (_: TimeoutCancellationException) {
+                Log.w(TAG, "DataStore snooze write timed out for $acceptedGen: commit outcome unconfirmed")
+                com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "DataStore snooze write failed for $acceptedGen", e)
+                com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT
+            }
+        } else {
+            com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT
+        }
+
+        when (snoozeResult) {
+            com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED -> {
+                // PERSISTENCE CONFIRMED COMMITTED: Verify generation on Main thread before teardown or memory update
+                withContext(Dispatchers.Main.immediate) {
+                    if (currentGeneration()?.matches(acceptedGen) != true) {
+                        Log.i(TAG, "Aborting post-commit side effects for $acceptedGen: active generation is ${currentGeneration()}")
+                        return@withContext
                     }
 
-                    when (clearResult) {
-                        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED -> {
-                            Log.i(TAG, "Successfully committed DataStore auto-dismiss clear for $acceptedGen")
-                        }
-                        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.REJECTED_STALE -> {
-                            Log.i(TAG, "Auto-dismiss clear rejected for $acceptedGen: DataStore holds newer active generation")
-                        }
-                        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT -> {
-                            Log.w(TAG, "Failed to commit DataStore auto-dismiss clear for $acceptedGen: launching background retry")
-                            recordIncidentAsync(
-                                type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
-                                status = AlarmIncidentEvent.STATUS_FAILED,
-                                reasonCode = "CAP_DISMISS_PERSISTENCE_FAILED",
-                                source = "AlarmService",
-                                alarmId = acceptedGen.alarmId,
-                                fireId = acceptedGen.fireId,
-                                scheduledAt = acceptedGen.scheduledAt
-                            )
-                            retryDismissTerminalClear(acceptedGen)
-                        }
+                    activeAlarm.set(snoozeSnapshot)
+
+                    if (!performOwnerGuardedTeardown(acceptedGen)) {
+                        Log.i(TAG, "Post-commit teardown skipped for $acceptedGen: generation superseded")
+                        return@withContext
                     }
-                    alarmScheduler.handleAlarmFired(alarmId, acceptedGen.scheduledAt)
-                    webhookEvent = WebhookEvent.AlarmDismissed
-                } else {
+
+                    if (alarm.guardianEnabled) {
+                        WorkManager.getInstance(applicationContext).cancelUniqueWork("guardian_${alarm.id}")
+                    }
                     currentSnoozeCount = nextSnoozeCount
                     persistSnoozeCount(alarmId, currentSnoozeCount)
-                    val effectiveSnooze = if (alarm.progressiveSnooze && customMinutes == null && snoozeAtMillis == null) {
-                        (alarm.snoozeDurationMinutes - currentSnoozeCount).coerceAtLeast(1)
-                    } else customMinutes
-                    val snoozeStartedAt = System.currentTimeMillis()
-                    val defaultSnoozeEndAt = snoozeStartedAt +
-                        (effectiveSnooze ?: alarm.snoozeDurationMinutes)
-                            .coerceAtLeast(1) * 60_000L
-                    val snoozeEndAt = (snoozeAtMillis ?: defaultSnoozeEndAt)
-                        .coerceAtLeast(snoozeStartedAt + 1_000L)
-                    if (alarmScheduler.scheduleSnoozeAt(alarm, snoozeEndAt)) {
-                        SnoozeCountdownReceiver.schedule(
-                            context = this@AlarmService,
-                            startAtMillis = snoozeStartedAt,
-                            endAtMillis = snoozeEndAt
-                        )
-                        val snoozeSnapshot = ActiveAlarmSnapshot(
-                            alarmId = alarm.id,
-                            scheduledAt = acceptedGen.scheduledAt,
-                            fireId = acceptedGen.fireId,
-                            firedAt = alarmFiredAt,
-                            state = "SNOOZED",
-                            refireAt = snoozeEndAt
-                        )
-                        val snoozeAck = CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
-                        val enqueued = updateActiveAlarm(snoozeSnapshot, targetGen = acceptedGen, ack = snoozeAck)
 
-                        val snoozeResult = if (enqueued) {
-                            try {
-                                withTimeout(3000L) {
-                                    snoozeAck.await()
-                                }
-                            } catch (_: TimeoutCancellationException) {
-                                Log.w(TAG, "DataStore snooze write timed out for $acceptedGen: commit outcome unconfirmed")
-                                com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (e: Exception) {
-                                Log.w(TAG, "DataStore snooze write failed for $acceptedGen", e)
-                                com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT
-                            }
-                        } else {
-                            com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT
-                        }
+                    SnoozeCountdownReceiver.schedule(
+                        context = this@AlarmService,
+                        startAtMillis = snoozeStartedAt,
+                        endAtMillis = snoozeEndAt
+                    )
 
-                        when (snoozeResult) {
-                            com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED -> {
-                                Log.i(TAG, "Successfully committed DataStore snooze state for $acceptedGen")
-                            }
-                            com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.REJECTED_STALE -> {
-                                Log.i(TAG, "Snooze state write rejected for $acceptedGen: DataStore holds newer active generation")
-                            }
-                            com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT -> {
-                                Log.w(TAG, "Failed to commit DataStore snooze state for $acceptedGen: launching background retry")
-                                recordIncidentAsync(
-                                    type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
-                                    status = AlarmIncidentEvent.STATUS_FAILED,
-                                    reasonCode = "SNOOZE_PERSISTENCE_FAILED",
-                                    source = "AlarmService",
-                                    alarmId = acceptedGen.alarmId,
-                                    fireId = acceptedGen.fireId,
-                                    scheduledAt = acceptedGen.scheduledAt
-                                )
-                                retrySnoozeActiveState(acceptedGen, snoozeSnapshot)
-                            }
-                        }
-                    }
+                    Log.i(TAG, "Successfully committed DataStore snooze state for $acceptedGen")
                     recordEventAsync(
                         alarm = alarm,
                         scheduledAt = acceptedGen.scheduledAt,
@@ -2693,43 +2762,49 @@ class AlarmService : Service() {
                         fireId = acceptedGen.fireId,
                         scheduledAt = acceptedGen.scheduledAt
                     )
-                    webhookEvent = WebhookEvent.AlarmSnoozed
+                    val webhookEvent = WebhookEvent.AlarmSnoozed
+                    webhookService.fireAsync(
+                        event = webhookEvent,
+                        alarmId = alarm.id,
+                        label = alarm.label,
+                        timeFormatted = wireAlarmTime(alarm),
+                        scheduledForMillis = acceptedGen.scheduledAt.takeIf { it > 0L },
+                        fireId = acceptedGen.fireId
+                    )
+                    AlarmBroadcastContract.send(
+                        this@AlarmService, AlarmBroadcastContract.ACTION_ALARM_SNOOZED,
+                        alarmId = alarm.id, label = alarm.label,
+                        displayTime = wireAlarmTime(alarm), fireId = acceptedGen.fireId
+                    )
+                    wearNextAlarmBridge.publishAlarmIdle(alarm.id)
+                    if (isForeground.compareAndSet(true, false)) {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                    }
+                    testOnStopSelfCalled?.invoke()
+                    stopSelf()
                 }
-                webhookService.fireAsync(
-                    event = webhookEvent,
-                    alarmId = alarm.id,
-                    label = alarm.label,
-                    timeFormatted = wireAlarmTime(alarm),
-                    scheduledForMillis = webhookScheduledAt.takeIf { it > 0L },
-                    fireId = webhookFireId
-                )
-                AlarmBroadcastContract.send(
-                    this@AlarmService, AlarmBroadcastContract.ACTION_ALARM_SNOOZED,
-                    alarmId = alarm.id, label = alarm.label,
-                    displayTime = wireAlarmTime(alarm), fireId = webhookFireId
-                )
-                wearNextAlarmBridge.publishAlarmIdle(alarm.id)
-            } else {
+            }
+            com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.IDEMPOTENT_NOOP -> {
+                Log.i(TAG, "Snooze state update was idempotent no-op for $acceptedGen")
+            }
+            com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.REJECTED_STALE -> {
+                Log.i(TAG, "Snooze state write rejected for $acceptedGen: DataStore holds newer active generation")
+            }
+            com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT -> {
+                Log.w(TAG, "Failed to commit DataStore snooze state for $acceptedGen: launching background retry")
                 recordIncidentAsync(
-                    type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                    type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
                     status = AlarmIncidentEvent.STATUS_FAILED,
-                    reasonCode = "SNOOZE_ALARM_ROW_MISSING",
+                    reasonCode = "SNOOZE_PERSISTENCE_FAILED",
                     source = "AlarmService",
-                    alarmId = alarmId,
+                    alarmId = acceptedGen.alarmId,
                     fireId = acceptedGen.fireId,
                     scheduledAt = acceptedGen.scheduledAt
                 )
-                clearAlarmRuntimeState(alarmId)
-                currentSnoozeCount = 0
-                currentAlarmId = -1
-                updateActiveAlarm(null, targetGen = acceptedGen)
+                retrySnoozeActiveState(acceptedGen, snoozeSnapshot)
             }
-            if (isForeground.compareAndSet(true, false)) {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-            }
-            testOnStopSelfCalled?.invoke()
-            stopSelf()
         }
+        testOnSnoozeActionCompletionLatch?.complete(Unit)
     }
 
     private suspend fun dismissAlarm(
@@ -2799,6 +2874,9 @@ class AlarmService : Service() {
                 when (clearResult) {
                     com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.COMMITTED -> {
                         Log.i(TAG, "Successfully committed DataStore active alarm clear for $acceptedGen")
+                    }
+                    com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.IDEMPOTENT_NOOP -> {
+                        Log.i(TAG, "Active alarm clear was idempotent no-op for $acceptedGen")
                     }
                     com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.REJECTED_STALE -> {
                         Log.i(TAG, "Active alarm clear rejected for $acceptedGen: DataStore holds newer active generation")
@@ -2918,6 +2996,10 @@ class AlarmService : Service() {
                             )
                             committed = true
                         }
+                        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.IDEMPOTENT_NOOP -> {
+                            Log.i(TAG, "Active alarm clear retry was idempotent no-op for $acceptedGen")
+                            committed = true
+                        }
                         com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.REJECTED_STALE -> {
                             Log.i(TAG, "Active alarm clear retry rejected for $acceptedGen: DataStore holds newer active generation")
                             staleRejected = true
@@ -2985,6 +3067,10 @@ class AlarmService : Service() {
                                 fireId = acceptedGen.fireId,
                                 scheduledAt = acceptedGen.scheduledAt
                             )
+                            committed = true
+                        }
+                        com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.IDEMPOTENT_NOOP -> {
+                            Log.i(TAG, "Snooze state retry was idempotent no-op for $acceptedGen")
                             committed = true
                         }
                         com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.REJECTED_STALE -> {

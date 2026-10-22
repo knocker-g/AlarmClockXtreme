@@ -12,6 +12,7 @@ import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
+import com.sysadmindoc.alarmclock.domain.ScheduleAuthorityReconciler
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.CancellationException
@@ -26,7 +27,9 @@ import java.util.concurrent.TimeUnit
 class BootRescheduleWorker @AssistedInject constructor(
     @Assisted context: Context,
     @Assisted workerParams: WorkerParameters,
-    private val alarmScheduler: AlarmScheduler
+    private val alarmScheduler: AlarmScheduler,
+    private val scheduleAuthorityReconciler: ScheduleAuthorityReconciler? = null,
+    private val routeAuthority: com.sysadmindoc.alarmclock.domain.ProductionSchedulingRouteAuthority = com.sysadmindoc.alarmclock.domain.ProductionSchedulingRouteAuthority()
 ) : CoroutineWorker(context, workerParams) {
 
     override suspend fun doWork(): Result {
@@ -34,6 +37,9 @@ class BootRescheduleWorker @AssistedInject constructor(
         val forceRecalculate = inputData.getBoolean(KEY_FORCE_RECALCULATE, false)
 
         return try {
+            if (routeAuthority.isOwnerRouteActive()) {
+                scheduleAuthorityReconciler?.reconcileBootAuthorities()
+            }
             val count = alarmScheduler.rescheduleAllInBatches(
                 forceRecalculate = forceRecalculate,
                 batchSize = RESCHEDULE_BATCH_SIZE

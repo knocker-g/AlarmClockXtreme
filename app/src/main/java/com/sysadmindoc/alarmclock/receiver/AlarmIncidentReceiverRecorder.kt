@@ -46,11 +46,14 @@ internal fun BroadcastReceiver.recordAlarmIncidentAsync(
     )
 }
 
+@org.jetbrains.annotations.VisibleForTesting
+internal var testOnIncidentRecordedCompletion: ((List<ReceiverAlarmIncident>) -> Unit)? = null
+
 internal fun BroadcastReceiver.recordAlarmIncidentsAsync(
     context: Context,
     events: List<ReceiverAlarmIncident>
 ) {
-    val pending = goAsync()
+    val pending = try { goAsync() } catch (_: Exception) { null }
     CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
         try {
             val entryPoint = EntryPointAccessors.fromApplication(
@@ -71,7 +74,8 @@ internal fun BroadcastReceiver.recordAlarmIncidentsAsync(
                 )
             }
         } finally {
-            pending.finish()
+            pending?.finish()
+            runCatching { testOnIncidentRecordedCompletion?.invoke(events) }
         }
     }
 }

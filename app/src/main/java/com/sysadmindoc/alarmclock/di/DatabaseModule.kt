@@ -2,7 +2,6 @@ package com.sysadmindoc.alarmclock.di
 
 import android.content.Context
 import androidx.room.Room
-import androidx.room.RoomDatabase
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.sysadmindoc.alarmclock.data.local.ActigraphySessionDao
 import com.sysadmindoc.alarmclock.data.local.AlarmDao
@@ -10,9 +9,13 @@ import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 import com.sysadmindoc.alarmclock.data.local.AlarmEventDao
 import com.sysadmindoc.alarmclock.data.local.AlarmGroupDao
 import com.sysadmindoc.alarmclock.data.local.AlarmIncidentEventDao
+import com.sysadmindoc.alarmclock.data.local.DurableOperationIntentDao
 import com.sysadmindoc.alarmclock.data.local.NewsSourceDao
 import com.sysadmindoc.alarmclock.data.local.PreSleepTagDao
+import com.sysadmindoc.alarmclock.data.local.ScheduleAuthorityDao
 import com.sysadmindoc.alarmclock.data.local.SnoreEventDao
+import com.sysadmindoc.alarmclock.domain.MainSlotApplier
+import com.sysadmindoc.alarmclock.domain.RealMainSlotApplier
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -33,14 +36,7 @@ object DatabaseModule {
             "alarm_clock.db"
         )
             .addMigrations(*AlarmDatabase.ALL_MIGRATIONS)
-            .addCallback(object : RoomDatabase.Callback() {
-                override fun onCreate(db: SupportSQLiteDatabase) {
-                    db.execSQL(
-                        "INSERT OR IGNORE INTO alarm_groups (name) " +
-                            "VALUES ('Work'), ('School'), ('Gym'), ('Medication'), ('Personal'), ('Calendar')"
-                    )
-                }
-            })
+            .addCallback(AlarmDatabase.DATABASE_CALLBACK)
             .build()
     }
 
@@ -90,5 +86,36 @@ object DatabaseModule {
     @Singleton
     fun provideNewsSourceDao(database: AlarmDatabase): NewsSourceDao {
         return database.newsSourceDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideScheduleAuthorityDao(database: AlarmDatabase): ScheduleAuthorityDao {
+        return database.scheduleAuthorityDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideDurableOperationIntentDao(database: AlarmDatabase): DurableOperationIntentDao {
+        return database.durableOperationIntentDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideMainSlotApplier(impl: RealMainSlotApplier): MainSlotApplier {
+        return impl
+    }
+
+    @Provides
+    @Singleton
+    fun provideExactPermissionChecker(@ApplicationContext context: Context): () -> Boolean {
+        return {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? android.app.AlarmManager
+                alarmManager?.canScheduleExactAlarms() == true
+            } else {
+                true
+            }
+        }
     }
 }

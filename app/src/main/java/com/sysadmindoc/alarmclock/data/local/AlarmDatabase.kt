@@ -6,11 +6,14 @@ import androidx.room.TypeConverters
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.sysadmindoc.alarmclock.data.local.entity.ActigraphySession
-import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmEvent
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmGroup
+import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
+import com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent
 import com.sysadmindoc.alarmclock.data.local.entity.NewsSource
 import com.sysadmindoc.alarmclock.data.local.entity.PreSleepTagEntry
+import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
+import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta
 import com.sysadmindoc.alarmclock.data.local.entity.SnoreEvent
 import com.sysadmindoc.alarmclock.data.model.Alarm
 
@@ -23,7 +26,10 @@ import com.sysadmindoc.alarmclock.data.model.Alarm
         SnoreEvent::class,
         PreSleepTagEntry::class,
         AlarmGroup::class,
-        NewsSource::class
+        NewsSource::class,
+        ScheduleAuthority::class,
+        ScheduleAuthorityMeta::class,
+        DurableOperationIntent::class
     ],
     version = AlarmDatabase.VERSION,
     exportSchema = true
@@ -38,9 +44,11 @@ abstract class AlarmDatabase : RoomDatabase() {
     abstract fun preSleepTagDao(): PreSleepTagDao
     abstract fun alarmGroupDao(): AlarmGroupDao
     abstract fun newsSourceDao(): NewsSourceDao
+    abstract fun scheduleAuthorityDao(): ScheduleAuthorityDao
+    abstract fun durableOperationIntentDao(): DurableOperationIntentDao
 
     companion object {
-        const val VERSION = 27
+        const val VERSION = 31
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -417,6 +425,153 @@ abstract class AlarmDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v28: KNO-227 P1A schedule authority schema expansion.
+         */
+        val MIGRATION_27_28 = object : Migration(27, 28) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `schedule_authority` (
+                        `alarmId` INTEGER NOT NULL,
+                        `instanceToken` TEXT NOT NULL,
+                        `definitionRevision` INTEGER NOT NULL,
+                        `scheduleRevision` INTEGER NOT NULL,
+                        `lifecycle` TEXT NOT NULL,
+                        `desiredOperation` TEXT NOT NULL,
+                        `desiredTriggerMillis` INTEGER,
+                        `reconcileState` TEXT NOT NULL,
+                        `restoreEpoch` INTEGER NOT NULL,
+                        `actionKey` TEXT,
+                        PRIMARY KEY(`alarmId`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `schedule_authority_meta` (
+                        `id` INTEGER NOT NULL,
+                        `restoreEpoch` INTEGER NOT NULL,
+                        `bootstrapState` TEXT NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
+        fun installDurableIntentTriggers(db: SupportSQLiteDatabase) {
+            DurableIntentTriggers.installTriggers(db)
+        }
+
+        val DATABASE_CALLBACK = object : RoomDatabase.Callback() {
+            override fun onCreate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "INSERT OR IGNORE INTO alarm_groups (name) " +
+                        "VALUES ('Work'), ('School'), ('Gym'), ('Medication'), ('Personal'), ('Calendar')"
+                )
+                installDurableIntentTriggers(db)
+            }
+
+            override fun onOpen(db: SupportSQLiteDatabase) {
+                installDurableIntentTriggers(db)
+            }
+        }
+
+        /**
+         * v29: KNO-227 P3A/P3B-H inert durable operation intent schema foundation.
+         */
+        val MIGRATION_28_29 = object : Migration(28, 29) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `durable_operation_intent` (
+                        `operationToken` TEXT NOT NULL,
+                        `alarmId` INTEGER NOT NULL,
+                        `operationEpoch` INTEGER NOT NULL,
+                        `incarnationId` TEXT NOT NULL,
+                        `operationKind` TEXT NOT NULL,
+                        `expectedOwnerToken` TEXT,
+                        `expectedScheduleRevision` INTEGER,
+                        `expectedRestoreEpoch` INTEGER,
+                        `phase` TEXT NOT NULL,
+                        `intentRevision` INTEGER NOT NULL,
+                        PRIMARY KEY(`operationToken`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE INDEX IF NOT EXISTS `index_durable_operation_intent_alarmId_phase`
+                    ON `durable_operation_intent` (`alarmId`, `phase`)
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE INDEX IF NOT EXISTS `index_durable_operation_intent_alarmId`
+                    ON `durable_operation_intent` (`alarmId`)
+                    """.trimIndent()
+                )
+                installDurableIntentTriggers(db)
+            }
+        }
+
+        /**
+         * v30: KNO-227 P3B-N1 controlled migration admission for legacy trigger replacement.
+         * Validates existing rows against invariants and classifies trigger definitions
+         * BEFORE performing any trigger replacement.
+         */
+        val MIGRATION_29_30 = object : Migration(29, 30) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val verifier = DurableIntentTriggerVerifier()
+
+                // 1. Validate existing persisted intent rows against invariants
+                verifier.validatePersistedIntents(db)
+
+                // 2. Classify existing trigger definitions in sqlite_master
+                when (val classification = verifier.classifyTriggers(db)) {
+                    is TriggerClassificationResult.AlreadyCanonical -> {
+                        // Triggers already match current canonical definitions; proceed safely
+                    }
+                    is TriggerClassificationResult.KnownLegacy -> {
+                        // Drop known legacy triggers and install canonical triggers
+                        db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_unresolved_unique_insert`")
+                        db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_unresolved_unique_update`")
+                        db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_phase_insert`")
+                        db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_phase_update`")
+                        db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_identity_insert`")
+                        db.execSQL("DROP TRIGGER IF EXISTS `trigger_durable_intent_identity_update`")
+
+                        installDurableIntentTriggers(db)
+
+                        val postVerify = verifier.verifyTriggers(db)
+                        if (postVerify !is TriggerVerificationResult.Valid) {
+                            error("Post-migration trigger verification failed: $postVerify")
+                        }
+                    }
+                    is TriggerClassificationResult.UnknownOrModified -> {
+                        // Abort migration safely without deleting or altering any data
+                        error("Migration 29->30 aborted: ${classification.details}")
+                    }
+                }
+            }
+        }
+
+        /**
+         * v31: KNO-227 G1 inert provenance persistence foundation.
+         * Adds nullable additive columns for causal provenance tracking:
+         * - originalFireId (TEXT)
+         * - originalScheduledAt (INTEGER)
+         * - candidateSnoozeAt (INTEGER)
+         */
+        val MIGRATION_30_31 = object : Migration(30, 31) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `durable_operation_intent` ADD COLUMN `originalFireId` TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE `durable_operation_intent` ADD COLUMN `originalScheduledAt` INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE `durable_operation_intent` ADD COLUMN `candidateSnoozeAt` INTEGER DEFAULT NULL")
+            }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -444,6 +599,10 @@ abstract class AlarmDatabase : RoomDatabase() {
             MIGRATION_24_25,
             MIGRATION_25_26,
             MIGRATION_26_27,
+            MIGRATION_27_28,
+            MIGRATION_28_29,
+            MIGRATION_29_30,
+            MIGRATION_30_31,
         )
     }
 }

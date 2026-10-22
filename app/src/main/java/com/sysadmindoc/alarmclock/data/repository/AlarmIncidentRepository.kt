@@ -137,6 +137,8 @@ class AlarmIncidentRepository @Inject constructor(
             val id = dao.insert(event)
             prune()
             id
+        }.onFailure { e ->
+            android.util.Log.e("AlarmIncidentRepo", "Failed to insert incident event", e)
         }.getOrNull()
     }
 
@@ -162,11 +164,10 @@ class AlarmIncidentRepository @Inject constructor(
 
     private fun exactAlarmStatus(): String {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return "TRUE"
-        return if (context.getSystemService(AlarmManager::class.java)?.canScheduleExactAlarms() == true) {
-            "TRUE"
-        } else {
-            "FALSE"
-        }
+        val allowed = runCatching {
+            (context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager)?.canScheduleExactAlarms()
+        }.getOrNull()
+        return if (allowed == true) "TRUE" else "FALSE"
     }
 
     private fun fullScreenIntentStatus(): String {
