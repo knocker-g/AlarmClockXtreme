@@ -1311,12 +1311,33 @@ class AlarmSchedulerTest {
         coVerify(exactly = 0) { repository.casUpdateNextTriggerInitialWithAuthority(any(), any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) { mockOwner.executeOperation(any(), any(), any(), any(), any()) }
 
-        // 2. Missing originRevision on early zeroing (disabled exact alarm) under OWNER_EXCLUSIVE -> aborts zeroing
+        // 2. Missing originRevision on early zeroing under OWNER_EXCLUSIVE -> aborts schedule BEFORE cancel or zeroing
         coEvery { repository.getAuthorityByAlarmId(alarmId) } returns null // Incomplete origin authority!
         schedulerWithOwner.schedule(enabledAlarm(id = alarmId), requestWidgetUpdate = false)
 
         coVerify(exactly = 0) { repository.updateNextTrigger(alarmId, 0) }
         coVerify(exactly = 0) { repository.casUpdateNextTriggerInitialWithAuthority(alarmId, 0, any(), any(), any(), any()) }
+        coVerify(exactly = 0) { mockOwner.executeOperation(alarmId, "CANCEL", null, any(), any()) }
+
+        // 3. Rejected cancel under OWNER_EXCLUSIVE (Superseded) -> skips worker/cache cancellations
+        coEvery { repository.getAuthorityByAlarmId(alarmId) } returns mockAuth
+        coEvery { mockOwner.executeOperation(alarmId, "CANCEL", null, any(), eq(1L)) } returns OwnerResult.Superseded(2L)
+
+        // Seed DirectBoot cache with alarmId
+        com.sysadmindoc.alarmclock.directboot.DirectBootAlarmCache.saveIfEarlier(
+            context,
+            enabledAlarm(id = alarmId),
+            triggerTime,
+            now = triggerTime - 1000L
+        )
+        assertNotNull(com.sysadmindoc.alarmclock.directboot.DirectBootAlarmCache.read(context))
+
+        // Execute schedule(disabledAlarm) with stale revision 1L -> owner returns Superseded(2L)
+        schedulerWithOwner.schedule(enabledAlarm(id = alarmId).copy(isEnabled = false), requestWidgetUpdate = false)
+
+        // Verify DirectBoot cache remains intact (NOT cleared/removed)!
+        assertNotNull("DirectBoot cache MUST remain intact when cancellation is Superseded", com.sysadmindoc.alarmclock.directboot.DirectBootAlarmCache.read(context))
+        com.sysadmindoc.alarmclock.directboot.DirectBootAlarmCache.clear(context)
 
         // 3. LEGACY_ONLY route regression check -> executes legacy updateNextTrigger when isOwnerRouteActive() == false
         val legacyRouteAuthority = mockk<ProductionSchedulingRouteAuthority>()

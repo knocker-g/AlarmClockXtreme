@@ -90,6 +90,11 @@ class AlarmScheduler @Inject constructor(
         val originRestoreEpoch = originAuthority?.restoreEpoch
         val originDefinitionRevision = originAuthority?.definitionRevision
 
+        if (routeAuthority.isOwnerRouteActive() && originAuthority == null) {
+            Log.w("AlarmScheduler", "Aborting schedule() for alarm ${sanitizedAlarm.id}: Owner route active but authority record absent")
+            return
+        }
+
         if (!sanitizedAlarm.isEnabled) {
             cancelScheduledEntries(sanitizedAlarm.id, expectedRevision = originRevision)
             return
@@ -966,6 +971,7 @@ class AlarmScheduler @Inject constructor(
         expectedRevision: Long? = null
     ) {
         val slotMutex = mainSlotMutexMap.computeIfAbsent(alarmId) { Mutex() }
+        var isCancelAccepted = false
         runBlocking {
             slotMutex.withLock {
                 if (targetGen != null) {
@@ -978,18 +984,31 @@ class AlarmScheduler @Inject constructor(
                 val owner = if (routeAuthority.isOwnerRouteActive()) scheduleAuthorityOwnerProvider?.get() else null
                 if (owner != null) {
                     val actionKey = "act-cancel-$alarmId-${System.currentTimeMillis()}"
-                    owner.executeOperation(
+                    val cancelResult = owner.executeOperation(
                         alarmId = alarmId,
                         desiredOperation = "CANCEL",
                         desiredTriggerMillis = null,
                         actionKey = actionKey,
                         expectedRevision = expectedRevision
                     )
+                    isCancelAccepted = cancelResult is OwnerResult.OsAccepted || cancelResult is OwnerResult.DuplicateIgnored
                 } else {
-                    applyRawOsCancel(alarmId)
+                    if (routeAuthority.isOwnerRouteActive()) {
+                        Log.w("AlarmScheduler", "Owner route active but scheduleAuthorityOwnerProvider is null for alarm $alarmId; aborting cancel")
+                        isCancelAccepted = false
+                    } else {
+                        applyRawOsCancel(alarmId)
+                        isCancelAccepted = true
+                    }
                 }
             }
         }
+
+        if (!isCancelAccepted && routeAuthority.isOwnerRouteActive()) {
+            Log.w("AlarmScheduler", "Cancellation unfulfilled or rejected for alarm $alarmId under OWNER_EXCLUSIVE; skipping destructive side effects")
+            return
+        }
+
         DirectBootAlarmCache.removeIfMatches(context, alarmId)
 
         cancelSmartAlarmStart(alarmId)
