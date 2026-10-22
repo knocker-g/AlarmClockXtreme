@@ -699,7 +699,10 @@ class AlarmSchedulerTest {
             resultA = schedulerWithOwner.scheduleAt(
                 enabledAlarm(id = alarmId),
                 triggerTimeA,
-                expectedRevision = capturedRevisionA
+                expectedRevision = capturedRevisionA,
+                expectedInstanceToken = originAuthA.instanceToken,
+                expectedRestoreEpoch = originAuthA.restoreEpoch,
+                expectedDefinitionRevision = originAuthA.definitionRevision
             )
         }
 
@@ -783,8 +786,8 @@ class AlarmSchedulerTest {
         var currentAlarm = enabledAlarm(id = alarmId).copy(nextTriggerTime = triggerTimeA)
         every { calculator.calculate(any()) } returns triggerTimeB
         every { calculator.calculate(any(), any()) } returns triggerTimeB
-        coEvery { repository.getAuthorityByAlarmId(alarmId) } answers {
-            kotlinx.coroutines.runBlocking { realDao.getAuthorityByAlarmId(alarmId) }
+        coEvery { repository.getAuthorityByAlarmId(alarmId) } coAnswers {
+            realDao.getAuthorityByAlarmId(alarmId)
         }
         coEvery { repository.getById(alarmId) } answers { currentAlarm }
         coEvery { repository.getNextAlarm() } answers { currentAlarm }
@@ -834,7 +837,10 @@ class AlarmSchedulerTest {
             resultA = schedulerWithOwner.scheduleAt(
                 currentAlarm,
                 triggerTimeA,
-                expectedRevision = capturedRevisionA
+                expectedRevision = capturedRevisionA,
+                expectedInstanceToken = originAuthA.instanceToken,
+                expectedRestoreEpoch = originAuthA.restoreEpoch,
+                expectedDefinitionRevision = originAuthA.definitionRevision
             )
         }
 
@@ -920,8 +926,8 @@ class AlarmSchedulerTest {
         every { ownerRouteAuthority.isOwnerRouteActive() } returns true
 
         var currentAlarm = enabledAlarm(id = alarmId).copy(nextTriggerTime = triggerTimeA)
-        coEvery { repository.getAuthorityByAlarmId(alarmId) } answers {
-            kotlinx.coroutines.runBlocking { realDao.getAuthorityByAlarmId(alarmId) }
+        coEvery { repository.getAuthorityByAlarmId(alarmId) } coAnswers {
+            realDao.getAuthorityByAlarmId(alarmId)
         }
         coEvery { repository.getById(alarmId) } answers { currentAlarm }
         coEvery { repository.getNextAlarm() } answers { currentAlarm }
@@ -970,7 +976,10 @@ class AlarmSchedulerTest {
             resultA = schedulerWithOwner.scheduleAt(
                 currentAlarm,
                 triggerTimeA,
-                expectedRevision = capturedRevisionA
+                expectedRevision = capturedRevisionA,
+                expectedInstanceToken = originAuthA.instanceToken,
+                expectedRestoreEpoch = originAuthA.restoreEpoch,
+                expectedDefinitionRevision = originAuthA.definitionRevision
             )
         }
 
@@ -1255,6 +1264,90 @@ class AlarmSchedulerTest {
 
         // Demonstrates that value-level nextTriggerTime equality alone cannot distinguish generation A from B
         assertEquals(sameTarget, repository.getById(alarmId)?.nextTriggerTime)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `ownerActiveFailClosedRouteGuardTest`() = runTest {
+        val alarmId = 910L
+        val triggerTime = System.currentTimeMillis() + 600_000L
+        every { calculator.calculate(any<Alarm>()) } returns triggerTime
+        every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
+
+        val mockAuth = com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority(
+            alarmId = alarmId, instanceToken = "inst-$alarmId", definitionRevision = 1L, scheduleRevision = 1L,
+            lifecycle = "LIVE", desiredOperation = "SET", desiredTriggerMillis = triggerTime,
+            reconcileState = "SETTLED", restoreEpoch = 100L, actionKey = "act-init"
+        )
+
+        val ownerRouteAuthority = mockk<ProductionSchedulingRouteAuthority>()
+        every { ownerRouteAuthority.isOwnerRouteActive() } returns true
+
+        val mockOwner = mockk<ScheduleAuthorityOwner>()
+
+        val schedulerWithOwner = AlarmScheduler(
+            context = context,
+            repository = repository,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            holidayRepository = holidayRepository,
+            alarmIncidentRepository = incidentRepository,
+            weatherRepository = weatherRepository,
+            routeAuthority = ownerRouteAuthority,
+            scheduleAuthorityOwnerProvider = { mockOwner }
+        )
+
+        // 1. Missing expectedRevision on scheduleAt under OWNER_EXCLUSIVE -> aborts write & OS call
+        coEvery { repository.getAuthorityByAlarmId(alarmId) } returns mockAuth
+        val scheduled = schedulerWithOwner.scheduleAt(
+            enabledAlarm(id = alarmId),
+            triggerTime,
+            requestWidgetUpdate = false,
+            expectedRevision = null // Missing expectedRevision!
+        )
+
+        assertFalse("scheduleAt MUST fail closed when expectedRevision is missing under OWNER_EXCLUSIVE", scheduled)
+        coVerify(exactly = 0) { repository.updateNextTrigger(alarmId, any()) }
+        coVerify(exactly = 0) { repository.casUpdateNextTriggerInitialWithAuthority(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { mockOwner.executeOperation(any(), any(), any(), any(), any()) }
+
+        // 2. Missing originRevision on early zeroing (disabled exact alarm) under OWNER_EXCLUSIVE -> aborts zeroing
+        coEvery { repository.getAuthorityByAlarmId(alarmId) } returns null // Incomplete origin authority!
+        schedulerWithOwner.schedule(enabledAlarm(id = alarmId), requestWidgetUpdate = false)
+
+        coVerify(exactly = 0) { repository.updateNextTrigger(alarmId, 0) }
+        coVerify(exactly = 0) { repository.casUpdateNextTriggerInitialWithAuthority(alarmId, 0, any(), any(), any(), any()) }
+
+        // 3. LEGACY_ONLY route regression check -> executes legacy updateNextTrigger when isOwnerRouteActive() == false
+        val legacyRouteAuthority = mockk<ProductionSchedulingRouteAuthority>()
+        every { legacyRouteAuthority.isOwnerRouteActive() } returns false
+
+        val legacyScheduler = AlarmScheduler(
+            context = context,
+            repository = repository,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            holidayRepository = holidayRepository,
+            alarmIncidentRepository = incidentRepository,
+            weatherRepository = weatherRepository,
+            routeAuthority = legacyRouteAuthority
+        )
+
+        var legacyAlarmState = enabledAlarm(id = alarmId)
+        coEvery { repository.getById(alarmId) } answers { legacyAlarmState }
+        coEvery { repository.updateNextTrigger(alarmId, any()) } answers {
+            legacyAlarmState = legacyAlarmState.copy(nextTriggerTime = secondArg())
+        }
+
+        val legacyScheduled = legacyScheduler.scheduleAt(
+            enabledAlarm(id = alarmId),
+            triggerTime,
+            requestWidgetUpdate = false,
+            expectedRevision = null
+        )
+
+        assertTrue("scheduleAt MUST succeed under LEGACY_ONLY route without expectedRevision", legacyScheduled)
+        coVerify { repository.updateNextTrigger(alarmId, triggerTime) }
     }
 
     private fun enabledAlarm(id: Long): Alarm = Alarm(

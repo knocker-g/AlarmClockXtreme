@@ -97,8 +97,12 @@ class AlarmScheduler @Inject constructor(
 
         if (!canScheduleExactAlarms()) {
             cancelScheduledEntries(sanitizedAlarm.id, expectedRevision = originRevision)
-            if (routeAuthority.isOwnerRouteActive() && originRevision != null) {
-                repository.casUpdateNextTriggerInitialWithAuthority(sanitizedAlarm.id, 0, originRevision, originInstanceToken, originRestoreEpoch, originDefinitionRevision)
+            if (routeAuthority.isOwnerRouteActive()) {
+                if (originRevision != null && originInstanceToken != null && originRestoreEpoch != null && originDefinitionRevision != null) {
+                    repository.casUpdateNextTriggerInitialWithAuthority(sanitizedAlarm.id, 0, originRevision, originInstanceToken, originRestoreEpoch, originDefinitionRevision)
+                } else {
+                    Log.w("AlarmScheduler", "Aborting zeroing for alarm ${sanitizedAlarm.id}: Owner route active but origin authority fingerprint incomplete")
+                }
             } else {
                 repository.updateNextTrigger(sanitizedAlarm.id, 0)
             }
@@ -114,8 +118,12 @@ class AlarmScheduler @Inject constructor(
         val currentSettings = preferencesManager.getCurrentSettings()
         if (currentSettings.isPaused()) {
             cancelScheduledEntries(sanitizedAlarm.id, expectedRevision = originRevision)
-            if (routeAuthority.isOwnerRouteActive() && originRevision != null) {
-                repository.casUpdateNextTriggerInitialWithAuthority(sanitizedAlarm.id, 0, originRevision, originInstanceToken, originRestoreEpoch, originDefinitionRevision)
+            if (routeAuthority.isOwnerRouteActive()) {
+                if (originRevision != null && originInstanceToken != null && originRestoreEpoch != null && originDefinitionRevision != null) {
+                    repository.casUpdateNextTriggerInitialWithAuthority(sanitizedAlarm.id, 0, originRevision, originInstanceToken, originRestoreEpoch, originDefinitionRevision)
+                } else {
+                    Log.w("AlarmScheduler", "Aborting zeroing for alarm ${sanitizedAlarm.id}: Owner route active but origin authority fingerprint incomplete")
+                }
             } else {
                 repository.updateNextTrigger(sanitizedAlarm.id, 0)
             }
@@ -134,14 +142,22 @@ class AlarmScheduler @Inject constructor(
         if (triggerTime <= System.currentTimeMillis()) {
             cancelScheduledEntries(sanitizedAlarm.id, expectedRevision = originRevision)
             if (sanitizedAlarm.isRecurringSchedule) {
-                if (routeAuthority.isOwnerRouteActive() && originRevision != null) {
-                    repository.casUpdateNextTriggerInitialWithAuthority(sanitizedAlarm.id, 0, originRevision, originInstanceToken, originRestoreEpoch, originDefinitionRevision)
+                if (routeAuthority.isOwnerRouteActive()) {
+                    if (originRevision != null && originInstanceToken != null && originRestoreEpoch != null && originDefinitionRevision != null) {
+                        repository.casUpdateNextTriggerInitialWithAuthority(sanitizedAlarm.id, 0, originRevision, originInstanceToken, originRestoreEpoch, originDefinitionRevision)
+                    } else {
+                        Log.w("AlarmScheduler", "Aborting zeroing for alarm ${sanitizedAlarm.id}: Owner route active but origin authority fingerprint incomplete")
+                    }
                 } else {
                     repository.updateNextTrigger(sanitizedAlarm.id, 0)
                 }
             } else {
-                if (routeAuthority.isOwnerRouteActive() && originRevision != null) {
-                    repository.casSetEnabledWithStrictAuthority(sanitizedAlarm.id, enabled = false, nextTrigger = 0, originRevision, originInstanceToken, originRestoreEpoch, originDefinitionRevision)
+                if (routeAuthority.isOwnerRouteActive()) {
+                    if (originRevision != null && originInstanceToken != null && originRestoreEpoch != null && originDefinitionRevision != null) {
+                        repository.casSetEnabledWithStrictAuthority(sanitizedAlarm.id, enabled = false, nextTrigger = 0, originRevision, originInstanceToken, originRestoreEpoch, originDefinitionRevision)
+                    } else {
+                        Log.w("AlarmScheduler", "Aborting setEnabled(false) for alarm ${sanitizedAlarm.id}: Owner route active but origin authority fingerprint incomplete")
+                    }
                 } else {
                     repository.setEnabled(sanitizedAlarm.id, enabled = false, nextTrigger = 0)
                 }
@@ -390,7 +406,15 @@ class AlarmScheduler @Inject constructor(
                 }
             }
 
-            if (routeAuthority.isOwnerRouteActive() && expectedRevision != null) {
+            if (routeAuthority.isOwnerRouteActive()) {
+                val hasFullFingerprint = expectedRevision != null &&
+                    expectedInstanceToken != null &&
+                    expectedRestoreEpoch != null &&
+                    expectedDefinitionRevision != null
+                if (!hasFullFingerprint) {
+                    Log.w("AlarmScheduler", "Aborting initial write for alarm ${sanitizedAlarm.id}: Owner route active but authority fingerprint incomplete")
+                    return@withLock false
+                }
                 val initialRows = repository.casUpdateNextTriggerInitialWithAuthority(
                     id = sanitizedAlarm.id,
                     newTrigger = triggerTime,
