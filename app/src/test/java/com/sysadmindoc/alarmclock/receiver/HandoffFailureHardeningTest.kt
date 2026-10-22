@@ -34,6 +34,7 @@ class HandoffFailureHardeningTest {
 
     @Before
     fun setUp() {
+        context.deleteDatabase("alarm_clock.db")
         val entryPoint = EntryPointAccessors.fromApplication(
             context.applicationContext,
             AlarmClockApp.AppEntryPoint::class.java
@@ -146,5 +147,37 @@ class HandoffFailureHardeningTest {
         assertEquals(alarmId, failureIncident.alarmId)
         assertEquals(fireId, failureIncident.fireId)
         assertEquals(scheduledAt, failureIncident.scheduledAt)
+    }
+
+    @Test
+    fun `AlarmReceiver startForegroundService fails and fallback fails records STATUS_FAILED incident`() {
+        val spyContext = spyk(context) {
+            every { applicationContext } returns context.applicationContext
+            every { startForegroundService(any()) } throws IllegalStateException("Background start restricted")
+        }
+
+        val latch = CountDownLatch(1)
+        testOnIncidentRecordedCompletion = {
+            latch.countDown()
+        }
+
+        val intent = Intent().apply {
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, 104L)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 4000L)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "fire-104")
+        }
+
+        val receiver = AlarmReceiver()
+        receiver.onReceive(spyContext, intent)
+
+        assertTrue("Incident recording timed out", latch.await(5, TimeUnit.SECONDS))
+
+        val incidents = runBlocking { incidentRepo.getRecent(50) }
+        val failureIncident = incidents.find { it.alarmId == 104L && it.status == AlarmIncidentEvent.STATUS_FAILED }
+
+        assertNotNull("Persisted failure incident MUST be present in Room DB", failureIncident)
+        assertEquals(104L, failureIncident!!.alarmId)
+        assertEquals(AlarmIncidentEvent.STATUS_FAILED, failureIncident.status)
+        assertEquals(0, runBlocking { incidentRepo.occurrenceDeliveryCount(104L, 4000L) })
     }
 }

@@ -7,6 +7,7 @@ import android.util.Log
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.service.AlarmFireDismissContract
+import dagger.hilt.android.EntryPointAccessors
 
 /**
  * Receives the alarm broadcast from AlarmManager and starts the foreground
@@ -51,8 +52,7 @@ class AlarmReceiver : BroadcastReceiver() {
         } catch (e: Exception) {
             // ForegroundServiceStartNotAllowedException (API 31+) when the app is
             // background-restricted at the exact moment AlarmManager wakes it.
-            // The AlarmManager exact-alarm guarantee means this is extremely rare;
-            // log for diagnostics and let the system handle retries.
+            // Log for diagnostics and attempt bounded full-screen fallback for same occurrence.
             Log.e("AlarmReceiver", "startForegroundService failed for alarm $alarmId", e)
             incidents += ReceiverAlarmIncident(
                 alarmId = alarmId,
@@ -63,6 +63,35 @@ class AlarmReceiver : BroadcastReceiver() {
                 reasonCode = "START_FOREGROUND_SERVICE_FAILED_${e.javaClass.simpleName}",
                 source = "AlarmReceiver"
             )
+
+            // Attempt bounded full-screen fallback for same occurrence using fail-closed privacy authority
+            try {
+                val entryPoint = EntryPointAccessors.fromApplication(
+                    context.applicationContext,
+                    com.sysadmindoc.alarmclock.AlarmClockApp.AppEntryPoint::class.java
+                )
+                val hideLabel = entryPoint.preferencesManager().shouldHideLabelsOnPublicSurfaces()
+                val fallbackPosted = com.sysadmindoc.alarmclock.service.AlarmFullScreenFallback.post(
+                    context = context,
+                    alarmId = alarmId,
+                    scheduledAt = scheduledAt,
+                    fireId = fireId,
+                    hideLabel = hideLabel
+                )
+                if (fallbackPosted) {
+                    incidents += ReceiverAlarmIncident(
+                        alarmId = alarmId,
+                        fireId = fireId,
+                        scheduledAt = scheduledAt,
+                        type = AlarmIncidentEvent.TYPE_NOTIFICATION,
+                        status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                        reasonCode = "ALARM_NOTIFICATION_POSTED",
+                        source = "AlarmReceiver"
+                    )
+                }
+            } catch (fallbackError: Exception) {
+                Log.e("AlarmReceiver", "Full-screen fallback failed for alarm $alarmId", fallbackError)
+            }
         } finally {
             if (!serviceStartSucceeded) AlarmDeliveryWakeLock.release(deliveryWakeLock)
             recordAlarmIncidentsAsync(context, incidents)
