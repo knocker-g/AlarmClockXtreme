@@ -100,7 +100,7 @@ class AlarmIncidentRepositoryTest {
     }
 
     @Test
-    fun occurrenceDeliveryCountRequiresStatusSucceededOnProvenDeliveryTypes() = runBlocking {
+    fun occurrenceDeliveryCountRequiresReasonCodeAllowlistForProvenDelivery() = runBlocking {
         val dao = FakeAlarmIncidentEventDao()
         val repository = AlarmIncidentRepository(dao, MinimalContext())
         val alarmId = 42L
@@ -138,13 +138,18 @@ class AlarmIncidentRepositoryTest {
         // Record a BROADCAST arrival incident
         dao.insert(makeIncident(AlarmIncidentEvent.TYPE_BROADCAST, AlarmIncidentEvent.STATUS_RECEIVED))
 
+        // Record SUCCEEDED events that are NOT proven user-facing delivery
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_PROMOTION, AlarmIncidentEvent.STATUS_SUCCEEDED, reasonCode = "PLACEHOLDER_FOREGROUND_STARTED"))
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE, AlarmIncidentEvent.STATUS_SUCCEEDED, reasonCode = "DUPLICATE_START_COMMAND_IGNORED"))
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_AUDIO, AlarmIncidentEvent.STATUS_SUCCEEDED, reasonCode = "BACKUP_SOUND_ESCALATED"))
+
         // None of these prove user-facing alarm delivery
         assertEquals(0, repository.occurrenceDeliveryCount(alarmId, scheduledAt))
 
-        // Record a STATUS_SUCCEEDED FOREGROUND_PROMOTION incident (startForeground succeeded!)
-        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_FOREGROUND_PROMOTION, AlarmIncidentEvent.STATUS_SUCCEEDED))
+        // Record a STATUS_SUCCEEDED NOTIFICATION_POSTED incident (real firing notification posted!)
+        dao.insert(makeIncident(AlarmIncidentEvent.TYPE_NOTIFICATION, AlarmIncidentEvent.STATUS_SUCCEEDED, reasonCode = "NOTIFICATION_POSTED"))
 
-        // STATUS_SUCCEEDED proves user-facing delivery!
+        // NOTIFICATION_POSTED counts as positive delivery proof!
         assertEquals(1, repository.occurrenceDeliveryCount(alarmId, scheduledAt))
     }
 
@@ -198,11 +203,10 @@ class AlarmIncidentRepositoryTest {
             it.alarmId == alarmId &&
                 it.scheduledAt == scheduledAt &&
                 it.status == AlarmIncidentEvent.STATUS_SUCCEEDED &&
-                it.type in listOf(
-                    AlarmIncidentEvent.TYPE_FOREGROUND_PROMOTION,
-                    AlarmIncidentEvent.TYPE_NOTIFICATION,
-                    AlarmIncidentEvent.TYPE_AUDIO,
-                    AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE
+                it.reasonCode in listOf(
+                    "NOTIFICATION_POSTED",
+                    "AUDIO_PLAYBACK_STARTED",
+                    "DIRECT_BOOT_FIRED"
                 )
         }
 

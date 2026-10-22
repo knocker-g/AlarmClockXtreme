@@ -31,11 +31,14 @@ interface AlarmIncidentEventDao {
 
     /**
      * Count positive accepted delivery evidence for a specific alarm occurrence.
-     * Requires status = 'SUCCEEDED' across user-facing delivery event types
-     * ('FOREGROUND_PROMOTION', 'NOTIFICATION', 'AUDIO') or 'FOREGROUND_SERVICE' with status = 'SUCCEEDED'.
+     * Uses an EXPLICIT ALLOWLIST for proven user-facing delivery reasonCodes:
+     * - 'NOTIFICATION_POSTED': Real labelled firing notification posted to user.
+     * - 'AUDIO_PLAYBACK_STARTED': Real alarm audio started playing to user.
+     * - 'DIRECT_BOOT_FIRED': Real Direct Boot alarm fired to user.
      *
-     * STATUS_RECEIVED (e.g. START_COMMAND_RECEIVED recorded before startForeground or startAlarm)
-     * and STATUS_REQUESTED/STATUS_FAILED/STATUS_UNKNOWN do NOT prove user-facing delivery.
+     * Requires status = 'SUCCEEDED'. Excludes placeholder foreground promotion,
+     * duplicate command suppression, volume escalation, media session, requested,
+     * failed, or any unlisted reasonCode.
      */
     @Query(
         """
@@ -43,7 +46,7 @@ interface AlarmIncidentEventDao {
         WHERE alarmId = :alarmId
           AND scheduledAt = :scheduledAt
           AND status = 'SUCCEEDED'
-          AND type IN ('FOREGROUND_PROMOTION', 'NOTIFICATION', 'AUDIO', 'FOREGROUND_SERVICE')
+          AND reasonCode IN ('NOTIFICATION_POSTED', 'AUDIO_PLAYBACK_STARTED', 'DIRECT_BOOT_FIRED')
         """
     )
     suspend fun countPositiveAcceptedDeliveryByOccurrence(
