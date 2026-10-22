@@ -230,7 +230,7 @@ class HandoffFailureHardeningTest {
 
         val intent = Intent().apply {
             putExtra(AlarmScheduler.EXTRA_ALARM_ID, 105L)
-            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 5000L)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, validScheduledAt)
             putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "fire-105")
         }
 
@@ -249,7 +249,7 @@ class HandoffFailureHardeningTest {
         assertEquals(AlarmIncidentEvent.STATUS_SUCCEEDED, successIncident.status)
         assertEquals("ALARM_NOTIFICATION_POSTED", successIncident.reasonCode)
 
-        val deliveryCount = runBlocking { incidentRepo.occurrenceDeliveryCount(105L, 5000L) }
+        val deliveryCount = runBlocking { incidentRepo.occurrenceDeliveryCount(105L, validScheduledAt) }
         assertEquals(1, deliveryCount)
 
         val watchdogDecision = com.sysadmindoc.alarmclock.worker.FireWatchdogPolicy.decide(
@@ -257,8 +257,8 @@ class HandoffFailureHardeningTest {
             alarmExists = true,
             isEnabled = true,
             deliveryCount = deliveryCount,
-            scheduledAtMs = 5000L,
-            nowMs = 5000L + com.sysadmindoc.alarmclock.worker.FireWatchdogPolicy.WATCHDOG_DELAY_MS
+            scheduledAtMs = validScheduledAt,
+            nowMs = validScheduledAt + com.sysadmindoc.alarmclock.worker.FireWatchdogPolicy.WATCHDOG_DELAY_MS
         )
         assertEquals(com.sysadmindoc.alarmclock.worker.FireWatchdogPolicy.Decision.SKIP_ALREADY_FIRED, watchdogDecision)
         assertFalse(watchdogDecision.shouldRefire)

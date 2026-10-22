@@ -8,6 +8,7 @@ import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.service.AlarmFireDismissContract
 import dagger.hilt.android.EntryPointAccessors
+import kotlinx.coroutines.launch
 
 @org.jetbrains.annotations.VisibleForTesting
 internal var testAlarmRepository: com.sysadmindoc.alarmclock.data.repository.AlarmRepository? = null
@@ -40,6 +41,7 @@ class AlarmReceiver : BroadcastReceiver() {
         val serviceIntent = AlarmFireDismissContract.startServiceIntent(context, alarmId, scheduledAt, fireId)
         val deliveryWakeLock = AlarmDeliveryWakeLock.acquire(context)
         var serviceStartSucceeded = false
+
         try {
             context.startForegroundService(serviceIntent)
             serviceStartSucceeded = true
@@ -52,10 +54,11 @@ class AlarmReceiver : BroadcastReceiver() {
                 reasonCode = "START_FOREGROUND_SERVICE",
                 source = "AlarmReceiver"
             )
+            recordAlarmIncidentsAsync(context, incidents)
         } catch (e: Exception) {
             // ForegroundServiceStartNotAllowedException (API 31+) when the app is
             // background-restricted at the exact moment AlarmManager wakes it.
-            // Log for diagnostics and attempt bounded full-screen fallback for same occurrence.
+            // Log for diagnostics and perform non-blocking async recovery on Dispatchers.IO.
             Log.e("AlarmReceiver", "startForegroundService failed for alarm $alarmId", e)
             incidents += ReceiverAlarmIncident(
                 alarmId = alarmId,
@@ -67,69 +70,72 @@ class AlarmReceiver : BroadcastReceiver() {
                 source = "AlarmReceiver"
             )
 
-            // Attempt bounded full-screen fallback for same occurrence using fail-closed privacy authority
-            try {
-                val entryPoint = EntryPointAccessors.fromApplication(
-                    context.applicationContext,
-                    com.sysadmindoc.alarmclock.AlarmClockApp.AppEntryPoint::class.java
-                )
-                val repository = testAlarmRepository ?: entryPoint.alarmRepository()
-                val alarm = runCatching {
-                    kotlinx.coroutines.runBlocking<com.sysadmindoc.alarmclock.data.model.Alarm?> {
-                        repository.getById(alarmId)
-                    }
-                }.getOrNull()
-
-                val deliveryCount = runCatching {
-                    kotlinx.coroutines.runBlocking {
-                        entryPoint.alarmIncidentRepository().occurrenceDeliveryCount(alarmId, scheduledAt)
-                    }
-                }.getOrDefault(0)
-
-                val isCurrentOccurrence = alarm != null &&
-                    alarm.isEnabled &&
-                    alarm.nextTriggerTime == scheduledAt &&
-                    deliveryCount == 0
-
-                if (isCurrentOccurrence) {
-                    val hideLabel = entryPoint.preferencesManager().shouldHideLabelsOnPublicSurfaces()
-                    val fallbackPosted = com.sysadmindoc.alarmclock.service.AlarmFullScreenFallback.post(
-                        context = context,
-                        alarmId = alarmId,
-                        scheduledAt = scheduledAt,
-                        fireId = fireId,
-                        hideLabel = hideLabel
+            // Asynchronous recovery using goAsync() on Dispatchers.IO (NO runBlocking!)
+            val pending = try { goAsync() } catch (_: Exception) { null }
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO).launch {
+                try {
+                    val entryPoint = EntryPointAccessors.fromApplication(
+                        context.applicationContext,
+                        com.sysadmindoc.alarmclock.AlarmClockApp.AppEntryPoint::class.java
                     )
-                    if (fallbackPosted) {
-                        incidents += ReceiverAlarmIncident(
+                    val alarmRepo = testAlarmRepository ?: entryPoint.alarmRepository()
+                    val incidentRepo = testIncidentRepository ?: entryPoint.alarmIncidentRepository()
+
+                    val alarm = alarmRepo.getById(alarmId)
+                    val deliveryCount = incidentRepo.occurrenceDeliveryCount(alarmId, scheduledAt)
+
+                    val isCurrentOccurrence = alarm != null &&
+                        alarm.isEnabled &&
+                        alarm.nextTriggerTime == scheduledAt &&
+                        deliveryCount == 0
+
+                    if (isCurrentOccurrence) {
+                        val hideLabel = entryPoint.preferencesManager().shouldHideLabelsOnPublicSurfaces()
+                        val fallbackPosted = com.sysadmindoc.alarmclock.service.AlarmFullScreenFallback.post(
+                            context = context,
                             alarmId = alarmId,
-                            fireId = fireId,
                             scheduledAt = scheduledAt,
-                            type = AlarmIncidentEvent.TYPE_NOTIFICATION,
-                            status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                            reasonCode = "ALARM_NOTIFICATION_POSTED",
-                            source = "AlarmReceiver"
+                            fireId = fireId,
+                            hideLabel = hideLabel
                         )
+                        if (fallbackPosted) {
+                            incidents += ReceiverAlarmIncident(
+                                alarmId = alarmId,
+                                fireId = fireId,
+                                scheduledAt = scheduledAt,
+                                type = AlarmIncidentEvent.TYPE_NOTIFICATION,
+                                status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                                reasonCode = "ALARM_NOTIFICATION_POSTED",
+                                source = "AlarmReceiver"
+                            )
+                        } else {
+                            incidents += ReceiverAlarmIncident(
+                                alarmId = alarmId,
+                                fireId = fireId,
+                                scheduledAt = scheduledAt,
+                                type = AlarmIncidentEvent.TYPE_NOTIFICATION,
+                                status = AlarmIncidentEvent.STATUS_FAILED,
+                                reasonCode = "FALLBACK_NOTIFICATION_FAILED",
+                                source = "AlarmReceiver"
+                            )
+                        }
                     } else {
-                        incidents += ReceiverAlarmIncident(
-                            alarmId = alarmId,
-                            fireId = fireId,
-                            scheduledAt = scheduledAt,
-                            type = AlarmIncidentEvent.TYPE_NOTIFICATION,
-                            status = AlarmIncidentEvent.STATUS_FAILED,
-                            reasonCode = "FALLBACK_NOTIFICATION_FAILED",
-                            source = "AlarmReceiver"
-                        )
+                        Log.w("AlarmReceiver", "Skipping fallback for alarm $alarmId: stale or duplicate occurrence (dbTrigger ${alarm?.nextTriggerTime}, deliveryCount $deliveryCount)")
                     }
-                } else {
-                    Log.w("AlarmReceiver", "Skipping fallback for alarm $alarmId: stale or duplicate occurrence (dbTrigger ${alarm?.nextTriggerTime}, deliveryCount $deliveryCount)")
+
+                    // Record all incidents asynchronously inside the coroutine
+                    recordAlarmIncidentsAsync(context, incidents)
+                } catch (fallbackError: Exception) {
+                    Log.e("AlarmReceiver", "Asynchronous fallback recovery failed for alarm $alarmId", fallbackError)
+                } finally {
+                    AlarmDeliveryWakeLock.release(deliveryWakeLock)
+                    pending?.finish()
                 }
-            } catch (fallbackError: Exception) {
-                Log.e("AlarmReceiver", "Full-screen fallback failed for alarm $alarmId", fallbackError)
             }
         } finally {
-            if (!serviceStartSucceeded) AlarmDeliveryWakeLock.release(deliveryWakeLock)
-            recordAlarmIncidentsAsync(context, incidents)
+            if (serviceStartSucceeded) {
+                // FGS start succeeded
+            }
         }
     }
 }
