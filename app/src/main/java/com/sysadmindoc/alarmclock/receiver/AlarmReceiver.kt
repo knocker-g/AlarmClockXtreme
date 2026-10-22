@@ -9,6 +9,9 @@ import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.service.AlarmFireDismissContract
 import dagger.hilt.android.EntryPointAccessors
 
+@org.jetbrains.annotations.VisibleForTesting
+internal var testAlarmRepository: com.sysadmindoc.alarmclock.data.repository.AlarmRepository? = null
+
 /**
  * Receives the alarm broadcast from AlarmManager and starts the foreground
  * AlarmService, which handles audio playback, vibration, and launching the
@@ -70,24 +73,56 @@ class AlarmReceiver : BroadcastReceiver() {
                     context.applicationContext,
                     com.sysadmindoc.alarmclock.AlarmClockApp.AppEntryPoint::class.java
                 )
-                val hideLabel = entryPoint.preferencesManager().shouldHideLabelsOnPublicSurfaces()
-                val fallbackPosted = com.sysadmindoc.alarmclock.service.AlarmFullScreenFallback.post(
-                    context = context,
-                    alarmId = alarmId,
-                    scheduledAt = scheduledAt,
-                    fireId = fireId,
-                    hideLabel = hideLabel
-                )
-                if (fallbackPosted) {
-                    incidents += ReceiverAlarmIncident(
+                val repository = testAlarmRepository ?: entryPoint.alarmRepository()
+                val alarm = runCatching {
+                    kotlinx.coroutines.runBlocking<com.sysadmindoc.alarmclock.data.model.Alarm?> {
+                        repository.getById(alarmId)
+                    }
+                }.getOrNull()
+
+                val deliveryCount = runCatching {
+                    kotlinx.coroutines.runBlocking {
+                        entryPoint.alarmIncidentRepository().occurrenceDeliveryCount(alarmId, scheduledAt)
+                    }
+                }.getOrDefault(0)
+
+                val isCurrentOccurrence = alarm != null &&
+                    alarm.isEnabled &&
+                    alarm.nextTriggerTime == scheduledAt &&
+                    deliveryCount == 0
+
+                if (isCurrentOccurrence) {
+                    val hideLabel = entryPoint.preferencesManager().shouldHideLabelsOnPublicSurfaces()
+                    val fallbackPosted = com.sysadmindoc.alarmclock.service.AlarmFullScreenFallback.post(
+                        context = context,
                         alarmId = alarmId,
-                        fireId = fireId,
                         scheduledAt = scheduledAt,
-                        type = AlarmIncidentEvent.TYPE_NOTIFICATION,
-                        status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                        reasonCode = "ALARM_NOTIFICATION_POSTED",
-                        source = "AlarmReceiver"
+                        fireId = fireId,
+                        hideLabel = hideLabel
                     )
+                    if (fallbackPosted) {
+                        incidents += ReceiverAlarmIncident(
+                            alarmId = alarmId,
+                            fireId = fireId,
+                            scheduledAt = scheduledAt,
+                            type = AlarmIncidentEvent.TYPE_NOTIFICATION,
+                            status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                            reasonCode = "ALARM_NOTIFICATION_POSTED",
+                            source = "AlarmReceiver"
+                        )
+                    } else {
+                        incidents += ReceiverAlarmIncident(
+                            alarmId = alarmId,
+                            fireId = fireId,
+                            scheduledAt = scheduledAt,
+                            type = AlarmIncidentEvent.TYPE_NOTIFICATION,
+                            status = AlarmIncidentEvent.STATUS_FAILED,
+                            reasonCode = "FALLBACK_NOTIFICATION_FAILED",
+                            source = "AlarmReceiver"
+                        )
+                    }
+                } else {
+                    Log.w("AlarmReceiver", "Skipping fallback for alarm $alarmId: stale or duplicate occurrence (dbTrigger ${alarm?.nextTriggerTime}, deliveryCount $deliveryCount)")
                 }
             } catch (fallbackError: Exception) {
                 Log.e("AlarmReceiver", "Full-screen fallback failed for alarm $alarmId", fallbackError)

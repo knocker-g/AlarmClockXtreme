@@ -32,6 +32,7 @@ class HandoffFailureHardeningTest {
 
     private val context: Context = ApplicationProvider.getApplicationContext()
     private lateinit var incidentRepo: AlarmIncidentRepository
+    private lateinit var alarmRepo: com.sysadmindoc.alarmclock.data.repository.AlarmRepository
     private lateinit var inMemoryDb: com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 
     @Before
@@ -41,16 +42,23 @@ class HandoffFailureHardeningTest {
             com.sysadmindoc.alarmclock.data.local.AlarmDatabase::class.java
         ).allowMainThreadQueries().build()
 
+        alarmRepo = com.sysadmindoc.alarmclock.data.repository.AlarmRepository(
+            dao = inMemoryDb.alarmDao(),
+            groupDao = inMemoryDb.alarmGroupDao(),
+            database = inMemoryDb
+        )
         incidentRepo = AlarmIncidentRepository(
             dao = inMemoryDb.alarmIncidentEventDao(),
             context = context
         )
+        testAlarmRepository = alarmRepo
         testIncidentRepository = incidentRepo
     }
 
     @After
     fun tearDown() {
         testOnIncidentRecordedCompletion = null
+        testAlarmRepository = null
         testIncidentRepository = null
         inMemoryDb.close()
     }
@@ -196,18 +204,16 @@ class HandoffFailureHardeningTest {
         val shadowApp = org.robolectric.Shadows.shadowOf(context.applicationContext as android.app.Application)
         shadowApp.grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
 
-        val entryPoint = EntryPointAccessors.fromApplication(
-            context.applicationContext,
-            AlarmClockApp.AppEntryPoint::class.java
-        )
+        val validScheduledAt = System.currentTimeMillis() - 1000L
         runBlocking {
-            entryPoint.alarmRepository().save(
+            alarmRepo.save(
                 com.sysadmindoc.alarmclock.data.model.Alarm(
                     id = 105L,
                     hour = 7,
                     minute = 30,
                     label = "Morning Test",
-                    isEnabled = true
+                    isEnabled = true,
+                    nextTriggerTime = validScheduledAt
                 )
             )
         }
