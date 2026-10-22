@@ -152,7 +152,8 @@ val unlocalizedComposeFiles = setOf(
     "service/WebhookService.kt",
     "data/health/StubHealthConnectSleepRepository.kt",
     "service/StubYouTubeAudioDownloader.kt",
-    "ui/alarmfiring/challenges/StubDigitalInkChallengeRecognizer.kt"
+    "ui/alarmfiring/challenges/StubDigitalInkChallengeRecognizer.kt",
+    "domain/OwnerWorkIdentity.kt"
 )
 
 val primaryComposeScreenFiles: List<File> = fileTree("src/main/java/com/sysadmindoc/alarmclock") {
