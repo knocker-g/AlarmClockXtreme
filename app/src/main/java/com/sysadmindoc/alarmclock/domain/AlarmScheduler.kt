@@ -62,6 +62,9 @@ class AlarmScheduler @Inject constructor(
         const val EXTRA_ALARM_ID = "alarm_id"
         const val EXTRA_ALARM_FIRE_ID = "alarm_fire_id"
         const val EXTRA_SCHEDULED_AT = "scheduled_at"
+        const val EXTRA_ISSUE_TOKEN = "issue_token"
+
+        private const val REQUEST_CODE_ISSUED_OCCURRENCE = 80001
 
         private val SNOW_ICE_CODES = setOf(56, 57, 66, 67, 71, 73, 75, 77, 85, 86)
         fun isSnowOrIceCode(code: Int): Boolean = code in SNOW_ICE_CODES
@@ -1067,6 +1070,63 @@ class AlarmScheduler @Inject constructor(
         return PendingIntent.getBroadcast(
             context,
             alarmId.toInt(),
+            intent,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    /**
+     * Creates a tokenized PendingIntent for a specific issued occurrence.
+     * Uses filterEquals-distinct Intent.data URI ("alarmclock://alarm/issue?alarmId=$alarmId&token=$issueToken")
+     * and a constant requestCode so that different issueTokens produce distinct PendingIntent slots
+     * without alarmId.toInt() integer truncation collisions.
+     * DORMANT helper for P2A.
+     */
+    @androidx.annotation.VisibleForTesting
+    internal fun createTokenizedPendingIntent(
+        alarmId: Long,
+        triggerTime: Long,
+        fireId: String,
+        issueToken: String
+    ): PendingIntent {
+        val uri = android.net.Uri.parse(
+            "alarmclock://alarm/issue?alarmId=$alarmId&token=${android.net.Uri.encode(issueToken)}"
+        )
+        val intent = Intent(context, AlarmReceiver::class.java).apply {
+            action = "com.sysadmindoc.alarmclock.ALARM_FIRE"
+            data = uri
+            putExtra(EXTRA_ALARM_ID, alarmId)
+            putExtra(EXTRA_SCHEDULED_AT, triggerTime)
+            putExtra(EXTRA_ALARM_FIRE_ID, fireId.ifBlank { AlarmIncidentEvent.fireIdFor(alarmId, triggerTime) })
+            if (issueToken.isNotBlank()) {
+                putExtra(EXTRA_ISSUE_TOKEN, issueToken)
+            }
+        }
+        return PendingIntent.getBroadcast(
+            context,
+            REQUEST_CODE_ISSUED_OCCURRENCE,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    /**
+     * Performs a FLAG_NO_CREATE lookup for a tokenized PendingIntent matching [alarmId] and [issueToken].
+     * DORMANT helper for P2A.
+     */
+    @androidx.annotation.VisibleForTesting
+    internal fun lookupTokenizedPendingIntentForCancel(alarmId: Long, issueToken: String): PendingIntent? {
+        if (issueToken.isBlank()) return null
+        val uri = android.net.Uri.parse(
+            "alarmclock://alarm/issue?alarmId=$alarmId&token=${android.net.Uri.encode(issueToken)}"
+        )
+        val intent = Intent(context, AlarmReceiver::class.java).apply {
+            action = "com.sysadmindoc.alarmclock.ALARM_FIRE"
+            data = uri
+        }
+        return PendingIntent.getBroadcast(
+            context,
+            REQUEST_CODE_ISSUED_OCCURRENCE,
             intent,
             PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
         )
