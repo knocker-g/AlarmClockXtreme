@@ -1236,7 +1236,7 @@
       },
       {
         "tableName": "issued_occurrences",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`issueToken` TEXT NOT NULL, `alarmId` INTEGER NOT NULL, `scheduledAt` INTEGER NOT NULL, `fireId` TEXT NOT NULL, `generationId` INTEGER NOT NULL, `status` TEXT NOT NULL, `recoveryLeaseToken` TEXT, `recoveryLeaseExpiresAt` INTEGER, `outcome` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`issueToken`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`issueToken` TEXT NOT NULL, `alarmId` INTEGER NOT NULL, `scheduledAt` INTEGER NOT NULL, `fireId` TEXT NOT NULL, `generationId` INTEGER NOT NULL, `status` TEXT NOT NULL, `activatedAt` INTEGER, `recoveryLeaseToken` TEXT, `recoveryLeaseExpiresAt` INTEGER, `outcome` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`issueToken`))",
         "fields": [
           {
             "fieldPath": "issueToken",
@@ -1273,6 +1273,12 @@
             "columnName": "status",
             "affinity": "TEXT",
             "notNull": true
+          },
+          {
+            "fieldPath": "activatedAt",
+            "columnName": "activatedAt",
+            "affinity": "INTEGER",
+            "notNull": false
           },
           {
             "fieldPath": "recoveryLeaseToken",

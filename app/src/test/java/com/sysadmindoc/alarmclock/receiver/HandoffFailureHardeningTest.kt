@@ -603,6 +603,62 @@ class HandoffFailureHardeningTest {
     }
 
     @Test
+    fun `First B reserved PREPARED then REVOKED without activation preserves valid Legacy A fallback recovery`() {
+        val shadowApp = org.robolectric.Shadows.shadowOf(context.applicationContext as android.app.Application)
+        shadowApp.grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+
+        val alarmId = 116L
+        val scheduledAt = System.currentTimeMillis() - 1000L
+        val tokenB = "token-B-revoked-before-activation"
+
+        runBlocking {
+            alarmRepo.save(
+                com.sysadmindoc.alarmclock.data.model.Alarm(
+                    id = alarmId,
+                    hour = 7,
+                    minute = 30,
+                    label = "Legacy A Alarm Revoked B",
+                    isEnabled = true,
+                    nextTriggerTime = scheduledAt
+                )
+            )
+            // 1. First tokenized reservation B (B is PREPARED)
+            inMemoryDb.issuedOccurrenceDao().reserveIssuedOccurrence(tokenB, alarmId, scheduledAt + 60000L, "fire-116-B")
+            // 2. B is revoked BEFORE activation (B status becomes REVOKED, activatedAt remains NULL)
+            inMemoryDb.issuedOccurrenceDao().revokeIssuedOccurrence(alarmId)
+        }
+
+        val spyContext = spyk(context) {
+            every { applicationContext } returns context.applicationContext
+            every { startForegroundService(any()) } throws IllegalStateException("Background start restricted")
+        }
+
+        val latch = CountDownLatch(1)
+        testOnIncidentRecordedCompletion = { latch.countDown() }
+
+        // Existing armed Legacy A fires (tokenless intent)
+        val intent = Intent().apply {
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, scheduledAt)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "fire-116-A")
+        }
+
+        val receiver = AlarmReceiver()
+        receiver.onReceive(spyContext, intent)
+
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        assertTrue("Incident recording timed out", latch.await(5, TimeUnit.SECONDS))
+
+        val incidents = runBlocking { incidentRepo.getRecent(50) }
+        val successIncident = incidents.find { it.alarmId == alarmId && it.status == AlarmIncidentEvent.STATUS_SUCCEEDED }
+
+        // VERIFY: Legacy A MUST be admitted and succeed because B was PREPARED -> REVOKED without EVER activating!
+        assertNotNull("Legacy A MUST be admitted when B was REVOKED without ever activating", successIncident)
+        assertEquals(alarmId, successIncident!!.alarmId)
+        assertEquals("ALARM_NOTIFICATION_POSTED", successIncident.reasonCode)
+    }
+
+    @Test
     fun `RED TEST C - orphan tokenized occurrence after alarm disable is currently not reconciled to REVOKED`() {
         val alarmId = 113L
         val scheduledAt = System.currentTimeMillis() + 60000L

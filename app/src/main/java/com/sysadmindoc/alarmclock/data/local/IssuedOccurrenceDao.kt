@@ -26,8 +26,11 @@ abstract class IssuedOccurrenceDao {
     @Query("SELECT * FROM issued_occurrences WHERE alarmId = :alarmId AND scheduledAt = :scheduledAt")
     abstract suspend fun getOccurrencesByAlarmAndScheduledAt(alarmId: Long, scheduledAt: Long): List<IssuedOccurrence>
 
-    @Query("SELECT COUNT(*) FROM issued_occurrences WHERE alarmId = :alarmId AND status IN ('ISSUED', 'ADMITTED', 'REVOKED')")
+    @Query("SELECT COUNT(*) FROM issued_occurrences WHERE alarmId = :alarmId AND activatedAt IS NOT NULL")
     abstract suspend fun countActivatedOccurrencesForAlarm(alarmId: Long): Int
+
+    @Query("UPDATE issued_occurrences SET status = 'ISSUED', activatedAt = :now, updatedAt = :now WHERE issueToken = :issueToken AND status = 'PREPARED'")
+    abstract suspend fun casActivateOccurrence(issueToken: String, now: Long): Int
 
     @Query("SELECT currentIssueToken FROM issue_slots WHERE alarmId = :alarmId")
     abstract suspend fun getSlotCurrentToken(alarmId: Long): String?
@@ -243,12 +246,10 @@ abstract class IssuedOccurrenceDao {
 
         val previousToken = slot.currentIssueToken
 
-        // Step 1: Promote B PREPARED -> ISSUED
-        val statusCas = casUpdateOccurrenceStatus(
+        // Step 1: Promote B PREPARED -> ISSUED and record immutable activatedAt
+        val statusCas = casActivateOccurrence(
             issueToken = issueToken,
-            expectedStatus = IssuedOccurrence.STATUS_PREPARED,
-            newStatus = IssuedOccurrence.STATUS_ISSUED,
-            updatedAt = now
+            now = now
         )
         if (statusCas != 1) {
             throw IllegalStateException("Occurrence status update CAS failed")

@@ -19,6 +19,7 @@ data class IssuedOccurrence(
     val fireId: String,
     val generationId: Long,
     val status: String,
+    val activatedAt: Long? = null,
     val recoveryLeaseToken: String? = null,
     val recoveryLeaseExpiresAt: Long? = null,
     val outcome: String = OUTCOME_PENDING,

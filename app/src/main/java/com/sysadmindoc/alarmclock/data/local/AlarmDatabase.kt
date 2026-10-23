@@ -592,6 +592,7 @@ abstract class AlarmDatabase : RoomDatabase() {
                         `fireId` TEXT NOT NULL,
                         `generationId` INTEGER NOT NULL,
                         `status` TEXT NOT NULL,
+                        `activatedAt` INTEGER,
                         `recoveryLeaseToken` TEXT,
                         `recoveryLeaseExpiresAt` INTEGER,
                         `outcome` TEXT NOT NULL,
