@@ -273,6 +273,49 @@ class IssuedOccurrenceDaoTest {
     }
 
     @Test
+    fun `Active A in ADMITTED status preserves ADMITTED status when B is activated`() = runBlocking {
+        val alarmId = 160L
+
+        // 1. Reserve and activate Occurrence A, then promote to ADMITTED
+        val occA = dao.reserveIssuedOccurrence("token-A-admitted", alarmId, 1000L, "fire-A")
+        assertNotNull(occA)
+        assertTrue(dao.activateIssuedOccurrence("token-A-admitted"))
+        assertEquals(1, dao.casUpdateOccurrenceStatus("token-A-admitted", IssuedOccurrence.STATUS_ISSUED, IssuedOccurrence.STATUS_ADMITTED, 1005L))
+
+        // Occurrence A is active in slot and ADMITTED
+        assertEquals(IssuedOccurrence.STATUS_ADMITTED, dao.getOccurrence("token-A-admitted")!!.status)
+        assertTrue("ADMITTED A MUST be admissible", dao.evaluateActiveOccurrenceAdmission("token-A-admitted"))
+
+        // 2. Reserve Occurrence B
+        val occB = dao.reserveIssuedOccurrence("token-B-new", alarmId, 2000L, "fire-B")
+        assertNotNull(occB)
+
+        // 3. Activate Occurrence B
+        assertTrue("Activation of B MUST succeed", dao.activateIssuedOccurrence("token-B-new"))
+
+        // VERIFY: Occurrence A's status remains ADMITTED (not revoked), preserving its firing proof!
+        val finalA = dao.getOccurrence("token-A-admitted")
+        assertNotNull(finalA)
+        assertEquals("ADMITTED status MUST be preserved for delivered firing session", IssuedOccurrence.STATUS_ADMITTED, finalA!!.status)
+
+        // VERIFY: Occurrence A is NO LONGER active in slot (slot points to token-B-new)
+        assertFalse("A is no longer active in slot", dao.evaluateActiveOccurrenceAdmission("token-A-admitted"))
+        assertTrue("B is active in slot", dao.evaluateActiveOccurrenceAdmission("token-B-new"))
+    }
+
+    @Test
+    fun `activation fails if slot points to token whose occurrence record is missing`() = runBlocking {
+        val alarmId = 170L
+
+        // Manually create slot pointing to non-existent token
+        dao.insertSlotInitial(IssueSlot(alarmId = alarmId, currentIssueToken = "token-missing", generationId = 1L))
+
+        // Attempting to activate non-existent token MUST return false
+        val activated = dao.activateIssuedOccurrence("token-missing")
+        assertFalse("Activation of missing occurrence MUST return false", activated)
+    }
+
+    @Test
     fun `stale activation for outdated generation is rejected`() = runBlocking {
         val alarmId = 300L
 
