@@ -54,6 +54,7 @@ class HandoffFailureHardeningTest {
         )
         testAlarmRepository = alarmRepo
         testIncidentRepository = incidentRepo
+        testIssuedOccurrenceDao = inMemoryDb.issuedOccurrenceDao()
     }
 
     @After
@@ -61,6 +62,7 @@ class HandoffFailureHardeningTest {
         testOnIncidentRecordedCompletion = null
         testAlarmRepository = null
         testIncidentRepository = null
+        testIssuedOccurrenceDao = null
         inMemoryDb.close()
     }
 
@@ -298,6 +300,97 @@ class HandoffFailureHardeningTest {
 
         val deliveryCount = runBlocking { incidentRepo.occurrenceDeliveryCount(106L, 6000L) }
         assertEquals(0, deliveryCount)
+    }
+
+    @Test
+    fun `tokenized occurrence FGS start failure evaluates token admission, posts fallback, and records positive proof`() {
+        val shadowApp = org.robolectric.Shadows.shadowOf(context.applicationContext as android.app.Application)
+        shadowApp.grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+
+        val alarmId = 109L
+        val scheduledAt = System.currentTimeMillis() - 1000L
+        val token = "token-p2b3-valid"
+
+        // Reserve and activate token in Room DB
+        runBlocking {
+            inMemoryDb.issuedOccurrenceDao().reserveIssuedOccurrence(token, alarmId, scheduledAt, "fire-109")
+            inMemoryDb.issuedOccurrenceDao().activateIssuedOccurrence(token)
+        }
+
+        val spyContext = spyk(context) {
+            every { applicationContext } returns context.applicationContext
+            every { startForegroundService(any()) } throws IllegalStateException("Background start restricted")
+        }
+
+        val latch = CountDownLatch(1)
+        testOnIncidentRecordedCompletion = {
+            latch.countDown()
+        }
+
+        val intent = Intent().apply {
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, scheduledAt)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "fire-109")
+            putExtra(AlarmScheduler.EXTRA_ISSUE_TOKEN, token)
+        }
+
+        val receiver = AlarmReceiver()
+        receiver.onReceive(spyContext, intent)
+
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        assertTrue("Incident recording timed out", latch.await(5, TimeUnit.SECONDS))
+
+        val incidents = runBlocking { incidentRepo.getRecent(50) }
+        val successIncident = incidents.find { it.alarmId == alarmId && it.status == AlarmIncidentEvent.STATUS_SUCCEEDED }
+
+        assertNotNull("Persisted success incident MUST be present in Room DB for valid token", successIncident)
+        assertEquals(alarmId, successIncident!!.alarmId)
+        assertEquals(AlarmIncidentEvent.TYPE_NOTIFICATION, successIncident.type)
+        assertEquals(AlarmIncidentEvent.STATUS_SUCCEEDED, successIncident.status)
+        assertEquals("ALARM_NOTIFICATION_POSTED", successIncident.reasonCode)
+    }
+
+    @Test
+    fun `tokenized occurrence with stale issueToken FGS start failure is rejected by evaluateActiveOccurrenceAdmission`() {
+        val shadowApp = org.robolectric.Shadows.shadowOf(context.applicationContext as android.app.Application)
+        shadowApp.grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+
+        val alarmId = 110L
+        val scheduledAt = System.currentTimeMillis() - 1000L
+        val staleToken = "token-p2b3-stale"
+
+        // Reserve token-p2b3-stale but do NOT activate it (status remains PREPARED)
+        runBlocking {
+            inMemoryDb.issuedOccurrenceDao().reserveIssuedOccurrence(staleToken, alarmId, scheduledAt, "fire-110")
+        }
+
+        val spyContext = spyk(context) {
+            every { applicationContext } returns context.applicationContext
+            every { startForegroundService(any()) } throws IllegalStateException("Background start restricted")
+        }
+
+        val latch = CountDownLatch(1)
+        testOnIncidentRecordedCompletion = {
+            latch.countDown()
+        }
+
+        val intent = Intent().apply {
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, scheduledAt)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "fire-110")
+            putExtra(AlarmScheduler.EXTRA_ISSUE_TOKEN, staleToken)
+        }
+
+        val receiver = AlarmReceiver()
+        receiver.onReceive(spyContext, intent)
+
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        assertTrue("Incident recording timed out", latch.await(5, TimeUnit.SECONDS))
+
+        val incidents = runBlocking { incidentRepo.getRecent(50) }
+        val successIncident = incidents.find { it.alarmId == alarmId && it.status == AlarmIncidentEvent.STATUS_SUCCEEDED }
+
+        assertNull("Stale PREPARED token MUST be rejected and skip fallback", successIncident)
     }
 
     @Test

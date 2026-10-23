@@ -13,6 +13,9 @@ import kotlinx.coroutines.launch
 @org.jetbrains.annotations.VisibleForTesting
 internal var testAlarmRepository: com.sysadmindoc.alarmclock.data.repository.AlarmRepository? = null
 
+@org.jetbrains.annotations.VisibleForTesting
+internal var testIssuedOccurrenceDao: com.sysadmindoc.alarmclock.data.local.IssuedOccurrenceDao? = null
+
 /**
  * Receives the alarm broadcast from AlarmManager and starts the foreground
  * AlarmService, which handles audio playback, vibration, and launching the
@@ -81,13 +84,16 @@ class AlarmReceiver : BroadcastReceiver() {
                     val alarmRepo = testAlarmRepository ?: entryPoint.alarmRepository()
                     val incidentRepo = testIncidentRepository ?: entryPoint.alarmIncidentRepository()
 
-                    val alarm = alarmRepo.getById(alarmId)
-                    val deliveryCount = incidentRepo.occurrenceDeliveryCount(alarmId, scheduledAt)
+                    val issueToken = intent.getStringExtra(AlarmScheduler.EXTRA_ISSUE_TOKEN).orEmpty()
+                    val issuedDao = testIssuedOccurrenceDao ?: alarmRepo.issuedOccurrenceDao()
 
-                    val isCurrentOccurrence = alarm != null &&
-                        alarm.isEnabled &&
-                        scheduledAt > 0L &&
-                        deliveryCount == 0
+                    val isCurrentOccurrence = if (issueToken.isNotBlank()) {
+                        issuedDao.evaluateActiveOccurrenceAdmission(issueToken)
+                    } else {
+                        val alarm = alarmRepo.getById(alarmId)
+                        val deliveryCount = incidentRepo.occurrenceDeliveryCount(alarmId, scheduledAt)
+                        alarm != null && alarm.isEnabled && scheduledAt > 0L && deliveryCount == 0
+                    }
 
                     if (isCurrentOccurrence) {
                         val hideLabel = entryPoint.preferencesManager().shouldHideLabelsOnPublicSurfaces()
@@ -120,7 +126,7 @@ class AlarmReceiver : BroadcastReceiver() {
                             )
                         }
                     } else {
-                        Log.w("AlarmReceiver", "Skipping fallback for alarm $alarmId: stale, disabled or duplicate occurrence (deliveryCount $deliveryCount)")
+                        Log.w("AlarmReceiver", "Skipping fallback for alarm $alarmId: stale, disabled or duplicate occurrence (token '$issueToken')")
                     }
 
                     // Record all incidents directly using suspend repository API before pending.finish()
