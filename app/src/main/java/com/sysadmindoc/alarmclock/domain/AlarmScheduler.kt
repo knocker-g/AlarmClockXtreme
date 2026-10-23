@@ -1089,6 +1089,10 @@ class AlarmScheduler @Inject constructor(
         fireId: String,
         issueToken: String
     ): PendingIntent {
+        require(issueToken.isNotBlank()) { "issueToken MUST NOT be blank for tokenized PendingIntent" }
+        require(alarmId > 0L) { "alarmId MUST be positive for tokenized PendingIntent" }
+        require(triggerTime > 0L) { "triggerTime MUST be positive for tokenized PendingIntent" }
+
         val uri = android.net.Uri.parse(
             "alarmclock://alarm/issue?alarmId=$alarmId&token=${android.net.Uri.encode(issueToken)}"
         )
@@ -1098,9 +1102,7 @@ class AlarmScheduler @Inject constructor(
             putExtra(EXTRA_ALARM_ID, alarmId)
             putExtra(EXTRA_SCHEDULED_AT, triggerTime)
             putExtra(EXTRA_ALARM_FIRE_ID, fireId.ifBlank { AlarmIncidentEvent.fireIdFor(alarmId, triggerTime) })
-            if (issueToken.isNotBlank()) {
-                putExtra(EXTRA_ISSUE_TOKEN, issueToken)
-            }
+            putExtra(EXTRA_ISSUE_TOKEN, issueToken)
         }
         return PendingIntent.getBroadcast(
             context,

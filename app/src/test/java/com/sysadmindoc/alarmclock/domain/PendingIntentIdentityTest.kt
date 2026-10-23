@@ -12,6 +12,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -153,5 +154,42 @@ class PendingIntentIdentityTest {
         assertNotNull(pi)
         assertNotNull(lookup)
         assertEquals("URI with reserved characters MUST decode and match deterministically", pi, lookup)
+    }
+
+    @Test
+    fun `H - empty or blank issueToken throws IllegalArgumentException`() {
+        val alarmId = 7007L
+        val triggerTime = 1700000000000L
+
+        try {
+            scheduler.createTokenizedPendingIntent(alarmId, triggerTime, "fire-7007", "")
+            org.junit.Assert.fail("Empty issueToken MUST throw IllegalArgumentException")
+        } catch (e: Exception) {
+            assertTrue("Expected IllegalArgumentException", e is IllegalArgumentException)
+        }
+
+        try {
+            scheduler.createTokenizedPendingIntent(alarmId, triggerTime, "fire-7007", "   ")
+            org.junit.Assert.fail("Blank issueToken MUST throw IllegalArgumentException")
+        } catch (e: Exception) {
+            assertTrue("Expected IllegalArgumentException", e is IllegalArgumentException)
+        }
+    }
+
+    @Test
+    fun `I - invalid alarmId or triggerTime throws IllegalArgumentException`() {
+        try {
+            scheduler.createTokenizedPendingIntent(-1L, 1700000000000L, "fire-err", "token-valid")
+            org.junit.Assert.fail("Negative alarmId MUST throw IllegalArgumentException")
+        } catch (e: Exception) {
+            assertTrue("Expected IllegalArgumentException", e is IllegalArgumentException)
+        }
+
+        try {
+            scheduler.createTokenizedPendingIntent(8008L, 0L, "fire-err", "token-valid")
+            org.junit.Assert.fail("Zero triggerTime MUST throw IllegalArgumentException")
+        } catch (e: Exception) {
+            assertTrue("Expected IllegalArgumentException", e is IllegalArgumentException)
+        }
     }
 }
