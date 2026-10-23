@@ -103,6 +103,20 @@ class DirectBootAlarmCacheTest {
     }
 
     @Test
+    fun clearPreservesFiredOneShotMarker() {
+        DirectBootAlarmCache.saveIfEarlier(context, alarm(1L), now + 600_000L, now)
+        DirectBootAlarmCache.recordFired(context, alarmId = 9L, triggerTime = now - 1_000L, firedAt = now)
+
+        DirectBootAlarmCache.clear(context)
+
+        // Alarm snapshot is cleared
+        assertNull(DirectBootAlarmCache.read(context))
+
+        // Fired one-shot marker MUST still be preserved and consumable!
+        assertTrue("clear() MUST NOT wipe fired one-shot markers", DirectBootAlarmCache.consumeFiredOneShotMarker(context, alarm(9L), now))
+    }
+
+    @Test
     fun firedOneShotMarkerIsConsumedOnceForOneShotAlarms() {
         DirectBootAlarmCache.recordFired(context, alarmId = 9L, triggerTime = now - 1_000L, firedAt = now)
 
