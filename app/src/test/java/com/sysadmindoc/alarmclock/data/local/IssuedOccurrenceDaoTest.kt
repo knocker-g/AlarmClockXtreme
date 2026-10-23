@@ -327,6 +327,81 @@ class IssuedOccurrenceDaoTest {
     }
 
     @Test
+    fun `claimFallbackLease rejects PREPARED occurrences and enforces payload match`() = runBlocking {
+        val alarmId = 190L
+        val scheduledAt = 1000L
+        val fireId = "fire-190"
+        val token = "token-lease-prep"
+
+        // Reserve token in PREPARED status
+        dao.reserveIssuedOccurrence(token, alarmId, scheduledAt, fireId)
+
+        // Attempting to claim lease for PREPARED occurrence MUST return 0 (rejected)
+        val leaseClaimed = dao.claimFallbackLease(token, alarmId, scheduledAt, fireId, "lease-1", System.currentTimeMillis() + 15000L)
+        assertEquals(0, leaseClaimed)
+
+        // Activate token to ISSUED
+        dao.activateIssuedOccurrence(token)
+
+        // Claiming lease with wrong alarmId MUST return 0
+        val wrongAlarmLeased = dao.claimFallbackLease(token, 9999L, scheduledAt, fireId, "lease-1", System.currentTimeMillis() + 15000L)
+        assertEquals(0, wrongAlarmLeased)
+
+        // Claiming lease with correct parameters MUST succeed
+        val now = System.currentTimeMillis()
+        val validLeased = dao.claimFallbackLease(token, alarmId, scheduledAt, fireId, "lease-1", now + 15000L, now)
+        assertEquals(1, validLeased)
+
+        // Verify occurrence status is still ISSUED and outcome is still PENDING (NOT yet POSTED)
+        val occLeased = dao.getOccurrence(token)
+        assertNotNull(occLeased)
+        assertEquals(IssuedOccurrence.STATUS_ISSUED, occLeased!!.status)
+        assertEquals(IssuedOccurrence.OUTCOME_PENDING, occLeased.outcome)
+        assertEquals("lease-1", occLeased.recoveryLeaseToken)
+
+        // Concurrent lease attempt while active lease is valid MUST return 0
+        val concurrentLeased = dao.claimFallbackLease(token, alarmId, scheduledAt, fireId, "lease-2", now + 15000L, now)
+        assertEquals(0, concurrentLeased)
+
+        // Acknowledge posting success -> promotes status to ADMITTED and outcome to POSTED
+        val ackResult = dao.acknowledgeFallbackPosted(token, "lease-1", now)
+        assertEquals(1, ackResult)
+
+        val occAcked = dao.getOccurrence(token)
+        assertEquals(IssuedOccurrence.STATUS_ADMITTED, occAcked!!.status)
+        assertEquals(IssuedOccurrence.OUTCOME_POSTED, occAcked.outcome)
+        assertNull(occAcked.recoveryLeaseToken)
+    }
+
+    @Test
+    fun `expired lease can be reclaimed and failed post marks outcome FAILED`() = runBlocking {
+        val alarmId = 195L
+        val scheduledAt = 2000L
+        val fireId = "fire-195"
+        val token = "token-lease-expire"
+
+        dao.reserveIssuedOccurrence(token, alarmId, scheduledAt, fireId)
+        dao.activateIssuedOccurrence(token)
+
+        val pastNow = 10000L
+        // Claim lease that expired in the past
+        dao.claimFallbackLease(token, alarmId, scheduledAt, fireId, "lease-old", expiresAt = pastNow + 100L, now = pastNow)
+
+        val currentNow = 20000L
+        // Claim lease with currentNow > expired lease -> MUST succeed in reclaiming expired lease
+        val reclaimed = dao.claimFallbackLease(token, alarmId, scheduledAt, fireId, "lease-new", expiresAt = currentNow + 15000L, now = currentNow)
+        assertEquals(1, reclaimed)
+
+        // Mark fallback failed
+        val failedResult = dao.markFallbackFailed(token, "lease-new", currentNow)
+        assertEquals(1, failedResult)
+
+        val occFailed = dao.getOccurrence(token)
+        assertEquals(IssuedOccurrence.OUTCOME_FAILED, occFailed!!.outcome)
+        assertNull(occFailed.recoveryLeaseToken)
+    }
+
+    @Test
     fun `activation fails if slot points to token whose occurrence record is missing`() = runBlocking {
         val alarmId = 170L
 

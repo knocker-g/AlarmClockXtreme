@@ -133,8 +133,57 @@ abstract class IssuedOccurrenceDao {
         }
     }
 
-    @Query("UPDATE issued_occurrences SET outcome = 'POSTED', status = 'ADMITTED', updatedAt = :now WHERE issueToken = :issueToken AND outcome = 'PENDING' AND status IN ('ISSUED', 'PREPARED')")
-    abstract suspend fun claimFallbackOutcome(issueToken: String, now: Long = System.currentTimeMillis()): Int
+    @Query(
+        """
+        UPDATE issued_occurrences
+        SET recoveryLeaseToken = :leaseToken, recoveryLeaseExpiresAt = :expiresAt, updatedAt = :now
+        WHERE issueToken = :issueToken
+          AND alarmId = :alarmId
+          AND scheduledAt = :scheduledAt
+          AND fireId = :fireId
+          AND status = 'ISSUED'
+          AND outcome = 'PENDING'
+          AND (recoveryLeaseToken IS NULL OR recoveryLeaseExpiresAt < :now)
+          AND generationId = (SELECT generationId FROM issue_slots WHERE alarmId = :alarmId AND currentIssueToken = :issueToken)
+        """
+    )
+    abstract suspend fun claimFallbackLease(
+        issueToken: String,
+        alarmId: Long,
+        scheduledAt: Long,
+        fireId: String,
+        leaseToken: String,
+        expiresAt: Long,
+        now: Long = System.currentTimeMillis()
+    ): Int
+
+    @Query(
+        """
+        UPDATE issued_occurrences
+        SET outcome = 'POSTED', status = 'ADMITTED', recoveryLeaseToken = NULL, recoveryLeaseExpiresAt = NULL, updatedAt = :now
+        WHERE issueToken = :issueToken
+          AND recoveryLeaseToken = :leaseToken
+        """
+    )
+    abstract suspend fun acknowledgeFallbackPosted(
+        issueToken: String,
+        leaseToken: String,
+        now: Long = System.currentTimeMillis()
+    ): Int
+
+    @Query(
+        """
+        UPDATE issued_occurrences
+        SET outcome = 'FAILED', recoveryLeaseToken = NULL, recoveryLeaseExpiresAt = NULL, updatedAt = :now
+        WHERE issueToken = :issueToken
+          AND recoveryLeaseToken = :leaseToken
+        """
+    )
+    abstract suspend fun markFallbackFailed(
+        issueToken: String,
+        leaseToken: String,
+        now: Long = System.currentTimeMillis()
+    ): Int
 
     suspend fun evaluateActiveOccurrenceAdmission(
         issueToken: String,

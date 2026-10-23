@@ -101,34 +101,61 @@ class AlarmReceiver : BroadcastReceiver() {
                     }
 
                     if (isCurrentOccurrence) {
-                        val hideLabel = entryPoint.preferencesManager().shouldHideLabelsOnPublicSurfaces()
-                        val fallbackPosted = com.sysadmindoc.alarmclock.service.AlarmFullScreenFallback.post(
-                            context = context,
-                            alarmId = alarmId,
-                            scheduledAt = scheduledAt,
-                            fireId = fireId,
-                            hideLabel = hideLabel
-                        )
-                        if (fallbackPosted) {
-                            incidents += ReceiverAlarmIncident(
+                        val leaseToken = java.util.UUID.randomUUID().toString()
+                        val now = System.currentTimeMillis()
+                        val leaseDurationMs = 15000L
+                        val leased = if (issueToken.isNotBlank()) {
+                            issuedDao.claimFallbackLease(
+                                issueToken = issueToken,
                                 alarmId = alarmId,
-                                fireId = fireId,
                                 scheduledAt = scheduledAt,
-                                type = AlarmIncidentEvent.TYPE_NOTIFICATION,
-                                status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                                reasonCode = "ALARM_NOTIFICATION_POSTED",
-                                source = "AlarmReceiver"
-                            )
+                                fireId = fireId,
+                                leaseToken = leaseToken,
+                                expiresAt = now + leaseDurationMs,
+                                now = now
+                            ) == 1
                         } else {
-                            incidents += ReceiverAlarmIncident(
+                            true
+                        }
+
+                        if (leased) {
+                            val hideLabel = entryPoint.preferencesManager().shouldHideLabelsOnPublicSurfaces()
+                            val fallbackPosted = com.sysadmindoc.alarmclock.service.AlarmFullScreenFallback.post(
+                                context = context,
                                 alarmId = alarmId,
-                                fireId = fireId,
                                 scheduledAt = scheduledAt,
-                                type = AlarmIncidentEvent.TYPE_NOTIFICATION,
-                                status = AlarmIncidentEvent.STATUS_FAILED,
-                                reasonCode = "FALLBACK_NOTIFICATION_FAILED",
-                                source = "AlarmReceiver"
+                                fireId = fireId,
+                                hideLabel = hideLabel
                             )
+                            if (fallbackPosted) {
+                                if (issueToken.isNotBlank()) {
+                                    issuedDao.acknowledgeFallbackPosted(issueToken, leaseToken, System.currentTimeMillis())
+                                }
+                                incidents += ReceiverAlarmIncident(
+                                    alarmId = alarmId,
+                                    fireId = fireId,
+                                    scheduledAt = scheduledAt,
+                                    type = AlarmIncidentEvent.TYPE_NOTIFICATION,
+                                    status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                                    reasonCode = "ALARM_NOTIFICATION_POSTED",
+                                    source = "AlarmReceiver"
+                                )
+                            } else {
+                                if (issueToken.isNotBlank()) {
+                                    issuedDao.markFallbackFailed(issueToken, leaseToken, System.currentTimeMillis())
+                                }
+                                incidents += ReceiverAlarmIncident(
+                                    alarmId = alarmId,
+                                    fireId = fireId,
+                                    scheduledAt = scheduledAt,
+                                    type = AlarmIncidentEvent.TYPE_NOTIFICATION,
+                                    status = AlarmIncidentEvent.STATUS_FAILED,
+                                    reasonCode = "FALLBACK_NOTIFICATION_FAILED",
+                                    source = "AlarmReceiver"
+                                )
+                            }
+                        } else {
+                            Log.w("AlarmReceiver", "Skipping fallback for alarm $alarmId: fallback lease claim rejected (token '$issueToken')")
                         }
                     } else {
                         Log.w("AlarmReceiver", "Skipping fallback for alarm $alarmId: stale, disabled or duplicate occurrence (token '$issueToken')")
