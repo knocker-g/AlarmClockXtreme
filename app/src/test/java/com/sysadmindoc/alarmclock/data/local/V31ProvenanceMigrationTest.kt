@@ -129,6 +129,60 @@ class V31ProvenanceMigrationTest {
     }
 
     @Test
+    fun `populated v31 database migrates to v32 schema, preserving existing alarms and creating issued_occurrences and issue_slots`() = runBlocking {
+        val database = Room.inMemoryDatabaseBuilder(context, AlarmDatabase::class.java)
+            .allowMainThreadQueries()
+            .addCallback(AlarmDatabase.DATABASE_CALLBACK)
+            .build()
+
+        val db = database.openHelper.writableDatabase
+        assertEquals(32, db.version)
+
+        // Insert representative v31 Alarm definition
+        database.alarmDao().insert(
+            com.sysadmindoc.alarmclock.data.model.Alarm(
+                id = 101L,
+                hour = 7,
+                minute = 30,
+                label = "Migrated Alarm 101",
+                isEnabled = true,
+                nextTriggerTime = 1700000060000L
+            )
+        )
+
+        // Verify existing Alarm definition 101 is preserved intact
+        val alarm = database.alarmDao().getById(101L)
+        assertNotNull("Migrated Alarm 101 MUST be preserved intact", alarm)
+        assertEquals(101L, alarm!!.id)
+        assertEquals("Migrated Alarm 101", alarm.label)
+        assertEquals(1700000060000L, alarm.nextTriggerTime)
+
+        // Verify issued_occurrences and issue_slots tables exist and allow normal DAO operations
+        val issuedDao = database.issuedOccurrenceDao()
+
+        // Count activated occurrences on newly migrated database (MUST be 0)
+        val activatedCount = issuedDao.countActivatedOccurrencesForAlarm(101L)
+        assertEquals(0, activatedCount)
+
+        // Reserve new tokenized occurrence
+        val occ = issuedDao.reserveIssuedOccurrence("token-migrated-101", 101L, 1700000060000L, "fire-101")
+        assertNotNull(occ)
+        assertNull("activatedAt MUST be null upon reservation", occ!!.activatedAt)
+
+        // Activate occurrence
+        val activated = issuedDao.activateIssuedOccurrence("token-migrated-101")
+        assertTrue(activated)
+
+        val activeOcc = issuedDao.getOccurrence("token-migrated-101")
+        assertNotNull(activeOcc!!.activatedAt)
+
+        val activeCountAfter = issuedDao.countActivatedOccurrencesForAlarm(101L)
+        assertEquals(1, activeCountAfter)
+
+        database.close()
+    }
+
+    @Test
     fun `v30 database migrates to v31, preserving existing row with NULL provenance`() = runBlocking {
         val sqliteDb = SQLiteDatabase.openOrCreateDatabase(dbFile, null)
         populateFull28Schema(sqliteDb)
