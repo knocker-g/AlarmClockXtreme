@@ -241,6 +241,38 @@ class IssuedOccurrenceDaoTest {
     }
 
     @Test
+    fun `Active A remains admissible while B is in PREPARED state`() = runBlocking {
+        val alarmId = 150L
+
+        // 1. Reserve and activate Occurrence A
+        val occA = dao.reserveIssuedOccurrence("token-A", alarmId, 1000L, "fire-A")
+        assertNotNull(occA)
+        assertTrue(dao.activateIssuedOccurrence("token-A"))
+
+        // Occurrence A is active in slot
+        assertTrue("Occurrence A MUST be admissible", dao.evaluateActiveOccurrenceAdmission("token-A"))
+
+        // 2. Reserve Occurrence B (status = PREPARED, generationId = 3L)
+        val occB = dao.reserveIssuedOccurrence("token-B", alarmId, 2000L, "fire-B")
+        assertNotNull(occB)
+        assertEquals(IssuedOccurrence.STATUS_PREPARED, occB!!.status)
+
+        // VERIFY: Occurrence A remains ADMISSIBLE while B is in PREPARED state!
+        assertTrue("Active A MUST remain admissible while B is PREPARED", dao.evaluateActiveOccurrenceAdmission("token-A"))
+
+        // VERIFY: Prepared B is NOT admissible via evaluateActiveOccurrenceAdmission
+        assertFalse("Prepared B MUST NOT be admissible before activation", dao.evaluateActiveOccurrenceAdmission("token-B"))
+
+        // 3. Activate Occurrence B -> atomically revokes A and updates slot token to token-B
+        assertTrue("Activation of B MUST succeed", dao.activateIssuedOccurrence("token-B"))
+
+        // VERIFY: B is now admissible, and A is no longer admissible
+        assertTrue("Activated B MUST be admissible", dao.evaluateActiveOccurrenceAdmission("token-B"))
+        assertFalse("Revoked A MUST NOT be admissible", dao.evaluateActiveOccurrenceAdmission("token-A"))
+        assertEquals(IssuedOccurrence.STATUS_REVOKED, dao.getOccurrence("token-A")!!.status)
+    }
+
+    @Test
     fun `stale activation for outdated generation is rejected`() = runBlocking {
         val alarmId = 300L
 

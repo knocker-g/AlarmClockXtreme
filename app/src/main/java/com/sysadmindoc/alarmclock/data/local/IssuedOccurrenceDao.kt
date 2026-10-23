@@ -133,6 +133,15 @@ abstract class IssuedOccurrenceDao {
         }
     }
 
+    suspend fun evaluateActiveOccurrenceAdmission(issueToken: String): Boolean {
+        val occurrence = getOccurrence(issueToken) ?: return false
+        val slot = getSlot(occurrence.alarmId) ?: return false
+
+        return (occurrence.status == IssuedOccurrence.STATUS_ISSUED || occurrence.status == IssuedOccurrence.STATUS_ADMITTED) &&
+            slot.currentIssueToken == issueToken &&
+            occurrence.generationId <= slot.generationId
+    }
+
     @Transaction
     open suspend fun activateIssuedOccurrenceTransaction(
         issueToken: String,
@@ -152,6 +161,9 @@ abstract class IssuedOccurrenceDao {
             throw IllegalStateException("Slot generation ${slot.generationId} mismatch with occurrence generation ${occurrence.generationId}")
         }
 
+        val previousToken = slot.currentIssueToken
+
+        // Step 1: Promote B PREPARED -> ISSUED
         val statusCas = casUpdateOccurrenceStatus(
             issueToken = issueToken,
             expectedStatus = IssuedOccurrence.STATUS_PREPARED,
@@ -162,10 +174,21 @@ abstract class IssuedOccurrenceDao {
             throw IllegalStateException("Occurrence status update CAS failed")
         }
 
+        // Step 2: Revoke previous active occurrence A (if any)
+        if (previousToken != null && previousToken != issueToken) {
+            casUpdateOccurrenceStatus(
+                issueToken = previousToken,
+                expectedStatus = IssuedOccurrence.STATUS_ISSUED,
+                newStatus = IssuedOccurrence.STATUS_REVOKED,
+                updatedAt = now
+            )
+        }
+
+        // Step 3: Update active slot token to issueToken_B
         val slotCas = casUpdateSlotCurrentTokenOnly(
             alarmId = occurrence.alarmId,
             expectedGenId = slot.generationId,
-            expectedToken = slot.currentIssueToken,
+            expectedToken = previousToken,
             newToken = issueToken
         )
         if (slotCas != 1) {
