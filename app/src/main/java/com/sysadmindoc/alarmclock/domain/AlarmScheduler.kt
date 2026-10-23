@@ -909,6 +909,10 @@ class AlarmScheduler @Inject constructor(
         if (success) {
             if (freshOsRegistration) {
                 DirectBootAlarmCache.cancelScheduledFallback(context, alarmId)
+                // Issue tokenized occurrence for recovery authority
+                runCatching {
+                    applyTokenizedOsSet(alarmId, triggerTime)
+                }
             }
             recordScheduleIncident(
                 alarmId = alarmId,
@@ -1093,6 +1097,7 @@ class AlarmScheduler @Inject constructor(
                         isCancelAccepted = false
                     } else {
                         applyRawOsCancel(alarmId)
+                        runCatching { cancelTokenizedScheduledAlarm(alarmId) }
                         isCancelAccepted = true
                     }
                 }
