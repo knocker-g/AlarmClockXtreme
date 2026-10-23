@@ -86,6 +86,7 @@ class AlarmReceiver : BroadcastReceiver() {
 
                     val issueToken = intent.getStringExtra(AlarmScheduler.EXTRA_ISSUE_TOKEN).orEmpty()
                     val issuedDao = testIssuedOccurrenceDao ?: alarmRepo.issuedOccurrenceDao()
+                    val currentSlot = issuedDao.getSlot(alarmId)
 
                     val isCurrentOccurrence = if (issueToken.isNotBlank()) {
                         issuedDao.evaluateActiveOccurrenceAdmission(
@@ -95,9 +96,17 @@ class AlarmReceiver : BroadcastReceiver() {
                             expectedFireId = fireId
                         )
                     } else {
-                        val alarm = alarmRepo.getById(alarmId)
-                        val deliveryCount = incidentRepo.occurrenceDeliveryCount(alarmId, scheduledAt)
-                        alarm != null && alarm.isEnabled && scheduledAt > 0L && deliveryCount == 0
+                        // Legacy tokenless broadcast:
+                        // Admissible ONLY IF alarm has NEVER entered Tokenized authority (currentSlot == null).
+                        // Once currentSlot != null, tokenless broadcasts are STRICTLY REJECTED!
+                        if (currentSlot == null) {
+                            val alarm = alarmRepo.getById(alarmId)
+                            val deliveryCount = incidentRepo.occurrenceDeliveryCount(alarmId, scheduledAt)
+                            alarm != null && alarm.isEnabled && scheduledAt > 0L && deliveryCount == 0
+                        } else {
+                            Log.w("AlarmReceiver", "Rejecting legacy tokenless broadcast for alarm $alarmId: alarm migrated to tokenized slot")
+                            false
+                        }
                     }
 
                     if (isCurrentOccurrence) {
