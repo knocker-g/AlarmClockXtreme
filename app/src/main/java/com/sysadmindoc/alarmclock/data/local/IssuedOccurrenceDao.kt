@@ -163,9 +163,25 @@ abstract class IssuedOccurrenceDao {
         SET outcome = 'POSTED', status = 'ADMITTED', recoveryLeaseToken = NULL, recoveryLeaseExpiresAt = NULL, updatedAt = :now
         WHERE issueToken = :issueToken
           AND recoveryLeaseToken = :leaseToken
+          AND status = 'ISSUED'
+          AND generationId = (SELECT generationId FROM issue_slots WHERE alarmId = (SELECT alarmId FROM issued_occurrences WHERE issueToken = :issueToken) AND currentIssueToken = :issueToken)
         """
     )
     abstract suspend fun acknowledgeFallbackPosted(
+        issueToken: String,
+        leaseToken: String,
+        now: Long = System.currentTimeMillis()
+    ): Int
+
+    @Query(
+        """
+        UPDATE issued_occurrences
+        SET recoveryLeaseToken = NULL, recoveryLeaseExpiresAt = NULL, updatedAt = :now
+        WHERE issueToken = :issueToken
+          AND recoveryLeaseToken = :leaseToken
+        """
+    )
+    abstract suspend fun releaseFallbackLeaseOnFailure(
         issueToken: String,
         leaseToken: String,
         now: Long = System.currentTimeMillis()

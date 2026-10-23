@@ -9,6 +9,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -374,7 +375,7 @@ class IssuedOccurrenceDaoTest {
     }
 
     @Test
-    fun `expired lease can be reclaimed and failed post marks outcome FAILED`() = runBlocking {
+    fun `expired lease can be reclaimed and failed post releases lease for retry`() = runBlocking {
         val alarmId = 195L
         val scheduledAt = 2000L
         val fireId = "fire-195"
@@ -392,13 +393,46 @@ class IssuedOccurrenceDaoTest {
         val reclaimed = dao.claimFallbackLease(token, alarmId, scheduledAt, fireId, "lease-new", expiresAt = currentNow + 15000L, now = currentNow)
         assertEquals(1, reclaimed)
 
-        // Mark fallback failed
-        val failedResult = dao.markFallbackFailed(token, "lease-new", currentNow)
-        assertEquals(1, failedResult)
+        // Release lease on notification posting failure -> outcome remains PENDING so retry claim can succeed
+        val releaseResult = dao.releaseFallbackLeaseOnFailure(token, "lease-new", currentNow)
+        assertEquals(1, releaseResult)
 
-        val occFailed = dao.getOccurrence(token)
-        assertEquals(IssuedOccurrence.OUTCOME_FAILED, occFailed!!.outcome)
-        assertNull(occFailed.recoveryLeaseToken)
+        val occReleased = dao.getOccurrence(token)
+        assertEquals(IssuedOccurrence.OUTCOME_PENDING, occReleased!!.outcome)
+        assertNull(occReleased.recoveryLeaseToken)
+
+        // Retry claim after release MUST succeed!
+        val retryLeased = dao.claimFallbackLease(token, alarmId, scheduledAt, fireId, "lease-retry", currentNow + 30000L, currentNow + 1000L)
+        assertEquals(1, retryLeased)
+    }
+
+    @Test
+    fun `acknowledgeFallbackPosted rejects ACK if slot token changed to B during in-flight post`() = runBlocking {
+        val alarmId = 196L
+        val tokenA = "token-ack-A"
+        val tokenB = "token-ack-B"
+
+        // 1. Reserve and activate Token A
+        dao.reserveIssuedOccurrence(tokenA, alarmId, 1000L, "fire-A")
+        dao.activateIssuedOccurrence(tokenA)
+
+        // 2. Claim fallback lease for Token A
+        val leaseTokenA = "lease-A"
+        val now = System.currentTimeMillis()
+        assertEquals(1, dao.claimFallbackLease(tokenA, alarmId, 1000L, "fire-A", leaseTokenA, now + 15000L, now))
+
+        // 3. Intervening operation: Reserve and activate Token B (e.g. alarm rescheduled/snoozed)
+        dao.reserveIssuedOccurrence(tokenB, alarmId, 2000L, "fire-B")
+        dao.activateIssuedOccurrence(tokenB) // Revokes A and updates slot currentIssueToken to tokenB
+
+        // 4. Delayed ACK attempt for Token A MUST be REJECTED (returns 0)!
+        val ackResult = dao.acknowledgeFallbackPosted(tokenA, leaseTokenA, now + 1000L)
+        assertEquals(0, ackResult)
+
+        // Verify Token A status remains REVOKED and outcome is NOT POSTED
+        val occA = dao.getOccurrence(tokenA)
+        assertEquals(IssuedOccurrence.STATUS_REVOKED, occA!!.status)
+        assertNotEquals(IssuedOccurrence.OUTCOME_POSTED, occA.outcome)
     }
 
     @Test

@@ -120,29 +120,51 @@ class AlarmReceiver : BroadcastReceiver() {
 
                         if (leased) {
                             val hideLabel = entryPoint.preferencesManager().shouldHideLabelsOnPublicSurfaces()
-                            val fallbackPosted = com.sysadmindoc.alarmclock.service.AlarmFullScreenFallback.post(
-                                context = context,
-                                alarmId = alarmId,
-                                scheduledAt = scheduledAt,
-                                fireId = fireId,
-                                hideLabel = hideLabel
-                            )
-                            if (fallbackPosted) {
-                                if (issueToken.isNotBlank()) {
-                                    issuedDao.acknowledgeFallbackPosted(issueToken, leaseToken, System.currentTimeMillis())
-                                }
-                                incidents += ReceiverAlarmIncident(
+                            val fallbackPosted = try {
+                                com.sysadmindoc.alarmclock.service.AlarmFullScreenFallback.post(
+                                    context = context,
                                     alarmId = alarmId,
-                                    fireId = fireId,
                                     scheduledAt = scheduledAt,
-                                    type = AlarmIncidentEvent.TYPE_NOTIFICATION,
-                                    status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                                    reasonCode = "ALARM_NOTIFICATION_POSTED",
-                                    source = "AlarmReceiver"
+                                    fireId = fireId,
+                                    hideLabel = hideLabel
                                 )
+                            } catch (e: Exception) {
+                                Log.e("AlarmReceiver", "AlarmFullScreenFallback.post threw exception for alarm $alarmId", e)
+                                false
+                            }
+
+                            if (fallbackPosted) {
+                                val ackSuccess = if (issueToken.isNotBlank()) {
+                                    issuedDao.acknowledgeFallbackPosted(issueToken, leaseToken, System.currentTimeMillis()) == 1
+                                } else {
+                                    true
+                                }
+
+                                if (ackSuccess) {
+                                    incidents += ReceiverAlarmIncident(
+                                        alarmId = alarmId,
+                                        fireId = fireId,
+                                        scheduledAt = scheduledAt,
+                                        type = AlarmIncidentEvent.TYPE_NOTIFICATION,
+                                        status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                                        reasonCode = "ALARM_NOTIFICATION_POSTED",
+                                        source = "AlarmReceiver"
+                                    )
+                                } else {
+                                    Log.w("AlarmReceiver", "Fallback ACK rejected for alarm $alarmId (token '$issueToken')")
+                                    incidents += ReceiverAlarmIncident(
+                                        alarmId = alarmId,
+                                        fireId = fireId,
+                                        scheduledAt = scheduledAt,
+                                        type = AlarmIncidentEvent.TYPE_NOTIFICATION,
+                                        status = AlarmIncidentEvent.STATUS_FAILED,
+                                        reasonCode = "FALLBACK_ACK_REJECTED",
+                                        source = "AlarmReceiver"
+                                    )
+                                }
                             } else {
                                 if (issueToken.isNotBlank()) {
-                                    issuedDao.markFallbackFailed(issueToken, leaseToken, System.currentTimeMillis())
+                                    issuedDao.releaseFallbackLeaseOnFailure(issueToken, leaseToken, System.currentTimeMillis())
                                 }
                                 incidents += ReceiverAlarmIncident(
                                     alarmId = alarmId,
