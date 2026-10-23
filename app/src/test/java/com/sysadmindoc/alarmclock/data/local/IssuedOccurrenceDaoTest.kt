@@ -60,14 +60,14 @@ class IssuedOccurrenceDaoTest {
     }
 
     @Test
-    fun `upsert and retrieve issue slot`() = runBlocking {
+    fun `insert and retrieve issue slot`() = runBlocking {
         val slot = IssueSlot(
             alarmId = 42L,
             currentIssueToken = "token-123",
             generationId = 1L
         )
 
-        dao.upsertSlot(slot)
+        dao.insertSlotInitial(slot)
 
         val retrieved = dao.getSlot(42L)
         assertNotNull(retrieved)
@@ -121,12 +121,13 @@ class IssuedOccurrenceDaoTest {
             currentIssueToken = "token-1",
             generationId = 1L
         )
-        dao.upsertSlot(slot)
+        dao.insertSlotInitial(slot)
 
-        // CAS update slot with expectedGenId = 1L
+        // CAS update slot with expectedGenId = 1L and expectedToken = "token-1"
         val successRows = dao.casUpdateSlotToken(
             alarmId = 44L,
             expectedGenId = 1L,
+            expectedToken = "token-1",
             newToken = "token-2",
             newGenId = 2L
         )
@@ -136,6 +137,7 @@ class IssuedOccurrenceDaoTest {
         val staleRows = dao.casUpdateSlotToken(
             alarmId = 44L,
             expectedGenId = 1L,
+            expectedToken = "token-2",
             newToken = "token-3",
             newGenId = 3L
         )

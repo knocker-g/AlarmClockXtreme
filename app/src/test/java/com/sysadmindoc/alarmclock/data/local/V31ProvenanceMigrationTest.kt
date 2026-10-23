@@ -98,7 +98,7 @@ class V31ProvenanceMigrationTest {
             .build()
 
         val db = database.openHelper.writableDatabase
-        assertEquals(31, db.version)
+        assertEquals(32, db.version)
         assertEquals(TriggerVerificationResult.Valid, verifier.verifyTriggers(db))
 
         // Roundtrip new row with non-null provenance fields
@@ -175,7 +175,7 @@ class V31ProvenanceMigrationTest {
             .build()
 
         val db = database.openHelper.writableDatabase
-        assertEquals(31, db.version)
+        assertEquals(32, db.version)
 
         // Verify existing v30 row has NULL provenance fields
         val legacyIntent = database.durableOperationIntentDao().getIntentByToken("intent-v30-legacy")

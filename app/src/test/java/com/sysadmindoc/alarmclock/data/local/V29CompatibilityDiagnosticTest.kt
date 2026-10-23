@@ -178,13 +178,17 @@ class V29CompatibilityDiagnosticTest {
         val database = Room.databaseBuilder(context, AlarmDatabase::class.java, "alarm_clock.db")
             .allowMainThreadQueries()
             .setJournalMode(RoomDatabase.JournalMode.TRUNCATE)
-            .addMigrations(AlarmDatabase.MIGRATION_29_30, AlarmDatabase.MIGRATION_30_31)
+            .addMigrations(
+                AlarmDatabase.MIGRATION_29_30,
+                AlarmDatabase.MIGRATION_30_31,
+                AlarmDatabase.MIGRATION_31_32
+            )
             .addCallback(AlarmDatabase.DATABASE_CALLBACK)
             .build()
 
         val reopenedDb = database.openHelper.writableDatabase
         assertTrue("Room must open existing v29 DB without schema error", reopenedDb.isOpen)
-        assertEquals(31, reopenedDb.version)
+        assertEquals(32, reopenedDb.version)
 
         // 3. VERIFY: Does CREATE TRIGGER IF NOT EXISTS replace the existing trigger definition?
         val reopenedCursor = reopenedDb.query("SELECT sql FROM sqlite_master WHERE name = 'trigger_durable_intent_identity_insert'")
