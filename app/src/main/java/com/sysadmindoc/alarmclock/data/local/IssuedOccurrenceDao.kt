@@ -26,6 +26,9 @@ abstract class IssuedOccurrenceDao {
     @Query("SELECT * FROM issued_occurrences WHERE alarmId = :alarmId AND scheduledAt = :scheduledAt")
     abstract suspend fun getOccurrencesByAlarmAndScheduledAt(alarmId: Long, scheduledAt: Long): List<IssuedOccurrence>
 
+    @Query("SELECT COUNT(*) FROM issued_occurrences WHERE alarmId = :alarmId AND status IN ('ISSUED', 'ADMITTED', 'REVOKED')")
+    abstract suspend fun countActivatedOccurrencesForAlarm(alarmId: Long): Int
+
     @Query("SELECT currentIssueToken FROM issue_slots WHERE alarmId = :alarmId")
     abstract suspend fun getSlotCurrentToken(alarmId: Long): String?
 

@@ -544,8 +544,62 @@ class HandoffFailureHardeningTest {
         val incidents = runBlocking { incidentRepo.getRecent(50) }
         val successIncident = incidents.find { it.alarmId == alarmId && it.status == AlarmIncidentEvent.STATUS_SUCCEEDED }
 
-        // RED ASSERTION: Currently fails because legacy tokenless gate evaluates TRUE when alarm is enabled
-        assertNull("RED ASSERTION B: Legacy tokenless broadcast for migrated/canceled alarm MUST be rejected", successIncident)
+        // RED TEST B: Now passes GREEN because countActivatedOccurrencesForAlarm(112) > 0!
+        assertNull("RED TEST B: Legacy tokenless broadcast for migrated/canceled alarm MUST be rejected", successIncident)
+    }
+
+    @Test
+    fun `Case 1 - First migration incomplete preserves existing valid Legacy A fallback recovery`() {
+        val shadowApp = org.robolectric.Shadows.shadowOf(context.applicationContext as android.app.Application)
+        shadowApp.grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+
+        val alarmId = 115L
+        val scheduledAt = System.currentTimeMillis() - 1000L
+        val tokenB = "token-B-first-prep"
+
+        runBlocking {
+            alarmRepo.save(
+                com.sysadmindoc.alarmclock.data.model.Alarm(
+                    id = alarmId,
+                    hour = 7,
+                    minute = 30,
+                    label = "Legacy A Alarm",
+                    isEnabled = true,
+                    nextTriggerTime = scheduledAt
+                )
+            )
+            // First tokenized reservation B (creates IssueSlot with currentIssueToken = null, B is PREPARED)
+            inMemoryDb.issuedOccurrenceDao().reserveIssuedOccurrence(tokenB, alarmId, scheduledAt + 60000L, "fire-115-B")
+        }
+
+        val spyContext = spyk(context) {
+            every { applicationContext } returns context.applicationContext
+            every { startForegroundService(any()) } throws IllegalStateException("Background start restricted")
+        }
+
+        val latch = CountDownLatch(1)
+        testOnIncidentRecordedCompletion = { latch.countDown() }
+
+        // Existing armed Legacy A fires (tokenless intent)
+        val intent = Intent().apply {
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, scheduledAt)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "fire-115-A")
+        }
+
+        val receiver = AlarmReceiver()
+        receiver.onReceive(spyContext, intent)
+
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        assertTrue("Incident recording timed out", latch.await(5, TimeUnit.SECONDS))
+
+        val incidents = runBlocking { incidentRepo.getRecent(50) }
+        val successIncident = incidents.find { it.alarmId == alarmId && it.status == AlarmIncidentEvent.STATUS_SUCCEEDED }
+
+        // VERIFY: Legacy A MUST be admitted and succeed because B was never activated
+        assertNotNull("Case 1: Legacy A MUST be admitted when first tokenized B is PREPARED and unactivated", successIncident)
+        assertEquals(alarmId, successIncident!!.alarmId)
+        assertEquals("ALARM_NOTIFICATION_POSTED", successIncident.reasonCode)
     }
 
     @Test
