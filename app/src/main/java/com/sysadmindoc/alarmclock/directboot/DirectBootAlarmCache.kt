@@ -51,18 +51,7 @@ object DirectBootAlarmCache {
     }
 
     fun clear(context: Context) {
-        prefs(context).edit()
-            .remove(KEY_SCHEMA_VERSION)
-            .remove(KEY_ALARM_ID)
-            .remove(KEY_TRIGGER_TIME)
-            .remove(KEY_LABEL)
-            .remove(KEY_TIME_LABEL)
-            .remove(KEY_PLAY_DEFAULT_SOUND)
-            .remove(KEY_VIBRATION_ENABLED)
-            .remove(KEY_UPDATED_AT)
-            .remove(KEY_TIMEZONE_POLICY)
-            .remove(KEY_FIXED_TIMEZONE_ID)
-            .apply()
+        prefs(context).edit().clear().commit()
     }
 
     fun removeIfMatches(context: Context, alarmId: Long) {

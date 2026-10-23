@@ -316,6 +316,36 @@ class IssuedOccurrenceDaoTest {
     }
 
     @Test
+    fun `activation fails and rolls back if slot points to previousToken whose occurrence record is missing`() = runBlocking {
+        val alarmId = 180L
+
+        // 1. Manually create slot pointing to non-existent token-A (generationId = 2L)
+        dao.insertSlotInitial(IssueSlot(alarmId = alarmId, currentIssueToken = "token-A-missing", generationId = 2L))
+
+        // 2. Reserve occurrence B for token-B (generationId = 3L)
+        val occB = dao.reserveIssuedOccurrence("token-B-valid", alarmId, 2000L, "fire-180-2000")
+        assertNotNull(occB)
+        assertEquals(3L, occB!!.generationId)
+        assertEquals(IssuedOccurrence.STATUS_PREPARED, occB.status)
+
+        // 3. Attempt to activate B while token-A-missing is in slot but missing from DB
+        val activated = dao.activateIssuedOccurrence("token-B-valid")
+        assertFalse("Activation MUST fail when previous slot token is missing from DB", activated)
+
+        // VERIFY: Transaction rolled back completely!
+        // Occurrence B status remains PREPARED (NOT promoted to ISSUED)
+        val B_after = dao.getOccurrence("token-B-valid")
+        assertNotNull(B_after)
+        assertEquals("B status MUST remain PREPARED after rollback", IssuedOccurrence.STATUS_PREPARED, B_after!!.status)
+
+        // Slot currentIssueToken remains "token-A-missing" (NOT updated to token-B-valid)
+        val slotAfter = dao.getSlot(alarmId)
+        assertNotNull(slotAfter)
+        assertEquals("token-A-missing", slotAfter!!.currentIssueToken)
+        assertEquals(3L, slotAfter.generationId)
+    }
+
+    @Test
     fun `stale activation for outdated generation is rejected`() = runBlocking {
         val alarmId = 300L
 

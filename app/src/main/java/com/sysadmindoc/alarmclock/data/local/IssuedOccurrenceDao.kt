@@ -177,7 +177,9 @@ abstract class IssuedOccurrenceDao {
         // Step 2: Revoke previous active occurrence A (if any and status is ISSUED)
         if (previousToken != null && previousToken != issueToken) {
             val previousOcc = getOccurrence(previousToken)
-            if (previousOcc != null && previousOcc.status == IssuedOccurrence.STATUS_ISSUED) {
+                ?: throw IllegalStateException("Previous active occurrence record $previousToken missing in DB")
+
+            if (previousOcc.status == IssuedOccurrence.STATUS_ISSUED) {
                 val revokeCas = casUpdateOccurrenceStatus(
                     issueToken = previousToken,
                     expectedStatus = IssuedOccurrence.STATUS_ISSUED,
