@@ -348,4 +348,93 @@ class IssuedOccurrenceDaoTest {
         assertNull("Slot current token MUST be null", slot!!.currentIssueToken)
         assertEquals(IssuedOccurrence.STATUS_REVOKED, dao.getOccurrence("token-rev")!!.status)
     }
+
+    @Test
+    fun `revocation on non existent slot returns false`() = runBlocking {
+        val revoked = dao.revokeIssuedOccurrence(alarmId = 99999L)
+        assertFalse("Revocation on non-existent slot MUST return false", revoked)
+    }
+
+    @Test
+    fun `second step slot CAS failure during reservation rolls back inserted PREPARED row`() = runBlocking {
+        val alarmId = 700L
+
+        // Execute transaction where step 1 insert succeeds but step 2 CAS fails via exception
+        try {
+            db.runInTransaction {
+                runBlocking {
+                    // Step 1: Insert occurrence
+                    dao.insertOccurrence(
+                        IssuedOccurrence(
+                            issueToken = "token-cas-fail",
+                            alarmId = alarmId,
+                            scheduledAt = 1000L,
+                            fireId = "fire-700",
+                            generationId = 2L,
+                            status = IssuedOccurrence.STATUS_PREPARED
+                        )
+                    )
+                    // Step 2: Force CAS failure by supplying mismatched expectedGenId = 999L
+                    val casRows = dao.casIncrementSlotGeneration(
+                        alarmId = alarmId,
+                        expectedGenId = 999L, // Mismatched!
+                        expectedToken = null,
+                        newToken = null
+                    )
+                    if (casRows != 1) {
+                        throw IllegalStateException("Simulated second-step CAS failure")
+                    }
+                }
+            }
+            org.junit.Assert.fail("Transaction MUST throw exception on second-step CAS failure")
+        } catch (_: Exception) {
+            // Expected
+        }
+
+        // VERIFY: Step 1 inserted row MUST be completely ROLLED BACK from database
+        val occ = dao.getOccurrence("token-cas-fail")
+        assertNull("Occurrence row MUST be rolled back and absent from DB", occ)
+    }
+
+    @Test
+    fun `second step slot CAS failure during activation rolls back status update`() = runBlocking {
+        val alarmId = 800L
+        dao.reserveIssuedOccurrence("token-act-fail", alarmId, 1000L, "fire-800")
+
+        // Execute transaction where step 1 status update succeeds but step 2 slot CAS fails
+        try {
+            db.runInTransaction {
+                runBlocking {
+                    // Step 1: Update status PREPARED -> ISSUED
+                    val statusCas = dao.casUpdateOccurrenceStatus(
+                        issueToken = "token-act-fail",
+                        expectedStatus = IssuedOccurrence.STATUS_PREPARED,
+                        newStatus = IssuedOccurrence.STATUS_ISSUED,
+                        updatedAt = 1005L
+                    )
+                    assertEquals(1, statusCas)
+
+                    // Step 2: Force slot update CAS failure by supplying mismatched expectedGenId = 999L
+                    val slotCas = dao.casUpdateSlotCurrentTokenOnly(
+                        alarmId = alarmId,
+                        expectedGenId = 999L, // Mismatched!
+                        expectedToken = null,
+                        newToken = "token-act-fail"
+                    )
+                    if (slotCas != 1) {
+                        throw IllegalStateException("Simulated second-step slot CAS failure during activation")
+                    }
+                }
+            }
+            org.junit.Assert.fail("Activation transaction MUST throw exception on second-step CAS failure")
+        } catch (_: Exception) {
+            // Expected
+        }
+
+        // VERIFY: Status update MUST be completely ROLLED BACK to PREPARED
+        val occ = dao.getOccurrence("token-act-fail")
+        assertNotNull(occ)
+        assertEquals(IssuedOccurrence.STATUS_PREPARED, occ!!.status)
+        assertNull(dao.getSlot(alarmId)!!.currentIssueToken)
+    }
 }

@@ -38,6 +38,7 @@ abstract class IssuedOccurrenceDao {
         SET currentIssueToken = :newToken, generationId = generationId + 1
         WHERE alarmId = :alarmId
           AND generationId = :expectedGenId
+          AND generationId < 9223372036854775807
           AND (currentIssueToken = :expectedToken OR (currentIssueToken IS NULL AND :expectedToken IS NULL))
         """
     )
@@ -54,11 +55,13 @@ abstract class IssuedOccurrenceDao {
         SET currentIssueToken = :newToken
         WHERE alarmId = :alarmId
           AND generationId = :expectedGenId
+          AND (currentIssueToken = :expectedToken OR (currentIssueToken IS NULL AND :expectedToken IS NULL))
         """
     )
     abstract suspend fun casUpdateSlotCurrentTokenOnly(
         alarmId: Long,
         expectedGenId: Long,
+        expectedToken: String?,
         newToken: String?
     ): Int
 
@@ -124,7 +127,8 @@ abstract class IssuedOccurrenceDao {
     ): IssuedOccurrence? {
         return try {
             reserveIssuedOccurrenceTransaction(issueToken, alarmId, scheduledAt, fireId, now)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
             null
         }
     }
@@ -161,6 +165,7 @@ abstract class IssuedOccurrenceDao {
         val slotCas = casUpdateSlotCurrentTokenOnly(
             alarmId = occurrence.alarmId,
             expectedGenId = slot.generationId,
+            expectedToken = slot.currentIssueToken,
             newToken = issueToken
         )
         if (slotCas != 1) {
@@ -175,7 +180,8 @@ abstract class IssuedOccurrenceDao {
         return try {
             activateIssuedOccurrenceTransaction(issueToken, now)
             true
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
             false
         }
     }
@@ -185,7 +191,7 @@ abstract class IssuedOccurrenceDao {
         alarmId: Long,
         now: Long = System.currentTimeMillis()
     ) {
-        val slot = getSlot(alarmId) ?: return
+        val slot = getSlot(alarmId) ?: throw IllegalStateException("Slot for alarm $alarmId not found")
         val currentToken = slot.currentIssueToken
 
         val slotCas = casIncrementSlotGeneration(
@@ -208,7 +214,8 @@ abstract class IssuedOccurrenceDao {
         return try {
             revokeIssuedOccurrenceTransaction(alarmId, now)
             true
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
             false
         }
     }
