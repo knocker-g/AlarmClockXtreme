@@ -82,12 +82,13 @@ class DirectBootAlarmCacheTest {
 
     @Test
     fun fixedTimezoneMetadataSurvivesDeviceProtectedCacheRoundTrip() {
+        DirectBootAlarmCache.clear(context)
         val fixed = alarm(4L).copy(
             timezonePolicy = Alarm.TIMEZONE_POLICY_FIXED,
             fixedTimezoneId = "Australia/Sydney"
         )
 
-        DirectBootAlarmCache.saveIfEarlier(context, fixed, now + 600_000L, now)
+        DirectBootAlarmCache.saveIfEarlier(context, fixed, now + 100_000L, now)
 
         val snapshot = requireNotNull(DirectBootAlarmCache.read(context))
         assertEquals(Alarm.TIMEZONE_POLICY_FIXED, snapshot.timezonePolicy)
@@ -99,6 +100,20 @@ class DirectBootAlarmCacheTest {
         DirectBootAlarmCache.saveIfEarlier(context, alarm(1L), now + 600_000L, now)
         DirectBootAlarmCache.clear(context)
         assertNull(DirectBootAlarmCache.read(context))
+    }
+
+    @Test
+    fun clearPreservesFiredOneShotMarker() {
+        DirectBootAlarmCache.saveIfEarlier(context, alarm(1L), now + 600_000L, now)
+        DirectBootAlarmCache.recordFired(context, alarmId = 9L, triggerTime = now - 1_000L, firedAt = now)
+
+        DirectBootAlarmCache.clear(context)
+
+        // Alarm snapshot is cleared
+        assertNull(DirectBootAlarmCache.read(context))
+
+        // Fired one-shot marker MUST still be preserved and consumable!
+        assertTrue("clear() MUST NOT wipe fired one-shot markers", DirectBootAlarmCache.consumeFiredOneShotMarker(context, alarm(9L), now))
     }
 
     @Test

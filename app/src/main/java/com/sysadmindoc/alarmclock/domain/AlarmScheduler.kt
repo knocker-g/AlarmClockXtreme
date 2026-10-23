@@ -50,8 +50,11 @@ class AlarmScheduler @Inject constructor(
     private val scheduleAuthorityOwnerProvider: javax.inject.Provider<ScheduleAuthorityOwner>? = null,
     private val routeAuthority: ProductionSchedulingRouteAuthority = ProductionSchedulingRouteAuthority()
 ) {
+    @androidx.annotation.VisibleForTesting
+    internal var testAlarmManager: AlarmManager? = null
+
     private val alarmManager: AlarmManager
-        get() = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        get() = testAlarmManager ?: (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager)
 
     private val mainSlotMutexMap = ConcurrentHashMap<Long, Mutex>()
 
@@ -62,6 +65,9 @@ class AlarmScheduler @Inject constructor(
         const val EXTRA_ALARM_ID = "alarm_id"
         const val EXTRA_ALARM_FIRE_ID = "alarm_fire_id"
         const val EXTRA_SCHEDULED_AT = "scheduled_at"
+        const val EXTRA_ISSUE_TOKEN = "issue_token"
+
+        private const val REQUEST_CODE_ISSUED_OCCURRENCE = 80001
 
         private val SNOW_ICE_CODES = setOf(56, 57, 66, 67, 71, 73, 75, 77, 85, 86)
         fun isSnowOrIceCode(code: Int): Boolean = code in SNOW_ICE_CODES
@@ -774,6 +780,95 @@ class AlarmScheduler @Inject constructor(
         }
     }
 
+    /**
+     * Performs a complete tokenized occurrence reservation, OS AlarmManager registration,
+     * and atomic activation sequence for [alarmId] at [triggerTime].
+     * DORMANT helper for P2B4 tokenized scheduling integration.
+     */
+    @androidx.annotation.VisibleForTesting
+    internal suspend fun applyTokenizedOsSet(
+        alarmId: Long,
+        triggerTime: Long,
+        issueToken: String = java.util.UUID.randomUUID().toString()
+    ): Boolean {
+        if (!canScheduleExactAlarms() || issueToken.isBlank()) return false
+        val fireId = AlarmIncidentEvent.fireIdFor(alarmId, triggerTime)
+        val issuedDao = repository.issuedOccurrenceDao()
+
+        // 1. Reserve occurrence in PREPARED status
+        val occurrence = issuedDao.reserveIssuedOccurrence(
+            issueToken = issueToken,
+            alarmId = alarmId,
+            scheduledAt = triggerTime,
+            fireId = fireId
+        ) ?: return false
+
+        // 2. Create tokenized PendingIntent
+        val pendingIntent = createTokenizedPendingIntent(alarmId, triggerTime, fireId, issueToken)
+        val showAlarmClockIcon = preferencesManager.getCachedSettings().showAlarmClockIcon
+
+        // 3. Register with OS AlarmManager
+        val osSuccess = try {
+            if (showAlarmClockIcon) {
+                alarmManager.setAlarmClock(
+                    AlarmManager.AlarmClockInfo(triggerTime, createShowIntent(alarmId)),
+                    pendingIntent
+                )
+            } else {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    triggerTime,
+                    pendingIntent
+                )
+            }
+            true
+        } catch (e: Exception) {
+            Log.e("AlarmScheduler", "applyTokenizedOsSet registration failed for alarm $alarmId", e)
+            issuedDao.casUpdateOccurrenceStatus(
+                issueToken = issueToken,
+                expectedStatus = com.sysadmindoc.alarmclock.data.local.entity.IssuedOccurrence.STATUS_PREPARED,
+                newStatus = com.sysadmindoc.alarmclock.data.local.entity.IssuedOccurrence.STATUS_SET_FAILED,
+                updatedAt = System.currentTimeMillis()
+            )
+            false
+        }
+
+        if (!osSuccess) return false
+
+        // 4. On OS success, activate replacement occurrence
+        val activated = issuedDao.activateIssuedOccurrence(issueToken)
+        if (activated) {
+            applyRawOsCancel(alarmId)
+        }
+        return activated
+    }
+
+    /**
+     * Cancels a tokenized OS registration for [alarmId] and revokes active/pending occurrences.
+     * DORMANT helper for P2B4.
+     */
+    @androidx.annotation.VisibleForTesting
+    internal suspend fun cancelTokenizedScheduledAlarm(alarmId: Long): Boolean {
+        val issuedDao = repository.issuedOccurrenceDao()
+        val currentToken = issuedDao.getSlotCurrentToken(alarmId)
+
+        if (!currentToken.isNullOrBlank()) {
+            val pendingIntent = lookupTokenizedPendingIntentForCancel(alarmId, currentToken)
+            if (pendingIntent != null) {
+                try {
+                    alarmManager.cancel(pendingIntent)
+                    pendingIntent.cancel()
+                } catch (e: Exception) {
+                    Log.e("AlarmScheduler", "cancelTokenizedScheduledAlarm failed for alarm $alarmId", e)
+                }
+            }
+        }
+
+        issuedDao.revokeIssuedOccurrence(alarmId)
+        applyRawOsCancel(alarmId)
+        return true
+    }
+
     private suspend fun scheduleAlarmClock(
         alarmId: Long,
         triggerTime: Long,
@@ -1067,6 +1162,65 @@ class AlarmScheduler @Inject constructor(
         return PendingIntent.getBroadcast(
             context,
             alarmId.toInt(),
+            intent,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    /**
+     * Creates a tokenized PendingIntent for a specific issued occurrence.
+     * Uses filterEquals-distinct Intent.data URI ("alarmclock://alarm/issue?alarmId=$alarmId&token=$issueToken")
+     * and a constant requestCode so that different issueTokens produce distinct PendingIntent slots
+     * without alarmId.toInt() integer truncation collisions.
+     * DORMANT helper for P2A.
+     */
+    @androidx.annotation.VisibleForTesting
+    internal fun createTokenizedPendingIntent(
+        alarmId: Long,
+        triggerTime: Long,
+        fireId: String,
+        issueToken: String
+    ): PendingIntent {
+        require(issueToken.isNotBlank()) { "issueToken MUST NOT be blank for tokenized PendingIntent" }
+        require(alarmId > 0L) { "alarmId MUST be positive for tokenized PendingIntent" }
+        require(triggerTime > 0L) { "triggerTime MUST be positive for tokenized PendingIntent" }
+
+        val uri = android.net.Uri.parse(
+            "alarmclock://alarm/issue?alarmId=$alarmId&token=${android.net.Uri.encode(issueToken)}"
+        )
+        val intent = Intent(context, AlarmReceiver::class.java).apply {
+            action = "com.sysadmindoc.alarmclock.ALARM_FIRE"
+            data = uri
+            putExtra(EXTRA_ALARM_ID, alarmId)
+            putExtra(EXTRA_SCHEDULED_AT, triggerTime)
+            putExtra(EXTRA_ALARM_FIRE_ID, fireId.ifBlank { AlarmIncidentEvent.fireIdFor(alarmId, triggerTime) })
+            putExtra(EXTRA_ISSUE_TOKEN, issueToken)
+        }
+        return PendingIntent.getBroadcast(
+            context,
+            REQUEST_CODE_ISSUED_OCCURRENCE,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    /**
+     * Performs a FLAG_NO_CREATE lookup for a tokenized PendingIntent matching [alarmId] and [issueToken].
+     * DORMANT helper for P2A.
+     */
+    @androidx.annotation.VisibleForTesting
+    internal fun lookupTokenizedPendingIntentForCancel(alarmId: Long, issueToken: String): PendingIntent? {
+        if (issueToken.isBlank()) return null
+        val uri = android.net.Uri.parse(
+            "alarmclock://alarm/issue?alarmId=$alarmId&token=${android.net.Uri.encode(issueToken)}"
+        )
+        val intent = Intent(context, AlarmReceiver::class.java).apply {
+            action = "com.sysadmindoc.alarmclock.ALARM_FIRE"
+            data = uri
+        }
+        return PendingIntent.getBroadcast(
+            context,
+            REQUEST_CODE_ISSUED_OCCURRENCE,
             intent,
             PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
         )
