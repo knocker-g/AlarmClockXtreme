@@ -12,6 +12,8 @@ import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent
 import com.sysadmindoc.alarmclock.data.local.entity.NewsSource
 import com.sysadmindoc.alarmclock.data.local.entity.PreSleepTagEntry
+import com.sysadmindoc.alarmclock.data.local.entity.IssueSlot
+import com.sysadmindoc.alarmclock.data.local.entity.IssuedOccurrence
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta
 import com.sysadmindoc.alarmclock.data.local.entity.SnoreEvent
@@ -29,7 +31,9 @@ import com.sysadmindoc.alarmclock.data.model.Alarm
         NewsSource::class,
         ScheduleAuthority::class,
         ScheduleAuthorityMeta::class,
-        DurableOperationIntent::class
+        DurableOperationIntent::class,
+        IssuedOccurrence::class,
+        IssueSlot::class
     ],
     version = AlarmDatabase.VERSION,
     exportSchema = true
@@ -46,9 +50,10 @@ abstract class AlarmDatabase : RoomDatabase() {
     abstract fun newsSourceDao(): NewsSourceDao
     abstract fun scheduleAuthorityDao(): ScheduleAuthorityDao
     abstract fun durableOperationIntentDao(): DurableOperationIntentDao
+    abstract fun issuedOccurrenceDao(): IssuedOccurrenceDao
 
     companion object {
-        const val VERSION = 31
+        const val VERSION = 32
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -572,6 +577,55 @@ abstract class AlarmDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v32: KNO-129 P1A inert issued occurrence persistence foundation.
+         * Creates `issued_occurrences` and `issue_slots` tables.
+         */
+        val MIGRATION_31_32 = object : Migration(31, 32) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `issued_occurrences` (
+                        `issueToken` TEXT NOT NULL,
+                        `alarmId` INTEGER NOT NULL,
+                        `scheduledAt` INTEGER NOT NULL,
+                        `fireId` TEXT NOT NULL,
+                        `generationId` INTEGER NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `recoveryLeaseToken` TEXT,
+                        `recoveryLeaseExpiresAt` INTEGER,
+                        `outcome` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`issueToken`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE INDEX IF NOT EXISTS `index_issued_occurrences_alarmId_scheduledAt`
+                    ON `issued_occurrences` (`alarmId`, `scheduledAt`)
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE INDEX IF NOT EXISTS `index_issued_occurrences_status`
+                    ON `issued_occurrences` (`status`)
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `issue_slots` (
+                        `alarmId` INTEGER NOT NULL,
+                        `currentIssueToken` TEXT,
+                        `generationId` INTEGER NOT NULL,
+                        PRIMARY KEY(`alarmId`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -603,6 +657,7 @@ abstract class AlarmDatabase : RoomDatabase() {
             MIGRATION_28_29,
             MIGRATION_29_30,
             MIGRATION_30_31,
+            MIGRATION_31_32
         )
     }
 }
