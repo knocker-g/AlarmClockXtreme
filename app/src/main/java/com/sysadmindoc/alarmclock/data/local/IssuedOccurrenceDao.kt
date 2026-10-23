@@ -174,14 +174,20 @@ abstract class IssuedOccurrenceDao {
             throw IllegalStateException("Occurrence status update CAS failed")
         }
 
-        // Step 2: Revoke previous active occurrence A (if any)
+        // Step 2: Revoke previous active occurrence A (if any and status is ISSUED)
         if (previousToken != null && previousToken != issueToken) {
-            casUpdateOccurrenceStatus(
-                issueToken = previousToken,
-                expectedStatus = IssuedOccurrence.STATUS_ISSUED,
-                newStatus = IssuedOccurrence.STATUS_REVOKED,
-                updatedAt = now
-            )
+            val previousOcc = getOccurrence(previousToken)
+            if (previousOcc != null && previousOcc.status == IssuedOccurrence.STATUS_ISSUED) {
+                val revokeCas = casUpdateOccurrenceStatus(
+                    issueToken = previousToken,
+                    expectedStatus = IssuedOccurrence.STATUS_ISSUED,
+                    newStatus = IssuedOccurrence.STATUS_REVOKED,
+                    updatedAt = now
+                )
+                if (revokeCas != 1) {
+                    throw IllegalStateException("Failed to revoke previous active occurrence $previousToken")
+                }
+            }
         }
 
         // Step 3: Update active slot token to issueToken_B
