@@ -88,7 +88,12 @@ class AlarmReceiver : BroadcastReceiver() {
                     val issuedDao = testIssuedOccurrenceDao ?: alarmRepo.issuedOccurrenceDao()
 
                     val isCurrentOccurrence = if (issueToken.isNotBlank()) {
-                        issuedDao.evaluateActiveOccurrenceAdmission(issueToken)
+                        issuedDao.evaluateActiveOccurrenceAdmission(
+                            issueToken = issueToken,
+                            expectedAlarmId = alarmId,
+                            expectedScheduledAt = scheduledAt,
+                            expectedFireId = fireId
+                        )
                     } else {
                         val alarm = alarmRepo.getById(alarmId)
                         val deliveryCount = incidentRepo.occurrenceDeliveryCount(alarmId, scheduledAt)

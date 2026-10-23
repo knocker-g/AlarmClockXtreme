@@ -304,6 +304,29 @@ class IssuedOccurrenceDaoTest {
     }
 
     @Test
+    fun `evaluateActiveOccurrenceAdmission rejects mismatched payload metadata`() = runBlocking {
+        val alarmId = 180L
+        val scheduledAt = 5000L
+        val fireId = "fire-180-5000"
+        val token = "token-payload-test"
+
+        dao.reserveIssuedOccurrence(token, alarmId, scheduledAt, fireId)
+        dao.activateIssuedOccurrence(token)
+
+        // Matching payload -> returns true
+        assertTrue(dao.evaluateActiveOccurrenceAdmission(token, alarmId, scheduledAt, fireId))
+
+        // Mismatched alarmId -> returns false
+        assertFalse("Mismatched alarmId MUST be rejected", dao.evaluateActiveOccurrenceAdmission(token, expectedAlarmId = 999L, expectedScheduledAt = scheduledAt, expectedFireId = fireId))
+
+        // Mismatched scheduledAt -> returns false
+        assertFalse("Mismatched scheduledAt MUST be rejected", dao.evaluateActiveOccurrenceAdmission(token, expectedAlarmId = alarmId, expectedScheduledAt = 9999L, expectedFireId = fireId))
+
+        // Mismatched fireId -> returns false
+        assertFalse("Mismatched fireId MUST be rejected", dao.evaluateActiveOccurrenceAdmission(token, expectedAlarmId = alarmId, expectedScheduledAt = scheduledAt, expectedFireId = "fire-wrong"))
+    }
+
+    @Test
     fun `activation fails if slot points to token whose occurrence record is missing`() = runBlocking {
         val alarmId = 170L
 

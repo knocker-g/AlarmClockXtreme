@@ -133,9 +133,21 @@ abstract class IssuedOccurrenceDao {
         }
     }
 
-    suspend fun evaluateActiveOccurrenceAdmission(issueToken: String): Boolean {
+    @Query("UPDATE issued_occurrences SET outcome = 'POSTED', status = 'ADMITTED', updatedAt = :now WHERE issueToken = :issueToken AND outcome = 'PENDING' AND status IN ('ISSUED', 'PREPARED')")
+    abstract suspend fun claimFallbackOutcome(issueToken: String, now: Long = System.currentTimeMillis()): Int
+
+    suspend fun evaluateActiveOccurrenceAdmission(
+        issueToken: String,
+        expectedAlarmId: Long = -1L,
+        expectedScheduledAt: Long = -1L,
+        expectedFireId: String = ""
+    ): Boolean {
         val occurrence = getOccurrence(issueToken) ?: return false
         val slot = getSlot(occurrence.alarmId) ?: return false
+
+        if (expectedAlarmId > 0L && occurrence.alarmId != expectedAlarmId) return false
+        if (expectedScheduledAt > 0L && occurrence.scheduledAt != expectedScheduledAt) return false
+        if (expectedFireId.isNotBlank() && occurrence.fireId != expectedFireId) return false
 
         return (occurrence.status == IssuedOccurrence.STATUS_ISSUED || occurrence.status == IssuedOccurrence.STATUS_ADMITTED) &&
             slot.currentIssueToken == issueToken &&
