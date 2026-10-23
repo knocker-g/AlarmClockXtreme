@@ -50,8 +50,11 @@ class AlarmScheduler @Inject constructor(
     private val scheduleAuthorityOwnerProvider: javax.inject.Provider<ScheduleAuthorityOwner>? = null,
     private val routeAuthority: ProductionSchedulingRouteAuthority = ProductionSchedulingRouteAuthority()
 ) {
+    @androidx.annotation.VisibleForTesting
+    internal var testAlarmManager: AlarmManager? = null
+
     private val alarmManager: AlarmManager
-        get() = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        get() = testAlarmManager ?: (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager)
 
     private val mainSlotMutexMap = ConcurrentHashMap<Long, Mutex>()
 
@@ -775,6 +778,95 @@ class AlarmScheduler @Inject constructor(
             Log.e("AlarmScheduler", "applyRawOsCancel failed for alarm $alarmId", e)
             false
         }
+    }
+
+    /**
+     * Performs a complete tokenized occurrence reservation, OS AlarmManager registration,
+     * and atomic activation sequence for [alarmId] at [triggerTime].
+     * DORMANT helper for P2B4 tokenized scheduling integration.
+     */
+    @androidx.annotation.VisibleForTesting
+    internal suspend fun applyTokenizedOsSet(
+        alarmId: Long,
+        triggerTime: Long,
+        issueToken: String = java.util.UUID.randomUUID().toString()
+    ): Boolean {
+        if (!canScheduleExactAlarms() || issueToken.isBlank()) return false
+        val fireId = AlarmIncidentEvent.fireIdFor(alarmId, triggerTime)
+        val issuedDao = repository.issuedOccurrenceDao()
+
+        // 1. Reserve occurrence in PREPARED status
+        val occurrence = issuedDao.reserveIssuedOccurrence(
+            issueToken = issueToken,
+            alarmId = alarmId,
+            scheduledAt = triggerTime,
+            fireId = fireId
+        ) ?: return false
+
+        // 2. Create tokenized PendingIntent
+        val pendingIntent = createTokenizedPendingIntent(alarmId, triggerTime, fireId, issueToken)
+        val showAlarmClockIcon = preferencesManager.getCachedSettings().showAlarmClockIcon
+
+        // 3. Register with OS AlarmManager
+        val osSuccess = try {
+            if (showAlarmClockIcon) {
+                alarmManager.setAlarmClock(
+                    AlarmManager.AlarmClockInfo(triggerTime, createShowIntent(alarmId)),
+                    pendingIntent
+                )
+            } else {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    triggerTime,
+                    pendingIntent
+                )
+            }
+            true
+        } catch (e: Exception) {
+            Log.e("AlarmScheduler", "applyTokenizedOsSet registration failed for alarm $alarmId", e)
+            issuedDao.casUpdateOccurrenceStatus(
+                issueToken = issueToken,
+                expectedStatus = com.sysadmindoc.alarmclock.data.local.entity.IssuedOccurrence.STATUS_PREPARED,
+                newStatus = com.sysadmindoc.alarmclock.data.local.entity.IssuedOccurrence.STATUS_SET_FAILED,
+                updatedAt = System.currentTimeMillis()
+            )
+            false
+        }
+
+        if (!osSuccess) return false
+
+        // 4. On OS success, activate replacement occurrence
+        val activated = issuedDao.activateIssuedOccurrence(issueToken)
+        if (activated) {
+            applyRawOsCancel(alarmId)
+        }
+        return activated
+    }
+
+    /**
+     * Cancels a tokenized OS registration for [alarmId] and revokes active/pending occurrences.
+     * DORMANT helper for P2B4.
+     */
+    @androidx.annotation.VisibleForTesting
+    internal suspend fun cancelTokenizedScheduledAlarm(alarmId: Long): Boolean {
+        val issuedDao = repository.issuedOccurrenceDao()
+        val currentToken = issuedDao.getSlotCurrentToken(alarmId)
+
+        if (!currentToken.isNullOrBlank()) {
+            val pendingIntent = lookupTokenizedPendingIntentForCancel(alarmId, currentToken)
+            if (pendingIntent != null) {
+                try {
+                    alarmManager.cancel(pendingIntent)
+                    pendingIntent.cancel()
+                } catch (e: Exception) {
+                    Log.e("AlarmScheduler", "cancelTokenizedScheduledAlarm failed for alarm $alarmId", e)
+                }
+            }
+        }
+
+        issuedDao.revokeIssuedOccurrence(alarmId)
+        applyRawOsCancel(alarmId)
+        return true
     }
 
     private suspend fun scheduleAlarmClock(
