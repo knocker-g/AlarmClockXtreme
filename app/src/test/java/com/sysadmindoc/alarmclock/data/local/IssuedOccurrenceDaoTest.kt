@@ -226,16 +226,11 @@ class IssuedOccurrenceDaoTest {
         val alarmId = 200L
         val scheduledAt = 10000L
 
-        val occ = dao.reserveIssuedOccurrenceTransaction(
-            issueToken = "token-active-1",
-            alarmId = alarmId,
-            scheduledAt = scheduledAt,
-            fireId = "fire-200-10000"
-        )
+        val occ = dao.reserveIssuedOccurrence("token-active-1", alarmId, scheduledAt, "fire-200-10000")
         assertNotNull(occ)
 
         // Activate occurrence #1
-        val activated = dao.activateIssuedOccurrenceTransaction("token-active-1")
+        val activated = dao.activateIssuedOccurrence("token-active-1")
         assertTrue("Activation MUST succeed", activated)
 
         val activeOcc = dao.getOccurrence("token-active-1")
@@ -250,32 +245,22 @@ class IssuedOccurrenceDaoTest {
         val alarmId = 300L
 
         // Reserve occurrence #1 (gen 2)
-        val occ1 = dao.reserveIssuedOccurrenceTransaction(
-            issueToken = "token-gen2",
-            alarmId = alarmId,
-            scheduledAt = 1000L,
-            fireId = "fire-300-1000"
-        )
+        val occ1 = dao.reserveIssuedOccurrence("token-gen2", alarmId, 1000L, "fire-300-1000")
         assertNotNull(occ1)
 
         // Reserve occurrence #2 (gen 3 - supersedes occurrence #1)
-        val occ2 = dao.reserveIssuedOccurrenceTransaction(
-            issueToken = "token-gen3",
-            alarmId = alarmId,
-            scheduledAt = 2000L,
-            fireId = "fire-300-2000"
-        )
+        val occ2 = dao.reserveIssuedOccurrence("token-gen3", alarmId, 2000L, "fire-300-2000")
         assertNotNull(occ2)
 
         // Attempt to activate stale occurrence #1 (gen 2 while slot is at gen 3)
-        val staleActivated = dao.activateIssuedOccurrenceTransaction("token-gen2")
+        val staleActivated = dao.activateIssuedOccurrence("token-gen2")
         assertFalse("Stale activation MUST be rejected", staleActivated)
 
         // Verify occurrence #1 remains PREPARED
         assertEquals(IssuedOccurrence.STATUS_PREPARED, dao.getOccurrence("token-gen2")!!.status)
 
         // Activate current occurrence #2 (gen 3)
-        val currentActivated = dao.activateIssuedOccurrenceTransaction("token-gen3")
+        val currentActivated = dao.activateIssuedOccurrence("token-gen3")
         assertTrue("Current activation MUST succeed", currentActivated)
         assertEquals(IssuedOccurrence.STATUS_ISSUED, dao.getOccurrence("token-gen3")!!.status)
         assertEquals("token-gen3", dao.getSlot(alarmId)!!.currentIssueToken)
@@ -285,20 +270,82 @@ class IssuedOccurrenceDaoTest {
     fun `revokeIssuedOccurrenceTransaction invalidates active slot token and revokes active occurrence`() = runBlocking {
         val alarmId = 400L
 
-        dao.reserveIssuedOccurrenceTransaction("token-revoke-1", alarmId, 1000L, "fire-400-1")
-        dao.activateIssuedOccurrenceTransaction("token-revoke-1")
+        dao.reserveIssuedOccurrence("token-revoke-1", alarmId, 1000L, "fire-400-1")
+        dao.activateIssuedOccurrence("token-revoke-1")
 
         assertEquals("token-revoke-1", dao.getSlot(alarmId)!!.currentIssueToken)
 
         // Revoke alarm (e.g. cancel/delete/disable)
-        val revokedRows = dao.revokeIssuedOccurrenceTransaction(alarmId)
-        assertEquals(1, revokedRows)
+        val revoked = dao.revokeIssuedOccurrence(alarmId)
+        assertTrue("Revocation MUST succeed", revoked)
 
         val slot = dao.getSlot(alarmId)
-        assertNull("Current slot token MUST be invalidated (null)", slot!!.currentIssueToken)
-        assertEquals(3L, slot.generationId) // Incremented generationId
+        assertNotNull("Slot tombstone MUST be preserved across revocation", slot)
+        assertNull("Current slot token MUST be null", slot!!.currentIssueToken)
+        assertEquals(IssuedOccurrence.STATUS_REVOKED, dao.getOccurrence("token-revoke-1")!!.status)
+    }
 
-        val occ = dao.getOccurrence("token-revoke-1")
-        assertEquals(IssuedOccurrence.STATUS_REVOKED, occ!!.status)
+    @Test
+    fun `reserveIssuedOccurrence helper returns null and rolls back row if duplicate issueToken inserted`() = runBlocking {
+        val alarmId = 101L
+
+        val occ1 = dao.reserveIssuedOccurrence("token-dup", alarmId, 1000L, "fire-101-1")
+        assertNotNull(occ1)
+
+        // Attempting to reserve with duplicate token-dup MUST roll back and return null
+        val occ2 = dao.reserveIssuedOccurrence("token-dup", alarmId, 2000L, "fire-101-2")
+        assertNull("Duplicate issueToken reservation MUST return null", occ2)
+
+        // Slot generation remains at gen 2 (from first reservation) and occurrence remains unchanged
+        val slot = dao.getSlot(alarmId)
+        assertEquals(2L, slot!!.generationId)
+        assertEquals("fire-101-1", dao.getOccurrence("token-dup")!!.fireId)
+    }
+
+    @Test
+    fun `activateIssuedOccurrence helper rolls back and returns false if activation is stale or invalid`() = runBlocking {
+        val alarmId = 201L
+
+        val occ1 = dao.reserveIssuedOccurrence("token-stale", alarmId, 1000L, "fire-201-1")
+        assertNotNull(occ1)
+
+        // Intervening reservation bumps generation
+        val occ2 = dao.reserveIssuedOccurrence("token-fresh", alarmId, 2000L, "fire-201-2")
+        assertNotNull(occ2)
+
+        // Attempting to activate stale occurrence #1 returns false
+        val activated = dao.activateIssuedOccurrence("token-stale")
+        assertFalse("Stale activation MUST return false", activated)
+
+        // Verify status remained PREPARED and slot currentIssueToken was NOT updated
+        assertEquals(IssuedOccurrence.STATUS_PREPARED, dao.getOccurrence("token-stale")!!.status)
+        assertNull(dao.getSlot(alarmId)!!.currentIssueToken)
+    }
+
+    @Test
+    fun `generationId overflow is rejected before mutation`() = runBlocking {
+        val alarmId = 500L
+        dao.insertSlotInitial(IssueSlot(alarmId = alarmId, currentIssueToken = null, generationId = Long.MAX_VALUE - 50L))
+
+        val reserved = dao.reserveIssuedOccurrence("token-overflow", alarmId, 1000L, "fire-500")
+        assertNull("Overflow reservation MUST return null", reserved)
+
+        assertNull("Overflow occurrence MUST NOT be inserted in DB", dao.getOccurrence("token-overflow"))
+    }
+
+    @Test
+    fun `revokeIssuedOccurrence revokes pending occurrence and preserves slot tombstone`() = runBlocking {
+        val alarmId = 600L
+
+        dao.reserveIssuedOccurrence("token-rev", alarmId, 1000L, "fire-600")
+        dao.activateIssuedOccurrence("token-rev")
+
+        val revoked = dao.revokeIssuedOccurrence(alarmId)
+        assertTrue("Revocation MUST succeed", revoked)
+
+        val slot = dao.getSlot(alarmId)
+        assertNotNull("Slot tombstone MUST be preserved across revocation", slot)
+        assertNull("Slot current token MUST be null", slot!!.currentIssueToken)
+        assertEquals(IssuedOccurrence.STATUS_REVOKED, dao.getOccurrence("token-rev")!!.status)
     }
 }
