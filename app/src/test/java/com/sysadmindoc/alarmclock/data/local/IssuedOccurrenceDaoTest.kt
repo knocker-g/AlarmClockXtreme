@@ -8,7 +8,9 @@ import com.sysadmindoc.alarmclock.data.local.entity.IssuedOccurrence
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -123,23 +125,21 @@ class IssuedOccurrenceDaoTest {
         )
         dao.insertSlotInitial(slot)
 
-        // CAS update slot with expectedGenId = 1L and expectedToken = "token-1"
-        val successRows = dao.casUpdateSlotToken(
+        // CAS increment slot generation with expectedGenId = 1L and expectedToken = "token-1"
+        val successRows = dao.casIncrementSlotGeneration(
             alarmId = 44L,
             expectedGenId = 1L,
             expectedToken = "token-1",
-            newToken = "token-2",
-            newGenId = 2L
+            newToken = "token-2"
         )
         assertEquals(1, successRows)
 
-        // CAS update slot with stale expectedGenId = 1L (current is 2L)
-        val staleRows = dao.casUpdateSlotToken(
+        // CAS increment slot generation with stale expectedGenId = 1L (current is 2L)
+        val staleRows = dao.casIncrementSlotGeneration(
             alarmId = 44L,
             expectedGenId = 1L,
             expectedToken = "token-2",
-            newToken = "token-3",
-            newGenId = 3L
+            newToken = "token-3"
         )
         assertEquals(0, staleRows)
 
@@ -179,5 +179,126 @@ class IssuedOccurrenceDaoTest {
         } catch (e: Exception) {
             assertTrue("Expected SQLiteConstraintException", e is android.database.sqlite.SQLiteConstraintException)
         }
+    }
+
+    @Test
+    fun `reserveIssuedOccurrenceTransaction creates PREPARED occurrence and increments generationId strictly monotonically`() = runBlocking {
+        val alarmId = 100L
+        val scheduledAt = 5000L
+
+        // 1. Reserve occurrence #1
+        val occ1 = dao.reserveIssuedOccurrenceTransaction(
+            issueToken = "token-p1",
+            alarmId = alarmId,
+            scheduledAt = scheduledAt,
+            fireId = "fire-100-5000-1"
+        )
+
+        assertNotNull(occ1)
+        assertEquals("token-p1", occ1!!.issueToken)
+        assertEquals(IssuedOccurrence.STATUS_PREPARED, occ1.status)
+        assertEquals(2L, occ1.generationId) // Initial slot 1L -> incremented to 2L
+
+        // Active slot token remains null until activation succeeds
+        val slot1 = dao.getSlot(alarmId)
+        assertNotNull(slot1)
+        assertEquals(2L, slot1!!.generationId)
+        assertNull(slot1.currentIssueToken)
+
+        // 2. Reserve occurrence #2 for same alarm (e.g. reschedule or edit)
+        val occ2 = dao.reserveIssuedOccurrenceTransaction(
+            issueToken = "token-p2",
+            alarmId = alarmId,
+            scheduledAt = scheduledAt + 1000L,
+            fireId = "fire-100-6000-2"
+        )
+
+        assertNotNull(occ2)
+        assertEquals("token-p2", occ2!!.issueToken)
+        assertEquals(3L, occ2.generationId) // Incremented to 3L
+
+        val slot2 = dao.getSlot(alarmId)
+        assertEquals(3L, slot2!!.generationId)
+    }
+
+    @Test
+    fun `activateIssuedOccurrenceTransaction promotes PREPARED to ISSUED and updates active slot currentIssueToken`() = runBlocking {
+        val alarmId = 200L
+        val scheduledAt = 10000L
+
+        val occ = dao.reserveIssuedOccurrenceTransaction(
+            issueToken = "token-active-1",
+            alarmId = alarmId,
+            scheduledAt = scheduledAt,
+            fireId = "fire-200-10000"
+        )
+        assertNotNull(occ)
+
+        // Activate occurrence #1
+        val activated = dao.activateIssuedOccurrenceTransaction("token-active-1")
+        assertTrue("Activation MUST succeed", activated)
+
+        val activeOcc = dao.getOccurrence("token-active-1")
+        assertEquals(IssuedOccurrence.STATUS_ISSUED, activeOcc!!.status)
+
+        val slot = dao.getSlot(alarmId)
+        assertEquals("token-active-1", slot!!.currentIssueToken)
+    }
+
+    @Test
+    fun `stale activation for outdated generation is rejected`() = runBlocking {
+        val alarmId = 300L
+
+        // Reserve occurrence #1 (gen 2)
+        val occ1 = dao.reserveIssuedOccurrenceTransaction(
+            issueToken = "token-gen2",
+            alarmId = alarmId,
+            scheduledAt = 1000L,
+            fireId = "fire-300-1000"
+        )
+        assertNotNull(occ1)
+
+        // Reserve occurrence #2 (gen 3 - supersedes occurrence #1)
+        val occ2 = dao.reserveIssuedOccurrenceTransaction(
+            issueToken = "token-gen3",
+            alarmId = alarmId,
+            scheduledAt = 2000L,
+            fireId = "fire-300-2000"
+        )
+        assertNotNull(occ2)
+
+        // Attempt to activate stale occurrence #1 (gen 2 while slot is at gen 3)
+        val staleActivated = dao.activateIssuedOccurrenceTransaction("token-gen2")
+        assertFalse("Stale activation MUST be rejected", staleActivated)
+
+        // Verify occurrence #1 remains PREPARED
+        assertEquals(IssuedOccurrence.STATUS_PREPARED, dao.getOccurrence("token-gen2")!!.status)
+
+        // Activate current occurrence #2 (gen 3)
+        val currentActivated = dao.activateIssuedOccurrenceTransaction("token-gen3")
+        assertTrue("Current activation MUST succeed", currentActivated)
+        assertEquals(IssuedOccurrence.STATUS_ISSUED, dao.getOccurrence("token-gen3")!!.status)
+        assertEquals("token-gen3", dao.getSlot(alarmId)!!.currentIssueToken)
+    }
+
+    @Test
+    fun `revokeIssuedOccurrenceTransaction invalidates active slot token and revokes active occurrence`() = runBlocking {
+        val alarmId = 400L
+
+        dao.reserveIssuedOccurrenceTransaction("token-revoke-1", alarmId, 1000L, "fire-400-1")
+        dao.activateIssuedOccurrenceTransaction("token-revoke-1")
+
+        assertEquals("token-revoke-1", dao.getSlot(alarmId)!!.currentIssueToken)
+
+        // Revoke alarm (e.g. cancel/delete/disable)
+        val revokedRows = dao.revokeIssuedOccurrenceTransaction(alarmId)
+        assertEquals(1, revokedRows)
+
+        val slot = dao.getSlot(alarmId)
+        assertNull("Current slot token MUST be invalidated (null)", slot!!.currentIssueToken)
+        assertEquals(3L, slot.generationId) // Incremented generationId
+
+        val occ = dao.getOccurrence("token-revoke-1")
+        assertEquals(IssuedOccurrence.STATUS_REVOKED, occ!!.status)
     }
 }
