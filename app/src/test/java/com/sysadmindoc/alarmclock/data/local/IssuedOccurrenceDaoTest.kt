@@ -674,4 +674,81 @@ class IssuedOccurrenceDaoTest {
         assertEquals(IssuedOccurrence.STATUS_PREPARED, occ!!.status)
         assertNull(dao.getSlot(alarmId)!!.currentIssueToken)
     }
+
+    @Test
+    fun `claimFallbackLease and acknowledgeFallbackPosted preserve active token A eligibility while token B is PREPARED`() = runBlocking {
+        val alarmId = 900L
+        val tokenA = "token-A-active"
+        val tokenB = "token-B-prepared"
+
+        // 1. Reserve and activate A (A is active ISSUED occurrence)
+        val occA = dao.reserveIssuedOccurrence(tokenA, alarmId, 1000L, "fire-900-A")
+        assertNotNull(occA)
+        assertTrue(dao.activateIssuedOccurrence(tokenA))
+
+        // 2. Reserve B (B is PREPARED, generationId advances, slot.currentIssueToken remains tokenA)
+        val occB = dao.reserveIssuedOccurrence(tokenB, alarmId, 2000L, "fire-900-B")
+        assertNotNull(occB)
+        assertEquals(IssuedOccurrence.STATUS_PREPARED, occB!!.status)
+        assertEquals(tokenA, dao.getSlot(alarmId)!!.currentIssueToken)
+
+        // 3. Verify A CAN claim fallback lease while B is PREPARED
+        val leaseA1 = dao.claimFallbackLease(
+            issueToken = tokenA,
+            alarmId = alarmId,
+            scheduledAt = 1000L,
+            fireId = "fire-900-A",
+            leaseToken = "lease-A1",
+            expiresAt = System.currentTimeMillis() + 15000L
+        )
+        assertEquals("Active occurrence A MUST successfully claim fallback lease while B is PREPARED", 1, leaseA1)
+
+        // 4. Verify A CAN acknowledge fallback posted while B is PREPARED
+        val ackA = dao.acknowledgeFallbackPosted(tokenA, "lease-A1")
+        assertEquals("Active occurrence A MUST successfully acknowledge fallback posted while B is PREPARED", 1, ackA)
+        assertEquals(IssuedOccurrence.STATUS_ADMITTED, dao.getOccurrence(tokenA)!!.status)
+
+        // 5. Verify un-activated PREPARED occurrence B CANNOT claim fallback lease
+        val leaseB1 = dao.claimFallbackLease(
+            issueToken = tokenB,
+            alarmId = alarmId,
+            scheduledAt = 2000L,
+            fireId = "fire-900-B",
+            leaseToken = "lease-B1",
+            expiresAt = System.currentTimeMillis() + 15000L
+        )
+        assertEquals("Un-activated PREPARED occurrence B MUST NOT claim fallback lease", 0, leaseB1)
+
+        // 6. Verify stale/incorrect lease token is rejected by acknowledgeFallbackPosted
+        val ackStale = dao.acknowledgeFallbackPosted(tokenA, "invalid-lease-token")
+        assertEquals("Incorrect lease token MUST be rejected", 0, ackStale)
+
+        // 7. Verify duplicate acknowledgment returns 0 and is idempotent
+        val ackDup = dao.acknowledgeFallbackPosted(tokenA, "lease-A1")
+        assertEquals("Duplicate acknowledgment on already ADMITTED occurrence MUST return 0", 0, ackDup)
+
+        // 8. Legitimately activate B, verify B becomes eligible and previous A cannot claim new lease
+        assertTrue(dao.activateIssuedOccurrence(tokenB))
+        assertEquals(tokenB, dao.getSlot(alarmId)!!.currentIssueToken)
+
+        val leaseB2 = dao.claimFallbackLease(
+            issueToken = tokenB,
+            alarmId = alarmId,
+            scheduledAt = 2000L,
+            fireId = "fire-900-B",
+            leaseToken = "lease-B2",
+            expiresAt = System.currentTimeMillis() + 15000L
+        )
+        assertEquals("Activated occurrence B MUST claim fallback lease", 1, leaseB2)
+
+        val leaseAStale = dao.claimFallbackLease(
+            issueToken = tokenA,
+            alarmId = alarmId,
+            scheduledAt = 1000L,
+            fireId = "fire-900-A",
+            leaseToken = "lease-A2",
+            expiresAt = System.currentTimeMillis() + 15000L
+        )
+        assertEquals("Previous token A CANNOT claim fallback lease after B activation", 0, leaseAStale)
+    }
 }

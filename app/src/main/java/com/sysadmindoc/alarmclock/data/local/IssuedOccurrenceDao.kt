@@ -149,8 +149,9 @@ abstract class IssuedOccurrenceDao {
           AND fireId = :fireId
           AND status = 'ISSUED'
           AND outcome = 'PENDING'
+          AND activatedAt IS NOT NULL
           AND (recoveryLeaseToken IS NULL OR recoveryLeaseExpiresAt < :now)
-          AND generationId = (SELECT generationId FROM issue_slots WHERE alarmId = :alarmId AND currentIssueToken = :issueToken)
+          AND issueToken = (SELECT currentIssueToken FROM issue_slots WHERE alarmId = :alarmId)
         """
     )
     abstract suspend fun claimFallbackLease(
@@ -170,7 +171,8 @@ abstract class IssuedOccurrenceDao {
         WHERE issueToken = :issueToken
           AND recoveryLeaseToken = :leaseToken
           AND status = 'ISSUED'
-          AND generationId = (SELECT generationId FROM issue_slots WHERE alarmId = (SELECT alarmId FROM issued_occurrences WHERE issueToken = :issueToken) AND currentIssueToken = :issueToken)
+          AND activatedAt IS NOT NULL
+          AND issueToken = (SELECT currentIssueToken FROM issue_slots WHERE alarmId = (SELECT alarmId FROM issued_occurrences WHERE issueToken = :issueToken))
         """
     )
     abstract suspend fun acknowledgeFallbackPosted(

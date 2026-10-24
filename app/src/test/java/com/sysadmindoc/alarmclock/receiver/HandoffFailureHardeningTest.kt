@@ -447,7 +447,7 @@ class HandoffFailureHardeningTest {
     }
 
     @Test
-    fun `RED TEST A - PREPARED occurrence B broadcast arriving before activation is currently rejected without recovery promotion`() {
+    fun `GREEN TEST A - PREPARED occurrence B broadcast arriving before activation is rejected while active occurrence A retains lease eligibility`() {
         val shadowApp = org.robolectric.Shadows.shadowOf(context.applicationContext as android.app.Application)
         shadowApp.grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
 
@@ -456,11 +456,49 @@ class HandoffFailureHardeningTest {
         val tokenA = "token-A-active"
         val tokenB = "token-B-prepared"
 
-        // Active occurrence A, then reserve occurrence B (B remains PREPARED)
+        // 1. Active occurrence A, then reserve occurrence B (B remains PREPARED)
         runBlocking {
             inMemoryDb.issuedOccurrenceDao().reserveIssuedOccurrence(tokenA, alarmId, scheduledAt - 10000L, "fire-A")
             inMemoryDb.issuedOccurrenceDao().activateIssuedOccurrence(tokenA)
             inMemoryDb.issuedOccurrenceDao().reserveIssuedOccurrence(tokenB, alarmId, scheduledAt, "fire-B")
+
+            // Part 1: Verify active occurrence A retains lease eligibility while B is PREPARED
+            val isAAdmissible = inMemoryDb.issuedOccurrenceDao().evaluateActiveOccurrenceAdmission(
+                issueToken = tokenA,
+                expectedAlarmId = alarmId,
+                expectedScheduledAt = scheduledAt - 10000L,
+                expectedFireId = "fire-A"
+            )
+            assertTrue("Active occurrence A MUST remain admissible while B is PREPARED", isAAdmissible)
+
+            val aLeaseResult = inMemoryDb.issuedOccurrenceDao().claimFallbackLease(
+                issueToken = tokenA,
+                alarmId = alarmId,
+                scheduledAt = scheduledAt - 10000L,
+                fireId = "fire-A",
+                leaseToken = "lease-A",
+                expiresAt = System.currentTimeMillis() + 15000L
+            )
+            assertEquals("Active occurrence A MUST successfully claim fallback lease while B is PREPARED", 1, aLeaseResult)
+
+            // Part 2: Verify un-activated PREPARED occurrence B is REJECTED
+            val isBAdmissible = inMemoryDb.issuedOccurrenceDao().evaluateActiveOccurrenceAdmission(
+                issueToken = tokenB,
+                expectedAlarmId = alarmId,
+                expectedScheduledAt = scheduledAt,
+                expectedFireId = "fire-B"
+            )
+            assertFalse("PREPARED occurrence B MUST NOT be admissible before activation", isBAdmissible)
+
+            val bLeaseResult = inMemoryDb.issuedOccurrenceDao().claimFallbackLease(
+                issueToken = tokenB,
+                alarmId = alarmId,
+                scheduledAt = scheduledAt,
+                fireId = "fire-B",
+                leaseToken = "lease-B",
+                expiresAt = System.currentTimeMillis() + 15000L
+            )
+            assertEquals("PREPARED occurrence B MUST NOT be granted a fallback lease before activation", 0, bLeaseResult)
         }
 
         val spyContext = spyk(context) {
@@ -471,7 +509,7 @@ class HandoffFailureHardeningTest {
         val latch = CountDownLatch(1)
         testOnIncidentRecordedCompletion = { latch.countDown() }
 
-        // OS delivers broadcast for token B while B is still in PREPARED status
+        // OS delivers broadcast for token B while B is still in PREPARED status -> REJECTED
         val intent = Intent().apply {
             putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
             putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, scheduledAt)
@@ -486,10 +524,42 @@ class HandoffFailureHardeningTest {
         assertTrue("Incident recording timed out", latch.await(5, TimeUnit.SECONDS))
 
         val incidents = runBlocking { incidentRepo.getRecent(50) }
-        val successIncident = incidents.find { it.alarmId == alarmId && it.status == AlarmIncidentEvent.STATUS_SUCCEEDED }
+        val successIncident = incidents.find { it.alarmId == alarmId && it.fireId == "fire-B" && it.status == AlarmIncidentEvent.STATUS_SUCCEEDED }
+        assertNull("Un-activated PREPARED occurrence B broadcast MUST NOT succeed or post fallback notification", successIncident)
 
-        // RED ASSERTION: Currently fails because evaluateActiveOccurrenceAdmission rejects PREPARED status
-        assertNotNull("RED ASSERTION A: PREPARED occurrence B should be admitted via crash-recovery promotion", successIncident)
+        // Part 3: Legitimately activate occurrence B, verify B becomes eligible and previous A is revoked
+        runBlocking {
+            val activateSuccess = inMemoryDb.issuedOccurrenceDao().activateIssuedOccurrence(tokenB)
+            assertTrue("Legitimate activation of occurrence B MUST succeed", activateSuccess)
+
+            val isBNowAdmissible = inMemoryDb.issuedOccurrenceDao().evaluateActiveOccurrenceAdmission(
+                issueToken = tokenB,
+                expectedAlarmId = alarmId,
+                expectedScheduledAt = scheduledAt,
+                expectedFireId = "fire-B"
+            )
+            assertTrue("Activated occurrence B MUST be admissible", isBNowAdmissible)
+
+            val bActiveLeaseResult = inMemoryDb.issuedOccurrenceDao().claimFallbackLease(
+                issueToken = tokenB,
+                alarmId = alarmId,
+                scheduledAt = scheduledAt,
+                fireId = "fire-B",
+                leaseToken = "lease-B-active",
+                expiresAt = System.currentTimeMillis() + 15000L
+            )
+            assertEquals("Activated occurrence B MUST successfully claim fallback lease", 1, bActiveLeaseResult)
+
+            val aAfterBActivateLeaseResult = inMemoryDb.issuedOccurrenceDao().claimFallbackLease(
+                issueToken = tokenA,
+                alarmId = alarmId,
+                scheduledAt = scheduledAt - 10000L,
+                fireId = "fire-A",
+                leaseToken = "lease-A-stale",
+                expiresAt = System.currentTimeMillis() + 15000L
+            )
+            assertEquals("Previous occurrence A MUST NOT claim fallback lease after B activation", 0, aAfterBActivateLeaseResult)
+        }
     }
 
     @Test
