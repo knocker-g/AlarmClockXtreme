@@ -184,6 +184,13 @@ class MissedAlarmReplayPolicyTest {
         assertEquals(-1L, store.getLong("last_missed_id", -1L))
     }
 
+    @Test
+    fun `recordDispatchTimestamp records dispatched timestamp under stateMutex`() = kotlinx.coroutines.runBlocking {
+        val store = TestSharedPreferences()
+        MissedAlarmReplayPolicy.recordDispatchTimestamp(store, dispatchedAtMs = 5000L)
+        assertEquals(5000L, store.getLong("last_missed_dispatched_at", 0L))
+    }
+
     private class TestSharedPreferences : android.content.SharedPreferences {
         private val data = java.util.concurrent.ConcurrentHashMap<String, Any>()
 

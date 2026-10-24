@@ -89,6 +89,32 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
                         }
 
                     val fireId = AlarmFireDismissContract.fireId(alarm.id, at)
+
+                    // Check 1: If positive delivery proof already exists for this occurrence, consume and exit
+                    if (ep.alarmIncidentRepository().occurrenceDeliveryCount(alarm.id, at) > 0) {
+                        clearMissedAlarmMarkerIfMatching(store, id, at)
+                        return@withTimeout
+                    }
+
+                    // Check 2: If a previous dispatch was initiated recently, wait for late positive proof before re-dispatching
+                    val lastDispatchedAt = store.getLong("last_missed_dispatched_at", 0L)
+                    val nowMs = System.currentTimeMillis()
+                    if (lastDispatchedAt > 0L && (nowMs - lastDispatchedAt) < 15_000L) {
+                        val lateProofFound = awaitPositiveDeliveryProof(
+                            repo = ep.alarmIncidentRepository(),
+                            alarmId = alarm.id,
+                            scheduledAt = at,
+                            timeoutMs = 2_500L
+                        )
+                        if (lateProofFound) {
+                            clearMissedAlarmMarkerIfMatching(store, id, at)
+                            return@withTimeout
+                        }
+                    }
+
+                    // Record dispatch attempt timestamp under lock
+                    MissedAlarmReplayPolicy.recordDispatchTimestamp(store, System.currentTimeMillis())
+
                     val fireIntent = AlarmFireDismissContract.startServiceIntent(context, alarm.id, at, fireId)
                     var deliverySucceeded = false
                     try {

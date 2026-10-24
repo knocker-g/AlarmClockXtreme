@@ -111,6 +111,17 @@ object MissedAlarmReplayPolicy {
         store.edit().clear().commit()
     }
 
+    /**
+     * Atomically records the dispatch attempt timestamp for an in-flight replay.
+     */
+    @android.annotation.SuppressLint("ApplySharedPref")
+    suspend fun recordDispatchTimestamp(
+        store: android.content.SharedPreferences,
+        dispatchedAtMs: Long = System.currentTimeMillis()
+    ) = stateMutex.withLock {
+        store.edit().putLong("last_missed_dispatched_at", dispatchedAtMs).commit()
+    }
+
     private val claimMutex = kotlinx.coroutines.sync.Mutex()
     private var activeClaimToken: String? = null
     private var activeClaimExpiresAt: Long = 0L
