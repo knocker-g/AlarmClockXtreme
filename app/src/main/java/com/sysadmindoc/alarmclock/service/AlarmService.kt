@@ -1450,14 +1450,16 @@ class AlarmService : Service() {
      * point of it is that MissedAlarmUnlockReceiver finds it after this service
      * is gone, and a queued write that never flushed loses the missed alarm.
      */
-    @SuppressLint("ApplySharedPref")
     private fun recordMissedAlarmForReplay(missedAlarmId: Long, fireId: String = "") {
-        getSharedPreferences("missed_alarm_state", MODE_PRIVATE)
-            .edit()
-            .putLong("last_missed_at", System.currentTimeMillis())
-            .putLong("last_missed_id", missedAlarmId)
-            .putString("last_missed_fire_id", fireId)
-            .commit()
+        val store = getSharedPreferences("missed_alarm_state", MODE_PRIVATE)
+        runBlocking {
+            com.sysadmindoc.alarmclock.receiver.MissedAlarmReplayPolicy.recordMissedAlarmMarker(
+                store = store,
+                alarmId = missedAlarmId,
+                missedAtMs = System.currentTimeMillis(),
+                fireId = fireId
+            )
+        }
     }
 
     private fun startMedia3AudioInternal(alarm: Alarm, startGen: AlarmGeneration) {

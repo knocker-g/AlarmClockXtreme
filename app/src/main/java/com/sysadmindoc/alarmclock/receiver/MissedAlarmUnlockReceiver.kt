@@ -93,7 +93,6 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
                     var deliverySucceeded = false
                     try {
                         context.startForegroundService(fireIntent)
-                        deliverySucceeded = true
                         ep.alarmIncidentRepository().record(
                             alarmId = alarm.id,
                             fireId = fireId,
@@ -102,6 +101,12 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
                             status = AlarmIncidentEvent.STATUS_REQUESTED,
                             reasonCode = "MISSED_REPLAY_REQUESTED",
                             source = incidentSource
+                        )
+                        deliverySucceeded = awaitPositiveDeliveryProof(
+                            repo = ep.alarmIncidentRepository(),
+                            alarmId = alarm.id,
+                            scheduledAt = at,
+                            timeoutMs = 1_500L
                         )
                     } catch (e: Exception) {
                         Log.e("MissedAlarmUnlockReceiver",
@@ -136,7 +141,7 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
                         )
                     }
 
-                    // Consume marker ONLY upon positive delivery proof
+                    // Consume marker ONLY upon verified positive delivery proof
                     if (deliverySucceeded) {
                         clearMissedAlarmMarkerIfMatching(store, id, at)
                     }
@@ -152,22 +157,36 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
         }
     }
 
+    private suspend fun awaitPositiveDeliveryProof(
+        repo: com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository,
+        alarmId: Long,
+        scheduledAt: Long,
+        timeoutMs: Long = 1_500L
+    ): Boolean {
+        val startTime = System.currentTimeMillis()
+        while (System.currentTimeMillis() - startTime <= timeoutMs) {
+            val proofCount = repo.occurrenceDeliveryCount(alarmId, scheduledAt)
+            if (proofCount > 0) return true
+            kotlinx.coroutines.delay(200L)
+        }
+        return false
+    }
+
     /**
      * Conditional marker consume: clears marker ONLY if stored last_missed_id
-     * and last_missed_at match the expected values, preventing a stale claimant
-     * from deleting a newer missed occurrence marker.
+     * and last_missed_at match the expected values under stateMutex lock,
+     * preventing a stale claimant A from deleting a newer missed occurrence marker B.
      */
-    @SuppressLint("ApplySharedPref")
-    private fun clearMissedAlarmMarkerIfMatching(
+    private suspend fun clearMissedAlarmMarkerIfMatching(
         store: android.content.SharedPreferences,
         expectedId: Long,
         expectedAt: Long
-    ) {
-        val currentId = store.getLong("last_missed_id", -1L)
-        val currentAt = store.getLong("last_missed_at", 0L)
-        if (currentId == expectedId && currentAt == expectedAt) {
-            store.edit().clear().commit()
-        }
+    ): Boolean {
+        return MissedAlarmReplayPolicy.clearMissedAlarmMarkerIfMatching(
+            store = store,
+            expectedId = expectedId,
+            expectedAt = expectedAt
+        )
     }
 
     @dagger.hilt.EntryPoint

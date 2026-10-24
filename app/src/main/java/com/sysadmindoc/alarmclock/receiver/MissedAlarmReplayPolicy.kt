@@ -59,6 +59,47 @@ object MissedAlarmReplayPolicy {
         return Decision.REPLAY
     }
 
+    private val stateMutex = kotlinx.coroutines.sync.Mutex()
+
+    /**
+     * Atomically records a missed alarm marker in SharedPreferences under stateMutex lock,
+     * ensuring consistent ordering across concurrent producers and consumers.
+     */
+    @android.annotation.SuppressLint("ApplySharedPref")
+    suspend fun recordMissedAlarmMarker(
+        store: android.content.SharedPreferences,
+        alarmId: Long,
+        missedAtMs: Long,
+        fireId: String = ""
+    ) = stateMutex.withLock {
+        store.edit()
+            .putLong("last_missed_at", missedAtMs)
+            .putLong("last_missed_id", alarmId)
+            .putString("last_missed_fire_id", fireId)
+            .commit()
+    }
+
+    /**
+     * Atomically clears the missed alarm marker if and only if the currently stored
+     * last_missed_id and last_missed_at match the expected values.
+     * Prevents a stale claimant A from erasing a newly recorded marker B.
+     */
+    @android.annotation.SuppressLint("ApplySharedPref")
+    suspend fun clearMissedAlarmMarkerIfMatching(
+        store: android.content.SharedPreferences,
+        expectedId: Long,
+        expectedAt: Long
+    ): Boolean = stateMutex.withLock {
+        val currentId = store.getLong("last_missed_id", -1L)
+        val currentAt = store.getLong("last_missed_at", 0L)
+        if (currentId == expectedId && currentAt == expectedAt) {
+            store.edit().clear().commit()
+            true
+        } else {
+            false
+        }
+    }
+
     private val claimMutex = kotlinx.coroutines.sync.Mutex()
     private var activeClaimToken: String? = null
     private var activeClaimExpiresAt: Long = 0L
