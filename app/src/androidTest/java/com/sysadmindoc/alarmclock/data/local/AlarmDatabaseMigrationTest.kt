@@ -57,6 +57,50 @@ class AlarmDatabaseMigrationTest {
     }
 
     @Test
+    fun migratesV31ToV32AndPreservesAlarmsWithActivatedAtProvenance() {
+        val testDbName = "migration-31-to-32-genuine.db"
+        var db = helper.createDatabase(testDbName, 31)
+        insertSyntheticAlarm(db)
+        assertEquals(1, db.queryLong("SELECT COUNT(*) FROM alarms"))
+        db.close()
+
+        db = helper.runMigrationsAndValidate(
+            testDbName,
+            32,
+            true,
+            AlarmDatabase.MIGRATION_31_32
+        )
+
+        // Verify preservation of Alarm definition count and representative label
+        assertEquals(1, db.queryLong("SELECT COUNT(*) FROM alarms"))
+        assertEquals("Migration alarm", db.queryString("SELECT label FROM alarms LIMIT 1"))
+
+        // Verify issued_occurrences and issue_slots tables exist in v32 schema
+        assertEquals(0, db.queryLong("SELECT COUNT(*) FROM issued_occurrences"))
+        assertEquals(0, db.queryLong("SELECT COUNT(*) FROM issue_slots"))
+
+        // Verify activatedAt column exists in issued_occurrences and is nullable via PRAGMA table_info
+        var foundActivatedAtColumn = false
+        var isActivatedAtNullable = false
+        db.query("PRAGMA table_info(issued_occurrences)").use { cursor ->
+            while (cursor.moveToNext()) {
+                val colName = cursor.getString(cursor.getColumnIndexOrThrow("name"))
+                if (colName == "activatedAt") {
+                    foundActivatedAtColumn = true
+                    isActivatedAtNullable = cursor.getInt(cursor.getColumnIndexOrThrow("notnull")) == 0
+                }
+            }
+        }
+        assertTrue("activatedAt column MUST exist in issued_occurrences schema", foundActivatedAtColumn)
+        assertTrue("activatedAt column MUST be nullable (notnull == 0)", isActivatedAtNullable)
+
+        // Verify activatedAt query returns 0 rows initially
+        assertEquals(0, db.queryLong("SELECT COUNT(*) FROM issued_occurrences WHERE activatedAt IS NOT NULL"))
+
+        db.close()
+    }
+
+    @Test
     fun everyExportedSchemaCanMigrateToLatest() {
         exportedSchemaVersions()
             .filter { it < AlarmDatabase.VERSION }

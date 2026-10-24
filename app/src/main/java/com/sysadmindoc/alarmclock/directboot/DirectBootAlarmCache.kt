@@ -62,7 +62,7 @@ object DirectBootAlarmCache {
             .remove(KEY_UPDATED_AT)
             .remove(KEY_TIMEZONE_POLICY)
             .remove(KEY_FIXED_TIMEZONE_ID)
-            .apply()
+            .commit()
     }
 
     fun removeIfMatches(context: Context, alarmId: Long) {

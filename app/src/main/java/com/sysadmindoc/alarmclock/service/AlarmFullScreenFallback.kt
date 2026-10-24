@@ -37,6 +37,28 @@ object AlarmFullScreenFallback {
         fireId: String,
         hideLabel: Boolean
     ): Boolean {
+        return post(
+            context = context,
+            alarmId = alarm.id,
+            scheduledAt = scheduledAt,
+            fireId = fireId,
+            hideLabel = hideLabel,
+            label = alarm.label
+        )
+    }
+
+    /**
+     * Posts the fallback for [alarmId] without requiring an Alarm model fetch.
+     * Uses generic public/private text when label is empty or hideLabel is true.
+     */
+    fun post(
+        context: Context,
+        alarmId: Long,
+        scheduledAt: Long,
+        fireId: String,
+        hideLabel: Boolean,
+        label: String = ""
+    ): Boolean {
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
@@ -45,28 +67,25 @@ object AlarmFullScreenFallback {
 
         return try {
             val firingIntent = AlarmFireDismissContract.firingActivityIntent(
-                context, alarm.id, scheduledAt, fireId
+                context, alarmId, scheduledAt, fireId
             )
             val fullScreenPi = PendingIntent.getActivity(
                 context,
-                alarm.id.toInt() + 30000,
+                alarmId.toInt() + 30000,
                 firingIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             val builder = NotificationCompat.Builder(context, AlarmService.CHANNEL_ALARM)
                 .setSmallIcon(R.drawable.ic_alarm)
                 .setContentTitle(context.getString(R.string.notif_alarm_title))
-                .setContentText(alarm.label.ifBlank { context.getString(R.string.notif_alarm_title) })
+                .setContentText(label.ifBlank { context.getString(R.string.notif_alarm_title) })
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setCategory(NotificationCompat.CATEGORY_ALARM)
                 .setFullScreenIntent(fullScreenPi, true)
                 .setContentIntent(fullScreenPi)
                 .setAutoCancel(true)
                 .setOngoing(false)
-            // Honor the hide-labels-on-public-surfaces setting like every
-            // other alarm/timer notification: keep the label private and
-            // publish a generic lockscreen version.
-            if (hideLabel) {
+            if (hideLabel || label.isBlank()) {
                 val publicVersion = NotificationCompat.Builder(context, AlarmService.CHANNEL_ALARM)
                     .setSmallIcon(R.drawable.ic_alarm)
                     .setContentTitle(context.getString(R.string.notif_alarm_title))
@@ -84,15 +103,11 @@ object AlarmFullScreenFallback {
             } else {
                 builder.setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             }
-            // Deliberately the live alarm notification id: this fallback stands
-            // in for the foreground service that could not start, so it should
-            // occupy the same slot rather than sit beside a notification that
-            // does not exist.
             NotificationManagerCompat.from(context)
                 .notify(AlarmService.NOTIFICATION_ID, builder.build())
             true
         } catch (e: Exception) {
-            Log.e(TAG, "Full-screen fallback failed for ${alarm.id}", e)
+            Log.e(TAG, "Full-screen fallback failed for $alarmId", e)
             false
         }
     }
