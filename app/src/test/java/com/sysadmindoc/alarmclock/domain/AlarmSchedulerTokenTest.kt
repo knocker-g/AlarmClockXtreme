@@ -167,4 +167,84 @@ class AlarmSchedulerTokenTest {
         assertEquals(IssuedOccurrence.STATUS_REVOKED, dao.getOccurrence(tokenA)!!.status)
         assertEquals(IssuedOccurrence.STATUS_ISSUED, dao.getOccurrence(tokenB)!!.status)
     }
+
+    @Test
+    fun `cancelTokenizedScheduledAlarm persists cancellation intent in durable_operation_intent and survives restart recovery`() = runBlocking {
+        val alarmId = 5005L
+        val triggerTime = 1700000000000L
+        val token = "token-gate1-2"
+
+        db.alarmDao().insert(com.sysadmindoc.alarmclock.data.model.Alarm(id = alarmId, hour = 7, minute = 0, isEnabled = true))
+        scheduler.applyTokenizedOsSet(alarmId, triggerTime, token)
+
+        val durableDao = db.durableOperationIntentDao()
+
+        // 1. Cancel tokenized alarm -> persists CANCEL intent in durable_operation_intent table
+        val canceled = scheduler.cancelTokenizedScheduledAlarm(alarmId)
+        assertTrue(canceled)
+
+        val cancelIntent = durableDao.getIntentByToken(token)
+        assertNotNull("CANCEL intent MUST be persisted in durable_operation_intent table", cancelIntent)
+        assertEquals(alarmId, cancelIntent!!.alarmId)
+        assertEquals("CANCEL", cancelIntent.operationKind)
+        assertEquals(com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent.PHASE_COMPLETED, cancelIntent.phase)
+
+        // 2. Simulate pending cancellation retry on restart by updating phase to PENDING
+        durableDao.updateIntentPhase(token, com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent.PHASE_PENDING)
+        val unresolvedBefore = durableDao.getUnresolvedCancellationIntents()
+        assertEquals(1, unresolvedBefore.size)
+
+        // Recreate scheduler instance
+        val restartedScheduler = AlarmScheduler(
+            context = context,
+            repository = alarmRepo,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            holidayRepository = holidayRepository,
+            alarmIncidentRepository = alarmIncidentRepository,
+            weatherRepository = weatherRepository
+        )
+
+        // Run rescheduleAllInBatches -> discovers pending cancel intent, retries OS cancel, and marks COMPLETED
+        restartedScheduler.rescheduleAllInBatches()
+
+        val cancelIntentAfter = durableDao.getIntentByToken(token)
+        assertEquals(com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent.PHASE_COMPLETED, cancelIntentAfter!!.phase)
+        assertEquals(0, durableDao.getUnresolvedCancellationIntents().size)
+    }
+
+    @Test
+    fun `tokenC and tokenD have distinct PendingIntent identities and tokenC cancellation does not cancel tokenD`() = runBlocking {
+        val alarmId = 6006L
+        val triggerTimeC = 1700000000000L
+        val triggerTimeD = 1800000000000L
+        val tokenC = "token-isolation-C"
+        val tokenD = "token-isolation-D"
+
+        // 1. Verify tokenC and tokenD produce distinct PendingIntent Data URIs
+        val piC = scheduler.createTokenizedPendingIntent(alarmId, triggerTimeC, "fire-C", tokenC)
+        val piD = scheduler.createTokenizedPendingIntent(alarmId, triggerTimeD, "fire-D", tokenD)
+
+        assertNotNull(piC)
+        assertNotNull(piD)
+
+        // 2. Schedule tokenC
+        db.alarmDao().insert(com.sysadmindoc.alarmclock.data.model.Alarm(id = alarmId, hour = 7, minute = 0, isEnabled = true))
+        scheduler.applyTokenizedOsSet(alarmId, triggerTimeC, tokenC)
+        assertEquals(tokenC, dao.getSlot(alarmId)!!.currentIssueToken)
+
+        // 3. Disable alarm, revoking tokenC
+        db.alarmDao().insert(com.sysadmindoc.alarmclock.data.model.Alarm(id = alarmId, hour = 7, minute = 0, isEnabled = false))
+        scheduler.rescheduleAllInBatches()
+        assertEquals(IssuedOccurrence.STATUS_REVOKED, dao.getOccurrence(tokenC)!!.status)
+
+        // 4. Re-enable alarm and schedule tokenD
+        db.alarmDao().insert(com.sysadmindoc.alarmclock.data.model.Alarm(id = alarmId, hour = 8, minute = 0, isEnabled = true))
+        scheduler.applyTokenizedOsSet(alarmId, triggerTimeD, tokenD)
+
+        // 5. Verify tokenD is the current admissible occurrence, and tokenC remains REJECTED
+        assertEquals(tokenD, dao.getSlot(alarmId)!!.currentIssueToken)
+        assertTrue(dao.evaluateActiveOccurrenceAdmission(tokenD))
+        org.junit.Assert.assertFalse(dao.evaluateActiveOccurrenceAdmission(tokenC))
+    }
 }
