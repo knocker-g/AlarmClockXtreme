@@ -46,21 +46,17 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
 
         val pending = goAsync()
         scope.launch {
+            val claimToken = MissedAlarmReplayPolicy.tryAcquireClaim()
+                ?: run {
+                    pending.finish()
+                    return@launch
+                }
             try {
-                // v1.6.3: 25 s was a real ANR risk — `goAsync()` extends the
-                // BroadcastReceiver window only to ~10 s on most Android
-                // versions, so a 25 s timeout was guaranteed to ANR before it
-                // ever fired. Match BootReceiver's v1.5.4 ceiling of 8 s, which
-                // safely sits under the goAsync() limit while comfortably
-                // covering any DataStore / Room lookup.
                 withTimeout(8_000L) {
                     val ep = EntryPointAccessors.fromApplication(
                         context.applicationContext,
                         AlarmClockApp.AppEntryPoint::class.java
                     )
-                    // Consult the current preference snapshot. If the user turned the
-                    // feature off since the miss was recorded, drop the record and bail.
-                    // (Also drops stale records older than the 10-minute window.)
                     val prefsMgr = EntryPointAccessors.fromApplication(
                         context.applicationContext,
                         PreferencesEntryPoint::class.java
@@ -72,9 +68,6 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
                     val at = store.getLong("last_missed_at", 0L)
                     val id = store.getLong("last_missed_id", -1L)
 
-                    // v1.5.2: Single source of truth for the replay decision lives
-                    // in [MissedAlarmReplayPolicy] so it can be unit-tested without
-                    // BroadcastReceiver / Hilt wiring.
                     val decision = MissedAlarmReplayPolicy.shouldReplay(
                         repeatMissedEnabled = settings.repeatMissedAlarms,
                         lastMissedAtMs = at,
@@ -83,23 +76,24 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
                         nowMs = System.currentTimeMillis()
                     )
                     if (decision.shouldClearState) {
-                        clearMissedAlarmMarker(store)
+                        clearMissedAlarmMarkerIfMatching(store, id, at)
+                        return@withTimeout
                     }
                     if (!decision.shouldReplay) return@withTimeout
 
-                    // Policy has already cleared the record above; if the DB
-                    // row vanished between the record write and now, we just
-                    // silently drop the replay. Same for an alarm the user
-                    // disabled after it auto-silenced — re-firing a disabled
-                    // alarm would override an explicit user decision.
                     val alarm = ep.alarmRepository().getById(id)
                         ?.takeIf { it.isEnabled }
-                        ?: return@withTimeout
+                        ?: run {
+                            clearMissedAlarmMarkerIfMatching(store, id, at)
+                            return@withTimeout
+                        }
 
                     val fireId = AlarmFireDismissContract.fireId(alarm.id, at)
                     val fireIntent = AlarmFireDismissContract.startServiceIntent(context, alarm.id, at, fireId)
+                    var deliverySucceeded = false
                     try {
                         context.startForegroundService(fireIntent)
+                        deliverySucceeded = true
                         ep.alarmIncidentRepository().record(
                             alarmId = alarm.id,
                             fireId = fireId,
@@ -121,11 +115,6 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
                             reasonCode = "MISSED_REPLAY_START_FAILED_${e.javaClass.simpleName}",
                             source = incidentSource
                         )
-                        // Background-restricted OEMs refuse the FGS start
-                        // (ForegroundServiceStartNotAllowedException). Rather than
-                        // let the replay vanish silently, post a high-importance
-                        // full-screen-intent notification so the alarm still
-                        // surfaces over the lock screen / as a heads-up.
                         val fallbackPosted = AlarmFullScreenFallback.post(
                             context = context,
                             alarm = alarm,
@@ -133,6 +122,7 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
                             fireId = fireId,
                             hideLabel = settings.hideAlarmLabelsOnPublicSurfaces
                         )
+                        deliverySucceeded = fallbackPosted
                         ep.alarmIncidentRepository().record(
                             alarmId = alarm.id,
                             fireId = fireId,
@@ -145,25 +135,39 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
                             source = incidentSource
                         )
                     }
+
+                    // Consume marker ONLY upon positive delivery proof
+                    if (deliverySucceeded) {
+                        clearMissedAlarmMarkerIfMatching(store, id, at)
+                    }
                 }
             } catch (e: TimeoutCancellationException) {
                 Log.e("MissedAlarmUnlockReceiver", "Timed out evaluating missed alarm replay", e)
             } catch (e: Exception) {
                 Log.e("MissedAlarmUnlockReceiver", "Unexpected error in missed alarm replay", e)
             } finally {
+                MissedAlarmReplayPolicy.releaseClaim(claimToken)
                 pending.finish()
             }
         }
     }
 
     /**
-     * commit(), not apply(): clearing this marker is what stops a second
-     * replay. A queued write that never flushed would let the same missed
-     * alarm fire again on the next unlock.
+     * Conditional marker consume: clears marker ONLY if stored last_missed_id
+     * and last_missed_at match the expected values, preventing a stale claimant
+     * from deleting a newer missed occurrence marker.
      */
     @SuppressLint("ApplySharedPref")
-    private fun clearMissedAlarmMarker(store: android.content.SharedPreferences) {
-        store.edit().clear().commit()
+    private fun clearMissedAlarmMarkerIfMatching(
+        store: android.content.SharedPreferences,
+        expectedId: Long,
+        expectedAt: Long
+    ) {
+        val currentId = store.getLong("last_missed_id", -1L)
+        val currentAt = store.getLong("last_missed_at", 0L)
+        if (currentId == expectedId && currentAt == expectedAt) {
+            store.edit().clear().commit()
+        }
     }
 
     @dagger.hilt.EntryPoint

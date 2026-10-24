@@ -1,5 +1,7 @@
 package com.sysadmindoc.alarmclock.receiver
 
+import kotlinx.coroutines.sync.withLock
+
 /**
  * v1.5.2: Pure decision function for whether a missed alarm should be
  * replayed when the user returns to the phone. Extracted out of
@@ -57,8 +59,39 @@ object MissedAlarmReplayPolicy {
         return Decision.REPLAY
     }
 
+    private val claimMutex = kotlinx.coroutines.sync.Mutex()
+    private var activeClaimToken: String? = null
+    private var activeClaimExpiresAt: Long = 0L
+
+    /**
+     * Attempts to acquire an atomic claim lease for a missed alarm replay attempt.
+     * Prevents concurrent receivers (e.g. USER_PRESENT and POWER_DISCONNECTED arriving at the same time)
+     * from double-dispatching the same missed occurrence.
+     *
+     * @return a unique non-null claim token if the lease was acquired, or null if an active lease is held.
+     */
+    suspend fun tryAcquireClaim(
+        nowMs: Long = System.currentTimeMillis(),
+        leaseDurationMs: Long = 15_000L
+    ): String? = claimMutex.withLock {
+        if (activeClaimToken != null && nowMs < activeClaimExpiresAt) {
+            return@withLock null
+        }
+        val newToken = java.util.UUID.randomUUID().toString()
+        activeClaimToken = newToken
+        activeClaimExpiresAt = nowMs + leaseDurationMs
+        newToken
+    }
+
+    suspend fun releaseClaim(claimToken: String) = claimMutex.withLock {
+        if (activeClaimToken == claimToken) {
+            activeClaimToken = null
+            activeClaimExpiresAt = 0L
+        }
+    }
+
     enum class Decision(val shouldReplay: Boolean, val shouldClearState: Boolean) {
-        REPLAY(shouldReplay = true, shouldClearState = true),
+        REPLAY(shouldReplay = true, shouldClearState = false),
         DROP_DISABLED(shouldReplay = false, shouldClearState = true),
         DROP_NO_RECORD(shouldReplay = false, shouldClearState = true),
         DROP_EXPIRED(shouldReplay = false, shouldClearState = true),

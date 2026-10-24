@@ -1011,7 +1011,7 @@ class AlarmService : Service() {
                         // id / timestamp so MissedAlarmUnlockReceiver can re-fire
                         // when the user unlocks or unplugs soon after.
                         if (settings.repeatMissedAlarms) {
-                            recordMissedAlarmForReplay(missedAlarm.id)
+                            recordMissedAlarmForReplay(missedAlarm.id, startGen.fireId)
                         }
                     }
                 }
@@ -1451,11 +1451,12 @@ class AlarmService : Service() {
      * is gone, and a queued write that never flushed loses the missed alarm.
      */
     @SuppressLint("ApplySharedPref")
-    private fun recordMissedAlarmForReplay(missedAlarmId: Long) {
+    private fun recordMissedAlarmForReplay(missedAlarmId: Long, fireId: String = "") {
         getSharedPreferences("missed_alarm_state", MODE_PRIVATE)
             .edit()
             .putLong("last_missed_at", System.currentTimeMillis())
             .putLong("last_missed_id", missedAlarmId)
+            .putString("last_missed_fire_id", fireId)
             .commit()
     }
 

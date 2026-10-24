@@ -53,7 +53,7 @@ class MissedAlarmReplayPolicyTest {
         )
         assertEquals(Decision.REPLAY, decision)
         assertTrue(decision.shouldReplay)
-        assertTrue(decision.shouldClearState)
+        assertFalse("REPLAY decision MUST NOT clear state before positive delivery", decision.shouldClearState)
     }
 
     @Test
@@ -149,10 +149,25 @@ class MissedAlarmReplayPolicyTest {
     }
 
     @Test
-    fun `every decision requests state clear so stale state cannot persist`() {
-        Decision.entries.forEach { d ->
+    fun `tryAcquireClaim grants lease once and blocks concurrent claims until released or expired`() = kotlinx.coroutines.runBlocking {
+        val claim1 = MissedAlarmReplayPolicy.tryAcquireClaim(nowMs = now, leaseDurationMs = 15_000L)
+        org.junit.Assert.assertNotNull("First claim attempt MUST succeed", claim1)
+
+        val claim2 = MissedAlarmReplayPolicy.tryAcquireClaim(nowMs = now + 1_000L, leaseDurationMs = 15_000L)
+        org.junit.Assert.assertNull("Concurrent claim attempt while lease active MUST return null", claim2)
+
+        // After lease duration, new claim succeeds
+        val claim3 = MissedAlarmReplayPolicy.tryAcquireClaim(nowMs = now + 16_000L, leaseDurationMs = 15_000L)
+        org.junit.Assert.assertNotNull("Claim attempt after lease expiry MUST succeed", claim3)
+
+        MissedAlarmReplayPolicy.releaseClaim(claim3!!)
+    }
+
+    @Test
+    fun `terminal drop decisions request state clear so stale state cannot persist`() {
+        Decision.entries.filter { it != Decision.REPLAY }.forEach { d ->
             assertTrue(
-                "Decision $d should always ask caller to clear state",
+                "Terminal drop decision $d should always ask caller to clear state",
                 d.shouldClearState
             )
         }
