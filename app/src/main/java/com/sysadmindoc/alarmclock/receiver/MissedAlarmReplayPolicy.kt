@@ -100,6 +100,17 @@ object MissedAlarmReplayPolicy {
         }
     }
 
+    /**
+     * Atomically clears the missed alarm marker unconditionally under stateMutex lock.
+     * Used on boot or package replace when pre-reboot missed state must be invalidated.
+     */
+    @android.annotation.SuppressLint("ApplySharedPref")
+    suspend fun clearMissedAlarmMarkerUnconditional(
+        store: android.content.SharedPreferences
+    ) = stateMutex.withLock {
+        store.edit().clear().commit()
+    }
+
     private val claimMutex = kotlinx.coroutines.sync.Mutex()
     private var activeClaimToken: String? = null
     private var activeClaimExpiresAt: Long = 0L

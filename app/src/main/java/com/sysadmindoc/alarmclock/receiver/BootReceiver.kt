@@ -71,8 +71,8 @@ class BootReceiver : BroadcastReceiver() {
                     action == Intent.ACTION_MY_PACKAGE_REPLACED) {
                     ReliabilityDoctor.recordCurrentBuildFingerprint(appContext)
                     try {
-                        appContext.getSharedPreferences("missed_alarm_state", Context.MODE_PRIVATE)
-                            .edit().clear().apply()
+                        val store = appContext.getSharedPreferences("missed_alarm_state", Context.MODE_PRIVATE)
+                        MissedAlarmReplayPolicy.clearMissedAlarmMarkerUnconditional(store)
                     } catch (_: Exception) {
                         // Prefs backup failure isn't fatal — continue to reschedule.
                     }
