@@ -549,6 +549,45 @@ class AlarmScheduler @Inject constructor(
         }
         WidgetUpdater.requestUpdate(context)
         syncBedtimeDndRule()
+
+        // Reconcile/sweep disabled or deleted alarms with orphan active/pending occurrences
+        val enabledIds = enabledAlarms.map { it.id }.toSet()
+        val issuedDao = repository.issuedOccurrenceDao()
+        val activeDbAlarmIds = issuedDao.getAlarmIdsWithActiveOccurrences()
+        activeDbAlarmIds.filter { it !in enabledIds }.forEach { disabledAlarmId ->
+            cancelTokenizedScheduledAlarm(disabledAlarmId)
+            cancelScheduledEntries(disabledAlarmId)
+            issuedDao.revokeIssuedOccurrence(disabledAlarmId)
+        }
+
+        // Reconcile unresolved cancellation intents for tokenized alarms
+        try {
+            val durableIntentDao = repository.durableOperationIntentDao()
+            val unresolvedCancelIntents = durableIntentDao.getUnresolvedCancellationIntents()
+            unresolvedCancelIntents.forEach { cancelIntent ->
+                if (cancelIntent.originalScheduledAt != null) {
+                    val pendingIntent = lookupTokenizedPendingIntentForCancel(cancelIntent.alarmId, cancelIntent.operationToken)
+                    val retrySuccess = try {
+                        if (pendingIntent != null) {
+                            alarmManager.cancel(pendingIntent)
+                            pendingIntent.cancel()
+                        }
+                        true
+                    } catch (e: Exception) {
+                        Log.e("AlarmScheduler", "Retry OS cancel failed for token ${cancelIntent.operationToken}", e)
+                        false
+                    }
+                    if (retrySuccess) {
+                        try {
+                            durableIntentDao.updateIntentPhase(cancelIntent.operationToken, com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent.PHASE_COMPLETED)
+                        } catch (_: Exception) {}
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("AlarmScheduler", "Failed to reconcile unresolved cancellation intents during rescheduleAllInBatches", e)
+        }
+
         return enabledAlarms.size
     }
 
@@ -850,16 +889,52 @@ class AlarmScheduler @Inject constructor(
     @androidx.annotation.VisibleForTesting
     internal suspend fun cancelTokenizedScheduledAlarm(alarmId: Long): Boolean {
         val issuedDao = repository.issuedOccurrenceDao()
+        val durableIntentDao = repository.durableOperationIntentDao()
         val currentToken = issuedDao.getSlotCurrentToken(alarmId)
 
         if (!currentToken.isNullOrBlank()) {
-            val pendingIntent = lookupTokenizedPendingIntentForCancel(alarmId, currentToken)
-            if (pendingIntent != null) {
+            val occurrence = issuedDao.getOccurrence(currentToken)
+            if (occurrence != null) {
+                val now = System.currentTimeMillis()
+                val cancelIntent = com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent(
+                    operationToken = currentToken,
+                    alarmId = alarmId,
+                    operationEpoch = now,
+                    incarnationId = occurrence.fireId,
+                    operationKind = "CANCEL",
+                    expectedOwnerToken = null,
+                    expectedScheduleRevision = null,
+                    expectedRestoreEpoch = null,
+                    phase = com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent.PHASE_PENDING,
+                    intentRevision = 1L,
+                    originalFireId = occurrence.fireId,
+                    originalScheduledAt = occurrence.scheduledAt
+                )
                 try {
-                    alarmManager.cancel(pendingIntent)
-                    pendingIntent.cancel()
+                    durableIntentDao.insertValidatedIntent(cancelIntent)
+                } catch (_: Exception) {
+                    // Intent record already exists
+                }
+
+                val pendingIntent = lookupTokenizedPendingIntentForCancel(alarmId, currentToken)
+                val osCancelSuccess = try {
+                    if (pendingIntent != null) {
+                        alarmManager.cancel(pendingIntent)
+                        pendingIntent.cancel()
+                    }
+                    true
                 } catch (e: Exception) {
                     Log.e("AlarmScheduler", "cancelTokenizedScheduledAlarm failed for alarm $alarmId", e)
+                    false
+                }
+
+                if (osCancelSuccess) {
+                    try {
+                        durableIntentDao.updateIntentPhase(
+                            currentToken,
+                            com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent.PHASE_COMPLETED
+                        )
+                    } catch (_: Exception) {}
                 }
             }
         }

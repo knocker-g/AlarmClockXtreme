@@ -729,7 +729,7 @@ class HandoffFailureHardeningTest {
     }
 
     @Test
-    fun `RED TEST C - orphan tokenized occurrence after alarm disable is currently not reconciled to REVOKED`() {
+    fun `GREEN TEST C - orphan tokenized occurrence after alarm disable is reconciled to REVOKED during rescheduleAllInBatches`() {
         val alarmId = 113L
         val scheduledAt = System.currentTimeMillis() + 60000L
         val tokenC = "token-C-orphan"
@@ -765,9 +765,8 @@ class HandoffFailureHardeningTest {
 
         val occC = runBlocking { inMemoryDb.issuedOccurrenceDao().getOccurrence(tokenC) }
 
-        // RED ASSERTION: Currently fails because rescheduleAllInBatches under LEGACY_ONLY does not sweep tokenized occurrence status to REVOKED
         assertNotNull(occC)
-        assertEquals("RED ASSERTION C: Orphan tokenized occurrence for disabled alarm MUST be reconciled to REVOKED", com.sysadmindoc.alarmclock.data.local.entity.IssuedOccurrence.STATUS_REVOKED, occC!!.status)
+        assertEquals("GREEN ASSERTION C: Orphan tokenized occurrence for disabled alarm MUST be reconciled to REVOKED", com.sysadmindoc.alarmclock.data.local.entity.IssuedOccurrence.STATUS_REVOKED, occC!!.status)
     }
 
     @Test

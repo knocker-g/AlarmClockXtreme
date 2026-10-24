@@ -29,6 +29,9 @@ abstract class IssuedOccurrenceDao {
     @Query("SELECT COUNT(*) FROM issued_occurrences WHERE alarmId = :alarmId AND activatedAt IS NOT NULL")
     abstract suspend fun countActivatedOccurrencesForAlarm(alarmId: Long): Int
 
+    @Query("SELECT DISTINCT alarmId FROM issued_occurrences WHERE status IN ('PREPARED', 'ISSUED', 'ADMITTED')")
+    abstract suspend fun getAlarmIdsWithActiveOccurrences(): List<Long>
+
     @Query("UPDATE issued_occurrences SET status = 'ISSUED', activatedAt = :now, updatedAt = :now WHERE issueToken = :issueToken AND status = 'PREPARED'")
     abstract suspend fun casActivateOccurrence(issueToken: String, now: Long): Int
 

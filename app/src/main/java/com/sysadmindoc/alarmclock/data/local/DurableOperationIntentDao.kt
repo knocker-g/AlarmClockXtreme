@@ -35,6 +35,12 @@ interface DurableOperationIntentDao {
     @Query("SELECT * FROM durable_operation_intent WHERE alarmId = :alarmId AND phase IN ('PENDING', 'IN_FLIGHT')")
     suspend fun getUnresolvedIntentsByAlarmId(alarmId: Long): List<DurableOperationIntent>
 
+    @Query("SELECT * FROM durable_operation_intent WHERE operationKind = 'CANCEL' AND phase IN ('PENDING', 'IN_FLIGHT') ORDER BY operationEpoch ASC")
+    suspend fun getUnresolvedCancellationIntents(): List<DurableOperationIntent>
+
+    @Query("UPDATE durable_operation_intent SET phase = :newPhase WHERE operationToken = :operationToken")
+    suspend fun updateIntentPhase(operationToken: String, newPhase: String): Int
+
     @Query("SELECT * FROM durable_operation_intent ORDER BY operationEpoch ASC")
     suspend fun getAllIntents(): List<DurableOperationIntent>
 }
