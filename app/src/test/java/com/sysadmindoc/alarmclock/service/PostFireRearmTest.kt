@@ -173,6 +173,44 @@ class PostFireRearmTest {
     }
 
     @Test
+    fun `handleAlarmFired for repeating alarm returns RegistrationFailed and keeps alarm enabled when OS throws`() = runBlocking {
+        val alarmId = 5005L
+        val completedAt = System.currentTimeMillis()
+        val nextTargetTime = completedAt + 86400_000L
+
+        every { calculator.calculate(any(), any()) } returns nextTargetTime
+        every { calculator.calculate(any()) } returns nextTargetTime
+
+        val spyAlarmManager = mockk<AlarmManager>(relaxed = true) {
+            every { canScheduleExactAlarms() } returns true
+            every { setAlarmClock(any(), any()) } throws IllegalStateException("OS internal error")
+            every { setExactAndAllowWhileIdle(any(), any(), any()) } throws IllegalStateException("OS internal error")
+        }
+        scheduler.testAlarmManager = spyAlarmManager
+
+        val repeatingAlarm = Alarm(
+            id = alarmId,
+            hour = 7,
+            minute = 0,
+            isEnabled = true,
+            repeatDays = setOf(DayOfWeek.MONDAY),
+            nextTriggerTime = completedAt
+        )
+        alarmRepo.save(repeatingAlarm)
+
+        val outcome = scheduler.handleAlarmFired(alarmId, firedScheduledAt = completedAt)
+
+        assertTrue("Outcome MUST be RegistrationFailed when OS registration throws IllegalStateException", outcome is ScheduleOutcome.RegistrationFailed)
+        val failed = outcome as ScheduleOutcome.RegistrationFailed
+        assertEquals(alarmId, failed.alarmId)
+
+        val updatedInDb = alarmRepo.getById(alarmId)
+        assertTrue("Repeating alarm MUST remain enabled in DB even when registration throws", updatedInDb?.isEnabled == true)
+
+        scheduler.testAlarmManager = null
+    }
+
+    @Test
     fun `handleAlarmFired uses notBeforeMillis floor to prevent double-advancement on early fire`() = runBlocking {
         val alarmId = 5004L
         val earlyFireScheduledAt = System.currentTimeMillis() + 600_000L // 10 minutes in future

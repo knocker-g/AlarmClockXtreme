@@ -593,13 +593,9 @@ class AlarmScheduler @Inject constructor(
         val alarm = repository.getById(alarmId) ?: return ScheduleOutcome.NoArm(alarmId, "MISSING_ALARM")
 
         return if (!alarm.isRecurringSchedule) {
-            // One-shot alarm: disable after firing. Also tear down any still-armed
-            // exact-alarm entry. A normally-fired one-shot's PendingIntent was
-            // already consumed by AlarmManager (this is a no-op), but a smart-wake
-            // *early* fire bypasses that PendingIntent, so without this the original
-            // exact alarm would fire a second time at the unmodified trigger minute.
-            cancelMainScheduledAlarm(alarmId)
+            // One-shot alarm: set enabled = false in Room DB first so process death cannot leave an enabled unarmed definition.
             repository.setEnabled(alarmId, enabled = false, nextTrigger = 0)
+            cancelMainScheduledAlarm(alarmId)
             syncBedtimeDndRule()
             ScheduleOutcome.NoArm(alarmId, "ONE_SHOT_DISABLED")
         } else {
