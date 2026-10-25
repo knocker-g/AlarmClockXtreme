@@ -670,7 +670,8 @@ class AlarmScheduler @Inject constructor(
         expectedTriggerTime: Long = 0L,
         expectedInstanceToken: String? = null,
         expectedRestoreEpoch: Long? = null,
-        expectedScheduleRevision: Long? = null
+        expectedScheduleRevision: Long? = null,
+        expectedIssueToken: String? = null
     ): Boolean {
         val alarm = runBlocking { repository.getById(alarmId)?.sanitized() }
             ?: run {
@@ -679,6 +680,14 @@ class AlarmScheduler @Inject constructor(
             }
 
         val authority = runBlocking { repository.getAuthorityByAlarmId(alarmId) }
+        val activeSlotToken = runBlocking { repository.issuedOccurrenceDao().getSlotCurrentToken(alarmId) }
+
+        if (!expectedIssueToken.isNullOrBlank()) {
+            if (activeSlotToken.isNullOrBlank() || activeSlotToken != expectedIssueToken) {
+                Log.w("AlarmScheduler", "Stale SmartWake cancellation ignored for alarm $alarmId (issueToken mismatch: active '$activeSlotToken' != expected '$expectedIssueToken')")
+                return false
+            }
+        }
 
         // Generation Fence Verification
         if (expectedInstanceToken != null && authority != null && authority.instanceToken != expectedInstanceToken) {

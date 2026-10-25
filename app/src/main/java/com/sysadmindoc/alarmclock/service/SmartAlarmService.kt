@@ -63,6 +63,7 @@ class SmartAlarmService : Service(), SensorEventListener {
 
     private var alarmId: Long = -1L
     private var targetTimeMs: Long = 0L
+    private var issueToken: String? = null
     private var windowMotionMax = 0f
     private var windowStartMs = 0L
     private var sessionStartMs = 0L
@@ -99,6 +100,7 @@ class SmartAlarmService : Service(), SensorEventListener {
 
         alarmId = intent.getLongExtra(EXTRA_ALARM_ID, -1L)
         targetTimeMs = intent.getLongExtra(EXTRA_TARGET_TIME, 0L)
+        issueToken = intent.getStringExtra(AlarmScheduler.EXTRA_ISSUE_TOKEN)
 
         if (alarmId == -1L || targetTimeMs == 0L) {
             stopSelf()
@@ -288,7 +290,7 @@ class SmartAlarmService : Service(), SensorEventListener {
         // Cancel original main AlarmManager target ONLY IF early delivery is confirmed
         if (earlyDeliverySucceeded) {
             try {
-                alarmScheduler.cancelMainScheduledAlarm(alarmId, targetTimeMs)
+                alarmScheduler.cancelMainScheduledAlarm(alarmId, targetTimeMs, expectedIssueToken = issueToken)
             } catch (e: Exception) {
                 android.util.Log.e("SmartAlarmService", "Failed to cancel main alarm $alarmId after early fire delivery", e)
             }

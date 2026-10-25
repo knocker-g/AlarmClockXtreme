@@ -139,6 +139,31 @@ class SmartWakeHandoffTest {
     }
 
     @Test
+    fun `cancelMainScheduledAlarm rejects cancellation when expectedIssueToken mismatches active slot token even if target time is identical`() = runBlocking {
+        val alarmId = 105L
+        val targetTime = System.currentTimeMillis() + 3600_000L
+        val tokenC = "token-C-generation1"
+        val tokenD = "token-D-generation2"
+
+        alarmRepo.save(Alarm(id = alarmId, hour = 7, minute = 0, isEnabled = true, nextTriggerTime = targetTime))
+
+        // Schedule token C (Generation 1)
+        scheduler.applyTokenizedOsSet(alarmId, targetTime, tokenC)
+
+        // Reschedule token D (Generation 2) for same targetTime
+        scheduler.applyTokenizedOsSet(alarmId, targetTime, tokenD)
+        assertEquals(tokenD, db.issuedOccurrenceDao().getSlotCurrentToken(alarmId))
+
+        // Stale command C attempts to cancel with expectedIssueToken = tokenC
+        val cancelledStaleC = scheduler.cancelMainScheduledAlarm(alarmId, targetTime, expectedIssueToken = tokenC)
+        assertFalse("Stale SmartWake command C MUST be rejected when active slot token is tokenD", cancelledStaleC)
+
+        // Active command D attempts to cancel with expectedIssueToken = tokenD
+        val cancelledActiveD = scheduler.cancelMainScheduledAlarm(alarmId, targetTime, expectedIssueToken = tokenD)
+        assertTrue("Active SmartWake command D MUST succeed when expectedIssueToken matches active slot token", cancelledActiveD)
+    }
+
+    @Test
     fun `positive delivery proof count returns 0 for REQUESTED status alone and 1 for SUCCEEDED status`() = runBlocking {
         val alarmId = 103L
         val scheduledAt = 1700000000000L
