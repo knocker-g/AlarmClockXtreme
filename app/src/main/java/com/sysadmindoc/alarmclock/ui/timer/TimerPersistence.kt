@@ -181,7 +181,7 @@ class TimerStore @Inject constructor(@ApplicationContext context: Context) {
                         )
                 )
             }
-        prefs.edit().putString(KEY_TIMERS, array.toString()).apply()
+        prefs.edit().putString(KEY_TIMERS, array.toString()).commit()
     }
 
     // Read-modify-write mutators are serialized on a process-wide lock: the
@@ -189,13 +189,13 @@ class TimerStore @Inject constructor(@ApplicationContext context: Context) {
     // construct separate TimerStore instances over the same SharedPreferences,
     // so without this an interleaved load/replace would drop or resurrect a
     // timer (e.g. a tick write clobbering a concurrent "finished" write).
-    fun upsert(record: PersistedTimerRecord) = synchronized(WRITE_LOCK) {
+    fun upsert(record: PersistedTimerRecord): Boolean = synchronized(WRITE_LOCK) {
         val records = readStoredRecords()
             .filterNot { it.id == record.id } + record
         replace(records)
     }
 
-    fun remove(id: Int) = synchronized(WRITE_LOCK) {
+    fun remove(id: Int): Boolean = synchronized(WRITE_LOCK) {
         replace(readStoredRecords().filterNot { it.id == id })
     }
 
@@ -302,34 +302,65 @@ class TimerStore @Inject constructor(@ApplicationContext context: Context) {
     }
 }
 
+sealed interface TimerScheduleOutcome {
+    data class ArmedExact(val timerId: Int, val endElapsedRealtime: Long) : TimerScheduleOutcome
+    data class ArmedInexact(val timerId: Int, val endElapsedRealtime: Long) : TimerScheduleOutcome
+    data class PermissionBlocked(val timerId: Int, val reason: String) : TimerScheduleOutcome
+    data class RegistrationFailed(val timerId: Int, val cause: Throwable? = null) : TimerScheduleOutcome
+    data class NoArm(val timerId: Int, val reason: String) : TimerScheduleOutcome
+}
+
 object TimerAlarmScheduler {
     const val ACTION_TIMER_EXPIRED = "com.sysadmindoc.alarmclock.action.TIMER_EXPIRED"
     const val EXTRA_TIMER_ID = "timer_id"
     private const val REQUEST_BASE = 40_000
 
-    fun schedule(context: Context, timerId: Int, endElapsedRealtime: Long) {
-        if (timerId <= 0 || endElapsedRealtime <= SystemClock.elapsedRealtime()) return
-        val alarmManager = context.getSystemService(AlarmManager::class.java) ?: return
+    fun schedule(context: Context, timerId: Int, endElapsedRealtime: Long): TimerScheduleOutcome {
+        if (timerId <= 0 || endElapsedRealtime <= SystemClock.elapsedRealtime()) {
+            return TimerScheduleOutcome.NoArm(timerId, "INVALID_TIMER_OR_ENDTIME")
+        }
+        val alarmManager = context.getSystemService(AlarmManager::class.java)
+            ?: return TimerScheduleOutcome.RegistrationFailed(timerId, IllegalStateException("AlarmManager unavailable"))
         val pendingIntent = pendingIntent(context, timerId)
-        try {
+
+        return try {
+            if (android.os.Build.VERSION.SDK_INT >= 31 && !alarmManager.canScheduleExactAlarms()) {
+                Log.w("TimerAlarmScheduler", "Exact timer expiry denied for timer $timerId; attempting inexact fallback")
+                return try {
+                    alarmManager.setAndAllowWhileIdle(
+                        AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                        endElapsedRealtime,
+                        pendingIntent
+                    )
+                    TimerScheduleOutcome.ArmedInexact(timerId, endElapsedRealtime)
+                } catch (fallbackEx: Exception) {
+                    Log.e("TimerAlarmScheduler", "Inexact timer fallback failed for timer $timerId", fallbackEx)
+                    TimerScheduleOutcome.PermissionBlocked(timerId, "EXACT_ALARM_PERMISSION_REVOKED")
+                }
+            }
+
             alarmManager.setExactAndAllowWhileIdle(
                 AlarmManager.ELAPSED_REALTIME_WAKEUP,
                 endElapsedRealtime,
                 pendingIntent
             )
+            TimerScheduleOutcome.ArmedExact(timerId, endElapsedRealtime)
         } catch (security: SecurityException) {
-            Log.w("TimerAlarmScheduler", "Exact timer expiry denied; using inexact fallback", security)
+            Log.w("TimerAlarmScheduler", "Exact timer expiry denied for timer $timerId; attempting inexact fallback", security)
             try {
                 alarmManager.setAndAllowWhileIdle(
                     AlarmManager.ELAPSED_REALTIME_WAKEUP,
                     endElapsedRealtime,
                     pendingIntent
                 )
+                TimerScheduleOutcome.ArmedInexact(timerId, endElapsedRealtime)
             } catch (fallback: Exception) {
-                Log.e("TimerAlarmScheduler", "Inexact timer fallback also failed", fallback)
+                Log.e("TimerAlarmScheduler", "Inexact timer fallback failed for timer $timerId", fallback)
+                TimerScheduleOutcome.PermissionBlocked(timerId, "EXACT_ALARM_PERMISSION_REVOKED")
             }
         } catch (e: Exception) {
-            Log.e("TimerAlarmScheduler", "Timer expiry registration failed", e)
+            Log.e("TimerAlarmScheduler", "Timer expiry registration failed for timer $timerId", e)
+            TimerScheduleOutcome.RegistrationFailed(timerId, e)
         }
     }
 
