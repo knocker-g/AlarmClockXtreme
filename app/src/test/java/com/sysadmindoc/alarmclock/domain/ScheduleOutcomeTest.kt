@@ -146,7 +146,7 @@ class ScheduleOutcomeTest {
     }
 
     @Test
-    fun `OS AlarmManager SecurityException returns ScheduleOutcome RegistrationFailed`() = runBlocking {
+    fun `OS AlarmManager SecurityException returns ScheduleOutcome PermissionBlocked`() = runBlocking {
         val alarmId = 1005L
         val triggerTime = System.currentTimeMillis() + 3600_000L
 
@@ -164,10 +164,10 @@ class ScheduleOutcomeTest {
         alarmRepo.save(alarm)
 
         val outcome = scheduler.schedule(alarm)
-        assertTrue("Outcome MUST be RegistrationFailed", outcome is ScheduleOutcome.RegistrationFailed)
-        val failed = outcome as ScheduleOutcome.RegistrationFailed
-        assertEquals(alarmId, failed.alarmId)
-        assertTrue(failed.cause is SecurityException)
+        assertTrue("Outcome MUST be PermissionBlocked", outcome is ScheduleOutcome.PermissionBlocked)
+        val blocked = outcome as ScheduleOutcome.PermissionBlocked
+        assertEquals(alarmId, blocked.alarmId)
+        assertEquals("EXACT_ALARM_PERMISSION_REVOKED", blocked.reason)
 
         scheduler.testAlarmManager = null
     }

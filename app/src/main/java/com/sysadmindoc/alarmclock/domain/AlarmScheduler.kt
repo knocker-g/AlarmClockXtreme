@@ -427,10 +427,14 @@ class AlarmScheduler @Inject constructor(
                 } else {
                     Log.i("AlarmScheduler", "Incomplete authority fingerprint for alarm ${sanitizedAlarm.id}; suppressing destructive compensation")
                 }
-                return@withLock ScheduleOutcome.RegistrationFailed(
-                    sanitizedAlarm.id,
-                    registrationCause ?: IllegalStateException("OS AlarmManager registration unfulfilled")
-                )
+                return@withLock if (registrationCause is SecurityException) {
+                    ScheduleOutcome.PermissionBlocked(sanitizedAlarm.id, "EXACT_ALARM_PERMISSION_REVOKED")
+                } else {
+                    ScheduleOutcome.RegistrationFailed(
+                        sanitizedAlarm.id,
+                        registrationCause ?: IllegalStateException("OS AlarmManager registration unfulfilled")
+                    )
+                }
             }
             DirectBootAlarmCache.saveIfEarlier(context, sanitizedAlarm, triggerTime)
             try { scheduleSupportingWork(sanitizedAlarm, triggerTime) } catch (e: Exception) { Log.w("AlarmScheduler", "Failed scheduleSupportingWork for alarm ${sanitizedAlarm.id}", e) }

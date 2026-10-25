@@ -45,11 +45,7 @@ class BootRescheduleWorker @AssistedInject constructor(
                 batchSize = RESCHEDULE_BATCH_SIZE
             )
             Log.i(TAG, "Rescheduled ${batchResult.totalProcessed} enabled alarms (armed: ${batchResult.armedCount}, blocked: ${batchResult.blockedCount}, failed: ${batchResult.failedCount}) after $sourceAction")
-            if (batchResult.failedCount > 0 && runAttemptCount < MAX_ATTEMPTS) {
-                Result.retry()
-            } else {
-                Result.success()
-            }
+            Result.success()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
