@@ -391,7 +391,7 @@ class AlarmSchedulerTest {
 
         val result = scheduler.scheduleAt(alarmA, triggerTimeA)
 
-        assertFalse("Stale operation A MUST abort when B updated nextTriggerTime", result)
+        assertFalse("Stale operation A MUST abort when B updated nextTriggerTime", result.isArmed)
     }
 
     @Test
@@ -448,8 +448,8 @@ class AlarmSchedulerTest {
         val resultA = scheduler.scheduleAt(currentAlarm, triggerTimeA)
         val resultB = scheduler.scheduleAt(currentAlarm, triggerTimeB)
 
-        assertTrue(resultA)
-        assertTrue(resultB)
+        assertTrue(resultA.isArmed)
+        assertTrue(resultB.isArmed)
     }
 
     @Test
@@ -532,7 +532,7 @@ class AlarmSchedulerTest {
         // Stale A attempts scheduleAt with targetGen = genA
         val resultA = scheduler.scheduleAt(enabledAlarm(id = alarmId), triggerTimeA, targetGen = genA)
 
-        assertFalse("Stale operation A scheduleAt MUST be rejected when DB holds generation B", resultA)
+        assertFalse("Stale operation A scheduleAt MUST be rejected when DB holds generation B", resultA.isArmed)
     }
 
     @Test
@@ -547,7 +547,7 @@ class AlarmSchedulerTest {
         // Stale A attempts scheduleAt with targetGen = genA while DB holds genB's fireId
         val resultA = scheduler.scheduleAt(enabledAlarm(id = alarmId), sameTarget, targetGen = genA)
 
-        assertFalse("Stale A with different fireId token MUST be rejected even if triggerTime matches", resultA)
+        assertFalse("Stale A with different fireId token MUST be rejected even if triggerTime matches", resultA.isArmed)
     }
 
     @Test
@@ -584,7 +584,7 @@ class AlarmSchedulerTest {
             expectedRevision = 1L
         )
 
-        assertFalse("Stale operation A with expectedRevision 1L MUST be rejected", resultA)
+        assertFalse("Stale operation A with expectedRevision 1L MUST be rejected", resultA.isArmed)
     }
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -694,7 +694,7 @@ class AlarmSchedulerTest {
         }
 
         // Launch operation A on background coroutine
-        var resultA: Boolean? = null
+        var resultA: ScheduleOutcome? = null
         val jobA = launch {
             resultA = schedulerWithOwner.scheduleAt(
                 enabledAlarm(id = alarmId),
@@ -727,7 +727,7 @@ class AlarmSchedulerTest {
 
         // Step 3: Assert A is REJECTED
         assertNotNull(resultA)
-        assertFalse("Stale operation A MUST be rejected when B became current", resultA!!)
+        assertFalse("Stale operation A MUST be rejected when B became current", resultA!!.isArmed)
 
         // Step 4: Verify Room DB authority and fake OS slot remain B (90000L)
         val finalAuth = repository.getAuthorityByAlarmId(alarmId)
@@ -832,7 +832,7 @@ class AlarmSchedulerTest {
         }
 
         // Launch operation A on background coroutine
-        var resultA: Boolean? = null
+        var resultA: ScheduleOutcome? = null
         val jobA = launch {
             resultA = schedulerWithOwner.scheduleAt(
                 currentAlarm,
@@ -866,7 +866,7 @@ class AlarmSchedulerTest {
 
         // Step 3: Assert A is REJECTED by real Room DAO CAS
         assertNotNull(resultA)
-        assertFalse("Stale operation A MUST be rejected by real Room DAO CAS when B became current", resultA!!)
+        assertFalse("Stale operation A MUST be rejected by real Room DAO CAS when B became current", resultA!!.isArmed)
 
         // Step 4: Verify real Room DB authority and fake OS slot remain B (triggerTimeB) and currentAlarm nextTriggerTime is preserved
         val finalAuth = realDao.getAuthorityByAlarmId(alarmId)
@@ -971,7 +971,7 @@ class AlarmSchedulerTest {
             }
         }
 
-        var resultA: Boolean? = null
+        var resultA: ScheduleOutcome? = null
         val jobA = launch {
             resultA = schedulerWithOwner.scheduleAt(
                 currentAlarm,
@@ -1005,7 +1005,7 @@ class AlarmSchedulerTest {
 
         // Step 3: Assert A is REJECTED
         assertNotNull(resultA)
-        assertFalse("Stale operation A MUST be rejected when B became current", resultA!!)
+        assertFalse("Stale operation A MUST be rejected when B became current", resultA!!.isArmed)
 
         // Step 4: Verify real Room DB authority and fake OS slot remain B's earlier trigger (triggerTimeB) and scheduleRevision 2L
         val finalAuth = realDao.getAuthorityByAlarmId(alarmId)
@@ -1259,8 +1259,8 @@ class AlarmSchedulerTest {
         val resultA = scheduler.scheduleAt(alarmA, sameTarget)
         val resultB = scheduler.scheduleAt(alarmA, sameTarget)
 
-        assertTrue(resultA)
-        assertTrue(resultB)
+        assertTrue(resultA.isArmed)
+        assertTrue(resultB.isArmed)
 
         // Demonstrates that value-level nextTriggerTime equality alone cannot distinguish generation A from B
         assertEquals(sameTarget, repository.getById(alarmId)?.nextTriggerTime)
@@ -1306,7 +1306,7 @@ class AlarmSchedulerTest {
             expectedRevision = null // Missing expectedRevision!
         )
 
-        assertFalse("scheduleAt MUST fail closed when expectedRevision is missing under OWNER_EXCLUSIVE", scheduled)
+        assertFalse("scheduleAt MUST fail closed when expectedRevision is missing under OWNER_EXCLUSIVE", scheduled.isArmed)
         coVerify(exactly = 0) { repository.updateNextTrigger(alarmId, any()) }
         coVerify(exactly = 0) { repository.casUpdateNextTriggerInitialWithAuthority(any(), any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) { mockOwner.executeOperation(any(), any(), any(), any(), any()) }
@@ -1367,7 +1367,7 @@ class AlarmSchedulerTest {
             expectedRevision = null
         )
 
-        assertTrue("scheduleAt MUST succeed under LEGACY_ONLY route without expectedRevision", legacyScheduled)
+        assertTrue("scheduleAt MUST succeed under LEGACY_ONLY route without expectedRevision", legacyScheduled.isArmed)
         coVerify { repository.updateNextTrigger(alarmId, triggerTime) }
     }
 

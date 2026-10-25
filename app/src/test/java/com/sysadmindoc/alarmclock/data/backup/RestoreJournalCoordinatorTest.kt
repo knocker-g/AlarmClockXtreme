@@ -46,7 +46,7 @@ class RestoreJournalCoordinatorTest {
             .build()
         preferencesManager = mockk(relaxed = true)
         alarmScheduler = mockk(relaxed = true)
-        coEvery { alarmScheduler.rescheduleAllInBatches(any(), any()) } returns 0
+        coEvery { alarmScheduler.rescheduleAllInBatches(any(), any()) } returns com.sysadmindoc.alarmclock.domain.ScheduleOutcome.BatchResult(0, 0, 0, 0, emptyMap())
 
         journalFile = File(context.filesDir, RestoreJournalCoordinator.JOURNAL_FILENAME)
         if (journalFile.exists()) journalFile.delete()
@@ -209,7 +209,7 @@ class RestoreJournalCoordinatorTest {
         runCatching { coordinator.checkAndRecover() }
         assertTrue("Journal must remain when reconcile fails", journalFile.exists())
 
-        coEvery { alarmScheduler.rescheduleAllInBatches(any(), any()) } returns 0
+        coEvery { alarmScheduler.rescheduleAllInBatches(any(), any()) } returns com.sysadmindoc.alarmclock.domain.ScheduleOutcome.BatchResult(0, 0, 0, 0, emptyMap())
         coordinator.checkAndRecover()
         assertFalse("Journal must be cleaned up on successful retry", journalFile.exists())
     }
@@ -223,7 +223,7 @@ class RestoreJournalCoordinatorTest {
         runCatching { coordinator.checkAndRecover() }
         assertTrue("Journal must remain when committed reconcile fails", journalFile.exists())
 
-        coEvery { alarmScheduler.rescheduleAllInBatches(any(), any()) } returns 0
+        coEvery { alarmScheduler.rescheduleAllInBatches(any(), any()) } returns com.sysadmindoc.alarmclock.domain.ScheduleOutcome.BatchResult(0, 0, 0, 0, emptyMap())
         coordinator.checkAndRecover()
         assertFalse("Journal must be cleaned up on successful retry", journalFile.exists())
     }

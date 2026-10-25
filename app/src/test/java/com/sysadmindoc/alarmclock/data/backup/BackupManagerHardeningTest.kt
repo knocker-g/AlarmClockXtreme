@@ -431,7 +431,7 @@ class BackupManagerHardeningTest {
             assertEquals("OLD Alarm ID must match exact OLD id", 123L, currentAlarmsInDb[0].id)
             assertEquals("OLD Alarm label must match exact OLD label", "OLD Alarm", currentAlarmsInDb[0].label)
             assertTrue("Scheduler during rollback must NOT see transient NEW Alarm", currentAlarmsInDb.none { it.id == 999L || it.label == "NEW Transient Alarm" })
-            0
+            com.sysadmindoc.alarmclock.domain.ScheduleOutcome.BatchResult(0, 0, 0, 0, emptyMap())
         }
 
         val newJson = """

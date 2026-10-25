@@ -2665,14 +2665,14 @@ class AlarmService : Service() {
         val snoozeEndAt = (snoozeAtMillis ?: defaultSnoozeEndAt).coerceAtLeast(snoozeStartedAt + 1_000L)
 
         // Attempt exact OS registration
-        val snoozeScheduled = try {
+        val snoozeOutcome = try {
             alarmScheduler.scheduleSnoozeAt(alarm, snoozeEndAt, targetGen = acceptedGen)
         } catch (e: Exception) {
             Log.e(TAG, "OS AlarmManager registration threw exception for $acceptedGen", e)
-            false
+            com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed(alarm.id, e)
         }
 
-        if (!snoozeScheduled) {
+        if (!snoozeOutcome.isArmed) {
             // EXACT SNOOZE REGISTRATION FAILED:
             // Do NOT tear down audio/haptics! Do NOT stop Service! Do NOT increment snooze count or cancel Guardian!
             // Keep FIRING generation active and audible with functional controls!
