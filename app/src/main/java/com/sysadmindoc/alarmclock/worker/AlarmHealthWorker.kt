@@ -21,6 +21,7 @@ import androidx.work.WorkerParameters
 import com.sysadmindoc.alarmclock.MainActivity
 import com.sysadmindoc.alarmclock.R
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
+import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.domain.ScheduleAuthorityReconciler
 import com.sysadmindoc.alarmclock.service.AlarmService
 import com.sysadmindoc.alarmclock.util.ManufacturerCompat
@@ -33,6 +34,7 @@ class AlarmHealthWorker @AssistedInject constructor(
     @Assisted context: Context,
     @Assisted workerParams: WorkerParameters,
     private val alarmRepository: AlarmRepository,
+    private val alarmScheduler: AlarmScheduler,
     private val scheduleAuthorityReconciler: ScheduleAuthorityReconciler,
     private val routeAuthority: com.sysadmindoc.alarmclock.domain.ProductionSchedulingRouteAuthority = com.sysadmindoc.alarmclock.domain.ProductionSchedulingRouteAuthority()
 ) : CoroutineWorker(context, workerParams) {
@@ -67,6 +69,14 @@ class AlarmHealthWorker @AssistedInject constructor(
             ) as? android.app.AlarmManager
             alarmManager?.canScheduleExactAlarms() != false
         } else true
+
+        if (exactAlarmsAllowed) {
+            try {
+                alarmScheduler.rescheduleAllInBatches(forceRecalculate = false)
+            } catch (e: Exception) {
+                android.util.Log.e("AlarmHealthWorker", "Periodic health reschedule failed", e)
+            }
+        }
 
         val issues = alarmHealthIssues(
             AlarmHealthSignals(

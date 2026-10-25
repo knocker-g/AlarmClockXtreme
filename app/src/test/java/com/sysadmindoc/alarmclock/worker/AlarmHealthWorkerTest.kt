@@ -40,10 +40,12 @@ class AlarmHealthWorkerTest {
 
     @Test
     fun `doWork under default LEGACY_ONLY route skips owner reconciler but completes health check`() = runBlocking {
+        val alarmScheduler = mockk<com.sysadmindoc.alarmclock.domain.AlarmScheduler>(relaxed = true)
         val worker = AlarmHealthWorker(
             context = context,
             workerParams = workerParams,
             alarmRepository = alarmRepository,
+            alarmScheduler = alarmScheduler,
             scheduleAuthorityReconciler = reconciler,
             routeAuthority = ProductionSchedulingRouteAuthority() // Default LEGACY_ONLY
         )
