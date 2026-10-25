@@ -761,7 +761,12 @@ class AlarmEditViewModel @Inject constructor(
                     id = if (s.isEditing) alarmId else savedId
                 )
                 if (savedAlarm.isEnabled) {
-                    scheduler.schedule(savedAlarm)
+                    val outcome = scheduler.schedule(savedAlarm)
+                    if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.PermissionBlocked) {
+                        android.util.Log.w("AlarmEditViewModel", "Alarm $savedId saved in DB, but exact alarm permission is revoked (${outcome.reason})")
+                    } else if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed) {
+                        android.util.Log.w("AlarmEditViewModel", "Alarm $savedId saved in DB; OS registration failed, pending background recovery")
+                    }
                 } else {
                     // Edit flow may have just disabled the alarm — make sure any
                     // previously-armed AlarmManager / worker entry is torn down.

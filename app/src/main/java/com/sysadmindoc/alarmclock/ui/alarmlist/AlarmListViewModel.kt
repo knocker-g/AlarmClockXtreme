@@ -334,21 +334,31 @@ class AlarmListViewModel @Inject constructor(
         viewModelScope.launch {
             val activeId = preferencesManager.getCachedSettings().activeAlarmId
             var enabledCount = 0
+            var blockedCount = 0
+            var failedCount = 0
             _selectedIds.value.forEach { id ->
                 if (id == activeId) return@forEach
                 val alarm = repository.getById(id) ?: return@forEach
                 if (!alarm.isEnabled) {
                     val nextTrigger = calculator.calculate(alarm)
                     repository.setEnabled(id, enabled = true, nextTrigger = nextTrigger)
-                    scheduler.schedule(alarm.copy(isEnabled = true, nextTriggerTime = nextTrigger))
-                    enabledCount += 1
+                    val outcome = scheduler.schedule(alarm.copy(isEnabled = true, nextTriggerTime = nextTrigger))
+                    when (outcome) {
+                        is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.PermissionBlocked -> blockedCount++
+                        is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed -> failedCount++
+                        else -> enabledCount++
+                    }
                 }
             }
             clearSelection()
-            if (enabledCount > 0) {
-                emitFeedback(
-                    context.resources.getQuantityString(R.plurals.feedback_multialarm_enabled, enabledCount, enabledCount)
-                )
+            val totalProcessed = enabledCount + blockedCount + failedCount
+            if (totalProcessed > 0) {
+                val message = when {
+                    blockedCount > 0 -> "$enabledCount enabled ($blockedCount blocked: permission required)"
+                    failedCount > 0 -> "$enabledCount enabled ($failedCount registration pending recovery)"
+                    else -> context.resources.getQuantityString(R.plurals.feedback_multialarm_enabled, enabledCount, enabledCount)
+                }
+                emitFeedback(message)
             }
         }
     }
@@ -389,8 +399,16 @@ class AlarmListViewModel @Inject constructor(
             if (newEnabled) {
                 val nextTrigger = calculator.calculate(alarm)
                 repository.setEnabled(alarm.id, enabled = true, nextTrigger = nextTrigger)
-                scheduler.schedule(alarm.copy(isEnabled = true, nextTriggerTime = nextTrigger))
-                emitFeedback(context.getString(R.string.feedback_alarm_enabled_for, formatFeedbackTime(nextTrigger)))
+                val outcome = scheduler.schedule(alarm.copy(isEnabled = true, nextTriggerTime = nextTrigger))
+                val message = when (outcome) {
+                    is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.PermissionBlocked ->
+                        "Alarm enabled, but exact alarm permission is required to ring"
+                    is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed ->
+                        "Alarm enabled; registration pending background recovery"
+                    else ->
+                        context.getString(R.string.feedback_alarm_enabled_for, formatFeedbackTime(nextTrigger))
+                }
+                emitFeedback(message)
             } else {
                 val lockMinutes = preferencesManager.getCachedSettings().cancellationLockMinutes
                 if (lockMinutes > 0 && alarm.nextTriggerTime > 0) {
@@ -439,10 +457,15 @@ class AlarmListViewModel @Inject constructor(
             val id = repository.save(alarm)
             val restored = alarm.copy(id = id)
             if (restored.isEnabled) {
-                if (restored.nextTriggerTime > System.currentTimeMillis()) {
+                val outcome = if (restored.nextTriggerTime > System.currentTimeMillis()) {
                     scheduler.scheduleAt(restored, restored.nextTriggerTime)
                 } else {
                     scheduler.schedule(restored)
+                }
+                if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.PermissionBlocked) {
+                    emitFeedback("Alarm restored, but exact alarm permission is required to ring")
+                } else if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed) {
+                    emitFeedback("Alarm restored; registration pending background recovery")
                 }
             }
         }
@@ -473,14 +496,20 @@ class AlarmListViewModel @Inject constructor(
             val saved = duplicate.copy(id = id)
             val nextTrigger = calculator.calculate(saved)
             repository.updateNextTrigger(id, nextTrigger)
-            scheduler.schedule(saved.copy(nextTriggerTime = nextTrigger))
-            emitFeedback(
-                if (duplicate.label.isBlank()) {
-                    context.getString(R.string.alarmlist_duplicated)
-                } else {
-                    context.getString(R.string.alarmlist_label_duplicated, duplicate.label)
-                }
-            )
+            val outcome = scheduler.schedule(saved.copy(nextTriggerTime = nextTrigger))
+            val message = when (outcome) {
+                is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.PermissionBlocked ->
+                    "Alarm copied, but exact alarm permission is required to ring"
+                is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed ->
+                    "Alarm copied; registration pending background recovery"
+                else ->
+                    if (duplicate.label.isBlank()) {
+                        context.getString(R.string.alarmlist_duplicated)
+                    } else {
+                        context.getString(R.string.alarmlist_label_duplicated, duplicate.label)
+                    }
+            }
+            emitFeedback(message)
         }
     }
 
