@@ -205,8 +205,8 @@ class TimerStore @Inject constructor(@ApplicationContext context: Context) {
             it.id == id && it.state == TimerState.RUNNING
         } ?: return@synchronized null
         val finished = timer.asFinished()
-        replace(records.map { if (it.id == id) finished else it })
-        finished
+        val committed = replace(records.map { if (it.id == id) finished else it })
+        if (committed) finished else null
     }
 
     /**
@@ -231,8 +231,8 @@ class TimerStore @Inject constructor(@ApplicationContext context: Context) {
             state = TimerState.RUNNING,
             endElapsedRealtime = nowElapsed + finished.totalSeconds * 1_000L
         )
-        replace(records.filterNot { it.id == id } + restarted)
-        restarted
+        val committed = replace(records.filterNot { it.id == id } + restarted)
+        if (committed) restarted else null
     }
 
     fun nextId(): Int = synchronized(WRITE_LOCK) {
@@ -271,15 +271,16 @@ class TimerStore @Inject constructor(@ApplicationContext context: Context) {
             state = TimerState.RUNNING,
             endElapsedRealtime = endElapsed
         )
-        replace(records + record)
-        TimerStartResult(record, created = true)
+        val committed = replace(records + record)
+        TimerStartResult(record, created = committed)
     }
 
     fun removeRunningTimersForReboot(): List<PersistedTimerRecord> = synchronized(WRITE_LOCK) {
         val records = readStoredRecords(dropStaleBoot = false)
         val running = records.filter { it.state == TimerState.RUNNING }
         if (running.isNotEmpty()) {
-            replace(records.filterNot { it.state == TimerState.RUNNING })
+            val committed = replace(records.filterNot { it.state == TimerState.RUNNING })
+            if (!committed) return@synchronized emptyList()
         }
         running
     }

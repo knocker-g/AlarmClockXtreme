@@ -159,17 +159,16 @@ class TimerViewModel @Inject constructor(
             state = TimerState.RUNNING
         )
 
-        val newTimers = _uiState.value.activeTimers + timer
-        _uiState.value = _uiState.value.copy(
-            activeTimers = newTimers,
-            inputDigits = "",
-            isInputMode = true
-        )
         val endElapsedRealtime = SystemClock.elapsedRealtime() + totalMillis
         val persisted = timer.toPersistedRecord(endElapsedRealtime)
-        runningEndTimes[id] = endElapsedRealtime
         val committed = timerStore.upsert(persisted)
         if (committed) {
+            runningEndTimes[id] = endElapsedRealtime
+            _uiState.value = _uiState.value.copy(
+                activeTimers = _uiState.value.activeTimers + timer,
+                inputDigits = "",
+                isInputMode = true
+            )
             val outcome = TimerAlarmScheduler.schedule(appContext, id, endElapsedRealtime)
             if (outcome is TimerScheduleOutcome.RegistrationFailed) {
                 android.util.Log.w("TimerViewModel", "Timer $id started in store, but OS registration failed ($outcome)")
@@ -198,10 +197,10 @@ class TimerViewModel @Inject constructor(
         val endElapsedRealtime = SystemClock.elapsedRealtime() + timer.remainingMillis
         val resumed = timer.copy(state = TimerState.RUNNING)
         val persisted = resumed.toPersistedRecord(endElapsedRealtime)
-        runningEndTimes[id] = endElapsedRealtime
-        updateTimer(id) { resumed }
         val committed = timerStore.upsert(persisted)
         if (committed) {
+            runningEndTimes[id] = endElapsedRealtime
+            updateTimer(id) { resumed }
             val outcome = TimerAlarmScheduler.schedule(appContext, id, endElapsedRealtime)
             if (outcome is TimerScheduleOutcome.RegistrationFailed) {
                 android.util.Log.w("TimerViewModel", "Timer $id resumed in store, but OS registration failed ($outcome)")
@@ -250,14 +249,14 @@ class TimerViewModel @Inject constructor(
             remainingMillis = remainingMillis,
             state = TimerState.RUNNING
         )
-        _uiState.value = _uiState.value.copy(
-            activeTimers = _uiState.value.activeTimers + restored
-        )
         val endElapsedRealtime = SystemClock.elapsedRealtime() + remainingMillis
         val persisted = restored.toPersistedRecord(endElapsedRealtime)
-        runningEndTimes[id] = endElapsedRealtime
         val committed = timerStore.upsert(persisted)
         if (committed) {
+            runningEndTimes[id] = endElapsedRealtime
+            _uiState.value = _uiState.value.copy(
+                activeTimers = _uiState.value.activeTimers + restored
+            )
             val outcome = TimerAlarmScheduler.schedule(appContext, id, endElapsedRealtime)
             if (outcome is TimerScheduleOutcome.RegistrationFailed) {
                 android.util.Log.w("TimerViewModel", "Restored timer $id saved in store, but OS registration failed ($outcome)")
