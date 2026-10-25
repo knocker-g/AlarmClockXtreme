@@ -88,10 +88,10 @@ class AlarmServiceSnoozeTest {
     @Test
     fun `B - when scheduleSnoozeAt returns false registration failure is indicated`() = runBlocking {
         coEvery { alarmScheduler.canScheduleExactAlarms() } returns true
-        coEvery { alarmScheduler.scheduleSnoozeAt(any(), any(), any()) } returns false
+        coEvery { alarmScheduler.scheduleSnoozeAt(any(), any(), any()) } returns com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed(testAlarm.id)
 
-        val success = alarmScheduler.scheduleSnoozeAt(testAlarm, System.currentTimeMillis() + 600_000L)
-        assertFalse("Registration MUST return false on OS registration failure", success)
+        val outcome = alarmScheduler.scheduleSnoozeAt(testAlarm, System.currentTimeMillis() + 600_000L)
+        assertFalse("Registration MUST return false on OS registration failure", outcome.isArmed)
     }
 
     @Test
@@ -127,10 +127,10 @@ class AlarmServiceSnoozeTest {
     @Test
     fun `E - successful OS registration returns true`() = runBlocking {
         coEvery { alarmScheduler.canScheduleExactAlarms() } returns true
-        coEvery { alarmScheduler.scheduleSnoozeAt(any(), any(), any()) } returns true
+        coEvery { alarmScheduler.scheduleSnoozeAt(any(), any(), any()) } returns com.sysadmindoc.alarmclock.domain.ScheduleOutcome.Armed(testAlarm.id, System.currentTimeMillis() + 600_000L)
 
-        val success = alarmScheduler.scheduleSnoozeAt(testAlarm, System.currentTimeMillis() + 600_000L)
-        assertTrue("Successful OS registration MUST return true", success)
+        val outcome = alarmScheduler.scheduleSnoozeAt(testAlarm, System.currentTimeMillis() + 600_000L)
+        assertTrue("Successful OS registration MUST return Armed", outcome.isArmed)
     }
 
     @Test
@@ -179,7 +179,7 @@ class AlarmServiceSnoozeTest {
         val snoozeEndAt = System.currentTimeMillis() + 600_000L
         val snoozeScheduled = realScheduler.scheduleSnoozeAt(currentAlarm, snoozeEndAt, targetGen = genA)
 
-        assertTrue("Valid Snooze for active FIRING generation MUST succeed even when DB nextTriggerTime has advanced to tomorrow", snoozeScheduled)
+        assertTrue("Valid Snooze for active FIRING generation MUST succeed even when DB nextTriggerTime has advanced to tomorrow", snoozeScheduled.isArmed)
     }
 
     @Test
@@ -213,7 +213,7 @@ class AlarmServiceSnoozeTest {
         val snoozeEndAt = System.currentTimeMillis() + 600_000L
         val snoozeScheduled = realScheduler.scheduleSnoozeAt(currentAlarm, snoozeEndAt, targetGen = genA)
 
-        assertFalse("Stale Snooze A MUST be rejected when active session holds FIRING B", snoozeScheduled)
+        assertFalse("Stale Snooze A MUST be rejected when active session holds FIRING B", snoozeScheduled.isArmed)
         assertEquals(9000L, currentAlarm.nextTriggerTime)
     }
 
@@ -249,7 +249,7 @@ class AlarmServiceSnoozeTest {
         val snoozeEndAt = System.currentTimeMillis() + 600_000L
         val snoozeScheduled = realScheduler.scheduleSnoozeAt(currentAlarm, snoozeEndAt, targetGen = genA)
 
-        assertFalse("Old A with mismatched fireId MUST be rejected even if scheduledAt matches", snoozeScheduled)
+        assertFalse("Old A with mismatched fireId MUST be rejected even if scheduledAt matches", snoozeScheduled.isArmed)
     }
 
     @Test
@@ -280,9 +280,9 @@ class AlarmServiceSnoozeTest {
         )
 
         val snoozeEndAt = System.currentTimeMillis() + 600_000L
-        val snoozeScheduled = realScheduler.scheduleSnoozeAt(currentAlarm, snoozeEndAt, targetGen = genA)
+        val snoozeOutcome = realScheduler.scheduleSnoozeAt(currentAlarm, snoozeEndAt, targetGen = genA)
 
-        assertFalse("Non-FIRING stored state (SNOOZED) MUST NOT authorize new Snooze when DB is ahead", snoozeScheduled)
+        assertFalse("Non-FIRING stored state (SNOOZED) MUST NOT authorize new Snooze when DB is ahead", snoozeOutcome.isArmed)
     }
 
     @Test
@@ -290,11 +290,11 @@ class AlarmServiceSnoozeTest {
         val previousTrigger = 5000L
         val alarmWithTrigger = testAlarm.copy(nextTriggerTime = previousTrigger)
         coEvery { alarmRepository.getById(42L) } returns alarmWithTrigger
-        coEvery { alarmScheduler.scheduleAt(any(), any(), any()) } returns false
+        coEvery { alarmScheduler.scheduleAt(any(), any(), any()) } returns com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed(42L)
 
-        val success = alarmScheduler.scheduleAt(alarmWithTrigger, 8000L)
+        val outcome = alarmScheduler.scheduleAt(alarmWithTrigger, 8000L)
 
-        assertFalse("Failed scheduleAt MUST return false", success)
+        assertFalse("Failed scheduleAt MUST return false", outcome.isArmed)
         coVerify(exactly = 0) { alarmRepository.updateNextTrigger(42L, 0) }
     }
 
@@ -323,7 +323,7 @@ class AlarmServiceSnoozeTest {
         // Inject mock scheduler that fails snooze registration
         val mockScheduler = mockk<AlarmScheduler>(relaxed = true)
         coEvery { mockScheduler.canScheduleExactAlarms() } returns true
-        coEvery { mockScheduler.scheduleSnoozeAt(any(), any(), any()) } returns false
+        coEvery { mockScheduler.scheduleSnoozeAt(any(), any(), any()) } returns com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed(42L)
         service.alarmScheduler = mockScheduler
 
         val snoozeIntent = Intent(context, AlarmService::class.java).apply {
@@ -400,7 +400,7 @@ class AlarmServiceSnoozeTest {
 
         val mockScheduler = mockk<AlarmScheduler>(relaxed = true)
         coEvery { mockScheduler.canScheduleExactAlarms() } returns true
-        coEvery { mockScheduler.scheduleSnoozeAt(any(), any(), any()) } returns false
+        coEvery { mockScheduler.scheduleSnoozeAt(any(), any(), any()) } returns com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed(42L)
         service.alarmScheduler = mockScheduler
 
         val snoozeIntent = Intent(context, AlarmService::class.java).apply {

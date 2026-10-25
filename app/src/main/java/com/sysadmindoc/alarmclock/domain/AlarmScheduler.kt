@@ -88,7 +88,7 @@ class AlarmScheduler @Inject constructor(
         alarm: Alarm,
         requestWidgetUpdate: Boolean = true,
         notBeforeMillis: Long = 0L
-    ) {
+    ): ScheduleOutcome {
         val sanitizedAlarm = alarm.sanitized()
         val originAuthority = repository.getAuthorityByAlarmId(sanitizedAlarm.id)
         val originRevision = originAuthority?.scheduleRevision
@@ -98,12 +98,12 @@ class AlarmScheduler @Inject constructor(
 
         if (routeAuthority.isOwnerRouteActive() && originAuthority == null) {
             Log.w("AlarmScheduler", "Aborting schedule() for alarm ${sanitizedAlarm.id}: Owner route active but authority record absent")
-            return
+            return ScheduleOutcome.RegistrationFailed(sanitizedAlarm.id, IllegalStateException("Owner route active but authority record absent"))
         }
 
         if (!sanitizedAlarm.isEnabled) {
             cancelScheduledEntries(sanitizedAlarm.id, expectedRevision = originRevision)
-            return
+            return ScheduleOutcome.NoArm(sanitizedAlarm.id, "DISABLED")
         }
 
         if (!canScheduleExactAlarms()) {
@@ -118,14 +118,9 @@ class AlarmScheduler @Inject constructor(
                 repository.updateNextTrigger(sanitizedAlarm.id, 0)
             }
             requestWidgetUpdateIfNeeded(requestWidgetUpdate)
-            return
+            return ScheduleOutcome.PermissionBlocked(sanitizedAlarm.id, "EXACT_ALARM_PERMISSION_REVOKED")
         }
 
-        // v1.11.6 (roadmap N6): hard-suspend all alarms when the user has
-        // tapped "Pause alarms for N days". Clears any prior PendingIntent
-        // and zeroes nextTrigger so the next-alarm UI surfaces the paused
-        // state. The pause expires naturally; the next reschedule pass
-        // after the timestamp will re-arm the alarm.
         val currentSettings = preferencesManager.getCurrentSettings()
         if (currentSettings.isPaused()) {
             cancelScheduledEntries(sanitizedAlarm.id, expectedRevision = originRevision)
@@ -139,7 +134,7 @@ class AlarmScheduler @Inject constructor(
                 repository.updateNextTrigger(sanitizedAlarm.id, 0)
             }
             requestWidgetUpdateIfNeeded(requestWidgetUpdate)
-            return
+            return ScheduleOutcome.NoArm(sanitizedAlarm.id, "PAUSED")
         }
 
         var triggerTime = if (notBeforeMillis > System.currentTimeMillis()) {
@@ -174,12 +169,10 @@ class AlarmScheduler @Inject constructor(
                 }
             }
             requestWidgetUpdateIfNeeded(requestWidgetUpdate)
-            return
+            return ScheduleOutcome.NoArm(sanitizedAlarm.id, "NO_NEXT_OCCURRENCE")
         }
-        val settings = currentSettings  // already fetched for the pause-state check above
+        val settings = currentSettings
 
-        // Vacation mode skips repeating-alarm occurrences inside the configured
-        // window, then schedules the first occurrence after the window ends.
         val vacationAdjustment = VacationAlarmPolicy.adjustTrigger(
             alarm = sanitizedAlarm,
             initialTriggerTime = triggerTime,
@@ -188,31 +181,20 @@ class AlarmScheduler @Inject constructor(
         )
         triggerTime = vacationAdjustment.triggerTime
 
-        // F13: Holiday auto-skip. Dates are resolved in the alarm's scheduling
-        // zone: a fixed-zone alarm whose local fire time is across midnight
-        // from the device zone would otherwise check the wrong calendar day.
         if (sanitizedAlarm.skipOnHolidays && settings.holidayAutoSkipEnabled) {
             val holidayZone = sanitizedAlarm.schedulingZone(ZoneId.systemDefault())
             if (!sanitizedAlarm.isRecurringSchedule) {
-                // One-shot alarm: if the day is a holiday, don't fire at all.
-                // Store 0, not the suppressed future trigger — a stored future
-                // trigger survives reboot/app-update reschedules (which re-arm
-                // any valid-looking nextTriggerTime without holiday checks)
-                // and the alarm would fire on the holiday after a reboot.
                 val triggerDate = Instant.ofEpochMilli(triggerTime)
                     .atZone(holidayZone).toLocalDate()
                 if (holidayRepository.isHoliday(triggerDate)) {
                     cancelScheduledEntries(sanitizedAlarm.id)
                     repository.updateNextTrigger(sanitizedAlarm.id, 0)
                     requestWidgetUpdateIfNeeded(requestWidgetUpdate)
-                    return
+                    return ScheduleOutcome.NoArm(sanitizedAlarm.id, "HOLIDAY_SKIPPED")
                 }
             } else {
                 var advanced = advanceTriggerPastHolidays(sanitizedAlarm, triggerTime, holidayZone)
                 if (advanced != null && advanced != triggerTime) {
-                    // Holiday advancement can push the occurrence inside the
-                    // vacation window; re-apply vacation, then clear holidays
-                    // once more from the vacation-adjusted date.
                     val revacationed = VacationAlarmPolicy.adjustTrigger(
                         alarm = sanitizedAlarm,
                         initialTriggerTime = advanced,
@@ -226,14 +208,10 @@ class AlarmScheduler @Inject constructor(
                     }
                 }
                 if (advanced == null) {
-                    // All candidates were holidays (corrupt data or an unusually
-                    // long public-holiday run): suppress this occurrence rather
-                    // than fire on a holiday. The alarm stays enabled; it
-                    // reschedules once holiday data refreshes or the user re-saves.
                     cancelScheduledEntries(sanitizedAlarm.id)
                     repository.updateNextTrigger(sanitizedAlarm.id, 0)
                     requestWidgetUpdateIfNeeded(requestWidgetUpdate)
-                    return
+                    return ScheduleOutcome.NoArm(sanitizedAlarm.id, "HOLIDAY_SKIPPED")
                 }
                 triggerTime = advanced
             }
@@ -244,7 +222,6 @@ class AlarmScheduler @Inject constructor(
             val lat = weatherSettings.lastKnownLatitude
             val lng = weatherSettings.lastKnownLongitude
             val haveLocation = lat != 0.0 || lng != 0.0
-            // Only trust cached weather that was fetched for the current location.
             var weather = weatherRepository.getCachedWeather(
                 latitude = lat.takeIf { haveLocation },
                 longitude = lng.takeIf { haveLocation }
@@ -261,9 +238,6 @@ class AlarmScheduler @Inject constructor(
                 if (dayIndex >= 0) {
                     val code = weather.daily?.weatherCode?.getOrNull(dayIndex)
                     if (code != null && isSnowOrIceCode(code)) {
-                        // Saving an alarm inside its weather-lead window must
-                        // not produce a past trigger — setAlarmClock() fires a
-                        // past time immediately. Keep at least a minute out.
                         triggerTime = maxOf(
                             triggerTime - sanitizedAlarm.weatherEarlyMinutes * 60_000L,
                             System.currentTimeMillis() + 60_000L
@@ -273,7 +247,7 @@ class AlarmScheduler @Inject constructor(
             }
         }
 
-        val success = scheduleAt(
+        return scheduleAt(
             sanitizedAlarm,
             triggerTime,
             requestWidgetUpdate = requestWidgetUpdate,
@@ -282,31 +256,17 @@ class AlarmScheduler @Inject constructor(
             expectedRestoreEpoch = originRestoreEpoch,
             expectedDefinitionRevision = originDefinitionRevision
         )
-        if (!success) {
-            Log.i("AlarmScheduler", "schedule() for alarm ${sanitizedAlarm.id} at trigger $triggerTime was unfulfilled or superseded; preserving current DB state")
-            return
-        }
     }
 
-    /**
-     * Cancel a scheduled alarm and any associated workers/services.
-     */
     fun cancel(alarmId: Long) {
         val originAuthority = runBlocking { repository.getAuthorityByAlarmId(alarmId) }
         val originRevision = originAuthority?.scheduleRevision
         cancelScheduledEntries(alarmId, includeFollowUpWorkers = true, expectedRevision = originRevision)
-        // The occurrence is over, so its snooze tally must not carry into the
-        // next one. A leftover count at or past the cap would otherwise make a
-        // fresh ring open with snooze already withdrawn.
         AlarmRuntimeState.clear(context, alarmId)
         WidgetUpdater.requestUpdate(context)
     }
 
-    /**
-     * Schedule a snoozed alarm to fire after the snooze duration.
-     * @param customMinutes Override snooze duration (null = use alarm's default)
-     */
-    suspend fun scheduleSnooze(alarm: Alarm, customMinutes: Int? = null): Boolean {
+    suspend fun scheduleSnooze(alarm: Alarm, customMinutes: Int? = null): ScheduleOutcome {
         val minutes = customMinutes ?: alarm.snoozeDurationMinutes
         val snoozeTime = System.currentTimeMillis() + (minutes * 60 * 1000L)
         if (!canScheduleExactAlarms()) {
@@ -319,23 +279,17 @@ class AlarmScheduler @Inject constructor(
                 status = AlarmIncidentEvent.STATUS_FAILED,
                 reasonCode = "SNOOZE_EXACT_PERMISSION_REVOKED"
             )
-            return false
+            return ScheduleOutcome.PermissionBlocked(sanitizedAlarm.id, "SNOOZE_EXACT_PERMISSION_REVOKED")
         }
         return scheduleAt(alarm, snoozeTime)
     }
 
-    /**
-     * Schedule a one-off snooze at a user-selected wall-clock time. The target
-     * is stored in the alarm row before returning, so a service restart or
-     * reboot reschedules the same occurrence instead of reverting to the
-     * alarm's normal repeat calculation.
-     */
     internal suspend fun scheduleSnoozeAt(
         alarm: Alarm,
         snoozeAtMillis: Long,
         targetGen: com.sysadmindoc.alarmclock.service.AlarmGeneration? = null,
         expectedRevision: Long? = null
-    ): Boolean {
+    ): ScheduleOutcome {
         if (snoozeAtMillis <= System.currentTimeMillis()) {
             val sanitizedAlarm = alarm.sanitized()
             val fireId = AlarmIncidentEvent.fireIdFor(sanitizedAlarm.id, snoozeAtMillis)
@@ -346,7 +300,7 @@ class AlarmScheduler @Inject constructor(
                 status = AlarmIncidentEvent.STATUS_FAILED,
                 reasonCode = "SNOOZE_AT_INVALID_PAST_TARGET"
             )
-            return false
+            return ScheduleOutcome.NoArm(sanitizedAlarm.id, "SNOOZE_AT_INVALID_PAST_TARGET")
         }
         if (!canScheduleExactAlarms()) {
             val sanitizedAlarm = alarm.sanitized()
@@ -358,15 +312,11 @@ class AlarmScheduler @Inject constructor(
                 status = AlarmIncidentEvent.STATUS_FAILED,
                 reasonCode = "SNOOZE_AT_EXACT_PERMISSION_REVOKED"
             )
-            return false
+            return ScheduleOutcome.PermissionBlocked(sanitizedAlarm.id, "SNOOZE_AT_EXACT_PERMISSION_REVOKED")
         }
         return scheduleAt(alarm, snoozeAtMillis, targetGen = targetGen, expectedRevision = expectedRevision)
     }
 
-    /**
-     * Register a precomputed trigger time without recalculating it.
-     * Useful for snooze, skip-next, quick alarms, and restored exact alarms.
-     */
     internal suspend fun scheduleAt(
         alarm: Alarm,
         triggerTime: Long,
@@ -376,17 +326,15 @@ class AlarmScheduler @Inject constructor(
         expectedInstanceToken: String? = null,
         expectedRestoreEpoch: Long? = null,
         expectedDefinitionRevision: Long? = null
-    ): Boolean {
+    ): ScheduleOutcome {
         val sanitizedAlarm = alarm.sanitized()
         if (!canScheduleExactAlarms()) {
             requestWidgetUpdateIfNeeded(requestWidgetUpdate)
-            return false
+            return ScheduleOutcome.PermissionBlocked(sanitizedAlarm.id, "EXACT_ALARM_PERMISSION_REVOKED")
         }
-        // v1.11.6 (roadmap N6): respect "Pause alarms" for snooze + quick-add
-        // paths too — snoozing inside a pause window shouldn't sneak past it.
         if (preferencesManager.getCurrentSettings().isPaused()) {
             requestWidgetUpdateIfNeeded(requestWidgetUpdate)
-            return false
+            return ScheduleOutcome.NoArm(sanitizedAlarm.id, "PAUSED")
         }
 
         val slotMutex = mainSlotMutexMap.computeIfAbsent(sanitizedAlarm.id) { Mutex() }
@@ -405,13 +353,13 @@ class AlarmScheduler @Inject constructor(
                 if (!isActiveFiringSession && currentDbTrigger > 0L) {
                     if (currentDbTrigger > targetGen.scheduledAt) {
                         Log.i("AlarmScheduler", "Aborting stale scheduleAt for alarm ${sanitizedAlarm.id}: targetGen $targetGen is older than current DB trigger $currentDbTrigger")
-                        return@withLock false
+                        return@withLock ScheduleOutcome.RegistrationFailed(sanitizedAlarm.id, IllegalStateException("Stale scheduleAt: targetGen older than current DB trigger"))
                     }
                     if (currentDbTrigger == targetGen.scheduledAt) {
                         val currentFireId = AlarmIncidentEvent.fireIdFor(sanitizedAlarm.id, currentDbTrigger)
                         if (targetGen.fireId != currentFireId) {
                             Log.i("AlarmScheduler", "Aborting stale scheduleAt for alarm ${sanitizedAlarm.id}: targetGen fireId ${targetGen.fireId} does not match current DB fireId $currentFireId")
-                            return@withLock false
+                            return@withLock ScheduleOutcome.RegistrationFailed(sanitizedAlarm.id, IllegalStateException("Stale scheduleAt: fireId mismatch"))
                         }
                     }
                 }
@@ -424,7 +372,7 @@ class AlarmScheduler @Inject constructor(
                     expectedDefinitionRevision != null
                 if (!hasFullFingerprint) {
                     Log.w("AlarmScheduler", "Aborting initial write for alarm ${sanitizedAlarm.id}: Owner route active but authority fingerprint incomplete")
-                    return@withLock false
+                    return@withLock ScheduleOutcome.RegistrationFailed(sanitizedAlarm.id, IllegalStateException("Authority fingerprint incomplete"))
                 }
                 val initialRows = repository.casUpdateNextTriggerInitialWithAuthority(
                     id = sanitizedAlarm.id,
@@ -436,26 +384,27 @@ class AlarmScheduler @Inject constructor(
                 )
                 if (initialRows == 0) {
                     Log.i("AlarmScheduler", "Aborting initial write for alarm ${sanitizedAlarm.id}: authority fingerprint mismatch or successor B intervened")
-                    return@withLock false
+                    return@withLock ScheduleOutcome.RegistrationFailed(sanitizedAlarm.id, IllegalStateException("Authority fingerprint mismatch"))
                 }
             } else {
                 repository.updateNextTrigger(sanitizedAlarm.id, triggerTime)
             }
 
-            // Verify nextTriggerTime is still triggerTime before making OS AlarmManager call
             val currentDbTrigger = repository.getById(sanitizedAlarm.id)?.nextTriggerTime
             if (currentDbTrigger != null && currentDbTrigger != triggerTime) {
                 Log.i("AlarmScheduler", "Aborting OS registration for alarm ${sanitizedAlarm.id}: nextTriggerTime updated to $currentDbTrigger while operation for $triggerTime was in-flight")
                 repository.casUpdateNextTrigger(id = sanitizedAlarm.id, expectedTrigger = triggerTime, newTrigger = previousTrigger)
-                return@withLock false
+                return@withLock ScheduleOutcome.RegistrationFailed(sanitizedAlarm.id, IllegalStateException("nextTriggerTime updated while operation in-flight"))
             }
 
             testOnPreOsRegistrationBarrier?.invoke(sanitizedAlarm.id, triggerTime)
 
+            var registrationCause: Throwable? = null
             val success = try {
                 scheduleAlarmClock(sanitizedAlarm.id, triggerTime, expectedRevision = expectedRevision)
             } catch (e: Exception) {
                 Log.e("AlarmScheduler", "OS AlarmManager registration threw exception for alarm ${sanitizedAlarm.id}", e)
+                registrationCause = e
                 false
             }
             if (!success) {
@@ -478,49 +427,52 @@ class AlarmScheduler @Inject constructor(
                 } else {
                     Log.i("AlarmScheduler", "Incomplete authority fingerprint for alarm ${sanitizedAlarm.id}; suppressing destructive compensation")
                 }
-                return@withLock false
+                return@withLock if (registrationCause is SecurityException) {
+                    ScheduleOutcome.PermissionBlocked(sanitizedAlarm.id, "EXACT_ALARM_PERMISSION_REVOKED")
+                } else {
+                    ScheduleOutcome.RegistrationFailed(
+                        sanitizedAlarm.id,
+                        registrationCause ?: IllegalStateException("OS AlarmManager registration unfulfilled")
+                    )
+                }
             }
             DirectBootAlarmCache.saveIfEarlier(context, sanitizedAlarm, triggerTime)
             try { scheduleSupportingWork(sanitizedAlarm, triggerTime) } catch (e: Exception) { Log.w("AlarmScheduler", "Failed scheduleSupportingWork for alarm ${sanitizedAlarm.id}", e) }
             requestWidgetUpdateIfNeeded(requestWidgetUpdate)
             try { syncBedtimeDndRule() } catch (e: Exception) { Log.w("AlarmScheduler", "Failed syncBedtimeDndRule for alarm ${sanitizedAlarm.id}", e) }
-            true
+            ScheduleOutcome.Armed(sanitizedAlarm.id, triggerTime)
         }
     }
 
-    /**
-     * Reschedule all enabled alarms. Called after boot and app update.
-     * Preserves existing future nextTriggerTime (e.g., from skip-next or snooze)
-     * to avoid undoing user actions.
-     */
     suspend fun rescheduleAll(forceRecalculate: Boolean = false) {
         rescheduleAllInBatches(forceRecalculate = forceRecalculate)
     }
 
-    /**
-     * Reschedule enabled alarms in batches so WorkManager recovery paths can
-     * handle large alarm libraries without receiver ANRs or redundant widget
-     * refreshes after every single AlarmManager registration.
-     *
-     * @return number of enabled alarms processed.
-     */
     suspend fun rescheduleAllInBatches(
         forceRecalculate: Boolean = false,
         batchSize: Int = 25
-    ): Int {
+    ): ScheduleOutcome.BatchResult {
         val now = System.currentTimeMillis()
         val enabledAlarms = repository.getEnabled()
         val safeBatchSize = batchSize.coerceAtLeast(1)
+        val outcomesMap = mutableMapOf<Long, ScheduleOutcome>()
+        var armed = 0
+        var blocked = 0
+        var failed = 0
+        var noArm = 0
+
         DirectBootAlarmCache.clear(context)
         enabledAlarms.chunked(safeBatchSize).forEach { batch ->
             batch.forEach { alarm ->
                 if (DirectBootAlarmCache.consumeFiredOneShotMarker(context, alarm, now)) {
                     repository.setEnabled(alarm.id, enabled = false, nextTrigger = 0)
                     cancelScheduledEntries(alarm.id)
+                    val outcome = ScheduleOutcome.NoArm(alarm.id, "ONE_SHOT_CONSUMED")
+                    outcomesMap[alarm.id] = outcome
+                    noArm++
                     return@forEach
                 }
-                if (!forceRecalculate && alarm.nextTriggerTime > now) {
-                    // Existing future trigger is still valid - just re-register with AlarmManager
+                val outcome = if (!forceRecalculate && alarm.nextTriggerTime > now) {
                     scheduleExistingTrigger(
                         alarm = alarm,
                         triggerTime = alarm.nextTriggerTime,
@@ -529,20 +481,21 @@ class AlarmScheduler @Inject constructor(
                 } else if (forceRecalculate && alarm.nextTriggerTime > now &&
                     alarm.nextTriggerTime < calculator.calculate(alarm.sanitized())
                 ) {
-                    // A stored trigger earlier than the natural next occurrence
-                    // is a live snooze (or weather/smart early fire). Forced
-                    // recalculation passes — including the automatic dashboard
-                    // location/solar refresh — must not silently un-snooze it.
-                    // Snoozes are epoch-anchored, so they stay correct across
-                    // TIME_SET/TIMEZONE_CHANGED too.
                     scheduleExistingTrigger(
                         alarm = alarm,
                         triggerTime = alarm.nextTriggerTime,
                         requestWidgetUpdate = false
                     )
                 } else {
-                    // Needs recalculation (past or unset trigger time)
                     schedule(alarm, requestWidgetUpdate = false)
+                }
+                outcomesMap[alarm.id] = outcome
+                when (outcome) {
+                    is ScheduleOutcome.Armed -> armed++
+                    is ScheduleOutcome.PermissionBlocked -> blocked++
+                    is ScheduleOutcome.RegistrationFailed -> failed++
+                    is ScheduleOutcome.NoArm -> noArm++
+                    else -> {}
                 }
             }
             yield()
@@ -550,7 +503,6 @@ class AlarmScheduler @Inject constructor(
         WidgetUpdater.requestUpdate(context)
         syncBedtimeDndRule()
 
-        // Reconcile/sweep disabled or deleted alarms with orphan active/pending occurrences
         val enabledIds = enabledAlarms.map { it.id }.toSet()
         val issuedDao = repository.issuedOccurrenceDao()
         val activeDbAlarmIds = issuedDao.getAlarmIdsWithActiveOccurrences()
@@ -560,7 +512,6 @@ class AlarmScheduler @Inject constructor(
             issuedDao.revokeIssuedOccurrence(disabledAlarmId)
         }
 
-        // Reconcile unresolved cancellation intents for tokenized alarms
         try {
             val durableIntentDao = repository.durableOperationIntentDao()
             val unresolvedCancelIntents = durableIntentDao.getUnresolvedCancellationIntents()
@@ -588,7 +539,13 @@ class AlarmScheduler @Inject constructor(
             Log.w("AlarmScheduler", "Failed to reconcile unresolved cancellation intents during rescheduleAllInBatches", e)
         }
 
-        return enabledAlarms.size
+        return ScheduleOutcome.BatchResult(
+            armedCount = armed,
+            blockedCount = blocked,
+            failedCount = failed,
+            noArmCount = noArm,
+            outcomes = outcomesMap
+        )
     }
 
     /**
@@ -598,13 +555,13 @@ class AlarmScheduler @Inject constructor(
         alarm: Alarm,
         triggerTime: Long,
         requestWidgetUpdate: Boolean = true
-    ) {
+    ): ScheduleOutcome {
         val sanitizedAlarm = alarm.sanitized()
         if (!canScheduleExactAlarms()) {
             cancelScheduledEntries(sanitizedAlarm.id)
             repository.updateNextTrigger(sanitizedAlarm.id, 0)
             requestWidgetUpdateIfNeeded(requestWidgetUpdate)
-            return
+            return ScheduleOutcome.PermissionBlocked(sanitizedAlarm.id, "EXACT_ALARM_PERMISSION_REVOKED")
         }
 
         val settings = preferencesManager.getCurrentSettings()
@@ -615,7 +572,7 @@ class AlarmScheduler @Inject constructor(
             calculateFrom = calculator::calculate
         )
 
-        scheduleAt(
+        return scheduleAt(
             alarm = sanitizedAlarm,
             triggerTime = vacationAdjustment.triggerTime,
             requestWidgetUpdate = requestWidgetUpdate
@@ -814,7 +771,7 @@ class AlarmScheduler @Inject constructor(
                 status = AlarmIncidentEvent.STATUS_FAILED,
                 reasonCode = "EXACT_SCHEDULE_FAILED_${e.javaClass.simpleName}"
             )
-            false
+            throw e
         }
     }
 

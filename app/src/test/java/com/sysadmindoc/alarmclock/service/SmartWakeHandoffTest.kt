@@ -135,7 +135,7 @@ class SmartWakeHandoffTest {
         )
         alarmRepo.save(alarm)
         val scheduleSuccess = scheduler.scheduleAt(alarm, targetTime, requestWidgetUpdate = false)
-        assertTrue("scheduleAt MUST succeed", scheduleSuccess)
+        assertTrue("scheduleAt MUST succeed", scheduleSuccess.isArmed)
 
         val cancelled = scheduler.cancelMainScheduledAlarm(alarmId, targetTime)
         assertTrue("SmartWake cancellation MUST succeed when target time matches current trigger and PendingIntent exists", cancelled)

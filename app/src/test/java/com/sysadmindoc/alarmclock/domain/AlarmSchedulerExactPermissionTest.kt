@@ -143,9 +143,9 @@ class AlarmSchedulerExactPermissionTest {
     fun `a snooze survives access being revoked mid-ring`() = runTest {
         ShadowAlarmManager.setCanScheduleExactAlarms(false)
 
-        val armed = scheduler.scheduleSnooze(enabledAlarm(id = 73L), customMinutes = 9)
+        val outcome = scheduler.scheduleSnooze(enabledAlarm(id = 73L), customMinutes = 9)
 
-        assertFalse("the snooze must fail closed when exact permission revoked", armed)
+        assertFalse("the snooze must fail closed when exact permission revoked", outcome.isArmed)
         assertTrue("no inexact alarm clock must be registered", scheduledAlarms().isEmpty())
         coVerify(exactly = 0) { repository.updateNextTrigger(73L, any()) }
         verify {
@@ -167,9 +167,9 @@ class AlarmSchedulerExactPermissionTest {
         ShadowAlarmManager.setCanScheduleExactAlarms(false)
         val target = System.currentTimeMillis() + 40 * 60_000L
 
-        val armed = scheduler.scheduleSnoozeAt(enabledAlarm(id = 74L), target)
+        val outcome = scheduler.scheduleSnoozeAt(enabledAlarm(id = 74L), target)
 
-        assertFalse("the snooze at chosen time must fail closed when exact permission revoked", armed)
+        assertFalse("the snooze at chosen time must fail closed when exact permission revoked", outcome.isArmed)
         assertTrue("no inexact alarm clock must be registered", scheduledAlarms().isEmpty())
         coVerify(exactly = 0) { repository.updateNextTrigger(74L, any()) }
         verify {

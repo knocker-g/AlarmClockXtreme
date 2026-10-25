@@ -37,7 +37,7 @@ class BootRescheduleWorkerTest {
         reconciler = mockk(relaxed = true)
 
         coEvery { workerParams.inputData } returns Data.EMPTY
-        coEvery { alarmScheduler.rescheduleAllInBatches(any(), any()) } returns 5
+        coEvery { alarmScheduler.rescheduleAllInBatches(any(), any()) } returns com.sysadmindoc.alarmclock.domain.ScheduleOutcome.BatchResult(5, 0, 0, 0, emptyMap())
     }
 
     @Test

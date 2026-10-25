@@ -40,11 +40,11 @@ class BootRescheduleWorker @AssistedInject constructor(
             if (routeAuthority.isOwnerRouteActive()) {
                 scheduleAuthorityReconciler?.reconcileBootAuthorities()
             }
-            val count = alarmScheduler.rescheduleAllInBatches(
+            val batchResult = alarmScheduler.rescheduleAllInBatches(
                 forceRecalculate = forceRecalculate,
                 batchSize = RESCHEDULE_BATCH_SIZE
             )
-            Log.i(TAG, "Rescheduled $count enabled alarms after $sourceAction")
+            Log.i(TAG, "Rescheduled ${batchResult.totalProcessed} enabled alarms (armed: ${batchResult.armedCount}, blocked: ${batchResult.blockedCount}, failed: ${batchResult.failedCount}) after $sourceAction")
             Result.success()
         } catch (e: CancellationException) {
             throw e
