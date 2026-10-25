@@ -625,6 +625,12 @@ class AlarmListViewModel @Inject constructor(
             return
         }
         viewModelScope.launch {
+            val currentSettings = preferencesManager.getCurrentSettings()
+            if (alarm.id == currentSettings.activeAlarmId && currentSettings.activeAlarmState == "FIRING") {
+                emitFeedback(context.getString(R.string.alarmlist_cannot_modify_active_alarm))
+                return@launch
+            }
+
             val current = repository.getById(alarm.id) ?: return@launch
             if (!current.isEnabled || current.nextTriggerTime <= 0L || current.nextTriggerTime != expectedScheduledAt) {
                 android.util.Log.i("AlarmListViewModel", "Rejecting stale UI skip for alarm ${alarm.id}: expected $expectedScheduledAt != current ${current.nextTriggerTime}")

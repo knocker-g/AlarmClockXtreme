@@ -87,13 +87,12 @@ class SkipNextReceiver : BroadcastReceiver() {
                     val outcome: com.sysadmindoc.alarmclock.domain.ScheduleOutcome
 
                     if (!alarm.isRecurringSchedule) {
-                        // Atomic Room CAS claim for one-shot disable: verify expectedScheduledAt before disabling
-                        val rowsUpdated = repo.casUpdateNextTrigger(alarm.id, expectedTrigger = expectedScheduledAt, newTrigger = 0L)
+                        // Atomic Room CAS disable: set isEnabled = 0 AND nextTriggerTime = 0 in a single atomic SQL query
+                        val rowsUpdated = repo.casDisableOneShot(alarm.id, expectedTrigger = expectedScheduledAt)
                         if (rowsUpdated == 0) {
                             Log.i("SkipNextReceiver", "Stale or concurrent duplicate one-shot skip rejected for alarm $alarmId at expected $expectedScheduledAt")
                             return@withTimeout
                         }
-                        repo.setEnabled(alarm.id, enabled = false, nextTrigger = 0L)
                         scheduler.cancel(alarm.id)
                         outcome = com.sysadmindoc.alarmclock.domain.ScheduleOutcome.NoArm(alarm.id, "ONE_SHOT_DISABLED")
                     } else {

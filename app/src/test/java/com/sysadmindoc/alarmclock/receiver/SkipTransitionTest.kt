@@ -24,6 +24,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -231,6 +232,35 @@ class SkipTransitionTest {
         assertNotNull(updated)
         assertTrue("One-shot alarm MUST remain enabled when stale skip is rejected", updated?.isEnabled == true)
         assertEquals(currentTrigger, updated?.nextTriggerTime)
+    }
+
+    @Test
+    fun `casDisableOneShot atomically disables one shot alarm when expectedTrigger matches`() = runBlocking {
+        val triggerTime = System.currentTimeMillis() + 3600_000L
+        val id = alarmRepo.save(Alarm(hour = 8, minute = 0, isEnabled = true, nextTriggerTime = triggerTime))
+
+        val rows = alarmRepo.casDisableOneShot(id, triggerTime)
+        assertEquals("Atomic one-shot disable MUST update exactly 1 row", 1, rows)
+
+        val updated = alarmRepo.getById(id)
+        assertNotNull(updated)
+        assertFalse("One-shot alarm MUST be disabled", updated!!.isEnabled)
+        assertEquals(0L, updated.nextTriggerTime)
+    }
+
+    @Test
+    fun `casDisableOneShot fails closed when expectedTrigger mismatches`() = runBlocking {
+        val triggerTime = System.currentTimeMillis() + 3600_000L
+        val staleTrigger = triggerTime - 1000L
+        val id = alarmRepo.save(Alarm(hour = 8, minute = 0, isEnabled = true, nextTriggerTime = triggerTime))
+
+        val rows = alarmRepo.casDisableOneShot(id, staleTrigger)
+        assertEquals("Stale one-shot disable MUST update 0 rows", 0, rows)
+
+        val updated = alarmRepo.getById(id)
+        assertNotNull(updated)
+        assertTrue("One-shot alarm MUST remain enabled when expectedTrigger mismatches", updated!!.isEnabled)
+        assertEquals(triggerTime, updated.nextTriggerTime)
     }
 
     @Test
