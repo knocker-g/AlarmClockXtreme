@@ -1011,7 +1011,7 @@ class AlarmService : Service() {
                         // id / timestamp so MissedAlarmUnlockReceiver can re-fire
                         // when the user unlocks or unplugs soon after.
                         if (settings.repeatMissedAlarms) {
-                            recordMissedAlarmForReplay(missedAlarm.id)
+                            recordMissedAlarmForReplay(missedAlarm.id, startGen.fireId)
                         }
                     }
                 }
@@ -1450,13 +1450,16 @@ class AlarmService : Service() {
      * point of it is that MissedAlarmUnlockReceiver finds it after this service
      * is gone, and a queued write that never flushed loses the missed alarm.
      */
-    @SuppressLint("ApplySharedPref")
-    private fun recordMissedAlarmForReplay(missedAlarmId: Long) {
-        getSharedPreferences("missed_alarm_state", MODE_PRIVATE)
-            .edit()
-            .putLong("last_missed_at", System.currentTimeMillis())
-            .putLong("last_missed_id", missedAlarmId)
-            .commit()
+    private fun recordMissedAlarmForReplay(missedAlarmId: Long, fireId: String = "") {
+        val store = getSharedPreferences("missed_alarm_state", MODE_PRIVATE)
+        runBlocking {
+            com.sysadmindoc.alarmclock.receiver.MissedAlarmReplayPolicy.recordMissedAlarmMarker(
+                store = store,
+                alarmId = missedAlarmId,
+                missedAtMs = System.currentTimeMillis(),
+                fireId = fireId
+            )
+        }
     }
 
     private fun startMedia3AudioInternal(alarm: Alarm, startGen: AlarmGeneration) {

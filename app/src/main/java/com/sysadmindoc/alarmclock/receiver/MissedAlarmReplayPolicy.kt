@@ -1,5 +1,7 @@
 package com.sysadmindoc.alarmclock.receiver
 
+import kotlinx.coroutines.sync.withLock
+
 /**
  * v1.5.2: Pure decision function for whether a missed alarm should be
  * replayed when the user returns to the phone. Extracted out of
@@ -57,8 +59,102 @@ object MissedAlarmReplayPolicy {
         return Decision.REPLAY
     }
 
+    private val stateMutex = kotlinx.coroutines.sync.Mutex()
+
+    /**
+     * Atomically records a missed alarm marker in SharedPreferences under stateMutex lock,
+     * ensuring consistent ordering across concurrent producers and consumers.
+     */
+    @android.annotation.SuppressLint("ApplySharedPref")
+    suspend fun recordMissedAlarmMarker(
+        store: android.content.SharedPreferences,
+        alarmId: Long,
+        missedAtMs: Long,
+        fireId: String = ""
+    ) = stateMutex.withLock {
+        store.edit()
+            .putLong("last_missed_at", missedAtMs)
+            .putLong("last_missed_id", alarmId)
+            .putString("last_missed_fire_id", fireId)
+            .commit()
+    }
+
+    /**
+     * Atomically clears the missed alarm marker if and only if the currently stored
+     * last_missed_id and last_missed_at match the expected values.
+     * Prevents a stale claimant A from erasing a newly recorded marker B.
+     */
+    @android.annotation.SuppressLint("ApplySharedPref")
+    suspend fun clearMissedAlarmMarkerIfMatching(
+        store: android.content.SharedPreferences,
+        expectedId: Long,
+        expectedAt: Long
+    ): Boolean = stateMutex.withLock {
+        val currentId = store.getLong("last_missed_id", -1L)
+        val currentAt = store.getLong("last_missed_at", 0L)
+        if (currentId == expectedId && currentAt == expectedAt) {
+            store.edit().clear().commit()
+            true
+        } else {
+            false
+        }
+    }
+
+    /**
+     * Atomically clears the missed alarm marker unconditionally under stateMutex lock.
+     * Used on boot or package replace when pre-reboot missed state must be invalidated.
+     */
+    @android.annotation.SuppressLint("ApplySharedPref")
+    suspend fun clearMissedAlarmMarkerUnconditional(
+        store: android.content.SharedPreferences
+    ) = stateMutex.withLock {
+        store.edit().clear().commit()
+    }
+
+    /**
+     * Atomically records the dispatch attempt timestamp for an in-flight replay.
+     */
+    @android.annotation.SuppressLint("ApplySharedPref")
+    suspend fun recordDispatchTimestamp(
+        store: android.content.SharedPreferences,
+        dispatchedAtMs: Long = System.currentTimeMillis()
+    ) = stateMutex.withLock {
+        store.edit().putLong("last_missed_dispatched_at", dispatchedAtMs).commit()
+    }
+
+    private val claimMutex = kotlinx.coroutines.sync.Mutex()
+    private var activeClaimToken: String? = null
+    private var activeClaimExpiresAt: Long = 0L
+
+    /**
+     * Attempts to acquire an atomic claim lease for a missed alarm replay attempt.
+     * Prevents concurrent receivers (e.g. USER_PRESENT and POWER_DISCONNECTED arriving at the same time)
+     * from double-dispatching the same missed occurrence.
+     *
+     * @return a unique non-null claim token if the lease was acquired, or null if an active lease is held.
+     */
+    suspend fun tryAcquireClaim(
+        nowMs: Long = System.currentTimeMillis(),
+        leaseDurationMs: Long = 15_000L
+    ): String? = claimMutex.withLock {
+        if (activeClaimToken != null && nowMs < activeClaimExpiresAt) {
+            return@withLock null
+        }
+        val newToken = java.util.UUID.randomUUID().toString()
+        activeClaimToken = newToken
+        activeClaimExpiresAt = nowMs + leaseDurationMs
+        newToken
+    }
+
+    suspend fun releaseClaim(claimToken: String) = claimMutex.withLock {
+        if (activeClaimToken == claimToken) {
+            activeClaimToken = null
+            activeClaimExpiresAt = 0L
+        }
+    }
+
     enum class Decision(val shouldReplay: Boolean, val shouldClearState: Boolean) {
-        REPLAY(shouldReplay = true, shouldClearState = true),
+        REPLAY(shouldReplay = true, shouldClearState = false),
         DROP_DISABLED(shouldReplay = false, shouldClearState = true),
         DROP_NO_RECORD(shouldReplay = false, shouldClearState = true),
         DROP_EXPIRED(shouldReplay = false, shouldClearState = true),
