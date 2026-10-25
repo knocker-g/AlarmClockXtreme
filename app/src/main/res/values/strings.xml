@@ -1502,6 +1502,14 @@
     <!-- Feedback messages -->
     <string name="feedback_alarm_paused">Alarm paused</string>
     <string name="feedback_alarm_enabled_for">Alarm enabled for %1$s</string>
+    <string name="feedback_multialarm_enabled_blocked">%1$d enabled (%2$d blocked: permission required)</string>
+    <string name="feedback_multialarm_enabled_failed">%1$d enabled (%2$d registration pending recovery)</string>
+    <string name="feedback_alarm_enabled_permission_blocked">Alarm enabled, but exact alarm permission is required to ring</string>
+    <string name="feedback_alarm_enabled_registration_failed">Alarm enabled; registration pending background recovery</string>
+    <string name="feedback_alarm_restored_permission_blocked">Alarm restored, but exact alarm permission is required to ring</string>
+    <string name="feedback_alarm_restored_registration_failed">Alarm restored; registration pending background recovery</string>
+    <string name="feedback_alarm_copied_permission_blocked">Alarm copied, but exact alarm permission is required to ring</string>
+    <string name="feedback_alarm_copied_registration_failed">Alarm copied; registration pending background recovery</string>
     <string name="feedback_cancellation_lock_overridden_paused">Cancellation lock overridden — alarm paused</string>
     <plurals name="feedback_multialarm_paused">
         <item quantity="one">1 alarm paused</item>

@@ -89,7 +89,10 @@ class AlarmClockIntentHandler @Inject constructor(
             val trigger = calculator.calculate(withId)
             repository.updateNextTrigger(id, trigger)
             val scheduled = withId.copy(nextTriggerTime = trigger)
-            scheduler.schedule(scheduled)
+            val outcome = scheduler.schedule(scheduled)
+            if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed) {
+                android.util.Log.w("AlarmClockIntentHandler", "SET_ALARM saved alarm $id in DB, but OS registration failed; pending background recovery")
+            }
             scheduled
         }
         return AlarmClockHandleResult.Handled(
