@@ -155,6 +155,7 @@ class NextAlarmNotifier @Inject constructor(
         // does NOT trigger the post-fire flow (TTS, morning briefing, wake confirmation).
         val skipIntent = Intent(context, com.sysadmindoc.alarmclock.receiver.SkipNextReceiver::class.java).apply {
             putExtra(com.sysadmindoc.alarmclock.domain.AlarmScheduler.EXTRA_ALARM_ID, alarm.id)
+            putExtra(com.sysadmindoc.alarmclock.domain.AlarmScheduler.EXTRA_SCHEDULED_AT, alarm.nextTriggerTime)
         }
         val skipPi = PendingIntent.getBroadcast(
             context, alarm.id.toInt() + 30000, skipIntent,

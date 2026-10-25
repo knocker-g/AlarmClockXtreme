@@ -62,6 +62,7 @@ class SkipNextAlarmTileService : TileService() {
             // occurrence for repeating, disables one-shot).
             val skip = Intent(applicationContext, SkipNextReceiver::class.java).apply {
                 putExtra(AlarmScheduler.EXTRA_ALARM_ID, next.id)
+                putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, next.nextTriggerTime)
             }
             applicationContext.sendBroadcast(skip)
             // v1.5.1: Refresh twice — once immediately (optimistic "skipped"

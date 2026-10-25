@@ -618,47 +618,54 @@ class AlarmListViewModel @Inject constructor(
      */
     fun skipNextOccurrence(alarm: Alarm) {
         if (!alarm.isRecurringSchedule) return
-        if (alarm.nextTriggerTime <= 0L) return // No scheduled occurrence to skip
-        if (preferencesManager.getCachedSettings().activeAlarmId == alarm.id) {
+        if (alarm.nextTriggerTime <= 0L) return
+        val cachedSettings = preferencesManager.getCachedSettings()
+        if (alarm.id == cachedSettings.activeAlarmId && cachedSettings.activeAlarmState == "FIRING") {
             emitFeedback(context.getString(R.string.alarmlist_cannot_modify_active_alarm))
             return
         }
         viewModelScope.launch {
-            // Record skip event
+            val current = repository.getById(alarm.id) ?: return@launch
+            if (!current.isRecurringSchedule || current.nextTriggerTime <= 0L || current.nextTriggerTime != alarm.nextTriggerTime) {
+                android.util.Log.i("AlarmListViewModel", "Rejecting stale UI skip for alarm ${alarm.id}: expected ${alarm.nextTriggerTime} != current ${current.nextTriggerTime}")
+                return@launch
+            }
+
+            val skipFloorMs = current.nextTriggerTime.coerceAtLeast(System.currentTimeMillis()) + 60_000L
+            val outcome = scheduler.schedule(current, notBeforeMillis = skipFloorMs)
+
+            if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed) {
+                android.util.Log.w("AlarmListViewModel", "Replacement re-arm registration failed for skipped alarm ${alarm.id}; pending background recovery")
+            }
+
             eventRepository.record(
                 AlarmEvent(
-                    alarmId = alarm.id,
-                    alarmLabel = alarm.label,
-                    scheduledTime = alarm.nextTriggerTime,
+                    alarmId = current.id,
+                    alarmLabel = current.label,
+                    scheduledTime = current.nextTriggerTime,
                     firedAt = System.currentTimeMillis(),
                     action = AlarmEvent.ACTION_SKIPPED,
                     actionAt = System.currentTimeMillis(),
-                    dayOfWeek = Instant.ofEpochMilli(alarm.nextTriggerTime)
+                    dayOfWeek = Instant.ofEpochMilli(current.nextTriggerTime)
                         .atZone(ZoneId.systemDefault()).dayOfWeek.value
                 )
             )
 
-            // Cancel current and schedule for the one after next
-            scheduler.cancel(alarm.id)
-            val afterSkipTime = Instant.ofEpochMilli(alarm.nextTriggerTime + 60_000)
-                .atZone(ZoneId.systemDefault())
-            val afterSkip = calculator.calculate(alarm, afterSkipTime)
-            val updated = alarm.copy(nextTriggerTime = afterSkip)
-            repository.updateNextTrigger(alarm.id, afterSkip)
-            scheduler.scheduleAt(updated, afterSkip)
+            val newTrigger = repository.getById(alarm.id)?.nextTriggerTime ?: 0L
+            if (newTrigger > 0L) {
+                val locale = context.resources.configuration.locales[0]
+                val is24h = preferencesManager.getCachedSettings().is24HourFormat
+                val datePattern = context.getString(R.string.alarmlist_date_pattern)
+                val format = context.getString(R.string.alarmlist_next_occurrence_format)
 
-            val locale = context.resources.configuration.locales[0]
-            val is24h = preferencesManager.getCachedSettings().is24HourFormat
-            val datePattern = context.getString(R.string.alarmlist_date_pattern)
-            val format = context.getString(R.string.alarmlist_next_occurrence_format)
+                val dateFormatted = Instant.ofEpochMilli(newTrigger)
+                    .atZone(ZoneId.systemDefault())
+                    .format(DateTimeFormatter.ofPattern(datePattern, locale))
+                val timeFormatted = AlarmTimeFormatter.format(newTrigger, is24h, locale = locale)
 
-            val dateFormatted = Instant.ofEpochMilli(afterSkip)
-                .atZone(ZoneId.systemDefault())
-                .format(DateTimeFormatter.ofPattern(datePattern, locale))
-            val timeFormatted = AlarmTimeFormatter.format(afterSkip, is24h, locale = locale)
-
-            val skippedDate = format.format(dateFormatted, timeFormatted)
-            emitFeedback(context.getString(R.string.alarmlist_skip_next_feedback, skippedDate))
+                val skippedDate = format.format(dateFormatted, timeFormatted)
+                emitFeedback(context.getString(R.string.alarmlist_skip_next_feedback, skippedDate))
+            }
         }
     }
 
