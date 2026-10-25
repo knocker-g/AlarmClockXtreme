@@ -77,7 +77,7 @@ class SkipNextReceiver : BroadcastReceiver() {
                     }
 
                     // Reject skipping an alarm that is currently FIRING in active session.
-                    val currentSettings = preferencesManager.getCachedSettings()
+                    val currentSettings = preferencesManager.getCurrentSettings()
                     if (alarm.id == currentSettings.activeAlarmId && currentSettings.activeAlarmState == "FIRING") {
                         Log.i("SkipNextReceiver", "Rejecting skip for active FIRING alarm $alarmId")
                         return@withTimeout
@@ -87,7 +87,13 @@ class SkipNextReceiver : BroadcastReceiver() {
                     val outcome: com.sysadmindoc.alarmclock.domain.ScheduleOutcome
 
                     if (!alarm.isRecurringSchedule) {
-                        repo.setEnabled(alarm.id, enabled = false, nextTrigger = 0)
+                        // Atomic Room CAS claim for one-shot disable: verify expectedScheduledAt before disabling
+                        val rowsUpdated = repo.casUpdateNextTrigger(alarm.id, expectedTrigger = expectedScheduledAt, newTrigger = 0L)
+                        if (rowsUpdated == 0) {
+                            Log.i("SkipNextReceiver", "Stale or concurrent duplicate one-shot skip rejected for alarm $alarmId at expected $expectedScheduledAt")
+                            return@withTimeout
+                        }
+                        repo.setEnabled(alarm.id, enabled = false, nextTrigger = 0L)
                         scheduler.cancel(alarm.id)
                         outcome = com.sysadmindoc.alarmclock.domain.ScheduleOutcome.NoArm(alarm.id, "ONE_SHOT_DISABLED")
                     } else {

@@ -645,7 +645,16 @@ class AlarmListViewModel @Inject constructor(
             val updatedAlarm = current.copy(nextTriggerTime = afterSkip)
             val outcome = scheduler.scheduleAt(updatedAlarm, afterSkip)
             if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed) {
-                android.util.Log.w("AlarmListViewModel", "Replacement re-arm registration failed for skipped alarm ${alarm.id}; pending background recovery")
+                android.util.Log.w("AlarmListViewModel", "Replacement re-arm registration failed for skipped alarm ${alarm.id}; enqueuing background recovery")
+                try {
+                    com.sysadmindoc.alarmclock.worker.BootRescheduleWorker.enqueue(
+                        context = context,
+                        sourceAction = "SKIP_REGISTRATION_FAILED",
+                        forceRecalculate = false
+                    )
+                } catch (e: Exception) {
+                    android.util.Log.e("AlarmListViewModel", "Failed to enqueue BootRescheduleWorker after skip registration failure for alarm ${alarm.id}", e)
+                }
             }
 
             eventRepository.record(
@@ -671,8 +680,17 @@ class AlarmListViewModel @Inject constructor(
                 .format(DateTimeFormatter.ofPattern(datePattern, locale))
             val timeFormatted = AlarmTimeFormatter.format(afterSkip, is24h, locale = locale)
 
-            val skippedDate = format.format(dateFormatted, timeFormatted)
-            emitFeedback(context.getString(R.string.alarmlist_skip_next_feedback, skippedDate))
+            val feedback = when (outcome) {
+                is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.PermissionBlocked ->
+                    context.getString(R.string.feedback_alarm_enabled_permission_blocked)
+                is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed ->
+                    context.getString(R.string.feedback_alarm_enabled_registration_failed)
+                else -> {
+                    val skippedDate = format.format(dateFormatted, timeFormatted)
+                    context.getString(R.string.alarmlist_skip_next_feedback, skippedDate)
+                }
+            }
+            emitFeedback(feedback)
         }
     }
 

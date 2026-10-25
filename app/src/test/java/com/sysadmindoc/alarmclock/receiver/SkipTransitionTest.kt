@@ -183,6 +183,7 @@ class SkipTransitionTest {
             activeAlarmState = "FIRING"
         )
         every { preferencesManager.getCachedSettings() } returns firingSettings
+        coEvery { preferencesManager.getCurrentSettings() } returns firingSettings
 
         val intent = Intent(context, SkipNextReceiver::class.java).apply {
             putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
@@ -198,6 +199,38 @@ class SkipTransitionTest {
 
         val updated = alarmRepo.getById(alarmId)
         assertEquals("FIRING alarm MUST NOT be skipped", currentTrigger, updated?.nextTriggerTime)
+    }
+
+    @Test
+    fun `SkipNextReceiver fails closed for stale one-shot skip without disabling newer occurrence`() = runBlocking {
+        val currentTrigger = System.currentTimeMillis() + 3600_000L
+        val staleTrigger = currentTrigger - 3600_000L
+
+        val alarmId = alarmRepo.save(
+            Alarm(
+                hour = 8,
+                minute = 0,
+                isEnabled = true,
+                repeatDays = emptySet(), // One-shot alarm
+                nextTriggerTime = currentTrigger
+            )
+        )
+
+        val intent = Intent(context, SkipNextReceiver::class.java).apply {
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, staleTrigger)
+        }
+
+        val receiver = SkipNextReceiver().apply {
+            testScope = this@runBlocking
+            testEntryPoint = mockEntryPoint
+        }
+        receiver.onReceive(context, intent)
+
+        val updated = alarmRepo.getById(alarmId)
+        assertNotNull(updated)
+        assertTrue("One-shot alarm MUST remain enabled when stale skip is rejected", updated?.isEnabled == true)
+        assertEquals(currentTrigger, updated?.nextTriggerTime)
     }
 
     @Test
