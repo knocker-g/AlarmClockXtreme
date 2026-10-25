@@ -589,10 +589,10 @@ class AlarmScheduler @Inject constructor(
      * before the original minute would otherwise recompute "next" as the
      * same still-future occurrence and ring again minutes later.
      */
-    suspend fun handleAlarmFired(alarmId: Long, firedScheduledAt: Long = 0L) {
-        val alarm = repository.getById(alarmId) ?: return
+    suspend fun handleAlarmFired(alarmId: Long, firedScheduledAt: Long = 0L): ScheduleOutcome {
+        val alarm = repository.getById(alarmId) ?: return ScheduleOutcome.NoArm(alarmId, "MISSING_ALARM")
 
-        if (!alarm.isRecurringSchedule) {
+        return if (!alarm.isRecurringSchedule) {
             // One-shot alarm: disable after firing. Also tear down any still-armed
             // exact-alarm entry. A normally-fired one-shot's PendingIntent was
             // already consumed by AlarmManager (this is a no-op), but a smart-wake
@@ -601,13 +601,27 @@ class AlarmScheduler @Inject constructor(
             cancelMainScheduledAlarm(alarmId)
             repository.setEnabled(alarmId, enabled = false, nextTrigger = 0)
             syncBedtimeDndRule()
+            ScheduleOutcome.NoArm(alarmId, "ONE_SHOT_DISABLED")
         } else {
             // Repeating alarm: schedule next occurrence (FLAG_UPDATE_CURRENT
             // replaces any stale early-fire PendingIntent with the same requestCode).
-            schedule(
+            val outcome = schedule(
                 alarm,
                 notBeforeMillis = if (firedScheduledAt > 0L) firedScheduledAt + 60_000L else 0L
             )
+            if (outcome is ScheduleOutcome.RegistrationFailed) {
+                Log.w("AlarmScheduler", "Post-fire re-arm registration failed for alarm $alarmId; enqueuing BootRescheduleWorker for durable recovery")
+                try {
+                    com.sysadmindoc.alarmclock.worker.BootRescheduleWorker.enqueue(
+                        context = context,
+                        sourceAction = "POST_FIRE_REGISTRATION_FAILED",
+                        forceRecalculate = false
+                    )
+                } catch (e: Exception) {
+                    Log.e("AlarmScheduler", "Failed to enqueue BootRescheduleWorker after post-fire registration failure for alarm $alarmId", e)
+                }
+            }
+            outcome
         }
     }
 
