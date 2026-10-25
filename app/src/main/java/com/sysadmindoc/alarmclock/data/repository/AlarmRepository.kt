@@ -30,16 +30,33 @@ class AlarmRepository @Inject constructor(
     fun durableOperationIntentDao(): com.sysadmindoc.alarmclock.data.local.DurableOperationIntentDao = database.durableOperationIntentDao()
 
     suspend fun save(alarm: Alarm): Long {
-        val sanitized = alarm.sanitized()
-        if (sanitized.group.isNotBlank()) {
-            groupDao.insert(AlarmGroup(sanitized.group))
+        return database.withTransaction {
+            val sanitized = alarm.sanitized()
+            if (sanitized.group.isNotBlank()) {
+                groupDao.insert(AlarmGroup(sanitized.group))
+            }
+            val ordered = if (sanitized.id == 0L && sanitized.sortOrder == 0) {
+                sanitized.copy(sortOrder = dao.maxSortOrder() + AlarmDao.SORT_ORDER_STEP)
+            } else {
+                sanitized
+            }
+            dao.insert(ordered)
         }
-        val ordered = if (sanitized.id == 0L && sanitized.sortOrder == 0) {
-            sanitized.copy(sortOrder = nextSortOrder())
-        } else {
-            sanitized
+    }
+
+    suspend fun createGroupAndAlarm(groupName: String, alarm: Alarm): Long {
+        return database.withTransaction {
+            if (groupName.isNotBlank()) {
+                groupDao.insert(AlarmGroup(groupName))
+            }
+            val sanitized = alarm.copy(group = groupName).sanitized()
+            val ordered = if (sanitized.id == 0L && sanitized.sortOrder == 0) {
+                sanitized.copy(sortOrder = dao.maxSortOrder() + AlarmDao.SORT_ORDER_STEP)
+            } else {
+                sanitized
+            }
+            dao.insert(ordered)
         }
-        return dao.insert(ordered)
     }
 
     fun observeGroups(): Flow<List<String>> =
@@ -73,6 +90,16 @@ class AlarmRepository @Inject constructor(
     suspend fun update(alarm: Alarm) = dao.update(alarm.sanitized())
     suspend fun delete(alarm: Alarm) = dao.delete(alarm)
     suspend fun deleteById(id: Long) = dao.deleteById(id)
+
+    suspend fun deleteWithCleanup(alarm: Alarm) {
+        database.withTransaction {
+            dao.delete(alarm)
+            val groupName = alarm.group
+            if (groupName.isNotBlank() && dao.countAlarmsByGroup(groupName, alarm.id) == 0) {
+                groupDao.delete(AlarmGroup(groupName))
+            }
+        }
+    }
 
     suspend fun setEnabled(id: Long, enabled: Boolean, nextTrigger: Long) =
         dao.setEnabled(id, enabled, nextTrigger)
