@@ -105,7 +105,16 @@ class SkipNextReceiver : BroadcastReceiver() {
 
                         outcome = scheduler.scheduleAt(alarm.copy(nextTriggerTime = nextTrigger), nextTrigger)
                         if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed) {
-                            Log.w("SkipNextReceiver", "Replacement re-arm registration failed for skipped alarm $alarmId; pending background recovery")
+                            Log.w("SkipNextReceiver", "Replacement re-arm registration failed for skipped alarm $alarmId; enqueuing background recovery")
+                            try {
+                                com.sysadmindoc.alarmclock.worker.BootRescheduleWorker.enqueue(
+                                    context = context,
+                                    sourceAction = "SKIP_REGISTRATION_FAILED",
+                                    forceRecalculate = false
+                                )
+                            } catch (e: Exception) {
+                                Log.e("SkipNextReceiver", "Failed to enqueue BootRescheduleWorker after skip registration failure for alarm $alarmId", e)
+                            }
                         }
                     }
 
