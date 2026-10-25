@@ -159,22 +159,46 @@ class ReconcileEntrypointsTest {
     }
 
     @Test
-    fun `ExactAlarmPermissionRescheduleWorker returns retry when permission restored batch has registration failure`() = runBlocking {
+    fun `BootRescheduleWorker stops retrying when runAttemptCount reaches MAX_ATTEMPTS`() = runBlocking {
         val mockScheduler = mockk<AlarmScheduler>(relaxed = true)
-        coEvery { mockScheduler.rescheduleAllInBatches(forceRecalculate = true) } returns ScheduleOutcome.BatchResult(
+        coEvery { mockScheduler.rescheduleAllInBatches(any(), any()) } returns ScheduleOutcome.BatchResult(
             armedCount = 1,
             blockedCount = 0,
             failedCount = 1,
             noArmCount = 0,
             outcomes = mapOf(
                 101L to ScheduleOutcome.Armed(101L, 1000L),
-                102L to ScheduleOutcome.RegistrationFailed(102L, IllegalStateException("OS Failure"))
+                102L to ScheduleOutcome.RegistrationFailed(102L, IllegalStateException("OS Error"))
             )
         )
 
-        every { workerParams.runAttemptCount } returns 1
-        val worker = ExactAlarmPermissionRescheduleWorker(context, workerParams, mockScheduler)
+        every { workerParams.runAttemptCount } returns 3 // Max attempts reached
+        val worker = BootRescheduleWorker(context, workerParams, mockScheduler)
         val result = worker.doWork()
-        assertEquals(Result.retry(), result)
+        // Stops retrying when max attempts reached
+        assertEquals(Result.success(), result)
+    }
+
+    @Test
+    fun `BatchResult accurately classifies mixed outcome batch`() {
+        val batch = ScheduleOutcome.BatchResult(
+            armedCount = 1,
+            blockedCount = 1,
+            failedCount = 1,
+            noArmCount = 1,
+            outcomes = mapOf(
+                201L to ScheduleOutcome.Armed(201L, 1000L),
+                202L to ScheduleOutcome.PermissionBlocked(202L, "EXACT_ALARM_PERMISSION_REVOKED"),
+                203L to ScheduleOutcome.RegistrationFailed(203L, IllegalStateException("OS Fail")),
+                204L to ScheduleOutcome.NoArm(204L, "DISABLED")
+            )
+        )
+
+        assertEquals(4, batch.totalProcessed)
+        assertEquals(1, batch.armedCount)
+        assertEquals(1, batch.blockedCount)
+        assertEquals(1, batch.failedCount)
+        assertEquals(1, batch.noArmCount)
+        org.junit.Assert.assertFalse("Batch with failures is not full success", batch.isFullSuccess)
     }
 }
