@@ -697,17 +697,22 @@ class AlarmScheduler @Inject constructor(
         }
 
         if (expectedTriggerTime > 0L) {
-            if (alarm.nextTriggerTime > expectedTriggerTime ||
-                (authority != null && authority.desiredTriggerMillis != null && authority.desiredTriggerMillis > expectedTriggerTime)) {
-                Log.w("AlarmScheduler", "Stale SmartWake cancellation ignored for alarm $alarmId (current ${alarm.nextTriggerTime} > expected $expectedTriggerTime)")
+            if (alarm.nextTriggerTime != expectedTriggerTime ||
+                (authority != null && authority.desiredTriggerMillis != null && authority.desiredTriggerMillis != expectedTriggerTime)) {
+                Log.w("AlarmScheduler", "Stale SmartWake cancellation ignored for alarm $alarmId (current ${alarm.nextTriggerTime} != expected $expectedTriggerTime)")
                 return false
             }
         }
 
         val pendingIntent = lookupPendingIntentForCancel(alarmId, expectedTriggerTime)
-        alarmManager.cancel(pendingIntent)
-        pendingIntent.cancel()
-        return true
+        return try {
+            alarmManager.cancel(pendingIntent)
+            pendingIntent.cancel()
+            true
+        } catch (e: Exception) {
+            Log.e("AlarmScheduler", "cancelMainScheduledAlarm OS cancel failed for alarm $alarmId", e)
+            false
+        }
     }
 
     /**

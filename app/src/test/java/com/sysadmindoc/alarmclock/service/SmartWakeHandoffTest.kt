@@ -1,5 +1,6 @@
 package com.sysadmindoc.alarmclock.service
 
+import android.app.AlarmManager
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
@@ -79,25 +80,40 @@ class SmartWakeHandoffTest {
     }
 
     @Test
-    fun `cancelMainScheduledAlarm rejects stale trigger when alarm nextTriggerTime is newer`() = runBlocking {
+    fun `cancelMainScheduledAlarm rejects stale trigger when alarm nextTriggerTime is newer or earlier`() = runBlocking {
         val alarmId = 101L
         val originalTargetTime = 1700000000000L
         val newerTargetTime = 1800000000000L
+        val earlierTargetTime = 1600000000000L
 
-        // Alarm 101 saved with a newer target time
-        alarmRepo.save(
-            Alarm(
-                id = alarmId,
-                hour = 7,
-                minute = 0,
-                isEnabled = true,
-                nextTriggerTime = newerTargetTime
-            )
-        )
+        // Case 1: Alarm 101 rescheduled newer
+        alarmRepo.save(Alarm(id = alarmId, hour = 7, minute = 0, isEnabled = true, nextTriggerTime = newerTargetTime))
+        val cancelledNewer = scheduler.cancelMainScheduledAlarm(alarmId, originalTargetTime)
+        assertFalse("Stale SmartWake cancellation MUST be rejected when newer trigger exists", cancelledNewer)
 
-        // Smart wake attempts to cancel the original target time
-        val cancelled = scheduler.cancelMainScheduledAlarm(alarmId, originalTargetTime)
-        assertFalse("Stale SmartWake cancellation MUST be rejected when newer trigger exists", cancelled)
+        // Case 2: Alarm 101 rescheduled earlier
+        alarmRepo.save(Alarm(id = alarmId, hour = 6, minute = 0, isEnabled = true, nextTriggerTime = earlierTargetTime))
+        val cancelledEarlier = scheduler.cancelMainScheduledAlarm(alarmId, originalTargetTime)
+        assertFalse("Stale SmartWake cancellation MUST be rejected when earlier trigger exists", cancelledEarlier)
+    }
+
+    @Test
+    fun `cancelMainScheduledAlarm returns false when AlarmManager cancel throws exception`() = runBlocking {
+        val alarmId = 104L
+        val targetTime = System.currentTimeMillis() + 3600_000L
+
+        val spyAlarmManager = mockk<AlarmManager>(relaxed = true) {
+            every { cancel(any<android.app.PendingIntent>()) } throws SecurityException("Permission revoked")
+        }
+        scheduler.testAlarmManager = spyAlarmManager
+
+        val alarm = Alarm(id = alarmId, hour = 7, minute = 0, isEnabled = true, nextTriggerTime = targetTime)
+        alarmRepo.save(alarm)
+
+        val cancelled = scheduler.cancelMainScheduledAlarm(alarmId, targetTime)
+        assertFalse("cancelMainScheduledAlarm MUST return false when OS cancel throws exception", cancelled)
+
+        scheduler.testAlarmManager = null
     }
 
     @Test
