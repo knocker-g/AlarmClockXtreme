@@ -716,15 +716,18 @@ class AlarmScheduler @Inject constructor(
             }
         }
 
-        val pendingIntent = lookupPendingIntentForCancel(alarmId, expectedTriggerTime)
-        return try {
-            alarmManager.cancel(pendingIntent)
-            pendingIntent.cancel()
-            true
-        } catch (e: Exception) {
-            Log.e("AlarmScheduler", "cancelMainScheduledAlarm OS cancel failed for alarm $alarmId", e)
-            false
+        val pendingIntent = lookupPendingIntentForCancel(alarmId, expectedTriggerTime, "")
+        if (pendingIntent != null) {
+            return try {
+                alarmManager.cancel(pendingIntent)
+                pendingIntent.cancel()
+                true
+            } catch (e: Exception) {
+                Log.e("AlarmScheduler", "cancelMainScheduledAlarm OS cancel failed for alarm $alarmId", e)
+                false
+            }
         }
+        return true
     }
 
     /**
@@ -822,7 +825,7 @@ class AlarmScheduler @Inject constructor(
      * Excludes repository mutations, widget updates, DirectBoot cache writes, and WorkManager jobs.
      */
     internal fun applyRawOsCancel(alarmId: Long): Boolean {
-        val pendingIntent = lookupPendingIntentForCancel(alarmId)
+        val pendingIntent = lookupPendingIntentForCancel(alarmId) ?: return true
         return try {
             alarmManager.cancel(pendingIntent)
             pendingIntent.cancel()
@@ -1244,11 +1247,23 @@ class AlarmScheduler @Inject constructor(
         )
     }
 
+    private fun lookupPendingIntentForCancel(alarmId: Long): PendingIntent? {
+        val intent = Intent(context, AlarmReceiver::class.java).apply {
+            action = "com.sysadmindoc.alarmclock.ALARM_FIRE"
+        }
+        return PendingIntent.getBroadcast(
+            context,
+            alarmId.toInt(),
+            intent,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
     private fun lookupPendingIntentForCancel(
         alarmId: Long,
-        triggerTime: Long = 0L,
-        fireId: String = ""
-    ): PendingIntent {
+        triggerTime: Long,
+        fireId: String
+    ): PendingIntent? {
         val intent = Intent(context, AlarmReceiver::class.java).apply {
             action = "com.sysadmindoc.alarmclock.ALARM_FIRE"
             putExtra(EXTRA_ALARM_ID, alarmId)
@@ -1261,7 +1276,7 @@ class AlarmScheduler @Inject constructor(
             context,
             alarmId.toInt(),
             intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
         )
     }
 

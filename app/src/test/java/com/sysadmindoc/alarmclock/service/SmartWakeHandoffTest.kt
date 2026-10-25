@@ -102,6 +102,8 @@ class SmartWakeHandoffTest {
         val alarmId = 104L
         val targetTime = System.currentTimeMillis() + 3600_000L
 
+        every { calculator.calculate(any()) } returns targetTime
+
         val spyAlarmManager = mockk<AlarmManager>(relaxed = true) {
             every { cancel(any<android.app.PendingIntent>()) } throws SecurityException("Permission revoked")
         }
@@ -109,6 +111,7 @@ class SmartWakeHandoffTest {
 
         val alarm = Alarm(id = alarmId, hour = 7, minute = 0, isEnabled = true, nextTriggerTime = targetTime)
         alarmRepo.save(alarm)
+        scheduler.schedule(alarm, requestWidgetUpdate = false)
 
         val cancelled = scheduler.cancelMainScheduledAlarm(alarmId, targetTime)
         assertFalse("cancelMainScheduledAlarm MUST return false when OS cancel throws exception", cancelled)
