@@ -73,6 +73,10 @@ class ProducerOutcomeAdoptionTest {
         coEvery { preferencesManager.getCurrentSettings() } returns AppSettings(activeAlarmId = null)
         every { preferencesManager.settings } returns kotlinx.coroutines.flow.flowOf(AppSettings(activeAlarmId = null))
 
+        val defaultTriggerTime = System.currentTimeMillis() + 3600_000L
+        every { calculator.calculate(any()) } returns defaultTriggerTime
+        every { calculator.calculate(any(), any()) } returns defaultTriggerTime
+
         scheduler = AlarmScheduler(
             context = context,
             repository = alarmRepo,
