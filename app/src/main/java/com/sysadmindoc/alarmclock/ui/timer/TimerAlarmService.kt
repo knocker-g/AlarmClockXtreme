@@ -115,7 +115,10 @@ class TimerAlarmService : Service() {
                     TimerNotifications.cancelFinished(this, id)
                 }
                 if (restarted != null) {
-                    TimerAlarmScheduler.schedule(this, restarted.id, restarted.endElapsedRealtime)
+                    val outcome = TimerAlarmScheduler.schedule(this, restarted.id, restarted.endElapsedRealtime)
+                    if (outcome is TimerScheduleOutcome.RegistrationFailed) {
+                        Log.w(TAG, "Restarted timer ${restarted.id} saved in store, but OS registration failed ($outcome)")
+                    }
                     TimerNotifications.postRunning(this, restarted)
                 }
                 if (alerts.isEmpty) stopEverything() else refreshNotification()

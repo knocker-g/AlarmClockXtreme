@@ -108,7 +108,10 @@ class AlarmClockIntentHandler @Inject constructor(
         val label = command.label.ifBlank { timerLabel(command.lengthSeconds) }
         val result = timerStore.startOrReuse(command.lengthSeconds.toLong(), label)
         if (result.created) {
-            TimerAlarmScheduler.schedule(context, result.record.id, result.record.endElapsedRealtime)
+            val outcome = TimerAlarmScheduler.schedule(context, result.record.id, result.record.endElapsedRealtime)
+            if (outcome is com.sysadmindoc.alarmclock.ui.timer.TimerScheduleOutcome.RegistrationFailed) {
+                android.util.Log.w("AlarmClockIntentHandler", "SET_TIMER created timer ${result.record.id}, but OS registration failed ($outcome)")
+            }
             TimerNotifications.postRunning(context, result.record)
         }
         return AlarmClockHandleResult.Handled(if (command.skipUi) null else ROUTE_TIMER)

@@ -168,10 +168,17 @@ class TimerViewModel @Inject constructor(
         val endElapsedRealtime = SystemClock.elapsedRealtime() + totalMillis
         val persisted = timer.toPersistedRecord(endElapsedRealtime)
         runningEndTimes[id] = endElapsedRealtime
-        timerStore.upsert(persisted)
-        TimerAlarmScheduler.schedule(appContext, id, endElapsedRealtime)
-        TimerNotifications.postRunning(appContext, persisted)
-        startCountdownUntil(id, endElapsedRealtime)
+        val committed = timerStore.upsert(persisted)
+        if (committed) {
+            val outcome = TimerAlarmScheduler.schedule(appContext, id, endElapsedRealtime)
+            if (outcome is TimerScheduleOutcome.RegistrationFailed) {
+                android.util.Log.w("TimerViewModel", "Timer $id started in store, but OS registration failed ($outcome)")
+            }
+            TimerNotifications.postRunning(appContext, persisted)
+            startCountdownUntil(id, endElapsedRealtime)
+        } else {
+            android.util.Log.e("TimerViewModel", "Failed to durably commit timer $id to TimerStore")
+        }
     }
 
     fun pause(timerId: Int? = null) {
@@ -193,10 +200,17 @@ class TimerViewModel @Inject constructor(
         val persisted = resumed.toPersistedRecord(endElapsedRealtime)
         runningEndTimes[id] = endElapsedRealtime
         updateTimer(id) { resumed }
-        timerStore.upsert(persisted)
-        TimerAlarmScheduler.schedule(appContext, id, endElapsedRealtime)
-        TimerNotifications.postRunning(appContext, persisted)
-        startCountdownUntil(id, endElapsedRealtime)
+        val committed = timerStore.upsert(persisted)
+        if (committed) {
+            val outcome = TimerAlarmScheduler.schedule(appContext, id, endElapsedRealtime)
+            if (outcome is TimerScheduleOutcome.RegistrationFailed) {
+                android.util.Log.w("TimerViewModel", "Timer $id resumed in store, but OS registration failed ($outcome)")
+            }
+            TimerNotifications.postRunning(appContext, persisted)
+            startCountdownUntil(id, endElapsedRealtime)
+        } else {
+            android.util.Log.e("TimerViewModel", "Failed to durably commit resumed timer $id to TimerStore")
+        }
     }
 
     /**
@@ -242,10 +256,17 @@ class TimerViewModel @Inject constructor(
         val endElapsedRealtime = SystemClock.elapsedRealtime() + remainingMillis
         val persisted = restored.toPersistedRecord(endElapsedRealtime)
         runningEndTimes[id] = endElapsedRealtime
-        timerStore.upsert(persisted)
-        TimerAlarmScheduler.schedule(appContext, id, endElapsedRealtime)
-        TimerNotifications.postRunning(appContext, persisted)
-        startCountdownUntil(id, endElapsedRealtime)
+        val committed = timerStore.upsert(persisted)
+        if (committed) {
+            val outcome = TimerAlarmScheduler.schedule(appContext, id, endElapsedRealtime)
+            if (outcome is TimerScheduleOutcome.RegistrationFailed) {
+                android.util.Log.w("TimerViewModel", "Restored timer $id saved in store, but OS registration failed ($outcome)")
+            }
+            TimerNotifications.postRunning(appContext, persisted)
+            startCountdownUntil(id, endElapsedRealtime)
+        } else {
+            android.util.Log.e("TimerViewModel", "Failed to durably commit restored timer $id to TimerStore")
+        }
     }
 
     fun clearUndoStop() {
@@ -371,7 +392,10 @@ class TimerViewModel @Inject constructor(
             when (record.state) {
                 TimerState.RUNNING -> {
                     runningEndTimes[record.id] = record.endElapsedRealtime
-                    TimerAlarmScheduler.schedule(appContext, record.id, record.endElapsedRealtime)
+                    val outcome = TimerAlarmScheduler.schedule(appContext, record.id, record.endElapsedRealtime)
+                    if (outcome is TimerScheduleOutcome.RegistrationFailed) {
+                        android.util.Log.w("TimerViewModel", "Restored timer ${record.id} in store, but OS registration failed ($outcome)")
+                    }
                     TimerNotifications.postRunning(appContext, record)
                     startCountdownUntil(record.id, record.endElapsedRealtime)
                 }
