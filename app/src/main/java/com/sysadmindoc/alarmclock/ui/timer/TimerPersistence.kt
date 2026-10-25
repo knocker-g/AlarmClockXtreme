@@ -58,10 +58,19 @@ data class TimerRestoreSnapshot(
     val newlyFinished: List<PersistedTimerRecord>
 )
 
+enum class TimerStartStatus { CREATED, REUSED, COMMIT_FAILED }
+
 data class TimerStartResult(
     val record: PersistedTimerRecord,
-    val created: Boolean
-)
+    val status: TimerStartStatus
+) {
+    constructor(record: PersistedTimerRecord, created: Boolean) : this(
+        record = record,
+        status = if (created) TimerStartStatus.CREATED else TimerStartStatus.REUSED
+    )
+
+    val created: Boolean get() = status == TimerStartStatus.CREATED
+}
 
 @Singleton
 class TimerStore @Inject constructor(@ApplicationContext context: Context) {
@@ -260,7 +269,7 @@ class TimerStore @Inject constructor(@ApplicationContext context: Context) {
                 kotlin.math.abs(record.endElapsedRealtime - endElapsed) <= DUPLICATE_WINDOW_MS
         }
         if (existing != null) {
-            return@synchronized TimerStartResult(existing.normalized(nowElapsed), created = false)
+            return@synchronized TimerStartResult(existing.normalized(nowElapsed), status = TimerStartStatus.REUSED)
         }
         val id = (records.maxOfOrNull { it.id } ?: 0) + 1
         val record = PersistedTimerRecord(
@@ -272,7 +281,7 @@ class TimerStore @Inject constructor(@ApplicationContext context: Context) {
             endElapsedRealtime = endElapsed
         )
         val committed = replace(records + record)
-        TimerStartResult(record, created = committed)
+        TimerStartResult(record, status = if (committed) TimerStartStatus.CREATED else TimerStartStatus.COMMIT_FAILED)
     }
 
     fun removeRunningTimersForReboot(): List<PersistedTimerRecord> = synchronized(WRITE_LOCK) {

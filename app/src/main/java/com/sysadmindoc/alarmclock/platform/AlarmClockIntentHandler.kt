@@ -107,12 +107,20 @@ class AlarmClockIntentHandler @Inject constructor(
     private fun setTimer(command: AlarmClockCommand.SetTimer): AlarmClockHandleResult {
         val label = command.label.ifBlank { timerLabel(command.lengthSeconds) }
         val result = timerStore.startOrReuse(command.lengthSeconds.toLong(), label)
-        if (result.created) {
-            val outcome = TimerAlarmScheduler.schedule(context, result.record.id, result.record.endElapsedRealtime)
-            if (outcome is com.sysadmindoc.alarmclock.ui.timer.TimerScheduleOutcome.RegistrationFailed) {
-                android.util.Log.w("AlarmClockIntentHandler", "SET_TIMER created timer ${result.record.id}, but OS registration failed ($outcome)")
+        when (result.status) {
+            com.sysadmindoc.alarmclock.ui.timer.TimerStartStatus.CREATED -> {
+                val outcome = TimerAlarmScheduler.schedule(context, result.record.id, result.record.endElapsedRealtime)
+                if (outcome is com.sysadmindoc.alarmclock.ui.timer.TimerScheduleOutcome.RegistrationFailed) {
+                    android.util.Log.w("AlarmClockIntentHandler", "SET_TIMER created timer ${result.record.id}, but OS registration failed ($outcome)")
+                }
+                TimerNotifications.postRunning(context, result.record)
             }
-            TimerNotifications.postRunning(context, result.record)
+            com.sysadmindoc.alarmclock.ui.timer.TimerStartStatus.REUSED -> {
+                android.util.Log.i("AlarmClockIntentHandler", "SET_TIMER reused existing running timer ${result.record.id}")
+            }
+            com.sysadmindoc.alarmclock.ui.timer.TimerStartStatus.COMMIT_FAILED -> {
+                android.util.Log.e("AlarmClockIntentHandler", "SET_TIMER failed to durably commit new timer")
+            }
         }
         return AlarmClockHandleResult.Handled(if (command.skipUi) null else ROUTE_TIMER)
     }

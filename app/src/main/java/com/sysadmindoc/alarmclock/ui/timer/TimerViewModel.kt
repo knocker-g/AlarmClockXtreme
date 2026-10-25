@@ -182,12 +182,17 @@ class TimerViewModel @Inject constructor(
 
     fun pause(timerId: Int? = null) {
         val id = timerId ?: _uiState.value.activeTimers.firstOrNull { it.state == TimerState.RUNNING }?.id ?: return
-        countdownJobs.remove(id)?.cancel()
-        runningEndTimes.remove(id)
-        TimerAlarmScheduler.cancel(appContext, id)
-        TimerNotifications.cancelTimer(appContext, id)
-        updateTimer(id) { timer ->
-            timer.copy(state = TimerState.PAUSED).also { timerStore.upsert(it.toPersistedRecord()) }
+        val timer = _uiState.value.activeTimers.find { it.id == id } ?: return
+        val paused = timer.copy(state = TimerState.PAUSED)
+        val committed = timerStore.upsert(paused.toPersistedRecord())
+        if (committed) {
+            countdownJobs.remove(id)?.cancel()
+            runningEndTimes.remove(id)
+            TimerAlarmScheduler.cancel(appContext, id)
+            TimerNotifications.cancelTimer(appContext, id)
+            updateTimer(id) { paused }
+        } else {
+            android.util.Log.e("TimerViewModel", "Failed to durably commit paused timer $id to TimerStore")
         }
     }
 
@@ -220,19 +225,23 @@ class TimerViewModel @Inject constructor(
      */
     fun stop(timerId: Int? = null) {
         val id = timerId ?: _uiState.value.activeTimers.firstOrNull()?.id ?: return
-        _uiState.value.activeTimers.firstOrNull { it.id == id }?.let { stopped ->
-            undoStopSnapshot = stopped
+        val committed = timerStore.remove(id)
+        if (committed) {
+            _uiState.value.activeTimers.firstOrNull { it.id == id }?.let { stopped ->
+                undoStopSnapshot = stopped
+            }
+            countdownJobs[id]?.cancel()
+            countdownJobs.remove(id)
+            runningEndTimes.remove(id)
+            TimerAlarmScheduler.cancel(appContext, id)
+            TimerAlarmService.dismiss(appContext, id)
+            cancelTimerFinishedNotification(id)
+            _uiState.value = _uiState.value.copy(
+                activeTimers = _uiState.value.activeTimers.filter { it.id != id }
+            )
+        } else {
+            android.util.Log.e("TimerViewModel", "Failed to durably remove timer $id from TimerStore")
         }
-        countdownJobs[id]?.cancel()
-        countdownJobs.remove(id)
-        runningEndTimes.remove(id)
-        TimerAlarmScheduler.cancel(appContext, id)
-        TimerAlarmService.dismiss(appContext, id)
-        cancelTimerFinishedNotification(id)
-        timerStore.remove(id)
-        _uiState.value = _uiState.value.copy(
-            activeTimers = _uiState.value.activeTimers.filter { it.id != id }
-        )
     }
 
     /** True when [stop] removed a timer that can still be put back. */

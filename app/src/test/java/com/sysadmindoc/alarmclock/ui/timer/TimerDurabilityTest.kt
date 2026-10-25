@@ -131,4 +131,41 @@ class TimerDurabilityTest {
         val result = storeWithMock.markFinished(1)
         assertEquals("markFinished MUST return null on commit failure", null, result)
     }
+
+    @Test
+    fun `TimerStore startOrReuse returns COMMIT_FAILED when disk commit fails`() {
+        val mockContext = mockk<Context>(relaxed = true)
+        val mockPrefs = mockk<android.content.SharedPreferences>(relaxed = true)
+        val mockEditor = mockk<android.content.SharedPreferences.Editor>(relaxed = true)
+
+        every { mockContext.getSharedPreferences(any(), any()) } returns mockPrefs
+        every { mockPrefs.getString(any(), any()) } returns null
+        every { mockPrefs.edit() } returns mockEditor
+        every { mockEditor.putString(any(), any()) } returns mockEditor
+        every { mockEditor.commit() } returns false
+
+        val storeWithMock = TimerStore(mockContext)
+        val result = storeWithMock.startOrReuse(60, "Tea")
+
+        assertEquals("startOrReuse MUST return COMMIT_FAILED when commit fails", TimerStartStatus.COMMIT_FAILED, result.status)
+        assertFalse("created MUST be false on COMMIT_FAILED", result.created)
+    }
+
+    @Test
+    fun `TimerStore restartFinished returns null on commit failure`() {
+        val mockContext = mockk<Context>(relaxed = true)
+        val mockPrefs = mockk<android.content.SharedPreferences>(relaxed = true)
+        val mockEditor = mockk<android.content.SharedPreferences.Editor>(relaxed = true)
+
+        val json = "[{\"id\":1,\"label\":\"Test\",\"totalSeconds\":60,\"remainingMillis\":0,\"state\":\"FINISHED\",\"endElapsedRealtime\":0}]"
+        every { mockContext.getSharedPreferences(any(), any()) } returns mockPrefs
+        every { mockPrefs.getString(any(), any()) } returns json
+        every { mockPrefs.edit() } returns mockEditor
+        every { mockEditor.putString(any(), any()) } returns mockEditor
+        every { mockEditor.commit() } returns false
+
+        val storeWithMock = TimerStore(mockContext)
+        val result = storeWithMock.restartFinished(1)
+        assertEquals("restartFinished MUST return null on commit failure", null, result)
+    }
 }
