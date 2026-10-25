@@ -704,13 +704,10 @@ class AlarmScheduler @Inject constructor(
             }
         }
 
-        val pendingIntent = lookupPendingIntentForCancel(alarmId)
-        if (pendingIntent != null) {
-            alarmManager.cancel(pendingIntent)
-            pendingIntent.cancel()
-            return true
-        }
-        return false
+        val pendingIntent = lookupPendingIntentForCancel(alarmId, expectedTriggerTime)
+        alarmManager.cancel(pendingIntent)
+        pendingIntent.cancel()
+        return true
     }
 
     /**
@@ -808,7 +805,7 @@ class AlarmScheduler @Inject constructor(
      * Excludes repository mutations, widget updates, DirectBoot cache writes, and WorkManager jobs.
      */
     internal fun applyRawOsCancel(alarmId: Long): Boolean {
-        val pendingIntent = lookupPendingIntentForCancel(alarmId) ?: return true
+        val pendingIntent = lookupPendingIntentForCancel(alarmId)
         return try {
             alarmManager.cancel(pendingIntent)
             pendingIntent.cancel()
@@ -1230,15 +1227,24 @@ class AlarmScheduler @Inject constructor(
         )
     }
 
-    private fun lookupPendingIntentForCancel(alarmId: Long): PendingIntent? {
+    private fun lookupPendingIntentForCancel(
+        alarmId: Long,
+        triggerTime: Long = 0L,
+        fireId: String = ""
+    ): PendingIntent {
         val intent = Intent(context, AlarmReceiver::class.java).apply {
             action = "com.sysadmindoc.alarmclock.ALARM_FIRE"
+            putExtra(EXTRA_ALARM_ID, alarmId)
+            if (triggerTime > 0L) {
+                putExtra(EXTRA_SCHEDULED_AT, triggerTime)
+                putExtra(EXTRA_ALARM_FIRE_ID, fireId.ifBlank { AlarmIncidentEvent.fireIdFor(alarmId, triggerTime) })
+            }
         }
         return PendingIntent.getBroadcast(
             context,
             alarmId.toInt(),
             intent,
-            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
     }
 
