@@ -40,7 +40,10 @@ class SkipNextReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val alarmId = intent.getLongExtra(AlarmScheduler.EXTRA_ALARM_ID, -1L)
         val expectedScheduledAt = intent.getLongExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, -1L)
-        if (alarmId == -1L) return
+        if (alarmId <= 0L || expectedScheduledAt <= 0L) {
+            Log.w("SkipNextReceiver", "Rejecting skip for alarm $alarmId: missing or non-positive occurrence identity ($expectedScheduledAt)")
+            return
+        }
 
         val pending = goAsync()
         val activeScope = testScope ?: scope
@@ -62,28 +65,45 @@ class SkipNextReceiver : BroadcastReceiver() {
                     val preferencesManager = ep.preferencesManager()
 
                     val alarm = repo.getById(alarmId) ?: return@withTimeout
+                    if (!alarm.isEnabled || alarm.nextTriggerTime <= 0L) {
+                        Log.i("SkipNextReceiver", "Rejecting skip for disabled/unarmed alarm $alarmId")
+                        return@withTimeout
+                    }
 
-                    // Validate occurrence identity: if expectedScheduledAt is provided (> 0) and differs
-                    // from current alarm.nextTriggerTime, the skip action is stale/duplicate and MUST fail closed.
-                    if (expectedScheduledAt > 0L && expectedScheduledAt != alarm.nextTriggerTime) {
+                    // Validate occurrence identity: expectedScheduledAt MUST match current alarm.nextTriggerTime
+                    if (expectedScheduledAt != alarm.nextTriggerTime) {
                         Log.i("SkipNextReceiver", "Rejecting stale skip for alarm $alarmId: expected $expectedScheduledAt != current ${alarm.nextTriggerTime}")
                         return@withTimeout
                     }
 
                     // Reject skipping an alarm that is currently FIRING in active session.
-                    val cachedSettings = preferencesManager.getCachedSettings()
-                    if (alarm.id == cachedSettings.activeAlarmId && cachedSettings.activeAlarmState == "FIRING") {
+                    val currentSettings = preferencesManager.getCachedSettings()
+                    if (alarm.id == currentSettings.activeAlarmId && currentSettings.activeAlarmState == "FIRING") {
                         Log.i("SkipNextReceiver", "Rejecting skip for active FIRING alarm $alarmId")
                         return@withTimeout
                     }
 
+                    val originalScheduledTime = alarm.nextTriggerTime
+                    val outcome: com.sysadmindoc.alarmclock.domain.ScheduleOutcome
+
                     if (!alarm.isRecurringSchedule) {
                         repo.setEnabled(alarm.id, enabled = false, nextTrigger = 0)
                         scheduler.cancel(alarm.id)
+                        outcome = com.sysadmindoc.alarmclock.domain.ScheduleOutcome.NoArm(alarm.id, "ONE_SHOT_DISABLED")
                     } else {
-                        val skipFloorMs = alarm.nextTriggerTime
-                            .coerceAtLeast(System.currentTimeMillis()) + 60_000L
-                        val outcome = scheduler.schedule(alarm, notBeforeMillis = skipFloorMs)
+                        val skipFloorMs = alarm.nextTriggerTime.coerceAtLeast(System.currentTimeMillis()) + 60_000L
+                        val nextTrigger = ep.nextAlarmCalculator().calculate(
+                            alarm,
+                            Instant.ofEpochMilli(skipFloorMs).atZone(ZoneId.systemDefault())
+                        )
+                        // Atomic Room CAS update: claim occurrence transition in DB
+                        val rowsUpdated = repo.casUpdateNextTrigger(alarm.id, expectedTrigger = expectedScheduledAt, newTrigger = nextTrigger)
+                        if (rowsUpdated == 0) {
+                            Log.i("SkipNextReceiver", "Concurrent duplicate skip rejected for alarm $alarmId at expected $expectedScheduledAt")
+                            return@withTimeout
+                        }
+
+                        outcome = scheduler.scheduleAt(alarm.copy(nextTriggerTime = nextTrigger), nextTrigger)
                         if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed) {
                             Log.w("SkipNextReceiver", "Replacement re-arm registration failed for skipped alarm $alarmId; pending background recovery")
                         }
@@ -94,13 +114,13 @@ class SkipNextReceiver : BroadcastReceiver() {
                             AlarmEvent(
                                 alarmId = alarm.id,
                                 alarmLabel = alarm.label,
-                                scheduledTime = alarm.nextTriggerTime,
-                                firedAt = alarm.nextTriggerTime,
+                                scheduledTime = originalScheduledTime,
+                                firedAt = originalScheduledTime,
                                 action = AlarmEvent.ACTION_SKIPPED,
                                 actionAt = System.currentTimeMillis(),
                                 challengeType = alarm.challengeType,
                                 dayOfWeek = Instant.ofEpochMilli(
-                                    alarm.nextTriggerTime.coerceAtLeast(System.currentTimeMillis())
+                                    originalScheduledTime.coerceAtLeast(System.currentTimeMillis())
                                 ).atZone(ZoneId.systemDefault()).dayOfWeek.value
                             )
                         )
@@ -111,7 +131,7 @@ class SkipNextReceiver : BroadcastReceiver() {
                         alarmId = alarm.id,
                         label = alarm.label,
                         timeFormatted = "%02d:%02d".format(Locale.US, alarm.hour, alarm.minute),
-                        scheduledForMillis = alarm.nextTriggerTime.takeIf { it > 0L },
+                        scheduledForMillis = originalScheduledTime.takeIf { it > 0L },
                         fireId = null
                     )
                 }

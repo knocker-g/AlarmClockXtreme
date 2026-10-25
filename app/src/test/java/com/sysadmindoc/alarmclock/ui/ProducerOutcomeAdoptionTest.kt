@@ -51,6 +51,7 @@ class ProducerOutcomeAdoptionTest {
 
     @Before
     fun setUp() {
+        try { Dispatchers.resetMain() } catch (_: Exception) {}
         Dispatchers.setMain(Dispatchers.Unconfined)
         context = ApplicationProvider.getApplicationContext()
         org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(true)

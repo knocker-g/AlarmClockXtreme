@@ -86,6 +86,7 @@ class SkipTransitionTest {
         mockEntryPoint = mockk<AlarmClockApp.AppEntryPoint>(relaxed = true)
         every { mockEntryPoint.alarmRepository() } returns alarmRepo
         every { mockEntryPoint.alarmScheduler() } returns scheduler
+        every { mockEntryPoint.nextAlarmCalculator() } returns calculator
         every { mockEntryPoint.alarmEventRepository() } returns eventRepo
         every { mockEntryPoint.webhookService() } returns webhookService
         every { mockEntryPoint.preferencesManager() } returns preferencesManager
@@ -197,5 +198,80 @@ class SkipTransitionTest {
 
         val updated = alarmRepo.getById(alarmId)
         assertEquals("FIRING alarm MUST NOT be skipped", currentTrigger, updated?.nextTriggerTime)
+    }
+
+    @Test
+    fun `SkipNextReceiver fails closed when expectedScheduledAt is missing or non-positive`() = runBlocking {
+        val currentTrigger = System.currentTimeMillis() + 3600_000L
+
+        val alarmId = alarmRepo.save(
+            Alarm(
+                hour = 7,
+                minute = 0,
+                isEnabled = true,
+                repeatDays = setOf(DayOfWeek.MONDAY),
+                nextTriggerTime = currentTrigger
+            )
+        )
+
+        // Missing EXTRA_SCHEDULED_AT
+        val intent = Intent(context, SkipNextReceiver::class.java).apply {
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
+        }
+
+        val receiver = SkipNextReceiver().apply {
+            testScope = this@runBlocking
+            testEntryPoint = mockEntryPoint
+        }
+        receiver.onReceive(context, intent)
+        kotlinx.coroutines.delay(100)
+
+        val updated = alarmRepo.getById(alarmId)
+        assertEquals("DB trigger MUST remain unchanged when occurrence identity is missing", currentTrigger, updated?.nextTriggerTime)
+    }
+
+    @Test
+    fun `SkipNextReceiver rejects duplicate skip on same occurrence`() = runBlocking {
+        val currentTrigger = System.currentTimeMillis() + 3600_000L
+        val nextTrigger = currentTrigger + 86400_000L
+
+        every { calculator.calculate(any(), any()) } returns nextTrigger
+        every { calculator.calculate(any()) } returns nextTrigger
+
+        val alarmId = alarmRepo.save(
+            Alarm(
+                hour = 7,
+                minute = 0,
+                isEnabled = true,
+                repeatDays = setOf(DayOfWeek.MONDAY),
+                nextTriggerTime = currentTrigger
+            )
+        )
+
+        val intent = Intent(context, SkipNextReceiver::class.java).apply {
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, currentTrigger)
+        }
+
+        val receiver1 = SkipNextReceiver().apply {
+            testScope = this@runBlocking
+            testEntryPoint = mockEntryPoint
+        }
+        receiver1.onReceive(context, intent)
+        kotlinx.coroutines.delay(100)
+
+        val firstUpdated = alarmRepo.getById(alarmId)
+        assertEquals("First skip MUST advance trigger to nextTrigger", nextTrigger, firstUpdated?.nextTriggerTime)
+
+        // Duplicate skip targeting original currentTrigger
+        val receiver2 = SkipNextReceiver().apply {
+            testScope = this@runBlocking
+            testEntryPoint = mockEntryPoint
+        }
+        receiver2.onReceive(context, intent)
+        kotlinx.coroutines.delay(100)
+
+        val secondUpdated = alarmRepo.getById(alarmId)
+        assertEquals("Duplicate skip MUST be rejected and DB trigger MUST stay at nextTrigger", nextTrigger, secondUpdated?.nextTriggerTime)
     }
 }

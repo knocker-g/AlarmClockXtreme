@@ -617,8 +617,8 @@ class AlarmListViewModel @Inject constructor(
      * Cancels the current schedule and reschedules for the occurrence after next.
      */
     fun skipNextOccurrence(alarm: Alarm) {
-        if (!alarm.isRecurringSchedule) return
-        if (alarm.nextTriggerTime <= 0L) return
+        if (!alarm.isRecurringSchedule || alarm.nextTriggerTime <= 0L) return
+        val expectedScheduledAt = alarm.nextTriggerTime
         val cachedSettings = preferencesManager.getCachedSettings()
         if (alarm.id == cachedSettings.activeAlarmId && cachedSettings.activeAlarmState == "FIRING") {
             emitFeedback(context.getString(R.string.alarmlist_cannot_modify_active_alarm))
@@ -626,14 +626,24 @@ class AlarmListViewModel @Inject constructor(
         }
         viewModelScope.launch {
             val current = repository.getById(alarm.id) ?: return@launch
-            if (!current.isRecurringSchedule || current.nextTriggerTime <= 0L || current.nextTriggerTime != alarm.nextTriggerTime) {
-                android.util.Log.i("AlarmListViewModel", "Rejecting stale UI skip for alarm ${alarm.id}: expected ${alarm.nextTriggerTime} != current ${current.nextTriggerTime}")
+            if (!current.isEnabled || current.nextTriggerTime <= 0L || current.nextTriggerTime != expectedScheduledAt) {
+                android.util.Log.i("AlarmListViewModel", "Rejecting stale UI skip for alarm ${alarm.id}: expected $expectedScheduledAt != current ${current.nextTriggerTime}")
                 return@launch
             }
 
-            val skipFloorMs = current.nextTriggerTime.coerceAtLeast(System.currentTimeMillis()) + 60_000L
-            val outcome = scheduler.schedule(current, notBeforeMillis = skipFloorMs)
+            val skipFloorMs = expectedScheduledAt.coerceAtLeast(System.currentTimeMillis()) + 60_000L
+            val afterSkipTime = Instant.ofEpochMilli(skipFloorMs).atZone(ZoneId.systemDefault())
+            val afterSkip = calculator.calculate(current, afterSkipTime)
 
+            // Atomic Room CAS update: claim occurrence transition in DB
+            val rowsUpdated = repository.casUpdateNextTrigger(alarm.id, expectedTrigger = expectedScheduledAt, newTrigger = afterSkip)
+            if (rowsUpdated == 0) {
+                android.util.Log.i("AlarmListViewModel", "Concurrent duplicate UI skip rejected for alarm ${alarm.id} at $expectedScheduledAt")
+                return@launch
+            }
+
+            val updatedAlarm = current.copy(nextTriggerTime = afterSkip)
+            val outcome = scheduler.scheduleAt(updatedAlarm, afterSkip)
             if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed) {
                 android.util.Log.w("AlarmListViewModel", "Replacement re-arm registration failed for skipped alarm ${alarm.id}; pending background recovery")
             }
@@ -642,30 +652,27 @@ class AlarmListViewModel @Inject constructor(
                 AlarmEvent(
                     alarmId = current.id,
                     alarmLabel = current.label,
-                    scheduledTime = current.nextTriggerTime,
+                    scheduledTime = expectedScheduledAt,
                     firedAt = System.currentTimeMillis(),
                     action = AlarmEvent.ACTION_SKIPPED,
                     actionAt = System.currentTimeMillis(),
-                    dayOfWeek = Instant.ofEpochMilli(current.nextTriggerTime)
+                    dayOfWeek = Instant.ofEpochMilli(expectedScheduledAt)
                         .atZone(ZoneId.systemDefault()).dayOfWeek.value
                 )
             )
 
-            val newTrigger = repository.getById(alarm.id)?.nextTriggerTime ?: 0L
-            if (newTrigger > 0L) {
-                val locale = context.resources.configuration.locales[0]
-                val is24h = preferencesManager.getCachedSettings().is24HourFormat
-                val datePattern = context.getString(R.string.alarmlist_date_pattern)
-                val format = context.getString(R.string.alarmlist_next_occurrence_format)
+            val locale = context.resources.configuration.locales[0]
+            val is24h = preferencesManager.getCachedSettings().is24HourFormat
+            val datePattern = context.getString(R.string.alarmlist_date_pattern)
+            val format = context.getString(R.string.alarmlist_next_occurrence_format)
 
-                val dateFormatted = Instant.ofEpochMilli(newTrigger)
-                    .atZone(ZoneId.systemDefault())
-                    .format(DateTimeFormatter.ofPattern(datePattern, locale))
-                val timeFormatted = AlarmTimeFormatter.format(newTrigger, is24h, locale = locale)
+            val dateFormatted = Instant.ofEpochMilli(afterSkip)
+                .atZone(ZoneId.systemDefault())
+                .format(DateTimeFormatter.ofPattern(datePattern, locale))
+            val timeFormatted = AlarmTimeFormatter.format(afterSkip, is24h, locale = locale)
 
-                val skippedDate = format.format(dateFormatted, timeFormatted)
-                emitFeedback(context.getString(R.string.alarmlist_skip_next_feedback, skippedDate))
-            }
+            val skippedDate = format.format(dateFormatted, timeFormatted)
+            emitFeedback(context.getString(R.string.alarmlist_skip_next_feedback, skippedDate))
         }
     }
 
