@@ -282,6 +282,9 @@ class AlarmClockApp : Application(), Configuration.Provider {
         val id = repo.save(alarm)
         val triggerTime = calculator.calculate(alarm)
         repo.updateNextTrigger(id, triggerTime)
-        scheduler.schedule(alarm.copy(id = id, nextTriggerTime = triggerTime))
+        val outcome = scheduler.schedule(alarm.copy(id = id, nextTriggerTime = triggerTime))
+        if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed) {
+            android.util.Log.w("AlarmClockApp", "Default seed alarm $id saved in DB, but OS registration failed; pending background recovery")
+        }
     }
 }

@@ -2322,6 +2322,14 @@
     <!-- Feedback messages -->
     <string name="feedback_alarm_paused">アラームを一時停止</string>
     <string name="feedback_alarm_enabled_for">有効: %1$s</string>
+    <string name="feedback_multialarm_enabled_blocked">%1$d件を有効化（%2$d件は権限が必要）</string>
+    <string name="feedback_multialarm_enabled_failed">%1$d件を有効化（%2$d件は復旧処理待ち）</string>
+    <string name="feedback_alarm_enabled_permission_blocked">アラームを有効にしましたが、鳴動には正確なアラーム権限が必要です</string>
+    <string name="feedback_alarm_enabled_registration_failed">アラームを有効にしました。背景処理で自動復旧を行います</string>
+    <string name="feedback_alarm_restored_permission_blocked">アラームを復元しましたが、鳴動には正確なアラーム権限が必要です</string>
+    <string name="feedback_alarm_restored_registration_failed">アラームを復元しました。背景処理で自動復旧を行います</string>
+    <string name="feedback_alarm_copied_permission_blocked">アラームを複製しましたが、鳴動には正確なアラーム権限が必要です</string>
+    <string name="feedback_alarm_copied_registration_failed">アラームを複製しました。背景処理で自動復旧を行います</string>
     <string name="feedback_cancellation_lock_overridden_paused">ロックを上書きして一時停止</string>
     <plurals name="feedback_multialarm_paused">
         <item quantity="one">1件のアラームを一時停止</item>
