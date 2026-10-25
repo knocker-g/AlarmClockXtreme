@@ -25,11 +25,19 @@ class ExactAlarmPermissionRescheduleWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result {
         return try {
-            withTimeout(RESCHEDULE_TIMEOUT_MS) {
-                alarmScheduler.rescheduleAll(forceRecalculate = true)
+            val batchResult = withTimeout(RESCHEDULE_TIMEOUT_MS) {
+                alarmScheduler.rescheduleAllInBatches(forceRecalculate = true)
             }
-            Log.i(TAG, "Rescheduled enabled alarms after exact-alarm permission grant")
-            Result.success()
+            Log.i(
+                TAG,
+                "Rescheduled enabled alarms after exact-alarm permission grant: total=${batchResult.totalProcessed}, armed=${batchResult.armedCount}, blocked=${batchResult.blockedCount}, failed=${batchResult.failedCount}, noArm=${batchResult.noArmCount}"
+            )
+            if (batchResult.failedCount > 0 && runAttemptCount < MAX_ATTEMPTS) {
+                Log.w(TAG, "Permission reschedule completed with ${batchResult.failedCount} registration failures; requesting retry (attempt ${runAttemptCount + 1}/$MAX_ATTEMPTS)")
+                Result.retry()
+            } else {
+                Result.success()
+            }
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "Timed out rescheduling alarms after exact-alarm permission grant", e)
             if (runAttemptCount < MAX_ATTEMPTS) Result.retry() else Result.failure()
