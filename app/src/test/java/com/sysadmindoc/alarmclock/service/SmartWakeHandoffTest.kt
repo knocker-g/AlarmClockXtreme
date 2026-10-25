@@ -158,6 +158,10 @@ class SmartWakeHandoffTest {
         val cancelledStaleC = scheduler.cancelMainScheduledAlarm(alarmId, targetTime, expectedIssueToken = tokenC)
         assertFalse("Stale SmartWake command C MUST be rejected when active slot token is tokenD", cancelledStaleC)
 
+        // Tokenless command attempts to cancel tokenized alarm -> fails closed
+        val cancelledTokenless = scheduler.cancelMainScheduledAlarm(alarmId, targetTime, expectedIssueToken = null)
+        assertFalse("Tokenless SmartWake command MUST be rejected when active slot token is tokenD", cancelledTokenless)
+
         // Active command D attempts to cancel with expectedIssueToken = tokenD
         val cancelledActiveD = scheduler.cancelMainScheduledAlarm(alarmId, targetTime, expectedIssueToken = tokenD)
         assertTrue("Active SmartWake command D MUST succeed when expectedIssueToken matches active slot token", cancelledActiveD)

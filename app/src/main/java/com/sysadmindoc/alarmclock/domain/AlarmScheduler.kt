@@ -682,9 +682,12 @@ class AlarmScheduler @Inject constructor(
         val authority = runBlocking { repository.getAuthorityByAlarmId(alarmId) }
         val activeSlotToken = runBlocking { repository.issuedOccurrenceDao().getSlotCurrentToken(alarmId) }
 
-        if (!expectedIssueToken.isNullOrBlank()) {
-            if (activeSlotToken.isNullOrBlank() || activeSlotToken != expectedIssueToken) {
-                Log.w("AlarmScheduler", "Stale SmartWake cancellation ignored for alarm $alarmId (issueToken mismatch: active '$activeSlotToken' != expected '$expectedIssueToken')")
+        // If alarm has migrated to tokenized authority (activeSlotToken is present in issue_slots):
+        // Cancellation requires an expectedIssueToken matching activeSlotToken.
+        // A missing, blank, or mismatched expectedIssueToken fails closed to protect the active alarm.
+        if (!activeSlotToken.isNullOrBlank()) {
+            if (expectedIssueToken.isNullOrBlank() || expectedIssueToken != activeSlotToken) {
+                Log.w("AlarmScheduler", "SmartWake cancellation rejected for alarm $alarmId: active tokenized authority '$activeSlotToken' requires matching token (got '$expectedIssueToken')")
                 return false
             }
         }
