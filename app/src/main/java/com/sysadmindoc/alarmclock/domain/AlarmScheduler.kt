@@ -670,7 +670,8 @@ class AlarmScheduler @Inject constructor(
         expectedTriggerTime: Long = 0L,
         expectedInstanceToken: String? = null,
         expectedRestoreEpoch: Long? = null,
-        expectedScheduleRevision: Long? = null
+        expectedScheduleRevision: Long? = null,
+        expectedIssueToken: String? = null
     ): Boolean {
         val alarm = runBlocking { repository.getById(alarmId)?.sanitized() }
             ?: run {
@@ -679,6 +680,17 @@ class AlarmScheduler @Inject constructor(
             }
 
         val authority = runBlocking { repository.getAuthorityByAlarmId(alarmId) }
+        val activeSlotToken = runBlocking { repository.issuedOccurrenceDao().getSlotCurrentToken(alarmId) }
+
+        // If alarm has migrated to tokenized authority (activeSlotToken is present in issue_slots):
+        // Cancellation requires an expectedIssueToken matching activeSlotToken.
+        // A missing, blank, or mismatched expectedIssueToken fails closed to protect the active alarm.
+        if (!activeSlotToken.isNullOrBlank()) {
+            if (expectedIssueToken.isNullOrBlank() || expectedIssueToken != activeSlotToken) {
+                Log.w("AlarmScheduler", "SmartWake cancellation rejected for alarm $alarmId: active tokenized authority '$activeSlotToken' requires matching token (got '$expectedIssueToken')")
+                return false
+            }
+        }
 
         // Generation Fence Verification
         if (expectedInstanceToken != null && authority != null && authority.instanceToken != expectedInstanceToken) {
@@ -697,20 +709,25 @@ class AlarmScheduler @Inject constructor(
         }
 
         if (expectedTriggerTime > 0L) {
-            if (alarm.nextTriggerTime > expectedTriggerTime ||
-                (authority != null && authority.desiredTriggerMillis != null && authority.desiredTriggerMillis > expectedTriggerTime)) {
-                Log.w("AlarmScheduler", "Stale SmartWake cancellation ignored for alarm $alarmId (current ${alarm.nextTriggerTime} > expected $expectedTriggerTime)")
+            if (alarm.nextTriggerTime != expectedTriggerTime ||
+                (authority != null && authority.desiredTriggerMillis != null && authority.desiredTriggerMillis != expectedTriggerTime)) {
+                Log.w("AlarmScheduler", "Stale SmartWake cancellation ignored for alarm $alarmId (current ${alarm.nextTriggerTime} != expected $expectedTriggerTime)")
                 return false
             }
         }
 
-        val pendingIntent = lookupPendingIntentForCancel(alarmId)
+        val pendingIntent = lookupPendingIntentForCancel(alarmId, expectedTriggerTime, "")
         if (pendingIntent != null) {
-            alarmManager.cancel(pendingIntent)
-            pendingIntent.cancel()
-            return true
+            return try {
+                alarmManager.cancel(pendingIntent)
+                pendingIntent.cancel()
+                true
+            } catch (e: Exception) {
+                Log.e("AlarmScheduler", "cancelMainScheduledAlarm OS cancel failed for alarm $alarmId", e)
+                false
+            }
         }
-        return false
+        return true
     }
 
     /**
@@ -1233,6 +1250,27 @@ class AlarmScheduler @Inject constructor(
     private fun lookupPendingIntentForCancel(alarmId: Long): PendingIntent? {
         val intent = Intent(context, AlarmReceiver::class.java).apply {
             action = "com.sysadmindoc.alarmclock.ALARM_FIRE"
+        }
+        return PendingIntent.getBroadcast(
+            context,
+            alarmId.toInt(),
+            intent,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    private fun lookupPendingIntentForCancel(
+        alarmId: Long,
+        triggerTime: Long,
+        fireId: String
+    ): PendingIntent? {
+        val intent = Intent(context, AlarmReceiver::class.java).apply {
+            action = "com.sysadmindoc.alarmclock.ALARM_FIRE"
+            putExtra(EXTRA_ALARM_ID, alarmId)
+            if (triggerTime > 0L) {
+                putExtra(EXTRA_SCHEDULED_AT, triggerTime)
+                putExtra(EXTRA_ALARM_FIRE_ID, fireId.ifBlank { AlarmIncidentEvent.fireIdFor(alarmId, triggerTime) })
+            }
         }
         return PendingIntent.getBroadcast(
             context,

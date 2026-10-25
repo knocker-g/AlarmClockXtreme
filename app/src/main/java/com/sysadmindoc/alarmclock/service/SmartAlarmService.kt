@@ -43,6 +43,9 @@ class SmartAlarmService : Service(), SensorEventListener {
 
     @Inject lateinit var actigraphyRepository: ActigraphyRepository
     @Inject lateinit var alarmScheduler: AlarmScheduler
+    @Inject lateinit var alarmRepository: com.sysadmindoc.alarmclock.data.repository.AlarmRepository
+    @Inject lateinit var alarmIncidentRepository: com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository
+    @Inject lateinit var preferencesManager: com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 
     companion object {
         const val ACTION_START_SMART = "com.sysadmindoc.alarmclock.SMART_ALARM_START"
@@ -60,6 +63,7 @@ class SmartAlarmService : Service(), SensorEventListener {
 
     private var alarmId: Long = -1L
     private var targetTimeMs: Long = 0L
+    private var issueToken: String? = null
     private var windowMotionMax = 0f
     private var windowStartMs = 0L
     private var sessionStartMs = 0L
@@ -96,6 +100,7 @@ class SmartAlarmService : Service(), SensorEventListener {
 
         alarmId = intent.getLongExtra(EXTRA_ALARM_ID, -1L)
         targetTimeMs = intent.getLongExtra(EXTRA_TARGET_TIME, 0L)
+        issueToken = intent.getStringExtra(AlarmScheduler.EXTRA_ISSUE_TOKEN)
 
         if (alarmId == -1L || targetTimeMs == 0L) {
             stopSelf()
@@ -243,25 +248,6 @@ class SmartAlarmService : Service(), SensorEventListener {
     }
 
     private fun startAlarmService() {
-        // Fire early via the foreground service directly ONLY if the original main
-        // alarm PendingIntent is safely cancelled. If cancellation fails or generation
-        // mismatches, do NOT launch an early duplicate alarm; the original alarm
-        // remains armed and will fire normally at its scheduled minute.
-        val mainAlarmCancelled = try {
-            alarmScheduler.cancelMainScheduledAlarm(alarmId, targetTimeMs)
-        } catch (e: Exception) {
-            android.util.Log.e("SmartAlarmService", "Failed to cancel main alarm $alarmId for early fire", e)
-            false
-        }
-
-        if (!mainAlarmCancelled) {
-            android.util.Log.w(
-                "SmartAlarmService",
-                "Main alarm $alarmId cancellation was unconfirmed or rejected for target $targetTimeMs; suppressing early fire to prevent duplicate alarm"
-            )
-            return
-        }
-
         val fireId = com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent.fireIdFor(alarmId, targetTimeMs)
         val intent = Intent(this, AlarmService::class.java).apply {
             action = AlarmService.ACTION_START_ALARM
@@ -273,10 +259,26 @@ class SmartAlarmService : Service(), SensorEventListener {
             putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, targetTimeMs)
             putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, fireId)
         }
+
         try {
             startForegroundService(intent)
         } catch (e: Exception) {
-            android.util.Log.e("SmartAlarmService", "startForegroundService failed for alarm $alarmId", e)
+            android.util.Log.e("SmartAlarmService", "startForegroundService failed for early fire alarm $alarmId", e)
+            try {
+                val settings = preferencesManager.getCachedSettings()
+                val alarm = kotlinx.coroutines.runBlocking { alarmRepository.getById(alarmId) }
+                if (alarm != null) {
+                    AlarmFullScreenFallback.post(
+                        context = this,
+                        alarm = alarm,
+                        scheduledAt = targetTimeMs,
+                        fireId = fireId,
+                        hideLabel = settings.hideAlarmLabelsOnPublicSurfaces
+                    )
+                }
+            } catch (fallbackErr: Exception) {
+                android.util.Log.e("SmartAlarmService", "Fallback notification post failed for early fire alarm $alarmId", fallbackErr)
+            }
         }
     }
 
