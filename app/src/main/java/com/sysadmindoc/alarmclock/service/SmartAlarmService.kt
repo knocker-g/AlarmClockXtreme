@@ -260,60 +260,26 @@ class SmartAlarmService : Service(), SensorEventListener {
             putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, fireId)
         }
 
-        var earlyDeliverySucceeded = false
         try {
             startForegroundService(intent)
-            earlyDeliverySucceeded = kotlinx.coroutines.runBlocking {
-                awaitPositiveDeliveryProof(alarmId, targetTimeMs, timeoutMs = 1_500L)
-            }
         } catch (e: Exception) {
             android.util.Log.e("SmartAlarmService", "startForegroundService failed for early fire alarm $alarmId", e)
             try {
                 val settings = preferencesManager.getCachedSettings()
                 val alarm = kotlinx.coroutines.runBlocking { alarmRepository.getById(alarmId) }
                 if (alarm != null) {
-                    val fallbackPosted = AlarmFullScreenFallback.post(
+                    AlarmFullScreenFallback.post(
                         context = this,
                         alarm = alarm,
                         scheduledAt = targetTimeMs,
                         fireId = fireId,
                         hideLabel = settings.hideAlarmLabelsOnPublicSurfaces
                     )
-                    earlyDeliverySucceeded = fallbackPosted
                 }
             } catch (fallbackErr: Exception) {
                 android.util.Log.e("SmartAlarmService", "Fallback notification post failed for early fire alarm $alarmId", fallbackErr)
-                earlyDeliverySucceeded = false
             }
         }
-
-        // Cancel original main AlarmManager target ONLY IF early delivery is confirmed
-        if (earlyDeliverySucceeded) {
-            try {
-                alarmScheduler.cancelMainScheduledAlarm(alarmId, targetTimeMs, expectedIssueToken = issueToken)
-            } catch (e: Exception) {
-                android.util.Log.e("SmartAlarmService", "Failed to cancel main alarm $alarmId after early fire delivery", e)
-            }
-        } else {
-            android.util.Log.w(
-                "SmartAlarmService",
-                "Early fire delivery was unconfirmed or failed for alarm $alarmId; preserving original target alarm at $targetTimeMs"
-            )
-        }
-    }
-
-    private suspend fun awaitPositiveDeliveryProof(
-        alarmId: Long,
-        scheduledAt: Long,
-        timeoutMs: Long = 1_500L
-    ): Boolean {
-        val startTime = System.currentTimeMillis()
-        while (System.currentTimeMillis() - startTime <= timeoutMs) {
-            val proofCount = alarmIncidentRepository.occurrenceDeliveryCount(alarmId, scheduledAt)
-            if (proofCount > 0) return true
-            kotlinx.coroutines.delay(200L)
-        }
-        return false
     }
 
     override fun onTimeout(startId: Int, fgsType: Int) {
