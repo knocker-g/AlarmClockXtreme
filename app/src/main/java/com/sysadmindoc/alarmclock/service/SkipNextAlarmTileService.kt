@@ -61,6 +61,7 @@ class SkipNextAlarmTileService : TileService() {
             // the persistent notification path (records event, recomputes next
             // occurrence for repeating, disables one-shot).
             val skip = Intent(applicationContext, SkipNextReceiver::class.java).apply {
+                data = android.net.Uri.parse("acx://skip_alarm/${next.id}/${next.nextTriggerTime}")
                 putExtra(AlarmScheduler.EXTRA_ALARM_ID, next.id)
                 putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, next.nextTriggerTime)
             }
