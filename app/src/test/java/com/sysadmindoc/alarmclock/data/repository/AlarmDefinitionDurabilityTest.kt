@@ -187,4 +187,45 @@ class AlarmDefinitionDurabilityTest {
         assertNotNull(finalDbAlarm)
         assertTrue(finalDbAlarm!!.isEnabled)
     }
+
+    @Test
+    fun `transaction rolls back group creation when alarm insertion throws exception`() = runBlocking {
+        val mockDao = mockk<com.sysadmindoc.alarmclock.data.local.AlarmDao>(relaxed = true) {
+            coEvery { maxSortOrder() } returns 10
+            coEvery { insert(any()) } throws android.database.sqlite.SQLiteConstraintException("FORCED ROLLBACK TEST")
+        }
+
+        val transactionalRepo = AlarmRepository(
+            database = db,
+            dao = mockDao,
+            groupDao = db.alarmGroupDao()
+        )
+
+        var exceptionThrown = false
+        try {
+            transactionalRepo.save(Alarm(hour = 7, minute = 0, group = "Rollback Group"))
+        } catch (_: android.database.sqlite.SQLiteConstraintException) {
+            exceptionThrown = true
+        }
+
+        assertTrue("Exception must be thrown on failed insert", exceptionThrown)
+        val groups = alarmRepo.getAllGroups()
+        assertFalse("Group 'Rollback Group' MUST NOT exist in DB after transaction rollback", groups.contains("Rollback Group"))
+    }
+
+    @Test
+    fun `updating existing alarm preserves sortOrder without reallocating`() = runBlocking {
+        val initialAlarm = Alarm(hour = 6, minute = 0, isEnabled = true, sortOrder = 42)
+        val id = alarmRepo.save(initialAlarm)
+
+        val saved = alarmRepo.getById(id)!!
+        assertEquals(42, saved.sortOrder)
+
+        val updated = saved.copy(hour = 8, minute = 15)
+        alarmRepo.save(updated)
+
+        val finalAlarm = alarmRepo.getById(id)!!
+        assertEquals("sortOrder MUST remain 42 after update", 42, finalAlarm.sortOrder)
+        assertEquals(8, finalAlarm.hour)
+    }
 }
