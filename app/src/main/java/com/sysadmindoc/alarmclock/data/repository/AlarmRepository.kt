@@ -110,6 +110,9 @@ class AlarmRepository @Inject constructor(
     suspend fun casUpdateNextTrigger(id: Long, expectedTrigger: Long, newTrigger: Long): Int =
         dao.casUpdateNextTrigger(id, expectedTrigger, newTrigger)
 
+    suspend fun casDisableOneShot(id: Long, expectedTrigger: Long): Int =
+        dao.casDisableOneShot(id, expectedTrigger)
+
     suspend fun casUpdateNextTriggerWithStrictAuthority(
         id: Long,
         expectedTrigger: Long,

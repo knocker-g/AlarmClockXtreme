@@ -58,6 +58,9 @@ interface AlarmDao {
     @Query("UPDATE alarms SET nextTriggerTime = :newTrigger WHERE id = :id AND nextTriggerTime = :expectedTrigger")
     suspend fun casUpdateNextTrigger(id: Long, expectedTrigger: Long, newTrigger: Long): Int
 
+    @Query("UPDATE alarms SET isEnabled = 0, nextTriggerTime = 0 WHERE id = :id AND nextTriggerTime = :expectedTrigger AND isEnabled = 1")
+    suspend fun casDisableOneShot(id: Long, expectedTrigger: Long): Int
+
     @Query("""
         UPDATE alarms
         SET nextTriggerTime = :newTrigger

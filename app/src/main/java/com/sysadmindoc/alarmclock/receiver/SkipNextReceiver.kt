@@ -34,20 +34,27 @@ import java.util.Locale
 class SkipNextReceiver : BroadcastReceiver() {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    internal var testScope: CoroutineScope? = null
+    internal var testEntryPoint: AlarmClockApp.AppEntryPoint? = null
 
     override fun onReceive(context: Context, intent: Intent) {
         val alarmId = intent.getLongExtra(AlarmScheduler.EXTRA_ALARM_ID, -1L)
-        if (alarmId == -1L) return
+        val expectedScheduledAt = intent.getLongExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, -1L)
+        if (alarmId <= 0L || expectedScheduledAt <= 0L) {
+            Log.w("SkipNextReceiver", "Rejecting skip for alarm $alarmId: missing or non-positive occurrence identity ($expectedScheduledAt)")
+            return
+        }
 
         val pending = goAsync()
-        scope.launch {
+        val activeScope = testScope ?: scope
+        activeScope.launch {
             try {
                 // Match BootReceiver / MissedAlarmUnlockReceiver: goAsync()'s
                 // BroadcastReceiver window is ~10 s on most Android versions;
                 // a corrupt DB or storage lock could otherwise pin the
                 // PendingResult past that ceiling and ANR. 8 s leaves headroom.
                 withTimeout(8_000L) {
-                    val ep = EntryPointAccessors.fromApplication(
+                    val ep = testEntryPoint ?: EntryPointAccessors.fromApplication(
                         context.applicationContext,
                         AlarmClockApp.AppEntryPoint::class.java
                     )
@@ -58,13 +65,62 @@ class SkipNextReceiver : BroadcastReceiver() {
                     val preferencesManager = ep.preferencesManager()
 
                     val alarm = repo.getById(alarmId) ?: return@withTimeout
-
-                    // v1.11.3 (ALA-88): Reject skipping an alarm that is currently ringing or snoozed.
-                    // The "Next Alarm" notification should have hidden the Skip button, but
-                    // a stale PendingIntent could still fire.
-                    if (alarm.id == preferencesManager.getCachedSettings().activeAlarmId) {
-                        Log.i("SkipNextReceiver", "Rejecting skip for active/snoozed alarm $alarmId")
+                    if (!alarm.isEnabled || alarm.nextTriggerTime <= 0L) {
+                        Log.i("SkipNextReceiver", "Rejecting skip for disabled/unarmed alarm $alarmId")
                         return@withTimeout
+                    }
+
+                    // Validate occurrence identity: expectedScheduledAt MUST match current alarm.nextTriggerTime
+                    if (expectedScheduledAt != alarm.nextTriggerTime) {
+                        Log.i("SkipNextReceiver", "Rejecting stale skip for alarm $alarmId: expected $expectedScheduledAt != current ${alarm.nextTriggerTime}")
+                        return@withTimeout
+                    }
+
+                    // Reject skipping an alarm that is currently FIRING in active session.
+                    val currentSettings = preferencesManager.getCurrentSettings()
+                    if (alarm.id == currentSettings.activeAlarmId && currentSettings.activeAlarmState == "FIRING") {
+                        Log.i("SkipNextReceiver", "Rejecting skip for active FIRING alarm $alarmId")
+                        return@withTimeout
+                    }
+
+                    val originalScheduledTime = alarm.nextTriggerTime
+                    val outcome: com.sysadmindoc.alarmclock.domain.ScheduleOutcome
+
+                    if (!alarm.isRecurringSchedule) {
+                        // Atomic Room CAS disable: set isEnabled = 0 AND nextTriggerTime = 0 in a single atomic SQL query
+                        val rowsUpdated = repo.casDisableOneShot(alarm.id, expectedTrigger = expectedScheduledAt)
+                        if (rowsUpdated == 0) {
+                            Log.i("SkipNextReceiver", "Stale or concurrent duplicate one-shot skip rejected for alarm $alarmId at expected $expectedScheduledAt")
+                            return@withTimeout
+                        }
+                        scheduler.cancel(alarm.id)
+                        outcome = com.sysadmindoc.alarmclock.domain.ScheduleOutcome.NoArm(alarm.id, "ONE_SHOT_DISABLED")
+                    } else {
+                        val skipFloorMs = alarm.nextTriggerTime.coerceAtLeast(System.currentTimeMillis()) + 60_000L
+                        val nextTrigger = ep.nextAlarmCalculator().calculate(
+                            alarm,
+                            Instant.ofEpochMilli(skipFloorMs).atZone(ZoneId.systemDefault())
+                        )
+                        // Atomic Room CAS update: claim occurrence transition in DB
+                        val rowsUpdated = repo.casUpdateNextTrigger(alarm.id, expectedTrigger = expectedScheduledAt, newTrigger = nextTrigger)
+                        if (rowsUpdated == 0) {
+                            Log.i("SkipNextReceiver", "Concurrent duplicate skip rejected for alarm $alarmId at expected $expectedScheduledAt")
+                            return@withTimeout
+                        }
+
+                        outcome = scheduler.scheduleAt(alarm.copy(nextTriggerTime = nextTrigger), nextTrigger)
+                        if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed) {
+                            Log.w("SkipNextReceiver", "Replacement re-arm registration failed for skipped alarm $alarmId; enqueuing background recovery")
+                            try {
+                                com.sysadmindoc.alarmclock.worker.BootRescheduleWorker.enqueue(
+                                    context = context,
+                                    sourceAction = "SKIP_REGISTRATION_FAILED",
+                                    forceRecalculate = false
+                                )
+                            } catch (e: Exception) {
+                                Log.e("SkipNextReceiver", "Failed to enqueue BootRescheduleWorker after skip registration failure for alarm $alarmId", e)
+                            }
+                        }
                     }
 
                     runCatching {
@@ -72,13 +128,13 @@ class SkipNextReceiver : BroadcastReceiver() {
                             AlarmEvent(
                                 alarmId = alarm.id,
                                 alarmLabel = alarm.label,
-                                scheduledTime = alarm.nextTriggerTime,
-                                firedAt = alarm.nextTriggerTime,
+                                scheduledTime = originalScheduledTime,
+                                firedAt = originalScheduledTime,
                                 action = AlarmEvent.ACTION_SKIPPED,
                                 actionAt = System.currentTimeMillis(),
                                 challengeType = alarm.challengeType,
                                 dayOfWeek = Instant.ofEpochMilli(
-                                    alarm.nextTriggerTime.coerceAtLeast(System.currentTimeMillis())
+                                    originalScheduledTime.coerceAtLeast(System.currentTimeMillis())
                                 ).atZone(ZoneId.systemDefault()).dayOfWeek.value
                             )
                         )
@@ -89,30 +145,16 @@ class SkipNextReceiver : BroadcastReceiver() {
                         alarmId = alarm.id,
                         label = alarm.label,
                         timeFormatted = "%02d:%02d".format(Locale.US, alarm.hour, alarm.minute),
-                        scheduledForMillis = alarm.nextTriggerTime.takeIf { it > 0L },
+                        scheduledForMillis = originalScheduledTime.takeIf { it > 0L },
                         fireId = null
                     )
-
-                    if (!alarm.isRecurringSchedule) {
-                        repo.setEnabled(alarm.id, enabled = false, nextTrigger = 0)
-                        scheduler.cancel(alarm.id)
-                    } else {
-                        scheduler.cancel(alarm.id)
-                        // Route through the full scheduling policy so the
-                        // replacement occurrence honors holiday auto-skip,
-                        // vacation mode, and weather lead adjustments instead
-                        // of landing raw on a policy-skipped day.
-                        val skipFloorMs = alarm.nextTriggerTime
-                            .coerceAtLeast(System.currentTimeMillis()) + 60_000L
-                        scheduler.schedule(alarm, notBeforeMillis = skipFloorMs)
-                    }
                 }
             } catch (e: TimeoutCancellationException) {
                 Log.e("SkipNextReceiver", "Timed out skipping alarm $alarmId", e)
             } catch (e: Exception) {
                 Log.e("SkipNextReceiver", "Failed to skip alarm $alarmId", e)
             } finally {
-                pending.finish()
+                pending?.finish()
             }
         }
     }
