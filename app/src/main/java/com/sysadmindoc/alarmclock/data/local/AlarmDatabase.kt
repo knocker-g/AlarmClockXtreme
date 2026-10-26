@@ -53,7 +53,7 @@ abstract class AlarmDatabase : RoomDatabase() {
     abstract fun issuedOccurrenceDao(): IssuedOccurrenceDao
 
     companion object {
-        const val VERSION = 32
+        const val VERSION = 33
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -627,6 +627,19 @@ abstract class AlarmDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v33: KNO-20 P1 Slice 1 Quick Alarm explicit persistence discriminator & trigger fields.
+         * Adds `kind`, `quickTriggerEpochMs`, `quickRelativeElapsedMs`, `quickBootCount` columns to `alarms`.
+         */
+        val MIGRATION_32_33 = object : Migration(32, 33) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `kind` TEXT NOT NULL DEFAULT 'NORMAL'")
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `quickTriggerEpochMs` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `quickRelativeElapsedMs` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `quickBootCount` INTEGER NOT NULL DEFAULT -1")
+            }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -658,7 +671,8 @@ abstract class AlarmDatabase : RoomDatabase() {
             MIGRATION_28_29,
             MIGRATION_29_30,
             MIGRATION_30_31,
-            MIGRATION_31_32
+            MIGRATION_31_32,
+            MIGRATION_32_33
         )
     }
 }

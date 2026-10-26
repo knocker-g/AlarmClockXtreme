@@ -12,6 +12,11 @@ import java.time.ZoneId
 import java.time.format.TextStyle
 import java.util.Locale
 
+enum class AlarmKind {
+    NORMAL,
+    QUICK
+}
+
 /**
  * Core alarm entity stored in Room database.
  * Maps directly to the alarm list UI and scheduling engine.
@@ -146,9 +151,19 @@ data class Alarm(
     // LOCAL follows the device wall clock. FIXED keeps the alarm's wall clock
     // anchored to [fixedTimezoneId] while the user travels.
     val timezonePolicy: String = TIMEZONE_POLICY_LOCAL,
-    val fixedTimezoneId: String = ""
+    val fixedTimezoneId: String = "",
+    // KNO-20: Persisted domain discriminator ("NORMAL" or "QUICK")
+    val kind: String = KIND_NORMAL,
+    // KNO-20: Quick Alarm concrete RTC trigger instant (epoch millis)
+    val quickTriggerEpochMs: Long = 0,
+    // KNO-20: Quick Alarm monotonic elapsed target (relative duration)
+    val quickRelativeElapsedMs: Long = 0,
+    // KNO-20: Boot count when quickRelativeElapsedMs was written (-1 if unknown)
+    val quickBootCount: Long = -1
 ) {
     companion object {
+        const val KIND_NORMAL = "NORMAL"
+        const val KIND_QUICK = "QUICK"
         const val TIMEZONE_POLICY_LOCAL = "LOCAL"
         const val TIMEZONE_POLICY_FIXED = "FIXED"
         const val MAX_SMART_ALARM_WINDOW_MINUTES = 60
@@ -212,6 +227,12 @@ data class Alarm(
     }
 
     val time: LocalTime get() = LocalTime.of(hour.coerceIn(0, 23), minute.coerceIn(0, 59))
+
+    val isNormalAlarm: Boolean
+        get() = kind.isBlank() || kind.equals(KIND_NORMAL, ignoreCase = true)
+
+    val isQuickAlarm: Boolean
+        get() = kind.equals(KIND_QUICK, ignoreCase = true)
 
     val usesFixedTimezone: Boolean
         get() = timezonePolicy == TIMEZONE_POLICY_FIXED && fixedTimezoneId.isNotBlank()
@@ -378,6 +399,11 @@ data class Alarm(
                 normalizedFixedTimezoneId
             } else {
                 ""
+            },
+            kind = when {
+                kind.equals(KIND_QUICK, ignoreCase = true) -> KIND_QUICK
+                kind.isBlank() || kind.equals(KIND_NORMAL, ignoreCase = true) -> KIND_NORMAL
+                else -> kind.trim().take(40)
             }
         )
     }
