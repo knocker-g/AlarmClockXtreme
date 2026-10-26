@@ -392,6 +392,10 @@ class TimerViewModel @Inject constructor(
             TimerAlarmService.fire(appContext, finished.id, finished.label)
         }
         val records = snapshot.records
+        // Recover any un-dismissed FINISHED timers that were committed before a process crash
+        records.filter { it.state == TimerState.FINISHED }.forEach { finished ->
+            TimerAlarmService.fire(appContext, finished.id, finished.label)
+        }
         val timers = records.map { it.toTimerInstance() }
         if (timers.isEmpty()) return
 

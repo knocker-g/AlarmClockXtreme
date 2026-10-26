@@ -97,16 +97,23 @@ class TimerStore @Inject constructor(@ApplicationContext context: Context) {
                 }
                 .map { it.asFinished() }
             val newlyFinishedIds = newlyFinished.mapTo(mutableSetOf()) { it.id }
-            val persisted = if (newlyFinishedIds.isEmpty()) {
-                stored
+            val (persisted, confirmedNewlyFinished) = if (newlyFinishedIds.isEmpty()) {
+                stored to emptyList<PersistedTimerRecord>()
             } else {
-                stored.map { record ->
+                val updatedRecords = stored.map { record ->
                     if (record.id in newlyFinishedIds) record.asFinished() else record
-                }.also(::replace)
+                }
+                val committed = replace(updatedRecords)
+                if (committed) {
+                    updatedRecords to newlyFinished
+                } else {
+                    Log.e(TAG, "Failed to durably commit restoreSnapshot FINISHED transitions to disk")
+                    stored to emptyList<PersistedTimerRecord>()
+                }
             }
             TimerRestoreSnapshot(
                 records = persisted.map { it.normalized(nowElapsed) },
-                newlyFinished = newlyFinished
+                newlyFinished = confirmedNewlyFinished
             )
         }
 

@@ -168,4 +168,22 @@ class TimerDurabilityTest {
         val result = storeWithMock.restartFinished(1)
         assertEquals("restartFinished MUST return null on commit failure", null, result)
     }
+
+    @Test
+    fun `TimerStore restoreSnapshot newlyFinished is empty when disk commit fails`() {
+        val mockContext = mockk<Context>(relaxed = true)
+        val mockPrefs = mockk<android.content.SharedPreferences>(relaxed = true)
+        val mockEditor = mockk<android.content.SharedPreferences.Editor>(relaxed = true)
+
+        val json = "[{\"id\":1,\"label\":\"Overdue\",\"totalSeconds\":60,\"remainingMillis\":0,\"state\":\"RUNNING\",\"endElapsedRealtime\":1000}]"
+        every { mockContext.getSharedPreferences(any(), any()) } returns mockPrefs
+        every { mockPrefs.getString(any(), any()) } returns json
+        every { mockPrefs.edit() } returns mockEditor
+        every { mockEditor.putString(any(), any()) } returns mockEditor
+        every { mockEditor.commit() } returns false
+
+        val storeWithMock = TimerStore(mockContext)
+        val snapshot = storeWithMock.restoreSnapshot(nowElapsed = 2000L)
+        assertTrue("restoreSnapshot newlyFinished MUST be empty on commit failure", snapshot.newlyFinished.isEmpty())
+    }
 }
