@@ -1,0 +1,113 @@
+name: Nightly Critical-Test Sentinel
+
+on:
+  schedule:
+    # 3:00 AM UTC daily
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      repetitions:
+        description: 'Number of repetitions (1-5, default 5)'
+        required: false
+        default: '5'
+
+concurrency:
+  group: nightly-critical-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nightly-sentinel:
+    name: Nightly Sentinel Repetitions
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Execute Bounded Critical-Test Repetitions
+        run: |
+          RAW_REPS="${{ github.event.inputs.repetitions || '5' }}"
+          if ! [[ "$RAW_REPS" =~ ^[0-9]+$ ]] || [ "$RAW_REPS" -lt 1 ] || [ "$RAW_REPS" -gt 5 ]; then
+            echo "::error::Invalid repetitions input '$RAW_REPS'. Repetitions must be an integer between 1 and 5."
+            exit 1
+          fi
+          MAX_REPS="$RAW_REPS"
+          TEST_FILTER="--tests com.sysadmindoc.alarmclock.ui.timer.TimerDurabilityTest --tests com.sysadmindoc.alarmclock.receiver.TimerExpiryRestartTest --tests com.sysadmindoc.alarmclock.ui.ProducerOutcomeAdoptionTest --tests com.sysadmindoc.alarmclock.receiver.SkipTransitionTest"
+          
+          echo "# Nightly Critical-Test Sentinel Execution Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Repetition | Status | Classification | Details |" >> $GITHUB_STEP_SUMMARY
+          echo "| :---: | :---: | :---: | :--- |" >> $GITHUB_STEP_SUMMARY
+
+          JOB_FAILED=0
+
+          for rep in $(seq 1 $MAX_REPS); do
+            echo "::group::Executing Repetition $rep of $MAX_REPS"
+            
+            # Clean test results before each repetition
+            rm -rf app/build/test-results/testDebugUnitTest app/build/reports/tests/testDebugUnitTest
+            
+            if ./gradlew :app:testDebugUnitTest $TEST_FILTER --rerun-tasks --no-daemon; then
+              echo "Repetition $rep PASSED"
+              echo "| $rep | PASSED | - | All critical tests passed |" >> $GITHUB_STEP_SUMMARY
+              echo "::endgroup::"
+            else
+              GRADLE_EXIT_CODE=$?
+              echo "Repetition $rep FAILED with exit code $GRADLE_EXIT_CODE"
+              
+              # Classify failure using Python3 XML ElementTree parsing
+              CLASSIFICATION_RESULT=$(python3 -c "
+          import glob, xml.etree.ElementTree as ET
+          failures = []
+          for f in glob.glob('app/build/test-results/testDebugUnitTest/*.xml'):
+              try:
+                  tree = ET.parse(f)
+                  for tc in tree.getroot().iter('testcase'):
+                      if tc.find('failure') is not None or tc.find('error') is not None:
+                          failures.append(f\"{tc.get('classname', '')}.{tc.get('name', '')}\")
+              except Exception:
+                  pass
+          if failures:
+              print('TEST_FAILURE:' + ', '.join(failures[:5]))
+          " 2>/dev/null || true)
+
+              if [[ "$CLASSIFICATION_RESULT" == TEST_FAILURE:* ]]; then
+                CLASSIFICATION="TEST_FAILURE"
+                FAILING_TESTS="${CLASSIFICATION_RESULT#TEST_FAILURE:}"
+                DETAILS="Test assertion failed: $FAILING_TESTS"
+              else
+                CLASSIFICATION="INFRA_FAILURE"
+                DETAILS="Gradle or infrastructure error (exit code $GRADLE_EXIT_CODE)"
+              fi
+
+              echo "| $rep | FAILED | $CLASSIFICATION | $DETAILS |" >> $GITHUB_STEP_SUMMARY
+              echo "::endgroup::"
+              echo "::error::Critical-test repetition $rep failed ($CLASSIFICATION): $DETAILS"
+              
+              JOB_FAILED=1
+              break
+            fi
+          done
+
+          if [ $JOB_FAILED -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Upload Test Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-sentinel-test-reports
+          path: |
+            app/build/reports/tests/testDebugUnitTest
+            app/build/test-results/testDebugUnitTest
+          retention-days: 7
