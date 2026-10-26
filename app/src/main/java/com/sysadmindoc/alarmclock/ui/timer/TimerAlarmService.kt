@@ -91,6 +91,9 @@ class TimerAlarmService : Service() {
                 startForegroundAlert()
                 ensureSoundPlaying()
                 scheduleAutoStop()
+                // Service-side acknowledgment: clear alertPending = false ONLY AFTER foreground alert and sound started
+                runCatching { TimerStore(this).acknowledgeAlert(id) }
+                    .onFailure { Log.w(TAG, "Failed to acknowledge alert for timer $id", it) }
             }
             ACTION_DISMISS -> {
                 val id = intent.getIntExtra(EXTRA_TIMER_ID, -1)
@@ -329,7 +332,6 @@ class TimerAlarmService : Service() {
         const val EXTRA_LABEL = "timer_label"
 
         fun fire(context: Context, timerId: Int, label: String) {
-            runCatching { TimerStore(context).acknowledgeAlert(timerId) }
             val intent = Intent(context, TimerAlarmService::class.java)
                 .setAction(ACTION_FIRED)
                 .putExtra(EXTRA_TIMER_ID, timerId)

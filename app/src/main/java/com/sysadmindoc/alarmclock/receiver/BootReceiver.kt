@@ -90,6 +90,10 @@ class BootReceiver : BroadcastReceiver() {
                     snapshot.newlyFinished.forEach { finished ->
                         com.sysadmindoc.alarmclock.ui.timer.TimerAlarmService.fire(appContext, finished.id, finished.label)
                     }
+                    // Headless recovery: also recover any committed FINISHED timers whose alert is still pending
+                    snapshot.records.filter { it.state == com.sysadmindoc.alarmclock.ui.timer.TimerState.FINISHED && it.alertPending }.forEach { finished ->
+                        com.sysadmindoc.alarmclock.ui.timer.TimerAlarmService.fire(appContext, finished.id, finished.label)
+                    }
                     snapshot.records.filter { it.state == com.sysadmindoc.alarmclock.ui.timer.TimerState.RUNNING }.forEach { record ->
                         com.sysadmindoc.alarmclock.ui.timer.TimerAlarmScheduler.schedule(appContext, record.id, record.endElapsedRealtime)
                         TimerNotifications.postRunning(appContext, record)

@@ -129,4 +129,28 @@ class TimerExpiryRestartTest {
         val recordsAfterBoot = store.loadRecords(nowElapsed)
         assertTrue("Running timers MUST be cleared on BOOT_COMPLETED", recordsAfterBoot.isEmpty())
     }
+
+    @Test
+    fun `MY_PACKAGE_REPLACED recovers overdue FINISHED timer headlessly without ViewModel`() = runBlocking {
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val overdue = PersistedTimerRecord(
+            id = 4,
+            label = "Bake",
+            totalSeconds = 300,
+            remainingMillis = 0L,
+            state = TimerState.RUNNING,
+            endElapsedRealtime = nowElapsed - 1000L
+        )
+        store.upsert(overdue)
+
+        // Broadcast MY_PACKAGE_REPLACED (headless recovery path)
+        val intent = Intent(Intent.ACTION_MY_PACKAGE_REPLACED)
+        val receiver = BootReceiver().apply { testScope = this@runBlocking }
+        receiver.onReceive(context, intent)
+        kotlinx.coroutines.yield()
+
+        val loaded = store.loadRecords(nowElapsed)
+        assertEquals(1, loaded.size)
+        assertEquals(TimerState.FINISHED, loaded[0].state)
+    }
 }
