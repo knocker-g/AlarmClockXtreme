@@ -46,6 +46,9 @@ import kotlinx.coroutines.launch
  */
 class BootReceiver : BroadcastReceiver() {
 
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    internal var testScope: CoroutineScope? = null
+
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
         if (action != Intent.ACTION_LOCKED_BOOT_COMPLETED &&
@@ -56,7 +59,8 @@ class BootReceiver : BroadcastReceiver() {
 
         val appContext = context.applicationContext
         val pendingResult = goAsync()
-        CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
+        val activeScope = testScope ?: scope
+        activeScope.launch {
             try {
                 if (action == Intent.ACTION_LOCKED_BOOT_COMPLETED) {
                     DirectBootAlarmCache.scheduleCachedAlarm(appContext)
@@ -67,8 +71,7 @@ class BootReceiver : BroadcastReceiver() {
                 // semantics of repeat-missed-alarm. Clear the state so the receiver
                 // doesn't fire a stale miss after the user pressed the power button
                 // deliberately.
-                if (action == Intent.ACTION_BOOT_COMPLETED ||
-                    action == Intent.ACTION_MY_PACKAGE_REPLACED) {
+                if (action == Intent.ACTION_BOOT_COMPLETED) {
                     ReliabilityDoctor.recordCurrentBuildFingerprint(appContext)
                     try {
                         val store = appContext.getSharedPreferences("missed_alarm_state", Context.MODE_PRIVATE)
@@ -77,7 +80,20 @@ class BootReceiver : BroadcastReceiver() {
                         // Prefs backup failure isn't fatal — continue to reschedule.
                     }
                     val canceledTimers = TimerStore(appContext).removeRunningTimersForReboot()
-                    TimerNotifications.postTimersCanceledAfterRestart(appContext, canceledTimers.size)
+                    if (canceledTimers.isNotEmpty()) {
+                        TimerNotifications.postTimersCanceledAfterRestart(appContext, canceledTimers.size)
+                    }
+                } else if (action == Intent.ACTION_MY_PACKAGE_REPLACED) {
+                    ReliabilityDoctor.recordCurrentBuildFingerprint(appContext)
+                    val timerStore = TimerStore(appContext)
+                    val snapshot = timerStore.restoreSnapshot()
+                    snapshot.newlyFinished.forEach { finished ->
+                        com.sysadmindoc.alarmclock.ui.timer.TimerAlarmService.fire(appContext, finished.id, finished.label)
+                    }
+                    snapshot.records.filter { it.state == com.sysadmindoc.alarmclock.ui.timer.TimerState.RUNNING }.forEach { record ->
+                        com.sysadmindoc.alarmclock.ui.timer.TimerAlarmScheduler.schedule(appContext, record.id, record.endElapsedRealtime)
+                        TimerNotifications.postRunning(appContext, record)
+                    }
                 }
 
                 val forceRecalculate = action == Intent.ACTION_TIME_CHANGED ||
@@ -93,7 +109,7 @@ class BootReceiver : BroadcastReceiver() {
             } catch (e: Exception) {
                 Log.e("BootReceiver", "Failed to enqueue alarm reschedule", e)
             } finally {
-                pendingResult.finish()
+                pendingResult?.finish()
             }
         }
     }
