@@ -54,25 +54,36 @@ jobs:
             echo "::group::Executing Repetition $rep of $MAX_REPS"
             
             # Clean test results before each repetition
-            rm -rf app/build/test-results/testDebugUnitTest
+            rm -rf app/build/test-results/testDebugUnitTest app/build/reports/tests/testDebugUnitTest
             
-            ./gradlew :app:testDebugUnitTest $TEST_FILTER --no-daemon
-            GRADLE_EXIT_CODE=$?
-
-            if [ $GRADLE_EXIT_CODE -eq 0 ]; then
+            if ./gradlew :app:testDebugUnitTest $TEST_FILTER --rerun-tasks --no-daemon; then
               echo "Repetition $rep PASSED"
               echo "| $rep | PASSED | - | All critical tests passed |" >> $GITHUB_STEP_SUMMARY
               echo "::endgroup::"
             else
+              GRADLE_EXIT_CODE=$?
               echo "Repetition $rep FAILED with exit code $GRADLE_EXIT_CODE"
               
-              # Classify failure: TEST_FAILURE vs INFRA_FAILURE
-              TEST_FAILURES=$(grep -E "<failure|<error" app/build/test-results/testDebugUnitTest/*.xml 2>/dev/null || true)
-              
-              if [ -n "$TEST_FAILURES" ]; then
+              # Classify failure using Python3 XML ElementTree parsing
+              CLASSIFICATION_RESULT=$(python3 -c "
+          import glob, xml.etree.ElementTree as ET
+          failures = []
+          for f in glob.glob('app/build/test-results/testDebugUnitTest/*.xml'):
+              try:
+                  tree = ET.parse(f)
+                  for tc in tree.getroot().iter('testcase'):
+                      if tc.find('failure') is not None or tc.find('error') is not None:
+                          failures.append(f\"{tc.get('classname', '')}.{tc.get('name', '')}\")
+              except Exception:
+                  pass
+          if failures:
+              print('TEST_FAILURE:' + ', '.join(failures[:5]))
+          " 2>/dev/null || true)
+
+              if [[ "$CLASSIFICATION_RESULT" == TEST_FAILURE:* ]]; then
                 CLASSIFICATION="TEST_FAILURE"
-                FAILING_TESTS=$(echo "$TEST_FAILURES" | sed -n 's/.*<testcase name="\([^"]*\)" classname="\([^"]*\)".*/\2.\1/p' | head -n 5 | paste -sd ", " -)
-                DETAILS="Test assertion failed: ${FAILING_TESTS:-See test report}"
+                FAILING_TESTS="${CLASSIFICATION_RESULT#TEST_FAILURE:}"
+                DETAILS="Test assertion failed: $FAILING_TESTS"
               else
                 CLASSIFICATION="INFRA_FAILURE"
                 DETAILS="Gradle or infrastructure error (exit code $GRADLE_EXIT_CODE)"
@@ -90,3 +101,13 @@ jobs:
           if [ $JOB_FAILED -ne 0 ]; then
             exit 1
           fi
+
+      - name: Upload Test Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-sentinel-test-reports
+          path: |
+            app/build/reports/tests/testDebugUnitTest
+            app/build/test-results/testDebugUnitTest
+          retention-days: 7
