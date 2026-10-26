@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -177,6 +178,12 @@ private fun <T> WheelColumn(
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialIndex)
     val snapFlingBehavior = rememberSnapFlingBehavior(lazyListState = listState)
 
+    LaunchedEffect(initialIndex) {
+        if (listState.firstVisibleItemIndex != initialIndex) {
+            listState.scrollToItem(initialIndex)
+        }
+    }
+
     val selectedIndex by remember {
         derivedStateOf {
             val layoutInfo = listState.layoutInfo
@@ -198,6 +205,7 @@ private fun <T> WheelColumn(
     LazyColumn(
         state = listState,
         flingBehavior = snapFlingBehavior,
+        contentPadding = PaddingValues(vertical = itemHeight),
         modifier = Modifier
             .width(64.dp)
             .height(itemHeight * 3),
