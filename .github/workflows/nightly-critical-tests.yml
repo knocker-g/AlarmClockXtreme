@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       repetitions:
-        description: 'Number of repetitions (1-10, default 5)'
+        description: 'Number of repetitions (1-5, default 5)'
         required: false
         default: '5'
 
@@ -36,7 +36,12 @@ jobs:
 
       - name: Execute Bounded Critical-Test Repetitions
         run: |
-          MAX_REPS="${{ github.event.inputs.repetitions || '5' }}"
+          RAW_REPS="${{ github.event.inputs.repetitions || '5' }}"
+          if ! [[ "$RAW_REPS" =~ ^[0-9]+$ ]] || [ "$RAW_REPS" -lt 1 ] || [ "$RAW_REPS" -gt 5 ]; then
+            echo "::error::Invalid repetitions input '$RAW_REPS'. Repetitions must be an integer between 1 and 5."
+            exit 1
+          fi
+          MAX_REPS="$RAW_REPS"
           TEST_FILTER="--tests com.sysadmindoc.alarmclock.ui.timer.TimerDurabilityTest --tests com.sysadmindoc.alarmclock.receiver.TimerExpiryRestartTest --tests com.sysadmindoc.alarmclock.ui.ProducerOutcomeAdoptionTest --tests com.sysadmindoc.alarmclock.receiver.SkipTransitionTest"
           
           echo "# Nightly Critical-Test Sentinel Execution Summary" >> $GITHUB_STEP_SUMMARY
