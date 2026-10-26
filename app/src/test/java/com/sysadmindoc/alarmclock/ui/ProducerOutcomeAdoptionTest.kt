@@ -232,10 +232,12 @@ class ProducerOutcomeAdoptionTest {
 
         // Delete alarm first
         viewModel.deleteAlarm(alarm)
+        kotlinx.coroutines.delay(100)
         assertNull("Alarm MUST be deleted from DB", alarmRepo.getById(initialId))
 
         // Undo delete
         viewModel.undoDelete()
+        kotlinx.coroutines.delay(100)
 
         val restoredAlarms = alarmRepo.getAll()
         assertEquals("Alarm MUST be restored in DB", 1, restoredAlarms.size)

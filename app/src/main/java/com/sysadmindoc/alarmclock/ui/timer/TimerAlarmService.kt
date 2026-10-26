@@ -95,9 +95,13 @@ class TimerAlarmService : Service() {
             ACTION_DISMISS -> {
                 val id = intent.getIntExtra(EXTRA_TIMER_ID, -1)
                 if (id > 0) {
-                    alerts.remove(id)
-                    runCatching { TimerStore(this).remove(id) }
-                    TimerNotifications.cancelFinished(this, id)
+                    val removed = runCatching { TimerStore(this).remove(id) }.getOrDefault(false)
+                    if (removed) {
+                        alerts.remove(id)
+                        TimerNotifications.cancelFinished(this, id)
+                    } else {
+                        Log.w(TAG, "Dismiss failed to durably remove timer $id from TimerStore; retaining notification")
+                    }
                 }
                 if (alerts.isEmpty) stopEverything() else refreshNotification()
             }
