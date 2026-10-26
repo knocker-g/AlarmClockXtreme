@@ -118,6 +118,7 @@ class ProducerOutcomeAdoptionTest {
         )
 
         viewModel.toggleAlarm(alarm)
+        kotlinx.coroutines.delay(100)
 
         val updated = alarmRepo.getById(alarmId)
         assertTrue("Alarm MUST be enabled in DB", updated?.isEnabled == true)
@@ -146,6 +147,7 @@ class ProducerOutcomeAdoptionTest {
         )
 
         viewModel.toggleAlarm(alarm)
+        kotlinx.coroutines.delay(100)
 
         val updated = alarmRepo.getById(alarmId)
         assertTrue("Alarm MUST remain enabled in DB for future permission restoration", updated?.isEnabled == true)
@@ -173,6 +175,7 @@ class ProducerOutcomeAdoptionTest {
         )
 
         viewModel.duplicateAlarm(originalAlarm)
+        kotlinx.coroutines.delay(100)
 
         val allAlarms = alarmRepo.getAll()
         assertEquals(2, allAlarms.size)
