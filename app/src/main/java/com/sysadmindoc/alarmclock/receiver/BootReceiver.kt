@@ -87,11 +87,13 @@ class BootReceiver : BroadcastReceiver() {
                     ReliabilityDoctor.recordCurrentBuildFingerprint(appContext)
                     val timerStore = TimerStore(appContext)
                     val snapshot = timerStore.restoreSnapshot()
-                    snapshot.newlyFinished.forEach { finished ->
-                        com.sysadmindoc.alarmclock.ui.timer.TimerAlarmService.fire(appContext, finished.id, finished.label)
+                    val newlyFinishedIds = snapshot.newlyFinished.mapTo(mutableSetOf()) { it.id }
+                    val pendingFinished = snapshot.newlyFinished + snapshot.records.filter {
+                        it.state == com.sysadmindoc.alarmclock.ui.timer.TimerState.FINISHED &&
+                            it.alertPending &&
+                            it.id !in newlyFinishedIds
                     }
-                    // Headless recovery: also recover any committed FINISHED timers whose alert is still pending
-                    snapshot.records.filter { it.state == com.sysadmindoc.alarmclock.ui.timer.TimerState.FINISHED && it.alertPending }.forEach { finished ->
+                    pendingFinished.forEach { finished ->
                         com.sysadmindoc.alarmclock.ui.timer.TimerAlarmService.fire(appContext, finished.id, finished.label)
                     }
                     snapshot.records.filter { it.state == com.sysadmindoc.alarmclock.ui.timer.TimerState.RUNNING }.forEach { record ->

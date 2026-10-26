@@ -88,7 +88,7 @@ class TimerAlarmService : Service() {
                 }
                 TimerNotifications.cancelTimer(this, id)
                 alerts.add(id, label)
-                val fgOk = runCatching { startForegroundAlert() }.isSuccess
+                val fgOk = startForegroundAlert()
                 ensureSoundPlaying()
                 scheduleAutoStop()
                 if (fgOk) {
@@ -142,10 +142,11 @@ class TimerAlarmService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startForegroundAlert() {
+    private fun startForegroundAlert(): Boolean {
         AlarmService.createNotificationChannels(this)
-        runCatching { startForeground(NOTIFICATION_ID, buildNotification()) }
+        return runCatching { startForeground(NOTIFICATION_ID, buildNotification()) }
             .onFailure { Log.w(TAG, "startForeground for timer alert failed", it) }
+            .isSuccess
     }
 
     private fun refreshNotification() {

@@ -388,14 +388,16 @@ class TimerViewModel @Inject constructor(
 
     private fun restorePersistedTimers() {
         val snapshot = timerStore.restoreSnapshot()
-        snapshot.newlyFinished.forEach { finished ->
+        val newlyFinishedIds = snapshot.newlyFinished.mapTo(mutableSetOf()) { it.id }
+        val pendingFinished = snapshot.newlyFinished + snapshot.records.filter {
+            it.state == TimerState.FINISHED &&
+                it.alertPending &&
+                it.id !in newlyFinishedIds
+        }
+        pendingFinished.forEach { finished ->
             TimerAlarmService.fire(appContext, finished.id, finished.label)
         }
         val records = snapshot.records
-        // Recover any un-dismissed FINISHED timers whose alert is still pending (committed before a crash)
-        records.filter { it.state == TimerState.FINISHED && it.alertPending }.forEach { finished ->
-            TimerAlarmService.fire(appContext, finished.id, finished.label)
-        }
         val timers = records.map { it.toTimerInstance() }
         if (timers.isEmpty()) return
 

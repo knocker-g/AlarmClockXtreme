@@ -102,24 +102,28 @@ class TimerStore @Inject constructor(@ApplicationContext context: Context) {
                 }
                 .map { it.asFinished() }
             val newlyFinishedIds = newlyFinished.mapTo(mutableSetOf()) { it.id }
-            val (persisted, confirmedNewlyFinished) = if (newlyFinishedIds.isEmpty()) {
-                stored to emptyList<PersistedTimerRecord>()
-            } else {
-                val updatedRecords = stored.map { record ->
-                    if (record.id in newlyFinishedIds) record.asFinished() else record
-                }
-                val committed = replace(updatedRecords)
-                if (committed) {
-                    updatedRecords to newlyFinished
-                } else {
-                    Log.e(TAG, "Failed to durably commit restoreSnapshot FINISHED transitions to disk")
-                    stored to emptyList<PersistedTimerRecord>()
-                }
+            if (newlyFinishedIds.isEmpty()) {
+                return@synchronized TimerRestoreSnapshot(
+                    records = stored.map { it.normalized(nowElapsed) },
+                    newlyFinished = emptyList()
+                )
             }
-            TimerRestoreSnapshot(
-                records = persisted.map { it.normalized(nowElapsed) },
-                newlyFinished = confirmedNewlyFinished
-            )
+            val updatedRecords = stored.map { record ->
+                if (record.id in newlyFinishedIds) record.asFinished() else record
+            }
+            val committed = replace(updatedRecords)
+            if (committed) {
+                TimerRestoreSnapshot(
+                    records = updatedRecords.map { it.normalized(nowElapsed) },
+                    newlyFinished = newlyFinished
+                )
+            } else {
+                Log.e(TAG, "Failed to durably commit restoreSnapshot FINISHED transitions to disk")
+                TimerRestoreSnapshot(
+                    records = stored,
+                    newlyFinished = emptyList()
+                )
+            }
         }
 
     /** Monotonic per-boot counter (API 24+). Returns -1 when unavailable. */
