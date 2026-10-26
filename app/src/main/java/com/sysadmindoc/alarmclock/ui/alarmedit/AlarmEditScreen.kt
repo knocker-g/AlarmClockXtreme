@@ -67,6 +67,7 @@ import com.sysadmindoc.alarmclock.domain.NextAlarmCalculator
 import com.sysadmindoc.alarmclock.ui.components.AppFilterChip
 import com.sysadmindoc.alarmclock.ui.components.AppSectionTitle
 import com.sysadmindoc.alarmclock.ui.components.AppStatusChip
+import com.sysadmindoc.alarmclock.ui.components.WheelTimePicker
 import com.sysadmindoc.alarmclock.ui.components.AppSurfaceCard
 import com.sysadmindoc.alarmclock.ui.components.AppInputShape
 import com.sysadmindoc.alarmclock.ui.components.appOutlinedTextFieldColors
@@ -634,11 +635,9 @@ fun AlarmEditScreen(
 
     // Time Picker Dialog
     if (showTimePicker) {
-        val timePickerState = rememberTimePickerState(
-            initialHour = state.hour,
-            initialMinute = state.minute,
-            is24Hour = state.is24HourFormat
-        )
+        var selectedWheelHour by remember(state.hour) { mutableIntStateOf(state.hour) }
+        var selectedWheelMinute by remember(state.minute) { mutableIntStateOf(state.minute) }
+
         val numpadTime = parseAlarmNumpadTime(
             digits = timeNumpadDigits,
             is24Hour = state.is24HourFormat,
@@ -652,7 +651,7 @@ fun AlarmEditScreen(
                     val selectedTime = if (useTimeNumpad) {
                         numpadTime
                     } else {
-                        AlarmNumpadTime(timePickerState.hour, timePickerState.minute)
+                        AlarmNumpadTime(selectedWheelHour, selectedWheelMinute)
                     }
                     selectedTime?.let { viewModel.updateTime(it.hour, it.minute) }
                     showTimePicker = false
@@ -690,19 +689,23 @@ fun AlarmEditScreen(
                         AppFilterChip(
                             label = stringResource(R.string.alarm_edit_clock_entry),
                             selected = !useTimeNumpad,
-                            onClick = { useTimeNumpad = false },
+                            onClick = {
+                                if (useTimeNumpad && numpadTime != null) {
+                                    selectedWheelHour = numpadTime.hour
+                                    selectedWheelMinute = numpadTime.minute
+                                }
+                                useTimeNumpad = false
+                            },
                             modifier = Modifier.weight(1f)
                         )
                         AppFilterChip(
                             label = stringResource(R.string.alarm_edit_numpad_entry),
                             selected = useTimeNumpad,
                             onClick = {
-                                if (!useTimeNumpad && timeNumpadDigits.isEmpty()) {
-                                    timeNumpadDigits = formatAlarmNumpadDigits(
-                                        state.hour, state.minute, state.is24HourFormat
-                                    )
-                                    timeNumpadIsPm = state.hour >= 12
-                                }
+                                timeNumpadDigits = formatAlarmNumpadDigits(
+                                    selectedWheelHour, selectedWheelMinute, state.is24HourFormat
+                                )
+                                timeNumpadIsPm = selectedWheelHour >= 12
                                 useTimeNumpad = true
                             },
                             modifier = Modifier.weight(1f)
@@ -723,15 +726,14 @@ fun AlarmEditScreen(
                             onClear = { timeNumpadDigits = "" }
                         )
                     } else {
-                        TimePicker(
-                            state = timePickerState,
-                            colors = TimePickerDefaults.colors(
-                                clockDialColor = SurfaceCard,
-                                selectorColor = MaterialTheme.colorScheme.primary,
-                                containerColor = SurfaceMedium,
-                                timeSelectorSelectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
-                                timeSelectorUnselectedContainerColor = SurfaceCard
-                            )
+                        WheelTimePicker(
+                            initialHour = selectedWheelHour,
+                            initialMinute = selectedWheelMinute,
+                            is24Hour = state.is24HourFormat,
+                            onTimeChange = { h, m ->
+                                selectedWheelHour = h
+                                selectedWheelMinute = m
+                            }
                         )
                     }
                 }
