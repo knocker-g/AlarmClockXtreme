@@ -148,7 +148,7 @@ class Kno20CreationConsumptionSliceTest {
         job.join()
 
         assertNotNull("Feedback MUST be emitted", emittedFeedback)
-        assertTrue("Feedback MUST contain quick alarm set confirmation", emittedFeedback!!.contains("10"))
+        assertTrue("Feedback MUST contain quick alarm set string", emittedFeedback!!.startsWith("Quick alarm set for"))
     }
 
     @Test
