@@ -186,4 +186,28 @@ class TimerDurabilityTest {
         val snapshot = storeWithMock.restoreSnapshot(nowElapsed = 2000L)
         assertTrue("restoreSnapshot newlyFinished MUST be empty on commit failure", snapshot.newlyFinished.isEmpty())
     }
+
+    @Test
+    fun `TimerStore acknowledgeAlert clears alertPending flag on persisted record`() {
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val overdue = PersistedTimerRecord(
+            id = 5,
+            label = "Pasta",
+            totalSeconds = 180,
+            remainingMillis = 0L,
+            state = TimerState.RUNNING,
+            endElapsedRealtime = nowElapsed - 1000L
+        )
+        store.upsert(overdue)
+
+        val snapshot = store.restoreSnapshot(nowElapsed)
+        assertEquals(1, snapshot.newlyFinished.size)
+        assertTrue("Newly finished timer MUST have alertPending = true", snapshot.newlyFinished[0].alertPending)
+
+        val acked = store.acknowledgeAlert(5)
+        assertTrue("acknowledgeAlert MUST return true when alertPending was true", acked)
+
+        val records = store.loadRecords(nowElapsed)
+        assertFalse("alertPending MUST be false after acknowledgeAlert", records[0].alertPending)
+    }
 }
