@@ -88,12 +88,17 @@ class TimerAlarmService : Service() {
                 }
                 TimerNotifications.cancelTimer(this, id)
                 alerts.add(id, label)
-                startForegroundAlert()
+                val fgOk = runCatching { startForegroundAlert() }.isSuccess
                 ensureSoundPlaying()
                 scheduleAutoStop()
-                // Service-side acknowledgment: clear alertPending = false ONLY AFTER foreground alert and sound started
-                runCatching { TimerStore(this).acknowledgeAlert(id) }
-                    .onFailure { Log.w(TAG, "Failed to acknowledge alert for timer $id", it) }
+                if (fgOk) {
+                    val acked = runCatching { TimerStore(this).acknowledgeAlert(id) }.getOrDefault(false)
+                    if (!acked) {
+                        Log.w(TAG, "Failed to durably acknowledge alert for timer $id")
+                    }
+                } else {
+                    Log.w(TAG, "startForegroundAlert failed for timer $id; retaining alertPending state for recovery")
+                }
             }
             ACTION_DISMISS -> {
                 val id = intent.getIntExtra(EXTRA_TIMER_ID, -1)
