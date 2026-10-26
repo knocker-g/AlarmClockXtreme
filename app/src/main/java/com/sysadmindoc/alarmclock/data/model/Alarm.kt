@@ -403,7 +403,7 @@ data class Alarm(
             kind = when {
                 kind.equals(KIND_QUICK, ignoreCase = true) -> KIND_QUICK
                 kind.isBlank() || kind.equals(KIND_NORMAL, ignoreCase = true) -> KIND_NORMAL
-                else -> KIND_NORMAL
+                else -> kind.trim().take(40)
             }
         )
     }

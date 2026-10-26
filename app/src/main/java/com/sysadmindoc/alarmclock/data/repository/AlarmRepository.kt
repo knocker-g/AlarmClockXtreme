@@ -23,6 +23,7 @@ class AlarmRepository @Inject constructor(
 
     suspend fun getById(id: Long): Alarm? = dao.getById(id)
     suspend fun getEnabled(): List<Alarm> = dao.getEnabled()
+    suspend fun getEnabledNormalAlarms(): List<Alarm> = dao.getEnabled().filter { it.isNormalAlarm }
     suspend fun getNextAlarm(): Alarm? = dao.getNextAlarm()
     suspend fun getAll(): List<Alarm> = dao.getAll()
     suspend fun getAllNormalAlarms(): List<Alarm> = dao.getAll().filter { it.kind == Alarm.KIND_NORMAL || it.kind.isBlank() }

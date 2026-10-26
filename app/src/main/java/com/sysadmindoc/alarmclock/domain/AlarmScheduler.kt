@@ -453,7 +453,7 @@ class AlarmScheduler @Inject constructor(
         batchSize: Int = 25
     ): ScheduleOutcome.BatchResult {
         val now = System.currentTimeMillis()
-        val enabledAlarms = repository.getEnabled()
+        val enabledAlarms = repository.getEnabledNormalAlarms()
         val safeBatchSize = batchSize.coerceAtLeast(1)
         val outcomesMap = mutableMapOf<Long, ScheduleOutcome>()
         var armed = 0

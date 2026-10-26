@@ -151,7 +151,7 @@ class Kno20PersistenceSliceTest {
     }
 
     @Test
-    fun `malformed kind values in Alarm entity fail-closed to NORMAL via sanitized`() {
+    fun `malformed kind values in Alarm entity do not become NORMAL or QUICK`() {
         val malformedAlarm = Alarm(
             hour = 10,
             minute = 0,
@@ -160,9 +160,24 @@ class Kno20PersistenceSliceTest {
         )
 
         val sanitized = malformedAlarm.sanitized()
-        assertEquals("Malformed kind MUST be sanitized to NORMAL", Alarm.KIND_NORMAL, sanitized.kind)
-        assertTrue("isNormalAlarm MUST be true", sanitized.isNormalAlarm)
-        assertFalse("isQuickAlarm MUST be false", sanitized.isQuickAlarm)
+        assertEquals("Malformed kind string MUST be preserved as trimmed token", "MALFORMED_KIND_123", sanitized.kind)
+        assertFalse("isNormalAlarm MUST be false for malformed kind", sanitized.isNormalAlarm)
+        assertFalse("isQuickAlarm MUST be false for malformed kind", sanitized.isQuickAlarm)
+    }
+
+    @Test
+    fun `getEnabledNormalAlarms excludes QUICK and malformed kind alarms`() = runBlocking {
+        val normalAlarm = Alarm(hour = 7, minute = 0, isEnabled = true, kind = Alarm.KIND_NORMAL)
+        val quickAlarm = Alarm(hour = 8, minute = 0, isEnabled = true, kind = Alarm.KIND_QUICK)
+        val malformedAlarm = Alarm(hour = 9, minute = 0, isEnabled = true, kind = "INVALID_KIND")
+
+        alarmRepo.save(normalAlarm)
+        alarmRepo.save(quickAlarm)
+        alarmRepo.save(malformedAlarm)
+
+        val normalEnabled = alarmRepo.getEnabledNormalAlarms()
+        assertEquals("getEnabledNormalAlarms MUST return only legitimate Normal alarms", 1, normalEnabled.size)
+        assertEquals(normalAlarm.hour, normalEnabled[0].hour)
     }
 
     @Test
@@ -179,5 +194,18 @@ class Kno20PersistenceSliceTest {
 
         assertTrue(legacy.isNormalAlarm)
         assertFalse(legacy.isQuickAlarm)
+    }
+
+    @Test
+    fun `BackupManager export excludes malformed kind alarms`() = runBlocking {
+        val normalAlarm = Alarm(hour = 7, minute = 0, label = "Valid Normal", isEnabled = true, kind = Alarm.KIND_NORMAL)
+        val malformedAlarm = Alarm(hour = 8, minute = 0, label = "Corrupt Kind Alarm", isEnabled = true, kind = "MALFORMED_KIND_999")
+
+        alarmRepo.save(normalAlarm)
+        alarmRepo.save(malformedAlarm)
+
+        val exportJson = backupManager.export()
+        assertTrue("Backup export MUST include normal alarm label", exportJson.contains("Valid Normal"))
+        assertFalse("Backup export MUST EXCLUDE malformed kind alarm label", exportJson.contains("Corrupt Kind Alarm"))
     }
 }
