@@ -29,13 +29,18 @@ data class PersistedTimerRecord(
      * belongs to, a pre-reboot deadline either looks days away or looks long
      * overdue and rings a timer the user never started.
      */
-    val bootCount: Long = -1L
+    val bootCount: Long = -1L,
+    /**
+     * Set to true when a RUNNING timer transitions to FINISHED until the
+     * TimerAlarmService accepts and acknowledges the alert presentation.
+     */
+    val alertPending: Boolean = false
 ) {
     fun normalized(nowElapsed: Long = SystemClock.elapsedRealtime()): PersistedTimerRecord {
         if (state != TimerState.RUNNING) return this
         val remaining = (endElapsedRealtime - nowElapsed).coerceAtLeast(0L)
         return if (remaining <= 0L) {
-            copy(remainingMillis = 0L, state = TimerState.FINISHED, endElapsedRealtime = 0L)
+            copy(remainingMillis = 0L, state = TimerState.FINISHED, endElapsedRealtime = 0L, alertPending = true)
         } else {
             copy(remainingMillis = remaining)
         }
@@ -97,17 +102,28 @@ class TimerStore @Inject constructor(@ApplicationContext context: Context) {
                 }
                 .map { it.asFinished() }
             val newlyFinishedIds = newlyFinished.mapTo(mutableSetOf()) { it.id }
-            val persisted = if (newlyFinishedIds.isEmpty()) {
-                stored
-            } else {
-                stored.map { record ->
-                    if (record.id in newlyFinishedIds) record.asFinished() else record
-                }.also(::replace)
+            if (newlyFinishedIds.isEmpty()) {
+                return@synchronized TimerRestoreSnapshot(
+                    records = stored.map { it.normalized(nowElapsed) },
+                    newlyFinished = emptyList()
+                )
             }
-            TimerRestoreSnapshot(
-                records = persisted.map { it.normalized(nowElapsed) },
-                newlyFinished = newlyFinished
-            )
+            val updatedRecords = stored.map { record ->
+                if (record.id in newlyFinishedIds) record.asFinished() else record
+            }
+            val committed = replace(updatedRecords)
+            if (committed) {
+                TimerRestoreSnapshot(
+                    records = updatedRecords.map { it.normalized(nowElapsed) },
+                    newlyFinished = newlyFinished
+                )
+            } else {
+                Log.e(TAG, "Failed to durably commit restoreSnapshot FINISHED transitions to disk")
+                TimerRestoreSnapshot(
+                    records = stored,
+                    newlyFinished = emptyList()
+                )
+            }
         }
 
     /** Monotonic per-boot counter (API 24+). Returns -1 when unavailable. */
@@ -139,7 +155,8 @@ class TimerStore @Inject constructor(@ApplicationContext context: Context) {
                                 TimerState.valueOf(obj.optString("state"))
                             }.getOrDefault(TimerState.IDLE),
                             endElapsedRealtime = obj.optLong("endElapsedRealtime"),
-                            bootCount = obj.optLong("bootCount", -1L)
+                            bootCount = obj.optLong("bootCount", -1L),
+                            alertPending = obj.optBoolean("alertPending", false)
                         )
                     )
                 }
@@ -165,7 +182,7 @@ class TimerStore @Inject constructor(@ApplicationContext context: Context) {
     fun loadTimers(nowElapsed: Long = SystemClock.elapsedRealtime()): List<TimerInstance> =
         loadRecords(nowElapsed).map { it.toTimerInstance(nowElapsed) }
 
-    fun replace(records: List<PersistedTimerRecord>) = synchronized(WRITE_LOCK) {
+    fun replace(records: List<PersistedTimerRecord>): Boolean = synchronized(WRITE_LOCK) {
         val bootCountNow = currentBootCount()
         val array = JSONArray()
         records
@@ -180,6 +197,7 @@ class TimerStore @Inject constructor(@ApplicationContext context: Context) {
                         .put("remainingMillis", record.remainingMillis)
                         .put("state", record.state.name)
                         .put("endElapsedRealtime", record.endElapsedRealtime)
+                        .put("alertPending", record.alertPending)
                         .put(
                             "bootCount",
                             if (record.state == TimerState.RUNNING) {
@@ -294,10 +312,18 @@ class TimerStore @Inject constructor(@ApplicationContext context: Context) {
         running
     }
 
+    fun acknowledgeAlert(id: Int): Boolean = synchronized(WRITE_LOCK) {
+        val records = readStoredRecords()
+        val timer = records.firstOrNull { it.id == id && it.alertPending } ?: return@synchronized false
+        val updated = records.map { if (it.id == id) it.copy(alertPending = false) else it }
+        replace(updated)
+    }
+
     private fun PersistedTimerRecord.asFinished(): PersistedTimerRecord = copy(
         remainingMillis = 0L,
         state = TimerState.FINISHED,
-        endElapsedRealtime = 0L
+        endElapsedRealtime = 0L,
+        alertPending = true
     )
 
     companion object {

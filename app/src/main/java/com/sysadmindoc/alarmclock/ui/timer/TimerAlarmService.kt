@@ -88,9 +88,17 @@ class TimerAlarmService : Service() {
                 }
                 TimerNotifications.cancelTimer(this, id)
                 alerts.add(id, label)
-                startForegroundAlert()
+                val fgOk = startForegroundAlert()
                 ensureSoundPlaying()
                 scheduleAutoStop()
+                if (fgOk) {
+                    val acked = runCatching { TimerStore(this).acknowledgeAlert(id) }.getOrDefault(false)
+                    if (!acked) {
+                        Log.w(TAG, "Failed to durably acknowledge alert for timer $id")
+                    }
+                } else {
+                    Log.w(TAG, "startForegroundAlert failed for timer $id; retaining alertPending state for recovery")
+                }
             }
             ACTION_DISMISS -> {
                 val id = intent.getIntExtra(EXTRA_TIMER_ID, -1)
@@ -134,10 +142,11 @@ class TimerAlarmService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startForegroundAlert() {
+    private fun startForegroundAlert(): Boolean {
         AlarmService.createNotificationChannels(this)
-        runCatching { startForeground(NOTIFICATION_ID, buildNotification()) }
+        return runCatching { startForeground(NOTIFICATION_ID, buildNotification()) }
             .onFailure { Log.w(TAG, "startForeground for timer alert failed", it) }
+            .isSuccess
     }
 
     private fun refreshNotification() {
