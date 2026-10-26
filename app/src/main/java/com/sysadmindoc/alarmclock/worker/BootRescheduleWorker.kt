@@ -29,7 +29,8 @@ class BootRescheduleWorker @AssistedInject constructor(
     @Assisted workerParams: WorkerParameters,
     private val alarmScheduler: AlarmScheduler,
     private val scheduleAuthorityReconciler: ScheduleAuthorityReconciler? = null,
-    private val routeAuthority: com.sysadmindoc.alarmclock.domain.ProductionSchedulingRouteAuthority = com.sysadmindoc.alarmclock.domain.ProductionSchedulingRouteAuthority()
+    private val routeAuthority: com.sysadmindoc.alarmclock.domain.ProductionSchedulingRouteAuthority = com.sysadmindoc.alarmclock.domain.ProductionSchedulingRouteAuthority(),
+    private val quickAlarmScheduler: com.sysadmindoc.alarmclock.domain.QuickAlarmScheduler? = null
 ) : CoroutineWorker(context, workerParams) {
 
     override suspend fun doWork(): Result {
@@ -40,6 +41,9 @@ class BootRescheduleWorker @AssistedInject constructor(
             if (routeAuthority.isOwnerRouteActive()) {
                 scheduleAuthorityReconciler?.reconcileBootAuthorities()
             }
+            quickAlarmScheduler?.reconcileQuickAlarms(
+                entrySource = com.sysadmindoc.alarmclock.domain.ReconcileEntrySource.SYSTEM_RECOVERY
+            )
             val batchResult = alarmScheduler.rescheduleAllInBatches(
                 forceRecalculate = forceRecalculate,
                 batchSize = RESCHEDULE_BATCH_SIZE

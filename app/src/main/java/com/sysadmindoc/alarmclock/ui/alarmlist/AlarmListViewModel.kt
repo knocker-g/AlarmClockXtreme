@@ -13,6 +13,8 @@ import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.domain.GroupTabPosition
 import com.sysadmindoc.alarmclock.domain.NextAlarmCalculator
+import com.sysadmindoc.alarmclock.domain.QuickAlarmScheduler
+import com.sysadmindoc.alarmclock.domain.ScheduleOutcome
 import com.sysadmindoc.alarmclock.domain.VacationAlarmPolicy
 import com.sysadmindoc.alarmclock.ui.templates.AlarmTemplate
 import com.sysadmindoc.alarmclock.util.AlarmTimeFormatter
@@ -116,7 +118,8 @@ class AlarmListViewModel @Inject constructor(
     private val scheduler: AlarmScheduler,
     private val calculator: NextAlarmCalculator,
     private val preferencesManager: PreferencesManager,
-    private val eventRepository: AlarmEventRepository
+    private val eventRepository: AlarmEventRepository,
+    private val quickAlarmScheduler: QuickAlarmScheduler? = null
 ) : ViewModel() {
 
     /** One-shot events for polished list action feedback. */
@@ -518,28 +521,51 @@ class AlarmListViewModel @Inject constructor(
      * One-shot, no repeat, default settings.
      */
     fun createQuickAlarm(minutesFromNow: Int) {
+        val safeMinutes = minutesFromNow.coerceIn(1, 180)
         viewModelScope.launch {
-            val triggerTime = System.currentTimeMillis() + (minutesFromNow * 60 * 1000L)
+            val nowEpoch = System.currentTimeMillis()
+            val nowElapsed = android.os.SystemClock.elapsedRealtime()
+            val durationMs = safeMinutes * 60 * 1000L
+            val triggerTime = nowEpoch + durationMs
+            val relativeElapsedMs = nowElapsed + durationMs
             val instant = Instant.ofEpochMilli(triggerTime)
             val localTime = instant.atZone(ZoneId.systemDefault()).toLocalTime()
 
-            // Settings > Defaults says it is "the behavior new alarms start
-            // with", and a quick alarm is a new alarm.
-            val defaults = preferencesManager.getCurrentSettings()
-            val alarm = Alarm(
+            val quickAlarm = Alarm(
                 hour = localTime.hour,
                 minute = localTime.minute,
-                label = context.getString(R.string.alarmlist_quick_alarm_label, minutesFromNow),
+                label = context.getString(R.string.alarmlist_quick_alarm_label, safeMinutes),
                 isEnabled = true,
                 repeatDays = emptySet(),
-                snoozeDurationMinutes = defaults.defaultSnoozeDuration,
-                gradualVolumeSeconds = defaults.defaultGradualVolume,
+                snoozeDurationMinutes = 0,
+                maxSnoozeCount = 0,
+                challengeType = "NONE",
+                group = "",
+                wakeConfirmEnabled = false,
+                kind = Alarm.KIND_QUICK,
+                quickTriggerEpochMs = triggerTime,
+                quickRelativeElapsedMs = relativeElapsedMs,
+                quickBootCount = quickAlarmScheduler?.currentBootCount() ?: -1L,
                 nextTriggerTime = triggerTime
             )
 
-            val id = repository.save(alarm)
-            scheduler.scheduleAt(alarm.copy(id = id), triggerTime)
-            emitFeedback(context.getString(R.string.alarmlist_quick_alarm_set, formatFeedbackTime(triggerTime)))
+            val id = repository.save(quickAlarm)
+            val saved = quickAlarm.copy(id = id)
+
+            val qScheduler = quickAlarmScheduler ?: QuickAlarmScheduler(context, repository)
+            val outcome = qScheduler.scheduleQuickAlarm(saved)
+
+            when (outcome) {
+                is ScheduleOutcome.Armed -> {
+                    emitFeedback(context.getString(R.string.alarmlist_quick_alarm_set, formatFeedbackTime(triggerTime)))
+                }
+                is ScheduleOutcome.PermissionBlocked -> {
+                    emitFeedback("Exact alarm permission required for Quick Alarm")
+                }
+                else -> {
+                    emitFeedback("Failed to schedule Quick Alarm")
+                }
+            }
         }
     }
 
