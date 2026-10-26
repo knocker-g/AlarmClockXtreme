@@ -149,4 +149,35 @@ class Kno20PersistenceSliceTest {
         assertTrue("Backup export MUST include normal alarm label", exportJson.contains("Daily Work"))
         assertFalse("Backup export MUST EXCLUDE quick alarm label", exportJson.contains("Quick Nap"))
     }
+
+    @Test
+    fun `malformed kind values in Alarm entity fail-closed to NORMAL via sanitized`() {
+        val malformedAlarm = Alarm(
+            hour = 10,
+            minute = 0,
+            label = "Corrupt Kind Test",
+            kind = "MALFORMED_KIND_123"
+        )
+
+        val sanitized = malformedAlarm.sanitized()
+        assertEquals("Malformed kind MUST be sanitized to NORMAL", Alarm.KIND_NORMAL, sanitized.kind)
+        assertTrue("isNormalAlarm MUST be true", sanitized.isNormalAlarm)
+        assertFalse("isQuickAlarm MUST be false", sanitized.isQuickAlarm)
+    }
+
+    @Test
+    fun `isNormalAlarm and isQuickAlarm helper properties accurately distinguish kinds`() {
+        val normal = Alarm(kind = Alarm.KIND_NORMAL)
+        val quick = Alarm(kind = Alarm.KIND_QUICK)
+        val legacy = Alarm(kind = "")
+
+        assertTrue(normal.isNormalAlarm)
+        assertFalse(normal.isQuickAlarm)
+
+        assertTrue(quick.isQuickAlarm)
+        assertFalse(quick.isNormalAlarm)
+
+        assertTrue(legacy.isNormalAlarm)
+        assertFalse(legacy.isQuickAlarm)
+    }
 }

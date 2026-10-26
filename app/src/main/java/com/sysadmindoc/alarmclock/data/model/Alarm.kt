@@ -228,6 +228,12 @@ data class Alarm(
 
     val time: LocalTime get() = LocalTime.of(hour.coerceIn(0, 23), minute.coerceIn(0, 59))
 
+    val isNormalAlarm: Boolean
+        get() = kind.isBlank() || kind.equals(KIND_NORMAL, ignoreCase = true)
+
+    val isQuickAlarm: Boolean
+        get() = kind.equals(KIND_QUICK, ignoreCase = true)
+
     val usesFixedTimezone: Boolean
         get() = timezonePolicy == TIMEZONE_POLICY_FIXED && fixedTimezoneId.isNotBlank()
 
@@ -393,6 +399,11 @@ data class Alarm(
                 normalizedFixedTimezoneId
             } else {
                 ""
+            },
+            kind = when {
+                kind.equals(KIND_QUICK, ignoreCase = true) -> KIND_QUICK
+                kind.isBlank() || kind.equals(KIND_NORMAL, ignoreCase = true) -> KIND_NORMAL
+                else -> KIND_NORMAL
             }
         )
     }
