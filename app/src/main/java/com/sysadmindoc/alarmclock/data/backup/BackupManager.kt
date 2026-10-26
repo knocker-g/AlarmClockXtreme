@@ -528,13 +528,13 @@ class BackupManager @Inject constructor(
     }
 
     suspend fun inspectExportWarning(): BackupExportWarning {
-        val alarms = repository.getAll()
+        val alarms = repository.getAll().filter { it.kind == com.sysadmindoc.alarmclock.data.model.Alarm.KIND_NORMAL || it.kind.isBlank() }
         val settings = preferencesManager.getCurrentSettings()
         return assessExportWarning(settings, alarms)
     }
 
     suspend fun export(): String {
-        val alarms = repository.getAll()
+        val alarms = repository.getAll().filter { it.kind == com.sysadmindoc.alarmclock.data.model.Alarm.KIND_NORMAL || it.kind.isBlank() }
         val settings = preferencesManager.getCurrentSettings()
 
         val backup = BackupData(

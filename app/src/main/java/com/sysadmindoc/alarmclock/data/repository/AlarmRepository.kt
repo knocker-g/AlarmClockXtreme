@@ -25,6 +25,8 @@ class AlarmRepository @Inject constructor(
     suspend fun getEnabled(): List<Alarm> = dao.getEnabled()
     suspend fun getNextAlarm(): Alarm? = dao.getNextAlarm()
     suspend fun getAll(): List<Alarm> = dao.getAll()
+    suspend fun getAllNormalAlarms(): List<Alarm> = dao.getAll().filter { it.kind == Alarm.KIND_NORMAL || it.kind.isBlank() }
+    suspend fun getPendingQuickAlarms(): List<Alarm> = dao.getPendingQuickAlarms()
     suspend fun getAuthorityByAlarmId(alarmId: Long) = database.scheduleAuthorityDao().getAuthorityByAlarmId(alarmId)
     fun issuedOccurrenceDao(): com.sysadmindoc.alarmclock.data.local.IssuedOccurrenceDao = database.issuedOccurrenceDao()
     fun durableOperationIntentDao(): com.sysadmindoc.alarmclock.data.local.DurableOperationIntentDao = database.durableOperationIntentDao()

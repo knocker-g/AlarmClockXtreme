@@ -22,6 +22,12 @@ interface AlarmDao {
     @Query("SELECT * FROM alarms ORDER BY sortOrder ASC, hour ASC, minute ASC, id ASC")
     suspend fun getAll(): List<Alarm>
 
+    @Query("SELECT * FROM alarms WHERE kind = 'NORMAL' OR kind = '' OR kind IS NULL ORDER BY sortOrder ASC, hour ASC, minute ASC, id ASC")
+    suspend fun getAllNormalAlarms(): List<Alarm>
+
+    @Query("SELECT * FROM alarms WHERE kind = 'QUICK'")
+    suspend fun getPendingQuickAlarms(): List<Alarm>
+
     // Only consider alarms with a real future trigger so the "next alarm" surface
     // (notification, widget, dashboard) doesn't latch onto a stale trigger from a
     // disabled-then-re-enabled alarm whose nextTriggerTime hasn't been recomputed yet.
