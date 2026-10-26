@@ -102,4 +102,26 @@ class TimePickerContractTest {
         assertEquals(originalTime.hour, parsed?.hour)
         assertEquals(originalTime.minute, parsed?.minute)
     }
+
+    @Test
+    fun `initial time 07 30 preserves exact values in 12h and 24h modes without drift`() {
+        val initialTime = TimePickerValue(7, 30)
+
+        // 24h mode check
+        assertEquals(7, initialTime.displayHour(is24Hour = true))
+        assertEquals(30, initialTime.minute)
+
+        // 12h mode check
+        assertEquals(7, initialTime.displayHour(is24Hour = false))
+        assertEquals(30, initialTime.minute)
+        assertFalse(initialTime.isPm)
+
+        // Re-construct from 12h representation
+        val reconstructed = TimePickerValue.from12Hour(
+            displayHour = initialTime.displayHour(is24Hour = false),
+            minute = initialTime.minute,
+            isPm = initialTime.isPm
+        )
+        assertEquals(initialTime, reconstructed)
+    }
 }
