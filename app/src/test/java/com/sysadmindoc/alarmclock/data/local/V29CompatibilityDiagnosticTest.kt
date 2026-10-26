@@ -181,14 +181,15 @@ class V29CompatibilityDiagnosticTest {
             .addMigrations(
                 AlarmDatabase.MIGRATION_29_30,
                 AlarmDatabase.MIGRATION_30_31,
-                AlarmDatabase.MIGRATION_31_32
+                AlarmDatabase.MIGRATION_31_32,
+                AlarmDatabase.MIGRATION_32_33
             )
             .addCallback(AlarmDatabase.DATABASE_CALLBACK)
             .build()
 
         val reopenedDb = database.openHelper.writableDatabase
         assertTrue("Room must open existing v29 DB without schema error", reopenedDb.isOpen)
-        assertEquals(32, reopenedDb.version)
+        assertEquals(AlarmDatabase.VERSION, reopenedDb.version)
 
         // 3. VERIFY: Does CREATE TRIGGER IF NOT EXISTS replace the existing trigger definition?
         val reopenedCursor = reopenedDb.query("SELECT sql FROM sqlite_master WHERE name = 'trigger_durable_intent_identity_insert'")

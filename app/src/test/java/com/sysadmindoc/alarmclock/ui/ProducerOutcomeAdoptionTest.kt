@@ -52,7 +52,7 @@ class ProducerOutcomeAdoptionTest {
     @Before
     fun setUp() {
         try { Dispatchers.resetMain() } catch (_: Exception) {}
-        Dispatchers.setMain(Dispatchers.Unconfined)
+        Dispatchers.setMain(kotlinx.coroutines.test.UnconfinedTestDispatcher())
         context = ApplicationProvider.getApplicationContext()
         org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(true)
         db = Room.inMemoryDatabaseBuilder(context, AlarmDatabase::class.java)
