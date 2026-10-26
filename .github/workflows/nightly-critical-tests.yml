@@ -1,0 +1,87 @@
+name: Nightly Critical-Test Sentinel
+
+on:
+  schedule:
+    # 3:00 AM UTC daily
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      repetitions:
+        description: 'Number of repetitions (1-10, default 5)'
+        required: false
+        default: '5'
+
+concurrency:
+  group: nightly-critical-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nightly-sentinel:
+    name: Nightly Sentinel Repetitions
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Execute Bounded Critical-Test Repetitions
+        run: |
+          MAX_REPS="${{ github.event.inputs.repetitions || '5' }}"
+          TEST_FILTER="--tests com.sysadmindoc.alarmclock.ui.timer.TimerDurabilityTest --tests com.sysadmindoc.alarmclock.receiver.TimerExpiryRestartTest --tests com.sysadmindoc.alarmclock.ui.ProducerOutcomeAdoptionTest --tests com.sysadmindoc.alarmclock.receiver.SkipTransitionTest"
+          
+          echo "# Nightly Critical-Test Sentinel Execution Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Repetition | Status | Classification | Details |" >> $GITHUB_STEP_SUMMARY
+          echo "| :---: | :---: | :---: | :--- |" >> $GITHUB_STEP_SUMMARY
+
+          JOB_FAILED=0
+
+          for rep in $(seq 1 $MAX_REPS); do
+            echo "::group::Executing Repetition $rep of $MAX_REPS"
+            
+            # Clean test results before each repetition
+            rm -rf app/build/test-results/testDebugUnitTest
+            
+            ./gradlew :app:testDebugUnitTest $TEST_FILTER --no-daemon
+            GRADLE_EXIT_CODE=$?
+
+            if [ $GRADLE_EXIT_CODE -eq 0 ]; then
+              echo "Repetition $rep PASSED"
+              echo "| $rep | PASSED | - | All critical tests passed |" >> $GITHUB_STEP_SUMMARY
+              echo "::endgroup::"
+            else
+              echo "Repetition $rep FAILED with exit code $GRADLE_EXIT_CODE"
+              
+              # Classify failure: TEST_FAILURE vs INFRA_FAILURE
+              TEST_FAILURES=$(grep -E "<failure|<error" app/build/test-results/testDebugUnitTest/*.xml 2>/dev/null || true)
+              
+              if [ -n "$TEST_FAILURES" ]; then
+                CLASSIFICATION="TEST_FAILURE"
+                FAILING_TESTS=$(echo "$TEST_FAILURES" | sed -n 's/.*<testcase name="\([^"]*\)" classname="\([^"]*\)".*/\2.\1/p' | head -n 5 | paste -sd ", " -)
+                DETAILS="Test assertion failed: ${FAILING_TESTS:-See test report}"
+              else
+                CLASSIFICATION="INFRA_FAILURE"
+                DETAILS="Gradle or infrastructure error (exit code $GRADLE_EXIT_CODE)"
+              fi
+
+              echo "| $rep | FAILED | $CLASSIFICATION | $DETAILS |" >> $GITHUB_STEP_SUMMARY
+              echo "::endgroup::"
+              echo "::error::Critical-test repetition $rep failed ($CLASSIFICATION): $DETAILS"
+              
+              JOB_FAILED=1
+              break
+            fi
+          done
+
+          if [ $JOB_FAILED -ne 0 ]; then
+            exit 1
+          fi
