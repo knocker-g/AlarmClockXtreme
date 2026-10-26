@@ -159,29 +159,40 @@ class TimerViewModel @Inject constructor(
             state = TimerState.RUNNING
         )
 
-        val newTimers = _uiState.value.activeTimers + timer
-        _uiState.value = _uiState.value.copy(
-            activeTimers = newTimers,
-            inputDigits = "",
-            isInputMode = true
-        )
         val endElapsedRealtime = SystemClock.elapsedRealtime() + totalMillis
         val persisted = timer.toPersistedRecord(endElapsedRealtime)
-        runningEndTimes[id] = endElapsedRealtime
-        timerStore.upsert(persisted)
-        TimerAlarmScheduler.schedule(appContext, id, endElapsedRealtime)
-        TimerNotifications.postRunning(appContext, persisted)
-        startCountdownUntil(id, endElapsedRealtime)
+        val committed = timerStore.upsert(persisted)
+        if (committed) {
+            runningEndTimes[id] = endElapsedRealtime
+            _uiState.value = _uiState.value.copy(
+                activeTimers = _uiState.value.activeTimers + timer,
+                inputDigits = "",
+                isInputMode = true
+            )
+            val outcome = TimerAlarmScheduler.schedule(appContext, id, endElapsedRealtime)
+            if (outcome is TimerScheduleOutcome.RegistrationFailed) {
+                android.util.Log.w("TimerViewModel", "Timer $id started in store, but OS registration failed ($outcome)")
+            }
+            TimerNotifications.postRunning(appContext, persisted)
+            startCountdownUntil(id, endElapsedRealtime)
+        } else {
+            android.util.Log.e("TimerViewModel", "Failed to durably commit timer $id to TimerStore")
+        }
     }
 
     fun pause(timerId: Int? = null) {
         val id = timerId ?: _uiState.value.activeTimers.firstOrNull { it.state == TimerState.RUNNING }?.id ?: return
-        countdownJobs.remove(id)?.cancel()
-        runningEndTimes.remove(id)
-        TimerAlarmScheduler.cancel(appContext, id)
-        TimerNotifications.cancelTimer(appContext, id)
-        updateTimer(id) { timer ->
-            timer.copy(state = TimerState.PAUSED).also { timerStore.upsert(it.toPersistedRecord()) }
+        val timer = _uiState.value.activeTimers.find { it.id == id } ?: return
+        val paused = timer.copy(state = TimerState.PAUSED)
+        val committed = timerStore.upsert(paused.toPersistedRecord())
+        if (committed) {
+            countdownJobs.remove(id)?.cancel()
+            runningEndTimes.remove(id)
+            TimerAlarmScheduler.cancel(appContext, id)
+            TimerNotifications.cancelTimer(appContext, id)
+            updateTimer(id) { paused }
+        } else {
+            android.util.Log.e("TimerViewModel", "Failed to durably commit paused timer $id to TimerStore")
         }
     }
 
@@ -191,12 +202,19 @@ class TimerViewModel @Inject constructor(
         val endElapsedRealtime = SystemClock.elapsedRealtime() + timer.remainingMillis
         val resumed = timer.copy(state = TimerState.RUNNING)
         val persisted = resumed.toPersistedRecord(endElapsedRealtime)
-        runningEndTimes[id] = endElapsedRealtime
-        updateTimer(id) { resumed }
-        timerStore.upsert(persisted)
-        TimerAlarmScheduler.schedule(appContext, id, endElapsedRealtime)
-        TimerNotifications.postRunning(appContext, persisted)
-        startCountdownUntil(id, endElapsedRealtime)
+        val committed = timerStore.upsert(persisted)
+        if (committed) {
+            runningEndTimes[id] = endElapsedRealtime
+            updateTimer(id) { resumed }
+            val outcome = TimerAlarmScheduler.schedule(appContext, id, endElapsedRealtime)
+            if (outcome is TimerScheduleOutcome.RegistrationFailed) {
+                android.util.Log.w("TimerViewModel", "Timer $id resumed in store, but OS registration failed ($outcome)")
+            }
+            TimerNotifications.postRunning(appContext, persisted)
+            startCountdownUntil(id, endElapsedRealtime)
+        } else {
+            android.util.Log.e("TimerViewModel", "Failed to durably commit resumed timer $id to TimerStore")
+        }
     }
 
     /**
@@ -207,19 +225,23 @@ class TimerViewModel @Inject constructor(
      */
     fun stop(timerId: Int? = null) {
         val id = timerId ?: _uiState.value.activeTimers.firstOrNull()?.id ?: return
-        _uiState.value.activeTimers.firstOrNull { it.id == id }?.let { stopped ->
-            undoStopSnapshot = stopped
+        val committed = timerStore.remove(id)
+        if (committed) {
+            _uiState.value.activeTimers.firstOrNull { it.id == id }?.let { stopped ->
+                undoStopSnapshot = stopped
+            }
+            countdownJobs[id]?.cancel()
+            countdownJobs.remove(id)
+            runningEndTimes.remove(id)
+            TimerAlarmScheduler.cancel(appContext, id)
+            TimerAlarmService.dismiss(appContext, id)
+            cancelTimerFinishedNotification(id)
+            _uiState.value = _uiState.value.copy(
+                activeTimers = _uiState.value.activeTimers.filter { it.id != id }
+            )
+        } else {
+            android.util.Log.e("TimerViewModel", "Failed to durably remove timer $id from TimerStore")
         }
-        countdownJobs[id]?.cancel()
-        countdownJobs.remove(id)
-        runningEndTimes.remove(id)
-        TimerAlarmScheduler.cancel(appContext, id)
-        TimerAlarmService.dismiss(appContext, id)
-        cancelTimerFinishedNotification(id)
-        timerStore.remove(id)
-        _uiState.value = _uiState.value.copy(
-            activeTimers = _uiState.value.activeTimers.filter { it.id != id }
-        )
     }
 
     /** True when [stop] removed a timer that can still be put back. */
@@ -236,16 +258,23 @@ class TimerViewModel @Inject constructor(
             remainingMillis = remainingMillis,
             state = TimerState.RUNNING
         )
-        _uiState.value = _uiState.value.copy(
-            activeTimers = _uiState.value.activeTimers + restored
-        )
         val endElapsedRealtime = SystemClock.elapsedRealtime() + remainingMillis
         val persisted = restored.toPersistedRecord(endElapsedRealtime)
-        runningEndTimes[id] = endElapsedRealtime
-        timerStore.upsert(persisted)
-        TimerAlarmScheduler.schedule(appContext, id, endElapsedRealtime)
-        TimerNotifications.postRunning(appContext, persisted)
-        startCountdownUntil(id, endElapsedRealtime)
+        val committed = timerStore.upsert(persisted)
+        if (committed) {
+            runningEndTimes[id] = endElapsedRealtime
+            _uiState.value = _uiState.value.copy(
+                activeTimers = _uiState.value.activeTimers + restored
+            )
+            val outcome = TimerAlarmScheduler.schedule(appContext, id, endElapsedRealtime)
+            if (outcome is TimerScheduleOutcome.RegistrationFailed) {
+                android.util.Log.w("TimerViewModel", "Restored timer $id saved in store, but OS registration failed ($outcome)")
+            }
+            TimerNotifications.postRunning(appContext, persisted)
+            startCountdownUntil(id, endElapsedRealtime)
+        } else {
+            android.util.Log.e("TimerViewModel", "Failed to durably commit restored timer $id to TimerStore")
+        }
     }
 
     fun clearUndoStop() {
@@ -371,7 +400,10 @@ class TimerViewModel @Inject constructor(
             when (record.state) {
                 TimerState.RUNNING -> {
                     runningEndTimes[record.id] = record.endElapsedRealtime
-                    TimerAlarmScheduler.schedule(appContext, record.id, record.endElapsedRealtime)
+                    val outcome = TimerAlarmScheduler.schedule(appContext, record.id, record.endElapsedRealtime)
+                    if (outcome is TimerScheduleOutcome.RegistrationFailed) {
+                        android.util.Log.w("TimerViewModel", "Restored timer ${record.id} in store, but OS registration failed ($outcome)")
+                    }
                     TimerNotifications.postRunning(appContext, record)
                     startCountdownUntil(record.id, record.endElapsedRealtime)
                 }

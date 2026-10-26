@@ -95,6 +95,17 @@ class ProducerOutcomeAdoptionTest {
         db.close()
     }
 
+    private suspend fun awaitDbCondition(
+        timeoutMs: Long = 2000L,
+        condition: suspend () -> Boolean
+    ) {
+        kotlinx.coroutines.withTimeout(timeoutMs) {
+            while (!condition()) {
+                kotlinx.coroutines.yield()
+            }
+        }
+    }
+
     @Test
     fun `toggleAlarm enabled consumes ScheduleOutcome Armed and emits feedback`() = runBlocking {
         val alarmId = 6001L
@@ -118,6 +129,7 @@ class ProducerOutcomeAdoptionTest {
         )
 
         viewModel.toggleAlarm(alarm)
+        awaitDbCondition { alarmRepo.getById(alarmId)?.isEnabled == true }
 
         val updated = alarmRepo.getById(alarmId)
         assertTrue("Alarm MUST be enabled in DB", updated?.isEnabled == true)
@@ -146,6 +158,7 @@ class ProducerOutcomeAdoptionTest {
         )
 
         viewModel.toggleAlarm(alarm)
+        awaitDbCondition { alarmRepo.getById(alarmId)?.isEnabled == true }
 
         val updated = alarmRepo.getById(alarmId)
         assertTrue("Alarm MUST remain enabled in DB for future permission restoration", updated?.isEnabled == true)
@@ -173,6 +186,7 @@ class ProducerOutcomeAdoptionTest {
         )
 
         viewModel.duplicateAlarm(originalAlarm)
+        awaitDbCondition { alarmRepo.getAll().size == 2 }
 
         val allAlarms = alarmRepo.getAll()
         assertEquals(2, allAlarms.size)
@@ -203,12 +217,16 @@ class ProducerOutcomeAdoptionTest {
 
         viewModel.selectMany(setOf(id1, id2))
         viewModel.enableSelected()
-        kotlinx.coroutines.delay(100)
+        awaitDbCondition {
+            val u1 = alarmRepo.getById(id1)
+            val u2 = alarmRepo.getById(id2)
+            u1?.isEnabled == true && u2?.isEnabled == true
+        }
 
         val updated1 = alarmRepo.getById(id1)
         val updated2 = alarmRepo.getById(id2)
-        org.junit.Assert.assertNotNull("updated1 must not be null", updated1)
-        org.junit.Assert.assertNotNull("updated2 must not be null", updated2)
+        assertNotNull("updated1 must not be null", updated1)
+        assertNotNull("updated2 must not be null", updated2)
         assertTrue("Alarm 1 MUST be enabled in DB (id1=$id1, isEnabled=${updated1?.isEnabled})", updated1?.isEnabled == true)
         assertTrue("Alarm 2 MUST be enabled in DB despite permission blockage (id2=$id2, isEnabled=${updated2?.isEnabled})", updated2?.isEnabled == true)
     }
@@ -232,10 +250,12 @@ class ProducerOutcomeAdoptionTest {
 
         // Delete alarm first
         viewModel.deleteAlarm(alarm)
+        awaitDbCondition { alarmRepo.getById(initialId) == null }
         assertNull("Alarm MUST be deleted from DB", alarmRepo.getById(initialId))
 
         // Undo delete
         viewModel.undoDelete()
+        awaitDbCondition { alarmRepo.getAll().isNotEmpty() }
 
         val restoredAlarms = alarmRepo.getAll()
         assertEquals("Alarm MUST be restored in DB", 1, restoredAlarms.size)

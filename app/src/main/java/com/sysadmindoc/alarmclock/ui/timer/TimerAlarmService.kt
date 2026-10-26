@@ -95,9 +95,13 @@ class TimerAlarmService : Service() {
             ACTION_DISMISS -> {
                 val id = intent.getIntExtra(EXTRA_TIMER_ID, -1)
                 if (id > 0) {
-                    alerts.remove(id)
-                    runCatching { TimerStore(this).remove(id) }
-                    TimerNotifications.cancelFinished(this, id)
+                    val removed = runCatching { TimerStore(this).remove(id) }.getOrDefault(false)
+                    if (removed) {
+                        alerts.remove(id)
+                        TimerNotifications.cancelFinished(this, id)
+                    } else {
+                        Log.w(TAG, "Dismiss failed to durably remove timer $id from TimerStore; retaining notification")
+                    }
                 }
                 if (alerts.isEmpty) stopEverything() else refreshNotification()
             }
@@ -110,13 +114,16 @@ class TimerAlarmService : Service() {
                 } else {
                     null
                 }
-                if (id > 0) {
+                if (restarted != null) {
                     alerts.remove(id)
                     TimerNotifications.cancelFinished(this, id)
-                }
-                if (restarted != null) {
-                    TimerAlarmScheduler.schedule(this, restarted.id, restarted.endElapsedRealtime)
+                    val outcome = TimerAlarmScheduler.schedule(this, restarted.id, restarted.endElapsedRealtime)
+                    if (outcome is TimerScheduleOutcome.RegistrationFailed) {
+                        Log.w(TAG, "Restarted timer ${restarted.id} saved in store, but OS registration failed ($outcome)")
+                    }
                     TimerNotifications.postRunning(this, restarted)
+                } else if (id > 0) {
+                    Log.w(TAG, "Restart failed to durably commit for timer $id; retaining finished notification")
                 }
                 if (alerts.isEmpty) stopEverything() else refreshNotification()
             }
