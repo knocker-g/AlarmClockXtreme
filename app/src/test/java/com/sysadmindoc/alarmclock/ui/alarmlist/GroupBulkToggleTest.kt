@@ -299,4 +299,62 @@ class GroupBulkToggleTest {
         assertTrue(enabledAlarms.any { it.id == alarm1 })
         assertTrue(enabledAlarms.any { it.id == alarm2 })
     }
+
+    @Test
+    fun `Production repository updateAlarmsEnabledTransaction rolls back entire batch on failure`() = runBlocking {
+        // Arrange
+        val alarm1 = alarmRepo.save(Alarm(hour = 7, minute = 0, isEnabled = false, group = "Work", nextTriggerTime = 0L))
+        val alarm2 = alarmRepo.save(Alarm(hour = 8, minute = 0, isEnabled = false, group = "Work", nextTriggerTime = 0L))
+        val alarm3 = alarmRepo.save(Alarm(hour = 9, minute = 0, isEnabled = false, group = "Work", nextTriggerTime = 0L))
+        val otherAlarm = alarmRepo.save(Alarm(hour = 10, minute = 0, isEnabled = false, group = "Personal", nextTriggerTime = 0L))
+        val quickAlarm = alarmRepo.save(Alarm(hour = 11, minute = 0, isEnabled = true, kind = Alarm.KIND_QUICK, group = "Work", nextTriggerTime = 123456789L))
+
+        // Create a fault-injecting AlarmDao delegate wrapping real Room alarmDao
+        val faultInjectingDao = object : AlarmDao by alarmDao {
+            override suspend fun updateAlarmsEnabled(alarms: List<Alarm>) {
+                alarms.forEachIndexed { index, alarm ->
+                    if (index == 1) {
+                        throw IllegalStateException("Injected Room transaction failure on 2nd row update")
+                    }
+                    alarmDao.setEnabled(alarm.id, alarm.isEnabled, alarm.nextTriggerTime)
+                }
+            }
+        }
+
+        val faultRepo = AlarmRepository(db, faultInjectingDao, db.alarmGroupDao())
+
+        val preparedAlarms = listOf(
+            alarmRepo.getById(alarm1)!!.copy(isEnabled = true, nextTriggerTime = 999999L),
+            alarmRepo.getById(alarm2)!!.copy(isEnabled = true, nextTriggerTime = 888888L),
+            alarmRepo.getById(alarm3)!!.copy(isEnabled = true, nextTriggerTime = 777777L)
+        )
+
+        // Act: Execute production repository method
+        var exceptionThrown = false
+        try {
+            faultRepo.updateAlarmsEnabledTransaction(preparedAlarms)
+        } catch (e: IllegalStateException) {
+            exceptionThrown = true
+        }
+
+        assertTrue("Production repository call MUST propagate transaction exception", exceptionThrown)
+
+        // Assert 1: First member's attempted update was rolled back in Room DB
+        val rolledBack1 = alarmRepo.getById(alarm1)!!
+        assertFalse("Alarm 1 MUST be rolled back to isEnabled == false", rolledBack1.isEnabled)
+        assertEquals("Alarm 1 nextTriggerTime MUST be rolled back to 0L", 0L, rolledBack1.nextTriggerTime)
+
+        // Assert 2: All group members retain original committed DB values
+        val rolledBack2 = alarmRepo.getById(alarm2)!!
+        assertFalse("Alarm 2 MUST retain isEnabled == false", rolledBack2.isEnabled)
+        assertEquals(0L, rolledBack2.nextTriggerTime)
+
+        val rolledBack3 = alarmRepo.getById(alarm3)!!
+        assertFalse("Alarm 3 MUST retain isEnabled == false", rolledBack3.isEnabled)
+        assertEquals(0L, rolledBack3.nextTriggerTime)
+
+        // Assert 3: Unrelated Group and Quick Alarm remain untouched
+        assertEquals(false, alarmRepo.getById(otherAlarm)!!.isEnabled)
+        assertEquals(true, alarmRepo.getById(quickAlarm)!!.isEnabled)
+    }
 }
