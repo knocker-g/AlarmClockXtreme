@@ -529,7 +529,6 @@ class AlarmListViewModel @Inject constructor(
                 return QuickCreationResult.ValidationRejected
             }
             if (existing.quickTriggerEpochMs <= System.currentTimeMillis()) {
-                repository.delete(existing)
                 return QuickCreationResult.ValidationRejected
             }
             val qScheduler = quickAlarmScheduler ?: QuickAlarmScheduler(context, repository)
@@ -620,7 +619,6 @@ class AlarmListViewModel @Inject constructor(
                 return QuickCreationResult.ValidationRejected
             }
             if (existing.quickTriggerEpochMs <= System.currentTimeMillis()) {
-                repository.delete(existing)
                 return QuickCreationResult.ValidationRejected
             }
             val qScheduler = quickAlarmScheduler ?: QuickAlarmScheduler(context, repository)

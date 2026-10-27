@@ -206,6 +206,41 @@ class Kno20CreationConsumptionSliceTest {
     }
 
     @Test
+    fun `expired retry returns ValidationRejected and preserves DB record without deletion`() = runBlocking {
+        org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(false)
+
+        val viewModel = AlarmListViewModel(
+            context = context,
+            repository = alarmRepo,
+            scheduler = mockNormalScheduler,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            eventRepository = eventRepo,
+            quickAlarmScheduler = quickScheduler
+        )
+
+        // 1. Initial creation (persisted in DB)
+        val result1 = viewModel.createQuickAlarm(5)
+        assertTrue(result1 is com.sysadmindoc.alarmclock.domain.QuickCreationResult.PermissionBlocked)
+        val alarmId = (result1 as com.sysadmindoc.alarmclock.domain.QuickCreationResult.PermissionBlocked).alarmId
+
+        // 2. Simulate time passing beyond the quick trigger epoch time
+        val persisted = alarmRepo.getById(alarmId)
+        assertNotNull(persisted)
+        val expiredAlarm = persisted!!.copy(quickTriggerEpochMs = System.currentTimeMillis() - 60_000L)
+        alarmRepo.update(expiredAlarm)
+
+        // 3. Retry on expired trigger ID
+        val retryResult = viewModel.createQuickAlarm(5, retryAlarmId = alarmId)
+        assertTrue("Expired retry MUST return ValidationRejected", retryResult is com.sysadmindoc.alarmclock.domain.QuickCreationResult.ValidationRejected)
+
+        // 4. Assert the expired Quick record was NOT deleted from DB by the retry path
+        val reloaded = alarmRepo.getById(alarmId)
+        assertNotNull("Expired Quick record MUST NOT be deleted by retry path", reloaded)
+        assertEquals(alarmId, reloaded?.id)
+    }
+
+    @Test
     fun `QuickTimeResolver resolveRelative validates 1 to 180 bounds`() {
         val now = System.currentTimeMillis()
         assertNotNull(com.sysadmindoc.alarmclock.domain.QuickTimeResolver.resolveRelative(1, now))
