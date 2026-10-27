@@ -17,6 +17,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -78,6 +79,11 @@ fun QuickAlarmCreateDialog(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var lastPersistedAlarmId by remember { mutableStateOf<Long?>(null) }
     val scope = rememberCoroutineScope()
+
+    // Reset retry ID on user input modification
+    LaunchedEffect(mode, relativeMinutesInput, selectedAbsoluteHour, selectedAbsoluteMinute) {
+        lastPersistedAlarmId = null
+    }
 
     AlertDialog(
         onDismissRequest = {

@@ -216,6 +216,26 @@ class Kno20CreationConsumptionSliceTest {
     }
 
     @Test
+    fun `QuickTimeResolver resolveAbsolute enforces strictly less than 24h horizon and DST gap`() {
+        val zoneNy = java.time.ZoneId.of("America/New_York")
+        val nowNy = java.time.ZonedDateTime.of(2026, 11, 15, 10, 0, 0, 0, zoneNy).toInstant().toEpochMilli()
+
+        // 1. Same-minute selection resolves to next day (+24h = 86_400_000ms), which is NOT < 24h, so MUST be rejected (null)
+        val resolvedExact24h = com.sysadmindoc.alarmclock.domain.QuickTimeResolver.resolveAbsolute(10, 0, nowNy, zoneNy)
+        assertNull("Exact 24h same-minute selection MUST be rejected as null (horizon is strictly < 24h)", resolvedExact24h)
+
+        // 2. 10:01 AM (1 minute in future = diff 60_000ms < 24h) MUST be accepted
+        val resolvedFuture = com.sysadmindoc.alarmclock.domain.QuickTimeResolver.resolveAbsolute(10, 1, nowNy, zoneNy)
+        assertNotNull("Strictly future < 24h selection MUST be accepted", resolvedFuture)
+        assertEquals(nowNy + 60_000L, resolvedFuture)
+
+        // 3. DST spring-forward gap local time (e.g. 2:30 AM on March 8, 2026 in NY) is invalid
+        val dstGapDate = java.time.ZonedDateTime.of(2026, 3, 8, 1, 0, 0, 0, zoneNy).toInstant().toEpochMilli()
+        val resolvedGap = com.sysadmindoc.alarmclock.domain.QuickTimeResolver.resolveAbsolute(2, 30, dstGapDate, zoneNy)
+        assertNull("Nonexistent local time during DST spring-forward gap MUST be rejected as null", resolvedGap)
+    }
+
+    @Test
     fun `createQuickAlarm returns ValidationRejected for 0 or 181 minutes`() = runBlocking {
         val viewModel = AlarmListViewModel(
             context = context,
