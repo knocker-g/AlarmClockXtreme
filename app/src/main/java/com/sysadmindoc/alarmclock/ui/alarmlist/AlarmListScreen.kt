@@ -137,13 +137,14 @@ import com.sysadmindoc.alarmclock.ui.components.AppInlineNotice
 import com.sysadmindoc.alarmclock.ui.components.AppSectionTitle
 import com.sysadmindoc.alarmclock.ui.components.AppStatusChip
 import com.sysadmindoc.alarmclock.ui.components.AppSurfaceCard
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.FloatingActionButton
 import com.sysadmindoc.alarmclock.ui.components.AppInputShape
 import com.sysadmindoc.alarmclock.ui.components.YouTubeDownloadDialog
 import com.sysadmindoc.alarmclock.ui.components.YouTubeDownloadResults
 import com.sysadmindoc.alarmclock.ui.components.appOutlinedTextFieldColors
 import com.sysadmindoc.alarmclock.ui.components.appSwitchColors
 import com.sysadmindoc.alarmclock.ui.components.isYouTubeDownloaderAvailable
-import com.sysadmindoc.alarmclock.ui.templates.TemplatePickerSheet
 import com.sysadmindoc.alarmclock.ui.theme.AccentRed
 import com.sysadmindoc.alarmclock.ui.theme.BorderSubtle
 import com.sysadmindoc.alarmclock.ui.theme.ClockTimeSmall
@@ -231,17 +232,6 @@ fun AlarmListScreen(
                     }
                 }
             }
-        )
-    }
-
-    if (showTemplates) {
-        TemplatePickerSheet(
-            is24Hour = state.is24HourFormat,
-            onSelect = { template ->
-                viewModel.createFromTemplate(template)
-                showTemplates = false
-            },
-            onDismiss = { showTemplates = false }
         )
     }
 
@@ -400,6 +390,8 @@ fun AlarmListScreen(
         )
     }
 
+    var showFabMenu by remember { mutableStateOf(false) }
+
     Scaffold(
         containerColor = SurfaceDark,
         // v1.7.1: Skip the inner Scaffold's default system insets — the outer
@@ -407,7 +399,57 @@ fun AlarmListScreen(
         // inset. Without this, both scaffolds compete for the same insets and
         // the alarm list stops well short of the floating nav.
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        snackbarHost = { SnackbarHost(snackbarHostState) }
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        floatingActionButton = {
+            if (!state.isSelectionMode) {
+                Box {
+                    FloatingActionButton(
+                        onClick = { showFabMenu = true },
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                        shape = CircleShape
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = stringResource(R.string.alarm_edit_create)
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded = showFabMenu,
+                        onDismissRequest = { showFabMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.new_alarm)) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.AlarmAdd,
+                                    contentDescription = null
+                                )
+                            },
+                            onClick = {
+                                showFabMenu = false
+                                onAddAlarm()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.alarm_list_quick_alarms)) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Bolt,
+                                    contentDescription = null
+                                )
+                            },
+                            onClick = {
+                                showFabMenu = false
+                                quickCreateInitialMinutes = 15
+                                showQuickCreateDialog = true
+                            }
+                        )
+                    }
+                }
+            }
+        }
     ) { padding ->
         Column(
             modifier = Modifier
@@ -529,13 +571,7 @@ fun AlarmListScreen(
                                             AppEmptyState(
                                                 icon = Icons.Default.AlarmAdd,
                                                 title = stringResource(R.string.alarm_list_empty_title),
-                                                description = stringResource(R.string.alarm_list_empty_description),
-                                                footer = {
-                                                    AlarmListEmptyActions(
-                                                        onAddAlarm = onAddAlarm,
-                                                        onBrowseTemplates = { showTemplates = true }
-                                                    )
-                                                }
+                                                description = stringResource(R.string.alarm_list_empty_description)
                                             )
                                         }
                                     }
@@ -738,45 +774,9 @@ fun AlarmListScreen(
                                         }
                                     }
                                 }
-                                item {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 16.dp, vertical = 4.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        TextButton(
-                                            onClick = { showTemplates = true },
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text(stringResource(R.string.alarm_list_templates))
-                                        }
-                                        TextButton(
-                                            onClick = onAddAlarm,
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text(stringResource(R.string.new_alarm))
-                                        }
-                                    }
-                                }
                             }
                         }
 
-                        item {
-                            Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
-                                QuickAlarmRow(
-                                    onQuickAlarm = { minutes ->
-                                        quickCreateInitialMinutes = minutes
-                                        showQuickCreateDialog = true
-                                    },
-                                    napDefaultMinutes = state.napDefaultMinutes
-                                )
-                            }
-                        }
                         if (youTubeAvailable) {
                             item {
                                 YouTubeDownloadCard(
@@ -826,8 +826,6 @@ fun AlarmListScreen(
                                 statsAlarmLabel = alarm.label.ifBlank { "%d:%02d".format(alarm.hour, alarm.minute) }
                                 viewModel.loadAlarmStats(alarm.id)
                             },
-                            onAddAlarm = onAddAlarm,
-                            onBrowseTemplates = { showTemplates = true },
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxHeight()
@@ -853,60 +851,6 @@ fun AlarmListScreen(
 }
 
 @Composable
-private fun AlarmListEmptyActions(
-    onAddAlarm: () -> Unit,
-    onBrowseTemplates: () -> Unit
-) {
-    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val compact = maxWidth < 360.dp
-        if (compact) {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Button(
-                    onClick = onAddAlarm,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                ) {
-                    Text(stringResource(R.string.alarm_edit_create))
-                }
-                OutlinedButton(
-                    onClick = onBrowseTemplates,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary)
-                ) {
-                    Text(stringResource(R.string.alarm_list_browse_templates))
-                }
-            }
-        } else {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Button(
-                    onClick = onAddAlarm,
-                    shape = RoundedCornerShape(8.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                ) {
-                    Text(stringResource(R.string.alarm_edit_create))
-                }
-                OutlinedButton(
-                    onClick = onBrowseTemplates,
-                    shape = RoundedCornerShape(8.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary)
-                ) {
-                    Text(stringResource(R.string.alarm_list_browse_templates))
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun AlarmDetailPane(
     alarm: Alarm?,
     latestEvent: AlarmEvent? = null,
@@ -922,8 +866,6 @@ private fun AlarmDetailPane(
     onDuplicate: (Alarm) -> Unit,
     onShare: (Alarm) -> Unit,
     onShowHistory: (Alarm) -> Unit,
-    onAddAlarm: () -> Unit,
-    onBrowseTemplates: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     AppSurfaceCard(
@@ -940,13 +882,7 @@ private fun AlarmDetailPane(
             AppEmptyState(
                 icon = Icons.Default.AlarmAdd,
                 title = stringResource(R.string.alarm_list_detail_empty_title),
-                description = stringResource(R.string.alarm_list_detail_empty_description),
-                footer = {
-                    AlarmListEmptyActions(
-                        onAddAlarm = onAddAlarm,
-                        onBrowseTemplates = onBrowseTemplates
-                    )
-                }
+                description = stringResource(R.string.alarm_list_detail_empty_description)
             )
             return@AppSurfaceCard
         }
