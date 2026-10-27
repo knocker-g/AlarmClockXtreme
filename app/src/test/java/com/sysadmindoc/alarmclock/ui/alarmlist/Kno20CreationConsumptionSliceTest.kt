@@ -31,6 +31,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -138,21 +139,17 @@ class Kno20CreationConsumptionSliceTest {
             quickAlarmScheduler = quickScheduler
         )
 
-        var emittedFeedback: String? = null
-        val job = launch {
-            emittedFeedback = viewModel.feedbackEvents.first()
-        }
+        val result = viewModel.createQuickAlarm(10)
+        assertTrue("Result MUST be CreatedAndArmed", result is com.sysadmindoc.alarmclock.domain.QuickCreationResult.CreatedAndArmed)
 
-        viewModel.createQuickAlarm(10)
         awaitDbCondition { alarmRepo.getPendingQuickAlarms().isNotEmpty() }
-        job.join()
 
-        assertNotNull("Feedback MUST be emitted", emittedFeedback)
-        assertTrue("Feedback MUST contain quick alarm set string", emittedFeedback!!.startsWith("Quick alarm set for"))
+        val pending = alarmRepo.getPendingQuickAlarms()
+        assertEquals(1, pending.size)
     }
 
     @Test
-    fun `createQuickAlarm emits permission required feedback when exact permission revoked`() = runBlocking {
+    fun `createQuickAlarm returns PermissionBlocked when exact permission revoked`() = runBlocking {
         org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(false)
 
         val viewModel = AlarmListViewModel(
@@ -165,14 +162,188 @@ class Kno20CreationConsumptionSliceTest {
             quickAlarmScheduler = quickScheduler
         )
 
-        viewModel.createQuickAlarm(20)
-
-        val feedback = viewModel.feedbackEvents.first()
-        assertTrue("Feedback MUST notify user of permission requirement", feedback.contains("Exact alarm permission required"))
+        val result = viewModel.createQuickAlarm(20)
+        assertTrue("Result MUST be PermissionBlocked", result is com.sysadmindoc.alarmclock.domain.QuickCreationResult.PermissionBlocked)
 
         // Confirm pending Quick intent is preserved in DB despite permission block
         val pendingQuick = alarmRepo.getPendingQuickAlarms()
         assertEquals("Pending Quick Alarm MUST remain persisted in DB", 1, pendingQuick.size)
+    }
+
+    @Test
+    fun `retry with retryAlarmId re-arms existing Quick Alarm without duplicate creation`() = runBlocking {
+        org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(false)
+
+        val viewModel = AlarmListViewModel(
+            context = context,
+            repository = alarmRepo,
+            scheduler = mockNormalScheduler,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            eventRepository = eventRepo,
+            quickAlarmScheduler = quickScheduler
+        )
+
+        // 1. Initial attempt fails registration / permission
+        val result1 = viewModel.createQuickAlarm(30)
+        assertTrue("Result 1 MUST be PermissionBlocked", result1 is com.sysadmindoc.alarmclock.domain.QuickCreationResult.PermissionBlocked)
+        val blockedId = (result1 as com.sysadmindoc.alarmclock.domain.QuickCreationResult.PermissionBlocked).alarmId
+
+        val pendingInitial = alarmRepo.getPendingQuickAlarms()
+        assertEquals("DB MUST contain 1 pending Quick alarm after initial blocked attempt", 1, pendingInitial.size)
+        assertEquals(blockedId, pendingInitial[0].id)
+
+        // 2. Exact alarm permission granted by user
+        org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(true)
+
+        // 3. User retries creation passing retryAlarmId = blockedId
+        val result2 = viewModel.createQuickAlarm(30, retryAlarmId = blockedId)
+        assertTrue("Result 2 MUST be CreatedAndArmed", result2 is com.sysadmindoc.alarmclock.domain.QuickCreationResult.CreatedAndArmed)
+
+        val pendingAfterRetry = alarmRepo.getPendingQuickAlarms()
+        assertEquals("DB MUST STILL contain exactly 1 pending Quick alarm (no duplicate row created)", 1, pendingAfterRetry.size)
+        assertEquals("Re-armed alarm ID MUST match initial blocked ID", blockedId, pendingAfterRetry[0].id)
+    }
+
+    @Test
+    fun `expired retry returns ValidationRejected and preserves DB record without deletion`() = runBlocking {
+        org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(false)
+
+        val viewModel = AlarmListViewModel(
+            context = context,
+            repository = alarmRepo,
+            scheduler = mockNormalScheduler,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            eventRepository = eventRepo,
+            quickAlarmScheduler = quickScheduler
+        )
+
+        // 1. Initial creation (persisted in DB)
+        val result1 = viewModel.createQuickAlarm(5)
+        assertTrue(result1 is com.sysadmindoc.alarmclock.domain.QuickCreationResult.PermissionBlocked)
+        val alarmId = (result1 as com.sysadmindoc.alarmclock.domain.QuickCreationResult.PermissionBlocked).alarmId
+
+        // 2. Simulate time passing beyond the quick trigger epoch time
+        val persisted = alarmRepo.getById(alarmId)
+        assertNotNull(persisted)
+        val expiredAlarm = persisted!!.copy(quickTriggerEpochMs = System.currentTimeMillis() - 60_000L)
+        alarmRepo.update(expiredAlarm)
+
+        // 3. Retry on expired trigger ID
+        val retryResult = viewModel.createQuickAlarm(5, retryAlarmId = alarmId)
+        assertTrue("Expired retry MUST return ValidationRejected", retryResult is com.sysadmindoc.alarmclock.domain.QuickCreationResult.ValidationRejected)
+
+        // 4. Assert the expired Quick record was NOT deleted from DB by the retry path
+        val reloaded = alarmRepo.getById(alarmId)
+        assertNotNull("Expired Quick record MUST NOT be deleted by retry path", reloaded)
+        assertEquals(alarmId, reloaded?.id)
+    }
+
+    @Test
+    fun `QuickTimeResolver resolveRelative validates 1 to 180 bounds`() {
+        val now = System.currentTimeMillis()
+        assertNotNull(com.sysadmindoc.alarmclock.domain.QuickTimeResolver.resolveRelative(1, now))
+        assertNotNull(com.sysadmindoc.alarmclock.domain.QuickTimeResolver.resolveRelative(180, now))
+        assertNull("0 minutes MUST be rejected", com.sysadmindoc.alarmclock.domain.QuickTimeResolver.resolveRelative(0, now))
+        assertNull("181 minutes MUST be rejected", com.sysadmindoc.alarmclock.domain.QuickTimeResolver.resolveRelative(181, now))
+        assertNull("Negative minutes MUST be rejected", com.sysadmindoc.alarmclock.domain.QuickTimeResolver.resolveRelative(-5, now))
+    }
+
+    @Test
+    fun `QuickTimeResolver resolveAbsolute enforces strictly less than 24h horizon and DST gap`() {
+        val zoneNy = java.time.ZoneId.of("America/New_York")
+        val nowNy = java.time.ZonedDateTime.of(2026, 11, 15, 10, 0, 0, 0, zoneNy).toInstant().toEpochMilli()
+
+        // 1. Same-minute selection resolves to next day (+24h = 86_400_000ms), which is NOT < 24h, so MUST be rejected (null)
+        val resolvedExact24h = com.sysadmindoc.alarmclock.domain.QuickTimeResolver.resolveAbsolute(10, 0, nowNy, zoneNy)
+        assertNull("Exact 24h same-minute selection MUST be rejected as null (horizon is strictly < 24h)", resolvedExact24h)
+
+        // 2. 10:01 AM (1 minute in future = diff 60_000ms < 24h) MUST be accepted
+        val resolvedFuture = com.sysadmindoc.alarmclock.domain.QuickTimeResolver.resolveAbsolute(10, 1, nowNy, zoneNy)
+        assertNotNull("Strictly future < 24h selection MUST be accepted", resolvedFuture)
+        assertEquals(nowNy + 60_000L, resolvedFuture)
+
+        // 3. DST spring-forward gap local time (e.g. 2:30 AM on March 8, 2026 in NY) is invalid
+        val dstGapDate = java.time.ZonedDateTime.of(2026, 3, 8, 1, 0, 0, 0, zoneNy).toInstant().toEpochMilli()
+        val resolvedGap = com.sysadmindoc.alarmclock.domain.QuickTimeResolver.resolveAbsolute(2, 30, dstGapDate, zoneNy)
+        assertNull("Nonexistent local time during DST spring-forward gap MUST be rejected as null", resolvedGap)
+    }
+
+    @Test
+    fun `createQuickAlarm returns ValidationRejected for 0 or 181 minutes`() = runBlocking {
+        val viewModel = AlarmListViewModel(
+            context = context,
+            repository = alarmRepo,
+            scheduler = mockNormalScheduler,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            eventRepository = eventRepo,
+            quickAlarmScheduler = quickScheduler
+        )
+
+        val result0 = viewModel.createQuickAlarm(0)
+        assertTrue("Result for 0 minutes MUST be ValidationRejected", result0 is com.sysadmindoc.alarmclock.domain.QuickCreationResult.ValidationRejected)
+
+        val result181 = viewModel.createQuickAlarm(181)
+        assertTrue("Result for 181 minutes MUST be ValidationRejected", result181 is com.sysadmindoc.alarmclock.domain.QuickCreationResult.ValidationRejected)
+    }
+
+    @Test
+    fun `createAbsoluteQuickAlarm resolves next occurrence within 24h and enforces Quick locks`() = runBlocking {
+        val viewModel = AlarmListViewModel(
+            context = context,
+            repository = alarmRepo,
+            scheduler = mockNormalScheduler,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            eventRepository = eventRepo,
+            quickAlarmScheduler = quickScheduler
+        )
+
+        // Select 15:30
+        viewModel.createAbsoluteQuickAlarm(15, 30)
+        awaitDbCondition { alarmRepo.getPendingQuickAlarms().isNotEmpty() }
+
+        val pending = alarmRepo.getPendingQuickAlarms()
+        assertEquals(1, pending.size)
+
+        val created = pending[0]
+        assertEquals("QUICK", created.kind)
+        assertEquals(15, created.hour)
+        assertEquals(30, created.minute)
+        assertTrue("isQuickAlarm MUST be true", created.isQuickAlarm)
+        assertEquals("Max snooze count MUST be 0", 0, created.maxSnoozeCount)
+        assertEquals("Challenge type MUST be NONE", "NONE", created.challengeType)
+        assertEquals("Group MUST be empty", "", created.group)
+    }
+
+    @Test
+    fun `createAbsoluteQuickAlarm same-minute selection resolves to next day`() = runBlocking {
+        val viewModel = AlarmListViewModel(
+            context = context,
+            repository = alarmRepo,
+            scheduler = mockNormalScheduler,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            eventRepository = eventRepo,
+            quickAlarmScheduler = quickScheduler
+        )
+
+        val nowEpoch = System.currentTimeMillis()
+        val nowZone = java.time.ZoneId.systemDefault()
+        val nowLocal = java.time.Instant.ofEpochMilli(nowEpoch).atZone(nowZone)
+
+        // Select current HH:mm
+        viewModel.createAbsoluteQuickAlarm(nowLocal.hour, nowLocal.minute)
+        awaitDbCondition { alarmRepo.getPendingQuickAlarms().isNotEmpty() }
+
+        val pending = alarmRepo.getPendingQuickAlarms()
+        assertEquals(1, pending.size)
+
+        val created = pending[0]
+        assertTrue("Target trigger MUST be strictly in the future (> nowEpoch)", created.quickTriggerEpochMs > nowEpoch)
+        assertTrue("Target trigger MUST be within 25 hours (< 25h)", created.quickTriggerEpochMs <= nowEpoch + 25 * 3600_000L)
     }
 
     @Test

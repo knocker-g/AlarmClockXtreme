@@ -1276,6 +1276,16 @@
     <string name="alarm_list_resume_alarms">Resume alarms</string>
     <string name="alarm_list_group_all">All</string>
     <string name="alarm_list_quick_alarms">Quick alarms</string>
+    <string name="quick_alarm_mode_relative">In X Minutes</string>
+    <string name="quick_alarm_mode_absolute">At Time</string>
+    <string name="quick_alarm_minutes_label">Minutes from now (1..180)</string>
+    <string name="quick_alarm_duration_error">Duration must be between 1 and 180 minutes</string>
+    <string name="quick_alarm_permission_required">Exact alarm permission required</string>
+    <string name="quick_alarm_schedule_failed">Failed to schedule Quick Alarm</string>
+    <string name="quick_alarm_invalid_duration">Invalid duration (must be 1..180 min)</string>
+    <string name="quick_alarm_today">Today</string>
+    <string name="quick_alarm_tomorrow">Tomorrow</string>
+    <string name="quick_alarm_preview_format">%1$s at %2$02d:%3$02d (in %4$d min)</string>
     <string name="alarm_list_quick_10min">10 min</string>
     <string name="alarm_list_quick_30min">30 min</string>
     <string name="alarm_list_quick_1h">1 hour</string>
