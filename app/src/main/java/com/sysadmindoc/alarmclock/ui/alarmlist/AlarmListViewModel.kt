@@ -522,7 +522,7 @@ class AlarmListViewModel @Inject constructor(
      * Create a quick alarm X minutes from now.
      * One-shot, no repeat, default settings.
      */
-    suspend fun createQuickAlarm(minutesFromNow: Int): QuickCreationResult {
+    suspend fun createQuickAlarm(minutesFromNow: Int, retryAlarmId: Long? = null): QuickCreationResult {
         if (minutesFromNow !in 1..180) return QuickCreationResult.ValidationRejected
 
         val nowEpoch = System.currentTimeMillis()
@@ -536,6 +536,7 @@ class AlarmListViewModel @Inject constructor(
         val localTime = instant.atZone(ZoneId.systemDefault()).toLocalTime()
 
         val quickAlarm = Alarm(
+            id = retryAlarmId ?: 0L,
             hour = localTime.hour,
             minute = localTime.minute,
             label = context.getString(R.string.alarmlist_quick_alarm_label, minutesFromNow),
@@ -553,7 +554,12 @@ class AlarmListViewModel @Inject constructor(
             nextTriggerTime = triggerTime
         )
 
-        val id = repository.save(quickAlarm)
+        val id = if (retryAlarmId != null && retryAlarmId > 0L) {
+            repository.update(quickAlarm)
+            retryAlarmId
+        } else {
+            repository.save(quickAlarm)
+        }
         val saved = quickAlarm.copy(id = id)
 
         val qScheduler = quickAlarmScheduler ?: QuickAlarmScheduler(context, repository)
@@ -582,10 +588,11 @@ class AlarmListViewModel @Inject constructor(
     /**
      * Create an absolute Quick alarm for the next occurrence of [hour]:[minute] (< 24h).
      */
-    suspend fun createAbsoluteQuickAlarm(hour: Int, minute: Int): QuickCreationResult {
+    suspend fun createAbsoluteQuickAlarm(hour: Int, minute: Int, retryAlarmId: Long? = null): QuickCreationResult {
         val nowEpoch = System.currentTimeMillis()
         val nowZone = ZoneId.systemDefault()
         val triggerEpochMs = QuickTimeResolver.resolveAbsolute(hour, minute, nowEpoch, nowZone)
+            ?: return QuickCreationResult.ValidationRejected
 
         val durationMs = (triggerEpochMs - nowEpoch).coerceAtLeast(60_000L)
         val nowElapsed = android.os.SystemClock.elapsedRealtime()
@@ -594,6 +601,7 @@ class AlarmListViewModel @Inject constructor(
         val targetDateTime = instant.atZone(nowZone)
 
         val quickAlarm = Alarm(
+            id = retryAlarmId ?: 0L,
             hour = targetDateTime.hour,
             minute = targetDateTime.minute,
             label = context.getString(R.string.alarmlist_quick_alarm_label, (durationMs / 60_000L).toInt()),
@@ -611,7 +619,12 @@ class AlarmListViewModel @Inject constructor(
             nextTriggerTime = triggerEpochMs
         )
 
-        val id = repository.save(quickAlarm)
+        val id = if (retryAlarmId != null && retryAlarmId > 0L) {
+            repository.update(quickAlarm)
+            retryAlarmId
+        } else {
+            repository.save(quickAlarm)
+        }
         val saved = quickAlarm.copy(id = id)
 
         val qScheduler = quickAlarmScheduler ?: QuickAlarmScheduler(context, repository)

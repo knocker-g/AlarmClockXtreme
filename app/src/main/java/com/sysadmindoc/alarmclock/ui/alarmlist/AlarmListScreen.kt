@@ -252,8 +252,8 @@ fun AlarmListScreen(
             initialMinutes = quickCreateInitialMinutes,
             is24HourFormat = state.is24HourFormat,
             onDismissRequest = { showQuickCreateDialog = false },
-            onCreateRelative = viewModel::createQuickAlarm,
-            onCreateAbsolute = viewModel::createAbsoluteQuickAlarm
+            onCreateRelative = { minutes, retryId -> viewModel.createQuickAlarm(minutes, retryId) },
+            onCreateAbsolute = { hour, minute, retryId -> viewModel.createAbsoluteQuickAlarm(hour, minute, retryId) }
         )
     }
 

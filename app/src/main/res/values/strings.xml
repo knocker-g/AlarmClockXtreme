@@ -1285,6 +1285,7 @@
     <string name="quick_alarm_invalid_duration">Invalid duration (must be 1..180 min)</string>
     <string name="quick_alarm_today">Today</string>
     <string name="quick_alarm_tomorrow">Tomorrow</string>
+    <string name="quick_alarm_preview_format">%1$s at %2$02d:%3$02d (in %4$d min)</string>
     <string name="alarm_list_quick_10min">10 min</string>
     <string name="alarm_list_quick_30min">30 min</string>
     <string name="alarm_list_quick_1h">1 hour</string>

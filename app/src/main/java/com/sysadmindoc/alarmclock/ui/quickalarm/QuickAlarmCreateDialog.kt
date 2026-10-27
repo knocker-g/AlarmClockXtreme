@@ -41,6 +41,7 @@ import com.sysadmindoc.alarmclock.domain.QuickCreationResult
 import kotlinx.coroutines.launch
 
 import androidx.compose.ui.platform.LocalContext
+import com.sysadmindoc.alarmclock.domain.QuickTimeResolver
 
 enum class QuickAlarmInputMode {
     RELATIVE,
@@ -55,8 +56,8 @@ fun QuickAlarmCreateDialog(
     initialMinutes: Int = 15,
     is24HourFormat: Boolean,
     onDismissRequest: () -> Unit,
-    onCreateRelative: suspend (minutes: Int) -> QuickCreationResult,
-    onCreateAbsolute: suspend (hour: Int, minute: Int) -> QuickCreationResult
+    onCreateRelative: suspend (minutes: Int, retryAlarmId: Long?) -> QuickCreationResult,
+    onCreateAbsolute: suspend (hour: Int, minute: Int, retryAlarmId: Long?) -> QuickCreationResult
 ) {
     val context = LocalContext.current
     var mode by remember { mutableStateOf(QuickAlarmInputMode.RELATIVE) }
@@ -75,10 +76,13 @@ fun QuickAlarmCreateDialog(
 
     var isSubmitting by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var lastPersistedAlarmId by remember { mutableStateOf<Long?>(null) }
     val scope = rememberCoroutineScope()
 
     AlertDialog(
-        onDismissRequest = onDismissRequest,
+        onDismissRequest = {
+            if (!isSubmitting) onDismissRequest()
+        },
         confirmButton = {
             TextButton(
                 onClick = {
@@ -86,9 +90,10 @@ fun QuickAlarmCreateDialog(
                         isSubmitting = true
                         scope.launch {
                             val result = if (mode == QuickAlarmInputMode.RELATIVE) {
-                                parsedRelativeMinutes?.let { onCreateRelative(it) } ?: QuickCreationResult.ValidationRejected
+                                parsedRelativeMinutes?.let { onCreateRelative(it, lastPersistedAlarmId) }
+                                    ?: QuickCreationResult.ValidationRejected
                             } else {
-                                onCreateAbsolute(selectedAbsoluteHour, selectedAbsoluteMinute)
+                                onCreateAbsolute(selectedAbsoluteHour, selectedAbsoluteMinute, lastPersistedAlarmId)
                             }
 
                             when (result) {
@@ -96,10 +101,12 @@ fun QuickAlarmCreateDialog(
                                     onDismissRequest()
                                 }
                                 is QuickCreationResult.PermissionBlocked -> {
+                                    lastPersistedAlarmId = result.alarmId
                                     errorMessage = context.getString(R.string.quick_alarm_permission_required)
                                     isSubmitting = false
                                 }
                                 is QuickCreationResult.RegistrationFailed -> {
+                                    lastPersistedAlarmId = result.alarmId
                                     errorMessage = context.getString(R.string.quick_alarm_schedule_failed)
                                     isSubmitting = false
                                 }
@@ -121,7 +128,12 @@ fun QuickAlarmCreateDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismissRequest) {
+            TextButton(
+                onClick = {
+                    if (!isSubmitting) onDismissRequest()
+                },
+                enabled = !isSubmitting
+            ) {
                 Text(stringResource(R.string.alarm_edit_keep_current), color = TextSecondary)
             }
         },
@@ -220,19 +232,20 @@ fun QuickAlarmCreateDialog(
                         // Preview next HH:mm occurrence
                         val todayLabel = stringResource(R.string.quick_alarm_today)
                         val tomorrowLabel = stringResource(R.string.quick_alarm_tomorrow)
-                        val previewText = remember(selectedAbsoluteHour, selectedAbsoluteMinute, todayLabel, tomorrowLabel) {
-                            var target = nowLocal
-                                .withHour(selectedAbsoluteHour)
-                                .withMinute(selectedAbsoluteMinute)
-                                .withSecond(0)
-                                .withNano(0)
-                            if (!target.isAfter(nowLocal)) {
-                                target = target.plusDays(1)
+                        val previewFormat = stringResource(R.string.quick_alarm_preview_format)
+                        val previewText = remember(selectedAbsoluteHour, selectedAbsoluteMinute, todayLabel, tomorrowLabel, previewFormat) {
+                            val resolvedMs: Long? = QuickTimeResolver.resolveAbsolute(
+                                selectedAbsoluteHour, selectedAbsoluteMinute, System.currentTimeMillis(), ZoneId.systemDefault()
+                            )
+                            if (resolvedMs == null) {
+                                ""
+                            } else {
+                                val target = Instant.ofEpochMilli(resolvedMs).atZone(ZoneId.systemDefault())
+                                val isTomorrow = target.dayOfYear != nowLocal.dayOfYear
+                                val dayLabel = if (isTomorrow) tomorrowLabel else todayLabel
+                                val diffMins = (resolvedMs - System.currentTimeMillis()) / 60_000L
+                                previewFormat.format(dayLabel, target.hour as Any, target.minute as Any, diffMins as Any)
                             }
-                            val isTomorrow = target.dayOfYear != nowLocal.dayOfYear
-                            val dayLabel = if (isTomorrow) tomorrowLabel else todayLabel
-                            val diffMins = (target.toInstant().toEpochMilli() - nowLocal.toInstant().toEpochMilli()) / 60_000L
-                            "$dayLabel at %02d:%02d (in %d min)".format(target.hour, target.minute, diffMins)
                         }
 
                         Text(

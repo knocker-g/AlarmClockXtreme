@@ -171,6 +171,41 @@ class Kno20CreationConsumptionSliceTest {
     }
 
     @Test
+    fun `retry with retryAlarmId re-arms existing Quick Alarm without duplicate creation`() = runBlocking {
+        org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(false)
+
+        val viewModel = AlarmListViewModel(
+            context = context,
+            repository = alarmRepo,
+            scheduler = mockNormalScheduler,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            eventRepository = eventRepo,
+            quickAlarmScheduler = quickScheduler
+        )
+
+        // 1. Initial attempt fails registration / permission
+        val result1 = viewModel.createQuickAlarm(30)
+        assertTrue("Result 1 MUST be PermissionBlocked", result1 is com.sysadmindoc.alarmclock.domain.QuickCreationResult.PermissionBlocked)
+        val blockedId = (result1 as com.sysadmindoc.alarmclock.domain.QuickCreationResult.PermissionBlocked).alarmId
+
+        val pendingInitial = alarmRepo.getPendingQuickAlarms()
+        assertEquals("DB MUST contain 1 pending Quick alarm after initial blocked attempt", 1, pendingInitial.size)
+        assertEquals(blockedId, pendingInitial[0].id)
+
+        // 2. Exact alarm permission granted by user
+        org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(true)
+
+        // 3. User retries creation passing retryAlarmId = blockedId
+        val result2 = viewModel.createQuickAlarm(30, retryAlarmId = blockedId)
+        assertTrue("Result 2 MUST be CreatedAndArmed", result2 is com.sysadmindoc.alarmclock.domain.QuickCreationResult.CreatedAndArmed)
+
+        val pendingAfterRetry = alarmRepo.getPendingQuickAlarms()
+        assertEquals("DB MUST STILL contain exactly 1 pending Quick alarm (no duplicate row created)", 1, pendingAfterRetry.size)
+        assertEquals("Re-armed alarm ID MUST match initial blocked ID", blockedId, pendingAfterRetry[0].id)
+    }
+
+    @Test
     fun `QuickTimeResolver resolveRelative validates 1 to 180 bounds`() {
         val now = System.currentTimeMillis()
         assertNotNull(com.sysadmindoc.alarmclock.domain.QuickTimeResolver.resolveRelative(1, now))
