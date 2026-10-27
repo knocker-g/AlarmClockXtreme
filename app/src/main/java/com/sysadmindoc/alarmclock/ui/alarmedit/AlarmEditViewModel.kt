@@ -176,7 +176,7 @@ class AlarmEditViewModel @Inject constructor(
 
             if (alarmId > 0) {
                 val alarm = repository.getById(alarmId)
-                if (alarm != null) {
+                if (alarm != null && !alarm.isQuickAlarm) {
                     _uiState.value = AlarmEditUiState(
                         hour = alarm.hour,
                         minute = alarm.minute,

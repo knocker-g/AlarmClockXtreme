@@ -712,7 +712,7 @@ fun AlarmListScreen(
                                                     onClick = {
                                                         if (useTwoPane) {
                                                             selectedAlarmId = alarm.id
-                                                        } else {
+                                                        } else if (!alarm.isQuickAlarm) {
                                                             onEditAlarm(alarm.id)
                                                         }
                                                     },
@@ -807,7 +807,7 @@ fun AlarmListScreen(
                                     alarm.nextTriggerTime in state.vacationStartMillis..state.vacationEndMillis
                             } == true,
                             pausedUntilMillis = state.pausedUntilMillis,
-                            onEdit = { alarm -> onEditAlarm(alarm.id) },
+                            onEdit = { alarm -> if (!alarm.isQuickAlarm) onEditAlarm(alarm.id) },
                             onToggle = { alarm -> viewModel.toggleAlarm(alarm) },
                             onForceToggle = { alarm -> viewModel.forceDisableAlarm(alarm) },
                             onDelete = { alarm -> viewModel.deleteAlarm(alarm) },
