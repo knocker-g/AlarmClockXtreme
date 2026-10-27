@@ -2510,4 +2510,18 @@
     <!-- Database Incompatibility (KNO-92) -->
     <string name="db_incompatible_title">アプリバージョン不適合</string>
     <string name="db_incompatible_text">インストールされているデータベースは新しいバージョンの Alarm Clock Xtreme で作成されました。アラームとデータは安全に保存されています。アプリを更新して継続してください。</string>
+
+    <!-- Group Bulk Control (KNO-28) -->
+    <string name="alarmlist_group_turn_all_on">すべてONにする</string>
+    <string name="alarmlist_group_turn_all_off">すべてOFFにする</string>
+    <string name="alarmlist_group_mixed_state">一部ON (%1$d件ON, %2$d件OFF)</string>
+    <string name="alarmlist_group_enabled_with_skipped">%1$d件をONにしました（実行中の%2$d件はスキップ）</string>
+    <string name="alarmlist_group_disabled_with_skipped">%1$d件をOFFにしました（実行中の%2$d件はスキップ）</string>
+    <string name="alarmlist_group_enabled_with_schedule_error">%1$d件をONに設定しましたが、権限不足等のスケジュールエラーが発生しました</string>
+    <plurals name="alarmlist_group_enabled">
+        <item quantity="other">グループ %2$s の%1$d件のアラームをONにしました</item>
+    </plurals>
+    <plurals name="alarmlist_group_disabled">
+        <item quantity="other">グループ %2$s の%1$d件のアラームをOFFにしました</item>
+    </plurals>
 </resources>
