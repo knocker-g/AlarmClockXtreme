@@ -19,12 +19,15 @@ class AlarmRepository @Inject constructor(
 ) {
     fun observeAll(): Flow<List<Alarm>> = dao.observeAll()
     fun observeEnabled(): Flow<List<Alarm>> = dao.observeEnabled()
-    fun observeNextAlarm(): Flow<Alarm?> = dao.observeNextAlarm()
+    fun observeNextAlarm(nowEpochMs: Long = System.currentTimeMillis()): Flow<Alarm?> = dao.observeEnabled().map { list ->
+        list.filter { it.nextTriggerTime > nowEpochMs }.minByOrNull { it.nextTriggerTime }
+    }
 
     suspend fun getById(id: Long): Alarm? = dao.getById(id)
     suspend fun getEnabled(): List<Alarm> = dao.getEnabled()
     suspend fun getEnabledNormalAlarms(): List<Alarm> = dao.getEnabled().filter { it.isNormalAlarm }
-    suspend fun getNextAlarm(): Alarm? = dao.getNextAlarm()
+    suspend fun getNextAlarm(nowEpochMs: Long = System.currentTimeMillis()): Alarm? =
+        dao.getEnabled().filter { it.nextTriggerTime > nowEpochMs }.minByOrNull { it.nextTriggerTime }
     suspend fun getAll(): List<Alarm> = dao.getAll()
     suspend fun getAllNormalAlarms(): List<Alarm> = dao.getAll().filter { it.kind == Alarm.KIND_NORMAL || it.kind.isBlank() }
     suspend fun getPendingQuickAlarms(): List<Alarm> = dao.getPendingQuickAlarms()

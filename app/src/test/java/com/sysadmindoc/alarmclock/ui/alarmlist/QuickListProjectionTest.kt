@@ -29,6 +29,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -144,7 +145,7 @@ class QuickListProjectionTest {
 
         var state: AlarmListUiState? = null
         val job = launch {
-            state = viewModel.uiState.first { it.alarms.isNotEmpty() }
+            state = viewModel.uiState.first { (it as AlarmListUiState).alarms.isNotEmpty() }
         }
         job.join()
 
@@ -193,7 +194,7 @@ class QuickListProjectionTest {
 
         var state: AlarmListUiState? = null
         val job = launch {
-            state = viewModel.uiState.first { it.groups.isNotEmpty() }
+            state = viewModel.uiState.first { (it as AlarmListUiState).groups.isNotEmpty() }
         }
         job.join()
 
@@ -242,5 +243,81 @@ class QuickListProjectionTest {
         assertNotNull("Earliest next alarm MUST be non-null", earliest)
         assertTrue("Earliest next trigger MUST be Quick Alarm", earliest!!.isQuickAlarm)
         assertEquals("Quick 5m", earliest.label)
+    }
+
+    @Test
+    fun `Stale enabled alarm with past trigger is ignored and valid future alarm wins`() = runBlocking {
+        val now = System.currentTimeMillis()
+        val staleTrigger = now - 600_000L // 10 min in PAST
+        val validFutureTrigger = now + 600_000L // 10 min in FUTURE
+
+        val staleAlarm = Alarm(
+            id = 1L,
+            hour = 7,
+            minute = 0,
+            label = "Stale Past Alarm",
+            isEnabled = true,
+            kind = Alarm.KIND_NORMAL,
+            nextTriggerTime = staleTrigger
+        )
+        val validFutureAlarm = Alarm(
+            id = 2L,
+            hour = 10,
+            minute = 0,
+            label = "Valid Future Alarm",
+            isEnabled = true,
+            kind = Alarm.KIND_QUICK,
+            quickTriggerEpochMs = validFutureTrigger,
+            nextTriggerTime = validFutureTrigger
+        )
+
+        alarmRepo.save(staleAlarm)
+        alarmRepo.save(validFutureAlarm)
+
+        // 1. Repository level getNextAlarm
+        val repoNext = alarmRepo.getNextAlarm(now)
+        assertNotNull("Next alarm MUST NOT be null when a valid future alarm exists", repoNext)
+        assertEquals("Valid future alarm MUST win over stale past alarm", "Valid Future Alarm", repoNext!!.label)
+
+        // 2. ViewModel uiState level nextAlarm projection
+        val viewModel = AlarmListViewModel(
+            context = context,
+            repository = alarmRepo,
+            scheduler = mockNormalScheduler,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            eventRepository = eventRepo,
+            quickAlarmScheduler = quickScheduler
+        )
+
+        var state: AlarmListUiState? = null
+        val job = launch {
+            state = viewModel.uiState.first { (it as AlarmListUiState).nextAlarm != null }
+        }
+        job.join()
+
+        assertNotNull("UiState nextAlarm MUST NOT be null when valid future alarm exists", state?.nextAlarm)
+        assertEquals("ViewModel nextAlarm MUST select valid future alarm over stale past alarm", "Valid Future Alarm", state!!.nextAlarm!!.label)
+    }
+
+    @Test
+    fun `All candidates stale returns null next alarm`() = runBlocking {
+        val now = System.currentTimeMillis()
+        val staleTrigger = now - 600_000L // 10 min in PAST
+
+        val staleAlarm = Alarm(
+            id = 1L,
+            hour = 7,
+            minute = 0,
+            label = "Stale Past Alarm",
+            isEnabled = true,
+            kind = Alarm.KIND_NORMAL,
+            nextTriggerTime = staleTrigger
+        )
+
+        alarmRepo.save(staleAlarm)
+
+        val repoNext = alarmRepo.getNextAlarm(now)
+        assertNull("getNextAlarm MUST return null when all enabled candidates are in the past", repoNext)
     }
 }
