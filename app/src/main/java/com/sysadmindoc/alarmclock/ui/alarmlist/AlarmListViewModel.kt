@@ -160,11 +160,14 @@ class AlarmListViewModel @Inject constructor(
             SelectionSnapshot(sel, mode, undo, gp.first, gp.second)
         }
     ) { (alarms, latestEventsMap), nextAlarm, settings, sort, snap ->
-        var filtered = alarms
+        // Hide disabled (completed/expired) Quick Alarms from list projection so no OFF Quick card state is exposed
+        var filtered = alarms.filter { alarm ->
+            !alarm.isQuickAlarm || alarm.isEnabled
+        }
 
-        // Extract unique groups from all alarms (not filtered), hiding the
-        // empty/default group so the chip row never gets a blank filter.
-        val groups = alarms.map { it.group.trim() }
+        // Extract unique groups from Normal alarms (Quick alarms do not participate in Groups)
+        val groups = alarms.filter { !it.isQuickAlarm }
+            .map { it.group.trim() }
             .filter { it.isNotBlank() }
             .distinct()
             .sorted()
