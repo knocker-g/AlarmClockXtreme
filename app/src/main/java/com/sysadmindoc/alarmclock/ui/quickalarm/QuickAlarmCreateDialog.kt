@@ -41,7 +41,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import com.sysadmindoc.alarmclock.domain.QuickCreationResult
 import kotlinx.coroutines.launch
 
-import androidx.compose.ui.platform.LocalContext
 import com.sysadmindoc.alarmclock.domain.QuickTimeResolver
 
 enum class QuickAlarmInputMode {
@@ -60,7 +59,6 @@ fun QuickAlarmCreateDialog(
     onCreateRelative: suspend (minutes: Int, retryAlarmId: Long?) -> QuickCreationResult,
     onCreateAbsolute: suspend (hour: Int, minute: Int, retryAlarmId: Long?) -> QuickCreationResult
 ) {
-    val context = LocalContext.current
     var mode by remember { mutableStateOf(QuickAlarmInputMode.RELATIVE) }
 
     // Fresh trigger state for each creation instance
@@ -79,6 +77,10 @@ fun QuickAlarmCreateDialog(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var lastPersistedAlarmId by remember { mutableStateOf<Long?>(null) }
     val scope = rememberCoroutineScope()
+
+    val permissionRequiredMsg = stringResource(R.string.quick_alarm_permission_required)
+    val scheduleFailedMsg = stringResource(R.string.quick_alarm_schedule_failed)
+    val invalidDurationMsg = stringResource(R.string.quick_alarm_invalid_duration)
 
     // Reset retry ID on user input modification
     LaunchedEffect(mode, relativeMinutesInput, selectedAbsoluteHour, selectedAbsoluteMinute) {
@@ -108,16 +110,16 @@ fun QuickAlarmCreateDialog(
                                 }
                                 is QuickCreationResult.PermissionBlocked -> {
                                     lastPersistedAlarmId = result.alarmId
-                                    errorMessage = context.getString(R.string.quick_alarm_permission_required)
+                                    errorMessage = permissionRequiredMsg
                                     isSubmitting = false
                                 }
                                 is QuickCreationResult.RegistrationFailed -> {
                                     lastPersistedAlarmId = result.alarmId
-                                    errorMessage = context.getString(R.string.quick_alarm_schedule_failed)
+                                    errorMessage = scheduleFailedMsg
                                     isSubmitting = false
                                 }
                                 is QuickCreationResult.ValidationRejected -> {
-                                    errorMessage = context.getString(R.string.quick_alarm_invalid_duration)
+                                    errorMessage = invalidDurationMsg
                                     isSubmitting = false
                                 }
                             }

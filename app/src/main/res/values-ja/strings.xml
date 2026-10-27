@@ -1257,6 +1257,16 @@
     <string name="alarmlist_duplicated">アラームを複製しました</string>
     <string name="alarmlist_label_duplicated">「%1$s」を複製しました</string>
     <string name="alarmlist_quick_alarm_set">クイックアラームを %1$s に設定しました</string>
+    <string name="quick_alarm_mode_relative">○分後</string>
+    <string name="quick_alarm_mode_absolute">時刻指定</string>
+    <string name="quick_alarm_minutes_label">経過分数を入力 (1..180分)</string>
+    <string name="quick_alarm_duration_error">時間は1分から180分の間で指定してください</string>
+    <string name="quick_alarm_permission_required">クイックアラームの作成には正確なアラームの権限が必要です</string>
+    <string name="quick_alarm_schedule_failed">クイックアラームのスケジュール設定に失敗しました</string>
+    <string name="quick_alarm_invalid_duration">無効な時間指定です (1..180分)</string>
+    <string name="quick_alarm_today">今日</string>
+    <string name="quick_alarm_tomorrow">明日</string>
+    <string name="quick_alarm_preview_format">%1$s %2$02d:%3$02d (%4$d分後)</string>
     <string name="alarmlist_skip_next_feedback">次回：%1$s</string>
     <string name="alarm_list_power_nap">パワーナップ</string>
     <string name="alarm_list_edit">編集</string>
