@@ -533,7 +533,9 @@ fun AlarmListScreen(
                                             title = stringResource(R.string.alarm_list_groups),
                                             groups = state.groups.filter { it.isNotBlank() },
                                             selectedGroup = state.selectedGroup,
-                                            onSelectGroup = viewModel::selectGroup
+                                            onSelectGroup = viewModel::selectGroup,
+                                            state = state,
+                                            onSetGroupEnabled = { group, targetEnabled -> viewModel.setGroupEnabled(group, targetEnabled) }
                                         )
                                     }
 
@@ -1193,7 +1195,9 @@ private fun AlarmListFilters(
             title = stringResource(R.string.alarm_list_groups),
             groups = state.groups.filter { it.isNotBlank() },
             selectedGroup = state.selectedGroup,
-            onSelectGroup = viewModel::selectGroup
+            onSelectGroup = viewModel::selectGroup,
+            state = state,
+            onSetGroupEnabled = { group, targetEnabled -> viewModel.setGroupEnabled(group, targetEnabled) }
         )
     }
 }
@@ -1203,8 +1207,11 @@ private fun GroupFilterRow(
     title: String,
     groups: List<String>,
     selectedGroup: String?,
-    onSelectGroup: (String?) -> Unit
+    onSelectGroup: (String?) -> Unit,
+    state: AlarmListUiState? = null,
+    onSetGroupEnabled: (suspend (String, Boolean) -> Unit)? = null
 ) {
+    val scope = rememberCoroutineScope()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         AppSectionTitle(title = title)
         Row(
@@ -1226,6 +1233,79 @@ private fun GroupFilterRow(
                     onClick = { onSelectGroup(if (selectedGroup == group) null else group) },
                     selectionSemantics = true,
                 )
+            }
+        }
+
+        // KNO-28: Group Bulk Master Control when a specific Group is selected
+        if (selectedGroup != null && state != null && onSetGroupEnabled != null) {
+            val derivedState = state.alarms.deriveGroupState(selectedGroup)
+            val localizedGroupName = AlarmPublicText.getLocalizedName(selectedGroup, LocalContext.current)
+
+            AppSurfaceCard(modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = localizedGroupName,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = TextPrimary
+                        )
+                        val statusText = when (derivedState) {
+                            GroupDerivedState.ALL_ON -> stringResource(R.string.alarmlist_enabled)
+                            GroupDerivedState.ALL_OFF -> stringResource(R.string.alarm_edit_disabled)
+                            GroupDerivedState.MIXED -> {
+                                val normalMembers = state.alarms.filter { !it.isQuickAlarm && it.group == selectedGroup }
+                                val onCount = normalMembers.count { it.isEnabled }
+                                val offCount = normalMembers.size - onCount
+                                stringResource(R.string.alarmlist_group_mixed_state, onCount, offCount)
+                            }
+                            GroupDerivedState.EMPTY -> stringResource(R.string.alarm_list_empty_title)
+                        }
+                        Text(
+                            text = statusText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+                    }
+
+                    when (derivedState) {
+                        GroupDerivedState.ALL_ON -> {
+                            Button(
+                                onClick = { scope.launch { onSetGroupEnabled(selectedGroup, false) } },
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                            ) {
+                                Text(stringResource(R.string.alarmlist_group_turn_all_off))
+                            }
+                        }
+                        GroupDerivedState.ALL_OFF -> {
+                            Button(
+                                onClick = { scope.launch { onSetGroupEnabled(selectedGroup, true) } },
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) {
+                                Text(stringResource(R.string.alarmlist_group_turn_all_on))
+                            }
+                        }
+                        GroupDerivedState.MIXED -> {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(
+                                    onClick = { scope.launch { onSetGroupEnabled(selectedGroup, false) } }
+                                ) {
+                                    Text(stringResource(R.string.alarmlist_group_turn_all_off))
+                                }
+                                Button(
+                                    onClick = { scope.launch { onSetGroupEnabled(selectedGroup, true) } },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                ) {
+                                    Text(stringResource(R.string.alarmlist_group_turn_all_on))
+                                }
+                            }
+                        }
+                        GroupDerivedState.EMPTY -> {}
+                    }
+                }
             }
         }
     }

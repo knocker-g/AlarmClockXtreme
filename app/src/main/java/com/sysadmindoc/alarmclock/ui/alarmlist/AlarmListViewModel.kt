@@ -35,6 +35,33 @@ import javax.inject.Inject
 
 enum class AlarmSortOrder { TIME, MANUAL, CREATED, ENABLED_FIRST }
 
+enum class GroupDerivedState {
+    ALL_ON,
+    ALL_OFF,
+    MIXED,
+    EMPTY
+}
+
+fun List<Alarm>.deriveGroupState(groupName: String): GroupDerivedState {
+    val members = filter { !it.isQuickAlarm && it.group == groupName }
+    if (members.isEmpty()) return GroupDerivedState.EMPTY
+    val enabledCount = members.count { it.isEnabled }
+    return when {
+        enabledCount == members.size -> GroupDerivedState.ALL_ON
+        enabledCount == 0 -> GroupDerivedState.ALL_OFF
+        else -> GroupDerivedState.MIXED
+    }
+}
+
+data class GroupBulkToggleResult(
+    val groupName: String,
+    val targetEnabled: Boolean,
+    val changedCount: Int,
+    val skippedCount: Int,
+    val scheduleBlockedCount: Int = 0,
+    val scheduleFailedCount: Int = 0
+)
+
 internal fun sortAlarmsForList(alarms: List<Alarm>, sort: AlarmSortOrder): List<Alarm> {
     return when (sort) {
         AlarmSortOrder.TIME -> alarms.sortedBy { it.hour * 60 + it.minute }
@@ -304,6 +331,109 @@ class AlarmListViewModel @Inject constructor(
             AlarmSortOrder.CREATED -> AlarmSortOrder.ENABLED_FIRST
             AlarmSortOrder.ENABLED_FIRST -> AlarmSortOrder.TIME
         }
+    }
+
+    private val groupMutex = Mutex()
+
+    suspend fun setGroupEnabled(groupName: String, targetEnabled: Boolean): GroupBulkToggleResult = groupMutex.withLock {
+        if (groupName.isBlank()) {
+            return@withLock GroupBulkToggleResult(groupName, targetEnabled, 0, 0)
+        }
+
+        // 1. Read current Normal members for this group from DB (Quick Alarms excluded by identity)
+        val groupMembers = repository.getAlarmsByGroup(groupName)
+            .filter { !it.isQuickAlarm && it.group == groupName }
+
+        if (groupMembers.isEmpty()) {
+            return@withLock GroupBulkToggleResult(groupName, targetEnabled, 0, 0)
+        }
+
+        // 2. Identify active session owner at the mutation boundary
+        val currentSettings = preferencesManager.getCurrentSettings()
+        val activeId = currentSettings.activeAlarmId
+
+        var changedCount = 0
+        var skippedCount = 0
+        val preparedAlarms = mutableListOf<Alarm>()
+        val alarmsToSchedule = mutableListOf<Alarm>()
+        val alarmIdsToCancel = mutableListOf<Long>()
+
+        for (alarm in groupMembers) {
+            // Guard against disabling active FIRING/SNOOZED session
+            if (activeId != null && activeId > 0L && alarm.id == activeId && !targetEnabled) {
+                skippedCount++
+                continue
+            }
+
+            if (alarm.isEnabled != targetEnabled) {
+                val nextTrigger = if (targetEnabled) calculator.calculate(alarm) else 0L
+                val updated = alarm.copy(
+                    isEnabled = targetEnabled,
+                    nextTriggerTime = nextTrigger
+                )
+                preparedAlarms.add(updated)
+                if (targetEnabled) {
+                    alarmsToSchedule.add(updated)
+                } else {
+                    alarmIdsToCancel.add(alarm.id)
+                }
+                changedCount++
+            }
+        }
+
+        var scheduleBlockedCount = 0
+        var scheduleFailedCount = 0
+
+        if (preparedAlarms.isNotEmpty()) {
+            // 3. Transactional DB update for eligible member definitions
+            repository.updateAlarmsEnabledTransaction(preparedAlarms)
+
+            // 4. Reconcile OS schedules after DB commit
+            alarmIdsToCancel.forEach { id ->
+                scheduler.cancel(id)
+            }
+            alarmsToSchedule.forEach { alarm ->
+                val outcome = scheduler.schedule(alarm)
+                when (outcome) {
+                    is ScheduleOutcome.PermissionBlocked -> scheduleBlockedCount++
+                    is ScheduleOutcome.RegistrationFailed -> scheduleFailedCount++
+                    else -> {}
+                }
+            }
+            scheduler.syncBedtimeDndRule()
+        }
+
+        // 5. Emit feedback
+        val localizedGroupName = com.sysadmindoc.alarmclock.util.AlarmPublicText.getLocalizedName(groupName, context)
+        val message = if (targetEnabled) {
+            when {
+                scheduleBlockedCount > 0 || scheduleFailedCount > 0 -> {
+                    context.getString(R.string.alarmlist_group_enabled_with_schedule_error, changedCount)
+                }
+                skippedCount > 0 -> {
+                    context.getString(R.string.alarmlist_group_enabled_with_skipped, changedCount, skippedCount)
+                }
+                else -> {
+                    context.resources.getQuantityString(R.plurals.alarmlist_group_enabled, changedCount, changedCount, localizedGroupName)
+                }
+            }
+        } else {
+            if (skippedCount > 0) {
+                context.getString(R.string.alarmlist_group_disabled_with_skipped, changedCount, skippedCount)
+            } else {
+                context.resources.getQuantityString(R.plurals.alarmlist_group_disabled, changedCount, changedCount, localizedGroupName)
+            }
+        }
+        emitFeedback(message)
+
+        return@withLock GroupBulkToggleResult(
+            groupName = groupName,
+            targetEnabled = targetEnabled,
+            changedCount = changedCount,
+            skippedCount = skippedCount,
+            scheduleBlockedCount = scheduleBlockedCount,
+            scheduleFailedCount = scheduleFailedCount
+        )
     }
 
     private val reorderMutex = Mutex()

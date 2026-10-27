@@ -142,8 +142,18 @@ interface AlarmDao {
     @Query("SELECT COUNT(*) FROM alarms WHERE `group` = :groupName AND id != :excludedId")
     suspend fun countAlarmsByGroup(groupName: String, excludedId: Long): Int
 
+    @Query("SELECT * FROM alarms WHERE `group` = :groupName")
+    suspend fun getAlarmsByGroup(groupName: String): List<Alarm>
+
     @Query("UPDATE alarms SET `group` = '' WHERE `group` = :groupName")
     suspend fun clearGroupFromAlarms(groupName: String)
+
+    @Transaction
+    suspend fun updateAlarmsEnabled(alarms: List<Alarm>) {
+        alarms.forEach { alarm ->
+            setEnabled(alarm.id, alarm.isEnabled, alarm.nextTriggerTime)
+        }
+    }
 
     @Query("SELECT COALESCE(MAX(sortOrder), 0) FROM alarms")
     suspend fun maxSortOrder(): Int

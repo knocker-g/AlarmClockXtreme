@@ -208,6 +208,15 @@ class AlarmRepository @Inject constructor(
 
     suspend fun nextSortOrder(): Int = dao.maxSortOrder() + AlarmDao.SORT_ORDER_STEP
 
+    suspend fun getAlarmsByGroup(groupName: String): List<Alarm> =
+        dao.getAlarmsByGroup(groupName)
+
+    suspend fun updateAlarmsEnabledTransaction(alarms: List<Alarm>) {
+        database.withTransaction {
+            dao.updateAlarmsEnabled(alarms)
+        }
+    }
+
     suspend fun updateSortOrders(idsInOrder: List<Long>) =
         dao.updateSortOrders(idsInOrder)
 

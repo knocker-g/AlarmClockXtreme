@@ -2599,5 +2599,21 @@
     <!-- Database Incompatibility (KNO-92) -->
     <string name="db_incompatible_title">App Version Incompatible</string>
     <string name="db_incompatible_text">The installed database was created by a newer version of Alarm Clock Xtreme. Your alarms and data have been safely preserved. Please update the app to continue.</string>
+
+    <!-- Group Bulk Control (KNO-28) -->
+    <string name="alarmlist_group_turn_all_on">Turn all ON</string>
+    <string name="alarmlist_group_turn_all_off">Turn all OFF</string>
+    <string name="alarmlist_group_mixed_state">Mixed (%1$d ON, %2$d OFF)</string>
+    <string name="alarmlist_group_enabled_with_skipped">%1$d alarms enabled (%2$d active skipped)</string>
+    <string name="alarmlist_group_disabled_with_skipped">%1$d alarms disabled (%2$d active skipped)</string>
+    <string name="alarmlist_group_enabled_with_schedule_error">%1$d alarms enabled, but exact permission or schedule error occurred</string>
+    <plurals name="alarmlist_group_enabled">
+        <item quantity="one">Enabled %1$d alarm in group %2$s</item>
+        <item quantity="other">Enabled %1$d alarms in group %2$s</item>
+    </plurals>
+    <plurals name="alarmlist_group_disabled">
+        <item quantity="one">Disabled %1$d alarm in group %2$s</item>
+        <item quantity="other">Disabled %1$d alarms in group %2$s</item>
+    </plurals>
 </resources>
 
