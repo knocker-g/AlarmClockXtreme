@@ -92,6 +92,9 @@ data class AlarmListUiState(
     val latestEvents: Map<Long, AlarmEvent> = emptyMap(),
     val activeAlarmId: Long? = null,
     val groupTabPosition: GroupTabPosition = GroupTabPosition.TOP,
+    val quickDefaultRingtoneUri: String = "",
+    val quickDefaultVibrationEnabled: Boolean = true,
+    val quickDefaultVolume: Int = 100,
     // v1.5.2: Current vacation window bounds surfaced so the list card can
     // flag individual alarms whose next trigger falls inside it — before
     // this, the scheduler silently suppressed them while the UI still said
@@ -201,6 +204,9 @@ class AlarmListViewModel @Inject constructor(
             vacationActive = VacationAlarmPolicy.isActive(settings, now),
             sortOrder = sort,
             is24HourFormat = settings.is24HourFormat,
+            quickDefaultRingtoneUri = settings.quickDefaultRingtoneUri,
+            quickDefaultVibrationEnabled = settings.quickDefaultVibrationEnabled,
+            quickDefaultVolume = settings.quickDefaultVolume,
             groups = groups,
             selectedGroup = snap.selectedGroup,
             profiles = profiles,
@@ -529,7 +535,13 @@ class AlarmListViewModel @Inject constructor(
      * Create a quick alarm X minutes from now.
      * One-shot, no repeat, default settings.
      */
-    suspend fun createQuickAlarm(minutesFromNow: Int, retryAlarmId: Long? = null): QuickCreationResult {
+    suspend fun createQuickAlarm(
+        minutesFromNow: Int,
+        ringtoneUri: String? = null,
+        vibrationEnabled: Boolean? = null,
+        volume: Int? = null,
+        retryAlarmId: Long? = null
+    ): QuickCreationResult {
         if (retryAlarmId != null && retryAlarmId > 0L) {
             val existing = repository.getById(retryAlarmId)
             if (existing == null || !existing.isQuickAlarm || !existing.isEnabled) {
@@ -572,10 +584,18 @@ class AlarmListViewModel @Inject constructor(
         val instant = Instant.ofEpochMilli(triggerTime)
         val localTime = instant.atZone(ZoneId.systemDefault()).toLocalTime()
 
+        val currentSettings = preferencesManager.getCurrentSettings()
+        val effectiveRingtone = ringtoneUri?.takeIf { it.isNotBlank() } ?: currentSettings.quickDefaultRingtoneUri
+        val effectiveVibration = vibrationEnabled ?: currentSettings.quickDefaultVibrationEnabled
+        val effectiveVolume = volume ?: currentSettings.quickDefaultVolume
+
         val quickAlarm = Alarm(
             hour = localTime.hour,
             minute = localTime.minute,
             label = context.getString(R.string.alarmlist_quick_alarm_label, minutesFromNow),
+            ringtoneUri = effectiveRingtone,
+            vibrationEnabled = effectiveVibration,
+            volume = effectiveVolume,
             isEnabled = true,
             repeatDays = emptySet(),
             snoozeDurationMinutes = 0,
@@ -598,6 +618,11 @@ class AlarmListViewModel @Inject constructor(
 
         return when (outcome) {
             is ScheduleOutcome.Armed -> {
+                preferencesManager.saveQuickDeliveryDefaults(
+                    effectiveRingtone,
+                    effectiveVibration,
+                    effectiveVolume
+                )
                 emitFeedback(context.getString(R.string.alarmlist_quick_alarm_set, formatFeedbackTime(triggerTime)))
                 QuickCreationResult.CreatedAndArmed(id, triggerTime)
             }
@@ -619,7 +644,14 @@ class AlarmListViewModel @Inject constructor(
     /**
      * Create an absolute Quick alarm for the next occurrence of [hour]:[minute] (< 24h).
      */
-    suspend fun createAbsoluteQuickAlarm(hour: Int, minute: Int, retryAlarmId: Long? = null): QuickCreationResult {
+    suspend fun createAbsoluteQuickAlarm(
+        hour: Int,
+        minute: Int,
+        ringtoneUri: String? = null,
+        vibrationEnabled: Boolean? = null,
+        volume: Int? = null,
+        retryAlarmId: Long? = null
+    ): QuickCreationResult {
         if (retryAlarmId != null && retryAlarmId > 0L) {
             val existing = repository.getById(retryAlarmId)
             if (existing == null || !existing.isQuickAlarm || !existing.isEnabled) {
@@ -661,10 +693,18 @@ class AlarmListViewModel @Inject constructor(
         val instant = Instant.ofEpochMilli(triggerEpochMs)
         val targetDateTime = instant.atZone(nowZone)
 
+        val currentSettings = preferencesManager.getCurrentSettings()
+        val effectiveRingtone = ringtoneUri?.takeIf { it.isNotBlank() } ?: currentSettings.quickDefaultRingtoneUri
+        val effectiveVibration = vibrationEnabled ?: currentSettings.quickDefaultVibrationEnabled
+        val effectiveVolume = volume ?: currentSettings.quickDefaultVolume
+
         val quickAlarm = Alarm(
             hour = targetDateTime.hour,
             minute = targetDateTime.minute,
             label = context.getString(R.string.alarmlist_quick_alarm_label, (durationMs / 60_000L).toInt()),
+            ringtoneUri = effectiveRingtone,
+            vibrationEnabled = effectiveVibration,
+            volume = effectiveVolume,
             isEnabled = true,
             repeatDays = emptySet(),
             snoozeDurationMinutes = 0,
@@ -687,6 +727,11 @@ class AlarmListViewModel @Inject constructor(
 
         return when (outcome) {
             is ScheduleOutcome.Armed -> {
+                preferencesManager.saveQuickDeliveryDefaults(
+                    effectiveRingtone,
+                    effectiveVibration,
+                    effectiveVolume
+                )
                 emitFeedback(context.getString(R.string.alarmlist_quick_alarm_set, formatFeedbackTime(triggerEpochMs)))
                 QuickCreationResult.CreatedAndArmed(id, triggerEpochMs)
             }
