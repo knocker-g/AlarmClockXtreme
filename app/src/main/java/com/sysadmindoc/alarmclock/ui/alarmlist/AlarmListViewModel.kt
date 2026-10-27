@@ -523,6 +523,37 @@ class AlarmListViewModel @Inject constructor(
      * One-shot, no repeat, default settings.
      */
     suspend fun createQuickAlarm(minutesFromNow: Int, retryAlarmId: Long? = null): QuickCreationResult {
+        if (retryAlarmId != null && retryAlarmId > 0L) {
+            val existing = repository.getById(retryAlarmId)
+            if (existing == null || !existing.isQuickAlarm || !existing.isEnabled) {
+                return QuickCreationResult.ValidationRejected
+            }
+            if (existing.quickTriggerEpochMs <= System.currentTimeMillis()) {
+                repository.delete(existing)
+                return QuickCreationResult.ValidationRejected
+            }
+            val qScheduler = quickAlarmScheduler ?: QuickAlarmScheduler(context, repository)
+            val outcome = qScheduler.scheduleQuickAlarm(existing)
+            return when (outcome) {
+                is ScheduleOutcome.Armed -> {
+                    emitFeedback(context.getString(R.string.alarmlist_quick_alarm_set, formatFeedbackTime(existing.quickTriggerEpochMs)))
+                    QuickCreationResult.CreatedAndArmed(existing.id, existing.quickTriggerEpochMs)
+                }
+                is ScheduleOutcome.PermissionBlocked -> {
+                    emitFeedback("Exact alarm permission required for Quick Alarm")
+                    QuickCreationResult.PermissionBlocked(existing.id, outcome.reason)
+                }
+                is ScheduleOutcome.RegistrationFailed -> {
+                    emitFeedback("Failed to schedule Quick Alarm")
+                    QuickCreationResult.RegistrationFailed(existing.id, outcome.cause)
+                }
+                else -> {
+                    emitFeedback("Failed to schedule Quick Alarm")
+                    QuickCreationResult.RegistrationFailed(existing.id, null)
+                }
+            }
+        }
+
         if (minutesFromNow !in 1..180) return QuickCreationResult.ValidationRejected
 
         val nowEpoch = System.currentTimeMillis()
@@ -536,7 +567,6 @@ class AlarmListViewModel @Inject constructor(
         val localTime = instant.atZone(ZoneId.systemDefault()).toLocalTime()
 
         val quickAlarm = Alarm(
-            id = retryAlarmId ?: 0L,
             hour = localTime.hour,
             minute = localTime.minute,
             label = context.getString(R.string.alarmlist_quick_alarm_label, minutesFromNow),
@@ -554,12 +584,7 @@ class AlarmListViewModel @Inject constructor(
             nextTriggerTime = triggerTime
         )
 
-        val id = if (retryAlarmId != null && retryAlarmId > 0L) {
-            repository.update(quickAlarm)
-            retryAlarmId
-        } else {
-            repository.save(quickAlarm)
-        }
+        val id = repository.save(quickAlarm)
         val saved = quickAlarm.copy(id = id)
 
         val qScheduler = quickAlarmScheduler ?: QuickAlarmScheduler(context, repository)
@@ -589,6 +614,37 @@ class AlarmListViewModel @Inject constructor(
      * Create an absolute Quick alarm for the next occurrence of [hour]:[minute] (< 24h).
      */
     suspend fun createAbsoluteQuickAlarm(hour: Int, minute: Int, retryAlarmId: Long? = null): QuickCreationResult {
+        if (retryAlarmId != null && retryAlarmId > 0L) {
+            val existing = repository.getById(retryAlarmId)
+            if (existing == null || !existing.isQuickAlarm || !existing.isEnabled) {
+                return QuickCreationResult.ValidationRejected
+            }
+            if (existing.quickTriggerEpochMs <= System.currentTimeMillis()) {
+                repository.delete(existing)
+                return QuickCreationResult.ValidationRejected
+            }
+            val qScheduler = quickAlarmScheduler ?: QuickAlarmScheduler(context, repository)
+            val outcome = qScheduler.scheduleQuickAlarm(existing)
+            return when (outcome) {
+                is ScheduleOutcome.Armed -> {
+                    emitFeedback(context.getString(R.string.alarmlist_quick_alarm_set, formatFeedbackTime(existing.quickTriggerEpochMs)))
+                    QuickCreationResult.CreatedAndArmed(existing.id, existing.quickTriggerEpochMs)
+                }
+                is ScheduleOutcome.PermissionBlocked -> {
+                    emitFeedback("Exact alarm permission required for Quick Alarm")
+                    QuickCreationResult.PermissionBlocked(existing.id, outcome.reason)
+                }
+                is ScheduleOutcome.RegistrationFailed -> {
+                    emitFeedback("Failed to schedule Quick Alarm")
+                    QuickCreationResult.RegistrationFailed(existing.id, outcome.cause)
+                }
+                else -> {
+                    emitFeedback("Failed to schedule Quick Alarm")
+                    QuickCreationResult.RegistrationFailed(existing.id, null)
+                }
+            }
+        }
+
         val nowEpoch = System.currentTimeMillis()
         val nowZone = ZoneId.systemDefault()
         val triggerEpochMs = QuickTimeResolver.resolveAbsolute(hour, minute, nowEpoch, nowZone)
@@ -601,7 +657,6 @@ class AlarmListViewModel @Inject constructor(
         val targetDateTime = instant.atZone(nowZone)
 
         val quickAlarm = Alarm(
-            id = retryAlarmId ?: 0L,
             hour = targetDateTime.hour,
             minute = targetDateTime.minute,
             label = context.getString(R.string.alarmlist_quick_alarm_label, (durationMs / 60_000L).toInt()),
@@ -619,12 +674,7 @@ class AlarmListViewModel @Inject constructor(
             nextTriggerTime = triggerEpochMs
         )
 
-        val id = if (retryAlarmId != null && retryAlarmId > 0L) {
-            repository.update(quickAlarm)
-            retryAlarmId
-        } else {
-            repository.save(quickAlarm)
-        }
+        val id = repository.save(quickAlarm)
         val saved = quickAlarm.copy(id = id)
 
         val qScheduler = quickAlarmScheduler ?: QuickAlarmScheduler(context, repository)
