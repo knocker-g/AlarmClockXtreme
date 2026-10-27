@@ -119,7 +119,7 @@ data class AlarmBackup(
 
 @JsonClass(generateAdapter = true)
 data class BackupData(
-    val version: Int = 19,
+    val version: Int = 20,
     val appVersion: String = BuildConfig.VERSION_NAME,
     val exportedAt: Long = System.currentTimeMillis(),
     val alarms: List<AlarmBackup>,
@@ -222,7 +222,10 @@ data class SettingsBackup(
     val hueBridgeCertFingerprint: String = "",
     val firingControlMode: String = "hybrid",
     val challengeBypassEnabled: Boolean = false,
-    val challengeBypassDelaySeconds: Int = 30
+    val challengeBypassDelaySeconds: Int = 30,
+    val quickDefaultRingtoneUri: String = "",
+    val quickDefaultVibrationEnabled: Boolean = true,
+    val quickDefaultVolume: Int = 100
 )
 
 data class BackupExportWarning(
@@ -293,7 +296,7 @@ class BackupManager @Inject constructor(
 
     companion object {
         /** Highest backup format version we know how to read end-to-end. */
-        const val MAX_SUPPORTED_BACKUP_VERSION = 19
+        const val MAX_SUPPORTED_BACKUP_VERSION = 20
 
         /**
          * Ceiling on an imported file. A full export of the maximum alarm count
@@ -611,7 +614,10 @@ class BackupManager @Inject constructor(
                 hueBridgeCertFingerprint = settings.hueBridgeCertFingerprint,
                 firingControlMode = settings.firingControlMode,
                 challengeBypassEnabled = settings.challengeBypassEnabled,
-                challengeBypassDelaySeconds = settings.challengeBypassDelaySeconds
+                challengeBypassDelaySeconds = settings.challengeBypassDelaySeconds,
+                quickDefaultRingtoneUri = settings.quickDefaultRingtoneUri,
+                quickDefaultVibrationEnabled = settings.quickDefaultVibrationEnabled,
+                quickDefaultVolume = settings.quickDefaultVolume
             )
         )
 
@@ -852,7 +858,10 @@ class BackupManager @Inject constructor(
         hueBridgeCertFingerprint = s.hueBridgeCertFingerprint,
         firingControlMode = s.firingControlMode,
         challengeBypassEnabled = s.challengeBypassEnabled,
-        challengeBypassDelaySeconds = s.challengeBypassDelaySeconds
+        challengeBypassDelaySeconds = s.challengeBypassDelaySeconds,
+        quickDefaultRingtoneUri = s.quickDefaultRingtoneUri,
+        quickDefaultVibrationEnabled = s.quickDefaultVibrationEnabled,
+        quickDefaultVolume = s.quickDefaultVolume
     )
 
     private suspend fun importFromJson(
