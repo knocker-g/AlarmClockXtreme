@@ -74,7 +74,8 @@ class AlarmClockIntentHandler @Inject constructor(
             isEnabled = true
         ).sanitized()
         val existing = repository.getEnabled().firstOrNull { alarm ->
-            alarm.hour == draft.hour &&
+            !alarm.isQuickAlarm &&
+                alarm.hour == draft.hour &&
                 alarm.minute == draft.minute &&
                 alarm.label == draft.label &&
                 alarm.repeatDays == draft.repeatDays &&
