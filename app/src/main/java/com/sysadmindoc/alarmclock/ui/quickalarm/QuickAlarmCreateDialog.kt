@@ -23,6 +23,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -43,6 +44,10 @@ import kotlinx.coroutines.launch
 
 import com.sysadmindoc.alarmclock.domain.QuickTimeResolver
 
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
+import com.sysadmindoc.alarmclock.ui.ringtone.RingtonePickerSheet
+
 enum class QuickAlarmInputMode {
     RELATIVE,
     ABSOLUTE
@@ -55,9 +60,12 @@ enum class QuickAlarmInputMode {
 fun QuickAlarmCreateDialog(
     initialMinutes: Int = 15,
     is24HourFormat: Boolean,
+    initialRingtoneUri: String = "",
+    initialVibrationEnabled: Boolean = true,
+    initialVolume: Int = 100,
     onDismissRequest: () -> Unit,
-    onCreateRelative: suspend (minutes: Int, retryAlarmId: Long?) -> QuickCreationResult,
-    onCreateAbsolute: suspend (hour: Int, minute: Int, retryAlarmId: Long?) -> QuickCreationResult
+    onCreateRelative: suspend (minutes: Int, ringtoneUri: String, vibrationEnabled: Boolean, volume: Int, retryAlarmId: Long?) -> QuickCreationResult,
+    onCreateAbsolute: suspend (hour: Int, minute: Int, ringtoneUri: String, vibrationEnabled: Boolean, volume: Int, retryAlarmId: Long?) -> QuickCreationResult
 ) {
     var mode by remember { mutableStateOf(QuickAlarmInputMode.RELATIVE) }
 
@@ -69,6 +77,12 @@ fun QuickAlarmCreateDialog(
     }
     var selectedAbsoluteHour by remember { mutableIntStateOf(nowLocal.hour) }
     var selectedAbsoluteMinute by remember { mutableIntStateOf(nowLocal.minute) }
+
+    // Delivery settings state initialized from last-used defaults
+    var ringtoneUri by remember { mutableStateOf(initialRingtoneUri) }
+    var vibrationEnabled by remember { mutableStateOf(initialVibrationEnabled) }
+    var volume by remember { mutableIntStateOf(initialVolume.coerceIn(0, 100)) }
+    var showRingtonePicker by remember { mutableStateOf(false) }
 
     val parsedRelativeMinutes = relativeMinutesInput.toIntOrNull()
     val isRelativeValid = parsedRelativeMinutes != null && parsedRelativeMinutes in 1..180
@@ -83,7 +97,7 @@ fun QuickAlarmCreateDialog(
     val invalidDurationMsg = stringResource(R.string.quick_alarm_invalid_duration)
 
     // Reset retry ID on user input modification
-    LaunchedEffect(mode, relativeMinutesInput, selectedAbsoluteHour, selectedAbsoluteMinute) {
+    LaunchedEffect(mode, relativeMinutesInput, selectedAbsoluteHour, selectedAbsoluteMinute, ringtoneUri, vibrationEnabled, volume) {
         lastPersistedAlarmId = null
     }
 
@@ -98,10 +112,10 @@ fun QuickAlarmCreateDialog(
                         isSubmitting = true
                         scope.launch {
                             val result = if (mode == QuickAlarmInputMode.RELATIVE) {
-                                parsedRelativeMinutes?.let { onCreateRelative(it, lastPersistedAlarmId) }
+                                parsedRelativeMinutes?.let { onCreateRelative(it, ringtoneUri, vibrationEnabled, volume, lastPersistedAlarmId) }
                                     ?: QuickCreationResult.ValidationRejected
                             } else {
-                                onCreateAbsolute(selectedAbsoluteHour, selectedAbsoluteMinute, lastPersistedAlarmId)
+                                onCreateAbsolute(selectedAbsoluteHour, selectedAbsoluteMinute, ringtoneUri, vibrationEnabled, volume, lastPersistedAlarmId)
                             }
 
                             when (result) {
@@ -263,6 +277,67 @@ fun QuickAlarmCreateDialog(
                             modifier = Modifier.padding(top = 4.dp)
                         )
                     }
+                }
+
+                // Editable Delivery Settings Section
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = stringResource(R.string.alarm_list_alarm_sounds),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = TextPrimary
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = { showRingtonePicker = true }) {
+                            Text(
+                                text = if (ringtoneUri.isBlank()) stringResource(R.string.alarm_edit_sound) else ringtoneUri.substringAfterLast("/"),
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = if (vibrationEnabled) stringResource(R.string.alarm_edit_vibration_on) else stringResource(R.string.alarm_edit_vibration_off),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary
+                            )
+                            Switch(
+                                checked = vibrationEnabled,
+                                onCheckedChange = { vibrationEnabled = it }
+                            )
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(stringResource(R.string.volume), style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                        Slider(
+                            value = volume.toFloat(),
+                            onValueChange = { volume = it.toInt() },
+                            valueRange = 0f..100f,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text("$volume%", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                    }
+                }
+
+                if (showRingtonePicker) {
+                    RingtonePickerSheet(
+                        currentUri = ringtoneUri,
+                        previewVolume = volume,
+                        onSelect = { selectedUri ->
+                            ringtoneUri = selectedUri
+                            showRingtonePicker = false
+                        },
+                        onDismiss = { showRingtonePicker = false }
+                    )
                 }
 
                 if (errorMessage != null) {

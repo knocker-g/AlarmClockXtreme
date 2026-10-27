@@ -19,7 +19,8 @@ class BackupVersionStampTest {
         /** Bump with [BackupData.version] whenever these change. */
         // 71 since v19 added AlarmBackup.id.
         const val ALARM_BACKUP_FIELDS = 71
-        const val SETTINGS_BACKUP_FIELDS = 77
+        // 80 since v20 added Quick delivery defaults.
+        const val SETTINGS_BACKUP_FIELDS = 80
     }
 
     @Test

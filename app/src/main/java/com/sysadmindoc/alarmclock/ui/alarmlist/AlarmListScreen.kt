@@ -252,9 +252,16 @@ fun AlarmListScreen(
         QuickAlarmCreateDialog(
             initialMinutes = quickCreateInitialMinutes,
             is24HourFormat = state.is24HourFormat,
+            initialRingtoneUri = state.quickDefaultRingtoneUri,
+            initialVibrationEnabled = state.quickDefaultVibrationEnabled,
+            initialVolume = state.quickDefaultVolume,
             onDismissRequest = { showQuickCreateDialog = false },
-            onCreateRelative = { minutes, retryId -> viewModel.createQuickAlarm(minutes, retryId) },
-            onCreateAbsolute = { hour, minute, retryId -> viewModel.createAbsoluteQuickAlarm(hour, minute, retryId) }
+            onCreateRelative = { minutes, ringtoneUri, vibrationEnabled, volume, retryId ->
+                viewModel.createQuickAlarm(minutes, ringtoneUri, vibrationEnabled, volume, retryId)
+            },
+            onCreateAbsolute = { hour, minute, ringtoneUri, vibrationEnabled, volume, retryId ->
+                viewModel.createAbsoluteQuickAlarm(hour, minute, ringtoneUri, vibrationEnabled, volume, retryId)
+            }
         )
     }
 

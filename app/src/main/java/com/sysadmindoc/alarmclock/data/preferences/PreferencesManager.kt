@@ -202,7 +202,11 @@ data class AppSettings(
     val ytEngineLastUpdateMs: Long = 0,
     val ytEngineLastUpdateStatus: String = "",
     val ytEngineLastUpdateSource: String = "",
-    val ytEngineLastFailureReason: String = ""
+    val ytEngineLastFailureReason: String = "",
+    // KNO-21: Reusable Quick Alarm delivery defaults snapshot
+    val quickDefaultRingtoneUri: String = "",
+    val quickDefaultVibrationEnabled: Boolean = true,
+    val quickDefaultVolume: Int = 100
 )
 
 private const val LEGACY_VIOLET_ACCENT = "#7C5CFF"
@@ -418,6 +422,9 @@ class PreferencesManager @Inject constructor(
         val YT_ENGINE_LAST_UPDATE_STATUS = stringPreferencesKey("yt_engine_last_update_status")
         val YT_ENGINE_LAST_UPDATE_SOURCE = stringPreferencesKey("yt_engine_last_update_source")
         val YT_ENGINE_LAST_FAILURE_REASON = stringPreferencesKey("yt_engine_last_failure_reason")
+        val QUICK_DEFAULT_RINGTONE_URI = stringPreferencesKey("quick_default_ringtone_uri")
+        val QUICK_DEFAULT_VIBRATION_ENABLED = booleanPreferencesKey("quick_default_vibration_enabled")
+        val QUICK_DEFAULT_VOLUME = intPreferencesKey("quick_default_volume")
     }
 
     @VisibleForTesting
@@ -770,7 +777,26 @@ class PreferencesManager @Inject constructor(
         ytEngineLastUpdateStatus = this[Keys.YT_ENGINE_LAST_UPDATE_STATUS] ?: "",
         ytEngineLastUpdateSource = this[Keys.YT_ENGINE_LAST_UPDATE_SOURCE] ?: "",
         ytEngineLastFailureReason = this[Keys.YT_ENGINE_LAST_FAILURE_REASON] ?: "",
+        quickDefaultRingtoneUri = this[Keys.QUICK_DEFAULT_RINGTONE_URI] ?: "",
+        quickDefaultVibrationEnabled = this[Keys.QUICK_DEFAULT_VIBRATION_ENABLED] ?: true,
+        quickDefaultVolume = this[Keys.QUICK_DEFAULT_VOLUME] ?: 100
     )
+
+    suspend fun saveQuickDeliveryDefaults(
+        ringtoneUri: String,
+        vibrationEnabled: Boolean,
+        volume: Int
+    ) {
+        try {
+            context.dataStore.edit { prefs ->
+                prefs[Keys.QUICK_DEFAULT_RINGTONE_URI] = ringtoneUri.trim()
+                prefs[Keys.QUICK_DEFAULT_VIBRATION_ENABLED] = vibrationEnabled
+                prefs[Keys.QUICK_DEFAULT_VOLUME] = volume.coerceIn(0, 100)
+            }
+        } catch (e: Exception) {
+            Log.w("PreferencesManager", "Failed to save Quick delivery defaults", e)
+        }
+    }
 
     private fun MutablePreferences.applySettings(s: AppSettings) {
         this[Keys.IS_24_HOUR] = s.is24HourFormat
