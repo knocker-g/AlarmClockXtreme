@@ -6,7 +6,11 @@ import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 import com.sysadmindoc.alarmclock.data.local.AlarmGroupDao
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmGroup
 import com.sysadmindoc.alarmclock.data.model.Alarm
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -19,9 +23,22 @@ class AlarmRepository @Inject constructor(
 ) {
     fun observeAll(): Flow<List<Alarm>> = dao.observeAll()
     fun observeEnabled(): Flow<List<Alarm>> = dao.observeEnabled()
-    fun observeNextAlarm(nowEpochMs: Long = System.currentTimeMillis()): Flow<Alarm?> = dao.observeEnabled().map { list ->
-        list.filter { it.nextTriggerTime > nowEpochMs }.minByOrNull { it.nextTriggerTime }
-    }
+    fun observeNextAlarm(
+        clock: () -> Long = { System.currentTimeMillis() },
+        refreshIntervalMs: Long = 30_000L
+    ): Flow<Alarm?> = combine(
+        dao.observeEnabled(),
+        flow {
+            emit(Unit)
+            while (true) {
+                delay(refreshIntervalMs)
+                emit(Unit)
+            }
+        }
+    ) { list, _ ->
+        val now = clock()
+        list.filter { it.nextTriggerTime > now }.minByOrNull { it.nextTriggerTime }
+    }.distinctUntilChanged()
 
     suspend fun getById(id: Long): Alarm? = dao.getById(id)
     suspend fun getEnabled(): List<Alarm> = dao.getEnabled()
