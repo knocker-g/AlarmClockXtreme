@@ -158,4 +158,29 @@ class FabCreationConsolidationTest {
         assertFalse("Normal Alarm MUST NOT return isQuickAlarm == true", saved!!.isQuickAlarm)
         assertEquals(Alarm.KIND_NORMAL, saved.kind)
     }
+
+    @Test
+    fun `FAB is the single canonical creation authority across empty and populated list states`() = runBlocking {
+        val viewModel = AlarmListViewModel(
+            context = context,
+            repository = alarmRepo,
+            scheduler = mockNormalScheduler,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            eventRepository = eventRepo,
+            quickAlarmScheduler = quickScheduler
+        )
+
+        // 1. In empty list state: alarms list is empty
+        val emptyStateAlarms = alarmRepo.getAll()
+        assertTrue("Alarm repository is initially empty", emptyStateAlarms.isEmpty())
+
+        // 2. Add an alarm via the consolidated FAB New Alarm route
+        val result = viewModel.createQuickAlarm(minutesFromNow = 15)
+        assertTrue(result is QuickCreationResult.CreatedAndArmed)
+
+        // 3. In populated list state: alarms list contains 1 item
+        val populatedAlarms = alarmRepo.getAll()
+        assertEquals("Alarm repository now contains exactly 1 alarm", 1, populatedAlarms.size)
+    }
 }

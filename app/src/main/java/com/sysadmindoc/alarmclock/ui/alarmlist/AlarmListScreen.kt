@@ -571,12 +571,7 @@ fun AlarmListScreen(
                                             AppEmptyState(
                                                 icon = Icons.Default.AlarmAdd,
                                                 title = stringResource(R.string.alarm_list_empty_title),
-                                                description = stringResource(R.string.alarm_list_empty_description),
-                                                footer = {
-                                                    AlarmListEmptyActions(
-                                                        onAddAlarm = onAddAlarm
-                                                    )
-                                                }
+                                                description = stringResource(R.string.alarm_list_empty_description)
                                             )
                                         }
                                     }
@@ -831,7 +826,6 @@ fun AlarmListScreen(
                                 statsAlarmLabel = alarm.label.ifBlank { "%d:%02d".format(alarm.hour, alarm.minute) }
                                 viewModel.loadAlarmStats(alarm.id)
                             },
-                            onAddAlarm = onAddAlarm,
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxHeight()
@@ -857,19 +851,6 @@ fun AlarmListScreen(
 }
 
 @Composable
-private fun AlarmListEmptyActions(
-    onAddAlarm: () -> Unit
-) {
-    Button(
-        onClick = onAddAlarm,
-        shape = RoundedCornerShape(8.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-    ) {
-        Text(stringResource(R.string.alarm_edit_create))
-    }
-}
-
-@Composable
 private fun AlarmDetailPane(
     alarm: Alarm?,
     latestEvent: AlarmEvent? = null,
@@ -885,7 +866,6 @@ private fun AlarmDetailPane(
     onDuplicate: (Alarm) -> Unit,
     onShare: (Alarm) -> Unit,
     onShowHistory: (Alarm) -> Unit,
-    onAddAlarm: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     AppSurfaceCard(
@@ -902,12 +882,7 @@ private fun AlarmDetailPane(
             AppEmptyState(
                 icon = Icons.Default.AlarmAdd,
                 title = stringResource(R.string.alarm_list_detail_empty_title),
-                description = stringResource(R.string.alarm_list_detail_empty_description),
-                footer = {
-                    AlarmListEmptyActions(
-                        onAddAlarm = onAddAlarm
-                    )
-                }
+                description = stringResource(R.string.alarm_list_detail_empty_description)
             )
             return@AppSurfaceCard
         }
