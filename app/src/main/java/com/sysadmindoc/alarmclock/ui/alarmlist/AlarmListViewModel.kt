@@ -14,6 +14,8 @@ import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.domain.GroupTabPosition
 import com.sysadmindoc.alarmclock.domain.NextAlarmCalculator
 import com.sysadmindoc.alarmclock.domain.QuickAlarmScheduler
+import com.sysadmindoc.alarmclock.domain.QuickCreationResult
+import com.sysadmindoc.alarmclock.domain.QuickTimeResolver
 import com.sysadmindoc.alarmclock.domain.ScheduleOutcome
 import com.sysadmindoc.alarmclock.domain.VacationAlarmPolicy
 import com.sysadmindoc.alarmclock.ui.templates.AlarmTemplate
@@ -520,51 +522,117 @@ class AlarmListViewModel @Inject constructor(
      * Create a quick alarm X minutes from now.
      * One-shot, no repeat, default settings.
      */
-    fun createQuickAlarm(minutesFromNow: Int) {
-        val safeMinutes = minutesFromNow.coerceIn(1, 180)
-        viewModelScope.launch {
-            val nowEpoch = System.currentTimeMillis()
-            val nowElapsed = android.os.SystemClock.elapsedRealtime()
-            val durationMs = safeMinutes * 60 * 1000L
-            val triggerTime = nowEpoch + durationMs
-            val relativeElapsedMs = nowElapsed + durationMs
-            val instant = Instant.ofEpochMilli(triggerTime)
-            val localTime = instant.atZone(ZoneId.systemDefault()).toLocalTime()
+    suspend fun createQuickAlarm(minutesFromNow: Int): QuickCreationResult {
+        if (minutesFromNow !in 1..180) return QuickCreationResult.ValidationRejected
 
-            val quickAlarm = Alarm(
-                hour = localTime.hour,
-                minute = localTime.minute,
-                label = context.getString(R.string.alarmlist_quick_alarm_label, safeMinutes),
-                isEnabled = true,
-                repeatDays = emptySet(),
-                snoozeDurationMinutes = 0,
-                maxSnoozeCount = 0,
-                challengeType = "NONE",
-                group = "",
-                wakeConfirmEnabled = false,
-                kind = Alarm.KIND_QUICK,
-                quickTriggerEpochMs = triggerTime,
-                quickRelativeElapsedMs = relativeElapsedMs,
-                quickBootCount = quickAlarmScheduler?.currentBootCount() ?: -1L,
-                nextTriggerTime = triggerTime
-            )
+        val nowEpoch = System.currentTimeMillis()
+        val triggerTime = QuickTimeResolver.resolveRelative(minutesFromNow, nowEpoch)
+            ?: return QuickCreationResult.ValidationRejected
 
-            val id = repository.save(quickAlarm)
-            val saved = quickAlarm.copy(id = id)
+        val nowElapsed = android.os.SystemClock.elapsedRealtime()
+        val durationMs = minutesFromNow * 60 * 1000L
+        val relativeElapsedMs = nowElapsed + durationMs
+        val instant = Instant.ofEpochMilli(triggerTime)
+        val localTime = instant.atZone(ZoneId.systemDefault()).toLocalTime()
 
-            val qScheduler = quickAlarmScheduler ?: QuickAlarmScheduler(context, repository)
-            val outcome = qScheduler.scheduleQuickAlarm(saved)
+        val quickAlarm = Alarm(
+            hour = localTime.hour,
+            minute = localTime.minute,
+            label = context.getString(R.string.alarmlist_quick_alarm_label, minutesFromNow),
+            isEnabled = true,
+            repeatDays = emptySet(),
+            snoozeDurationMinutes = 0,
+            maxSnoozeCount = 0,
+            challengeType = "NONE",
+            group = "",
+            wakeConfirmEnabled = false,
+            kind = Alarm.KIND_QUICK,
+            quickTriggerEpochMs = triggerTime,
+            quickRelativeElapsedMs = relativeElapsedMs,
+            quickBootCount = quickAlarmScheduler?.currentBootCount() ?: -1L,
+            nextTriggerTime = triggerTime
+        )
 
-            when (outcome) {
-                is ScheduleOutcome.Armed -> {
-                    emitFeedback(context.getString(R.string.alarmlist_quick_alarm_set, formatFeedbackTime(triggerTime)))
-                }
-                is ScheduleOutcome.PermissionBlocked -> {
-                    emitFeedback("Exact alarm permission required for Quick Alarm")
-                }
-                else -> {
-                    emitFeedback("Failed to schedule Quick Alarm")
-                }
+        val id = repository.save(quickAlarm)
+        val saved = quickAlarm.copy(id = id)
+
+        val qScheduler = quickAlarmScheduler ?: QuickAlarmScheduler(context, repository)
+        val outcome = qScheduler.scheduleQuickAlarm(saved)
+
+        return when (outcome) {
+            is ScheduleOutcome.Armed -> {
+                emitFeedback(context.getString(R.string.alarmlist_quick_alarm_set, formatFeedbackTime(triggerTime)))
+                QuickCreationResult.CreatedAndArmed(id, triggerTime)
+            }
+            is ScheduleOutcome.PermissionBlocked -> {
+                emitFeedback("Exact alarm permission required for Quick Alarm")
+                QuickCreationResult.PermissionBlocked(id, outcome.reason)
+            }
+            is ScheduleOutcome.RegistrationFailed -> {
+                emitFeedback("Failed to schedule Quick Alarm")
+                QuickCreationResult.RegistrationFailed(id, outcome.cause)
+            }
+            else -> {
+                emitFeedback("Failed to schedule Quick Alarm")
+                QuickCreationResult.RegistrationFailed(id, null)
+            }
+        }
+    }
+
+    /**
+     * Create an absolute Quick alarm for the next occurrence of [hour]:[minute] (< 24h).
+     */
+    suspend fun createAbsoluteQuickAlarm(hour: Int, minute: Int): QuickCreationResult {
+        val nowEpoch = System.currentTimeMillis()
+        val nowZone = ZoneId.systemDefault()
+        val triggerEpochMs = QuickTimeResolver.resolveAbsolute(hour, minute, nowEpoch, nowZone)
+
+        val durationMs = (triggerEpochMs - nowEpoch).coerceAtLeast(60_000L)
+        val nowElapsed = android.os.SystemClock.elapsedRealtime()
+        val relativeElapsedMs = nowElapsed + durationMs
+        val instant = Instant.ofEpochMilli(triggerEpochMs)
+        val targetDateTime = instant.atZone(nowZone)
+
+        val quickAlarm = Alarm(
+            hour = targetDateTime.hour,
+            minute = targetDateTime.minute,
+            label = context.getString(R.string.alarmlist_quick_alarm_label, (durationMs / 60_000L).toInt()),
+            isEnabled = true,
+            repeatDays = emptySet(),
+            snoozeDurationMinutes = 0,
+            maxSnoozeCount = 0,
+            challengeType = "NONE",
+            group = "",
+            wakeConfirmEnabled = false,
+            kind = Alarm.KIND_QUICK,
+            quickTriggerEpochMs = triggerEpochMs,
+            quickRelativeElapsedMs = relativeElapsedMs,
+            quickBootCount = quickAlarmScheduler?.currentBootCount() ?: -1L,
+            nextTriggerTime = triggerEpochMs
+        )
+
+        val id = repository.save(quickAlarm)
+        val saved = quickAlarm.copy(id = id)
+
+        val qScheduler = quickAlarmScheduler ?: QuickAlarmScheduler(context, repository)
+        val outcome = qScheduler.scheduleQuickAlarm(saved)
+
+        return when (outcome) {
+            is ScheduleOutcome.Armed -> {
+                emitFeedback(context.getString(R.string.alarmlist_quick_alarm_set, formatFeedbackTime(triggerEpochMs)))
+                QuickCreationResult.CreatedAndArmed(id, triggerEpochMs)
+            }
+            is ScheduleOutcome.PermissionBlocked -> {
+                emitFeedback("Exact alarm permission required for Quick Alarm")
+                QuickCreationResult.PermissionBlocked(id, outcome.reason)
+            }
+            is ScheduleOutcome.RegistrationFailed -> {
+                emitFeedback("Failed to schedule Quick Alarm")
+                QuickCreationResult.RegistrationFailed(id, outcome.cause)
+            }
+            else -> {
+                emitFeedback("Failed to schedule Quick Alarm")
+                QuickCreationResult.RegistrationFailed(id, null)
             }
         }
     }

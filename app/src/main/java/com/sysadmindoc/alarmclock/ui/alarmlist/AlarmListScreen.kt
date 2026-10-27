@@ -50,6 +50,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import com.sysadmindoc.alarmclock.domain.GroupTabPosition
+import com.sysadmindoc.alarmclock.ui.quickalarm.QuickAlarmCreateDialog
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Sort
@@ -103,6 +104,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -239,6 +241,19 @@ fun AlarmListScreen(
                 showTemplates = false
             },
             onDismiss = { showTemplates = false }
+        )
+    }
+
+    var showQuickCreateDialog by remember { mutableStateOf(false) }
+    var quickCreateInitialMinutes by remember { mutableIntStateOf(15) }
+
+    if (showQuickCreateDialog) {
+        QuickAlarmCreateDialog(
+            initialMinutes = quickCreateInitialMinutes,
+            is24HourFormat = state.is24HourFormat,
+            onDismissRequest = { showQuickCreateDialog = false },
+            onCreateRelative = viewModel::createQuickAlarm,
+            onCreateAbsolute = viewModel::createAbsoluteQuickAlarm
         )
     }
 
@@ -746,7 +761,10 @@ fun AlarmListScreen(
                         item {
                             Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
                                 QuickAlarmRow(
-                                    onQuickAlarm = viewModel::createQuickAlarm,
+                                    onQuickAlarm = { minutes ->
+                                        quickCreateInitialMinutes = minutes
+                                        showQuickCreateDialog = true
+                                    },
                                     napDefaultMinutes = state.napDefaultMinutes
                                 )
                             }
