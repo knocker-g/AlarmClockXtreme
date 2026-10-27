@@ -25,6 +25,8 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -64,6 +66,33 @@ internal fun reorderAlarmIds(
         val moved = removeAt(fromIndex)
         add(targetIndex, moved)
     }
+}
+
+internal fun mergeFilteredReorderDirect(
+    globalIds: List<Long>,
+    finalVisibleIds: List<Long>,
+    initialVisibleIds: List<Long>
+): List<Long> {
+    if (finalVisibleIds == initialVisibleIds) return globalIds
+
+    val occupiedIndices = globalIds.indices.filter { globalIds[it] in initialVisibleIds }
+    if (occupiedIndices.size != finalVisibleIds.size) return globalIds
+
+    val result = globalIds.toMutableList()
+    occupiedIndices.forEachIndexed { idx, globalIdx ->
+        result[globalIdx] = finalVisibleIds[idx]
+    }
+    return result
+}
+
+internal fun mergeFilteredReorder(
+    globalIds: List<Long>,
+    visibleIds: List<Long>,
+    movedId: Long,
+    targetId: Long
+): List<Long> {
+    val reorderedVisible = reorderAlarmIds(visibleIds, movedId, targetId)
+    return mergeFilteredReorderDirect(globalIds, reorderedVisible, visibleIds)
 }
 
 private data class SelectionSnapshot(
@@ -277,18 +306,39 @@ class AlarmListViewModel @Inject constructor(
         }
     }
 
+    private val reorderMutex = Mutex()
+
+    fun commitReorder(
+        finalVisibleIds: List<Long>,
+        initialVisibleIds: List<Long>
+    ) {
+        if (finalVisibleIds == initialVisibleIds || finalVisibleIds.size <= 1) return
+        _sortOrder.value = AlarmSortOrder.MANUAL
+        viewModelScope.launch {
+            reorderMutex.withLock {
+                val globalAlarms = repository.getAll()
+                val globalIds = globalAlarms.map { it.id }
+
+                val validFinal = finalVisibleIds.filter { it in globalIds }
+                val validInitial = initialVisibleIds.filter { it in globalIds }
+                if (validFinal.size <= 1 || validFinal.size != validInitial.size) return@withLock
+
+                val completeOrder = mergeFilteredReorderDirect(globalIds, validFinal, validInitial)
+                if (completeOrder != globalIds) {
+                    repository.updateSortOrders(completeOrder)
+                    emitFeedback(context.getString(R.string.alarmlist_manual_order_saved))
+                }
+            }
+        }
+    }
+
     fun moveAlarm(
         movedAlarmId: Long,
         targetAlarmId: Long,
         visibleAlarmIds: List<Long>
     ) {
-        val reorderedIds = reorderAlarmIds(visibleAlarmIds, movedAlarmId, targetAlarmId)
-        if (reorderedIds == visibleAlarmIds) return
-        _sortOrder.value = AlarmSortOrder.MANUAL
-        viewModelScope.launch {
-            repository.updateSortOrders(reorderedIds)
-            emitFeedback(context.getString(R.string.alarmlist_manual_order_saved))
-        }
+        val reordered = reorderAlarmIds(visibleAlarmIds, movedAlarmId, targetAlarmId)
+        commitReorder(reordered, visibleAlarmIds)
     }
 
     fun selectGroup(group: String?) {

@@ -13,7 +13,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -315,6 +315,9 @@ fun AlarmListScreen(
     }
 
     val searchContext = LocalContext.current
+    var localReorderedIds by remember { mutableStateOf<List<Long>?>(null) }
+    var initialVisibleIds by remember { mutableStateOf<List<Long>>(emptyList()) }
+
     val filteredAlarms = remember(state.alarms, searchQuery, state.selectedGroup, searchContext) {
         state.alarms
             .filter { alarm ->
@@ -330,7 +333,18 @@ fun AlarmListScreen(
                 }
             }
     }
-    val visibleAlarmIds = filteredAlarms.map { it.id }
+
+    val displayAlarms = remember(filteredAlarms, localReorderedIds) {
+        val reordered = localReorderedIds
+        if (reordered != null) {
+            val alarmMap = filteredAlarms.associateBy { it.id }
+            reordered.mapNotNull { alarmMap[it] }
+        } else {
+            filteredAlarms
+        }
+    }
+
+    val visibleAlarmIds = displayAlarms.map { it.id }
     val currentVisibleAlarmIds by rememberUpdatedState(visibleAlarmIds)
     val canReorderAlarms = !state.isSelectionMode && filteredAlarms.size > 1
 
@@ -634,7 +648,7 @@ fun AlarmListScreen(
                                         )
                                     }
                                 }
-                                items(filteredAlarms, key = { it.id }) { alarm ->
+                                items(displayAlarms, key = { it.id }) { alarm ->
                                     val isDragging = draggingAlarmId == alarm.id
                                     Row(
                                         modifier = Modifier
@@ -683,18 +697,27 @@ fun AlarmListScreen(
                                                 },
                                                 modifier = Modifier.pointerInput(canReorderAlarms, alarm.id) {
                                                     if (canReorderAlarms) {
-                                                        detectDragGesturesAfterLongPress(
+                                                        detectDragGestures(
                                                             onDragStart = {
                                                                 draggingAlarmId = alarm.id
                                                                 dragOffsetPx = 0f
+                                                                initialVisibleIds = currentVisibleAlarmIds
+                                                                localReorderedIds = currentVisibleAlarmIds
                                                             },
                                                             onDragEnd = {
+                                                                val finalIds = localReorderedIds
+                                                                val initialIds = initialVisibleIds
                                                                 draggingAlarmId = null
                                                                 dragOffsetPx = 0f
+                                                                localReorderedIds = null
+                                                                if (finalIds != null && initialIds.isNotEmpty() && finalIds != initialIds) {
+                                                                    viewModel.commitReorder(finalIds, initialIds)
+                                                                }
                                                             },
                                                             onDragCancel = {
                                                                 draggingAlarmId = null
                                                                 dragOffsetPx = 0f
+                                                                localReorderedIds = null
                                                             },
                                                             onDrag = { change, dragAmount ->
                                                                 change.consume()
@@ -712,12 +735,12 @@ fun AlarmListScreen(
                                                                 }
                                                                 val targetAlarmId = targetInfo?.key as? Long
                                                                 if (targetAlarmId != null) {
-                                                                    viewModel.moveAlarm(
-                                                                        movedAlarmId = alarm.id,
-                                                                        targetAlarmId = targetAlarmId,
-                                                                        visibleAlarmIds = currentVisibleAlarmIds
-                                                                    )
-                                                                    dragOffsetPx = 0f
+                                                                    val current = localReorderedIds ?: currentVisibleAlarmIds
+                                                                    val next = reorderAlarmIds(current, alarm.id, targetAlarmId)
+                                                                    if (next != current) {
+                                                                        localReorderedIds = next
+                                                                        dragOffsetPx = 0f
+                                                                    }
                                                                 }
                                                             }
                                                         )
