@@ -57,6 +57,7 @@ import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AlarmAdd
 import androidx.compose.material.icons.filled.BeachAccess
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Clear
@@ -1449,6 +1450,25 @@ private fun AlarmCard(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
+                    if (alarm.isQuickAlarm) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Bolt,
+                                contentDescription = stringResource(R.string.alarm_list_quick_alarms),
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = stringResource(R.string.alarm_list_quick_alarms),
+                                color = MaterialTheme.colorScheme.primary,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                     Text(
                         text = formatAlarmTime(alarm, is24Hour),
                         color = if (alarm.isEnabled) TextPrimary else TextMuted,
@@ -1571,7 +1591,7 @@ private fun AlarmCard(
                 if (alarm.label.isNotBlank() && cardRepeatLabel.isNotBlank()) add(cardRepeatLabel)
                 alarm.shiftPatternChipLabel()?.let(::add)
                 if (alarm.usesFixedTimezone) add(alarm.fixedTimezoneId)
-                if (alarm.group.isNotBlank()) add(AlarmPublicText.getLocalizedName(alarm.group, metadataContext))
+                if (!alarm.isQuickAlarm && alarm.group.isNotBlank()) add(AlarmPublicText.getLocalizedName(alarm.group, metadataContext))
                 if (alarm.profileName.isNotBlank()) add(alarm.profileName)
                 chainLabel?.let(::add)
                 if (alarm.ringtoneUri == "silent") add(silentLabel)

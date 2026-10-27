@@ -153,18 +153,26 @@ class AlarmListViewModel @Inject constructor(
 
     val uiState: StateFlow<AlarmListUiState> = combine(
         alarmsWithLatestEvents,
-        repository.observeNextAlarm(),
+        repository.observeEnabled(),
         preferencesManager.settings,
         _sortOrder,
         combine(ticker, _selectedIds, _isSelectionMode, _undoAlarm, combine(_selectedGroup, _selectedProfile) { g, p -> g to p }) { _, sel, mode, undo, gp ->
             SelectionSnapshot(sel, mode, undo, gp.first, gp.second)
         }
-    ) { (alarms, latestEventsMap), nextAlarm, settings, sort, snap ->
-        var filtered = alarms
+    ) { (alarms, latestEventsMap), enabledAlarms, settings, sort, snap ->
+        val now = System.currentTimeMillis()
 
-        // Extract unique groups from all alarms (not filtered), hiding the
-        // empty/default group so the chip row never gets a blank filter.
-        val groups = alarms.map { it.group.trim() }
+        // Future-valid next alarm selection: earliest nextTriggerTime > now among enabled alarms
+        val validNextAlarm = enabledAlarms.filter { it.nextTriggerTime > now }.minByOrNull { it.nextTriggerTime }
+
+        // Hide disabled (completed/expired) Quick Alarms from list projection so no OFF Quick card state is exposed
+        var filtered = alarms.filter { alarm ->
+            !alarm.isQuickAlarm || alarm.isEnabled
+        }
+
+        // Extract unique groups from Normal alarms (Quick alarms do not participate in Groups)
+        val groups = alarms.filter { !it.isQuickAlarm }
+            .map { it.group.trim() }
             .filter { it.isNotBlank() }
             .distinct()
             .sorted()
@@ -183,13 +191,12 @@ class AlarmListViewModel @Inject constructor(
             .filter { it.isNotBlank() }
             .distinct()
             .sorted()
-        val now = System.currentTimeMillis()
 
         AlarmListUiState(
             alarms = sorted,
-            nextAlarm = nextAlarm,
-            remainingTime = if (nextAlarm != null && nextAlarm.nextTriggerTime > 0) {
-                calculator.formatRemaining(context, nextAlarm.nextTriggerTime)
+            nextAlarm = validNextAlarm,
+            remainingTime = if (validNextAlarm != null && validNextAlarm.nextTriggerTime > now) {
+                calculator.formatRemaining(context, validNextAlarm.nextTriggerTime)
             } else "",
             vacationActive = VacationAlarmPolicy.isActive(settings, now),
             sortOrder = sort,
