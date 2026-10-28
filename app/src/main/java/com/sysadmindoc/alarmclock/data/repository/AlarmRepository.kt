@@ -15,6 +15,8 @@ import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
 
+class StaleAlarmException(message: String) : IllegalStateException(message)
+
 @Singleton
 class AlarmRepository @Inject constructor(
     private val database: AlarmDatabase,
@@ -77,6 +79,17 @@ class AlarmRepository @Inject constructor(
                 revision = if (withKind.revision > 0) withKind.revision else 1
             )
         }
+
+        // Optimistic Concurrency Control Check:
+        // Reject stale drafts where draft version is older than current DB version.
+        if (alarm.generation < existing.generation ||
+            (alarm.generation == existing.generation && alarm.revision < existing.revision)
+        ) {
+            throw StaleAlarmException(
+                "Stale alarm draft (gen ${alarm.generation}, rev ${alarm.revision}) cannot overwrite newer DB version (gen ${existing.generation}, rev ${existing.revision})"
+            )
+        }
+
         val isScheduleChanged = existing.hour != withKind.hour ||
                 existing.minute != withKind.minute ||
                 existing.repeatDays != withKind.repeatDays ||

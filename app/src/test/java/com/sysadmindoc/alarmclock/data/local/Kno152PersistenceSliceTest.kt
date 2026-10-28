@@ -12,6 +12,7 @@ import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.model.AlarmOccurrenceId
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.data.repository.ScheduleExceptionRepository
+import com.sysadmindoc.alarmclock.data.repository.StaleAlarmException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -114,6 +115,39 @@ class Kno152PersistenceSliceTest {
         assertEquals(2, saved3.generation)
         assertEquals(1, saved3.revision)
         assertEquals(8, saved3.hour)
+
+        // 4. Intentional change from REPEATING to ONE_TIME by clearing repeatDays -> updates scheduleKind to ONE_TIME and increments generation
+        alarmRepo.update(saved3.copy(repeatDays = emptySet(), scheduleKind = Alarm.SCHEDULE_KIND_ONE_TIME))
+        val saved4 = alarmRepo.getById(id)!!
+        assertEquals(3, saved4.generation)
+        assertEquals(1, saved4.revision)
+        assertEquals(Alarm.SCHEDULE_KIND_ONE_TIME, saved4.scheduleKind)
+    }
+
+    @Test
+    fun `Optimistic Concurrency Control - Outdated draft snapshot is rejected by AlarmRepository`() = runBlocking {
+        val initial = Alarm(hour = 7, minute = 0, label = "Original")
+        val id = alarmRepo.save(initial)
+        val currentDb = alarmRepo.getById(id)!!
+
+        // Save a newer edit first (e.g. User changed hour to 8)
+        alarmRepo.update(currentDb.copy(hour = 8))
+        val updatedDb = alarmRepo.getById(id)!!
+        assertEquals(2, updatedDb.generation)
+
+        // Attempting to save an outdated draft snapshot holding generation = 1 throws StaleAlarmException
+        val staleDraft = currentDb.copy(label = "Stale Edit from Old Draft")
+        var staleRejected = false
+        try {
+            alarmRepo.update(staleDraft)
+        } catch (e: StaleAlarmException) {
+            staleRejected = true
+        }
+
+        assertTrue("Stale draft update MUST be rejected by AlarmRepository", staleRejected)
+        // Verify DB entity remains at generation = 2
+        assertEquals(2, alarmRepo.getById(id)!!.generation)
+        assertEquals(8, alarmRepo.getById(id)!!.hour)
     }
 
     @Test
@@ -135,7 +169,7 @@ class Kno152PersistenceSliceTest {
         val occurrenceGen3 = AlarmOccurrenceId.fromAlarm(alarmGen3, baseTime)
 
         assertNotEquals(occurrenceRev1, occurrenceGen3)
-        assertEquals("alarm_43_gen_3_base_1700000000000".replace("43", "42"), occurrenceGen3.key)
+        assertEquals("alarm_42_gen_3_base_1700000000000", occurrenceGen3.key)
     }
 
     @Test

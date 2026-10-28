@@ -157,6 +157,8 @@ class AlarmEditViewModel @Inject constructor(
     private val alarmId: Long = savedStateHandle.get<Long>("alarmId") ?: -1
 
     private var loadedDraft: AlarmEditUiState? = null
+    private var initialAlarm: Alarm? = null
+
     private val _uiState = MutableStateFlow(AlarmEditUiState())
     val uiState: StateFlow<AlarmEditUiState> = combine(
         _uiState,
@@ -177,6 +179,7 @@ class AlarmEditViewModel @Inject constructor(
             if (alarmId > 0) {
                 val alarm = repository.getById(alarmId)
                 if (alarm != null && !alarm.isQuickAlarm) {
+                    initialAlarm = alarm
                     _uiState.value = AlarmEditUiState(
                         hour = alarm.hour,
                         minute = alarm.minute,
@@ -752,14 +755,21 @@ class AlarmEditViewModel @Inject constructor(
                 shiftPattern = s.shiftPattern,
                 shiftPatternStartDate = s.shiftPatternStartDate,
                 timezonePolicy = s.timezonePolicy,
-                fixedTimezoneId = s.fixedTimezoneId
+                fixedTimezoneId = s.fixedTimezoneId,
+                generation = initialAlarm?.generation ?: 1,
+                revision = initialAlarm?.revision ?: 1,
+                scheduleKind = if (s.repeatDays.isNotEmpty() || s.shiftPattern.isNotBlank()) {
+                    Alarm.SCHEDULE_KIND_REPEATING
+                } else if (initialAlarm != null && initialAlarm?.scheduleKind == Alarm.SCHEDULE_KIND_REPEATING && s.repeatDays.isEmpty() && s.shiftPattern.isBlank() && !s.skipOnHolidays) {
+                    Alarm.SCHEDULE_KIND_ONE_TIME
+                } else {
+                    initialAlarm?.scheduleKind ?: Alarm.SCHEDULE_KIND_ONE_TIME
+                }
             ).sanitized()
 
             try {
                 val savedId = repository.save(alarm)
-                val savedAlarm = alarm.copy(
-                    id = if (s.isEditing) alarmId else savedId
-                )
+                val savedAlarm = repository.getById(if (s.isEditing) alarmId else savedId) ?: alarm.copy(id = if (s.isEditing) alarmId else savedId)
                 if (savedAlarm.isEnabled) {
                     val outcome = scheduler.schedule(savedAlarm)
                     if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.PermissionBlocked) {
@@ -774,6 +784,11 @@ class AlarmEditViewModel @Inject constructor(
                     scheduler.syncBedtimeDndRule()
                 }
                 onComplete()
+            } catch (e: com.sysadmindoc.alarmclock.data.repository.StaleAlarmException) {
+                _uiState.value = _uiState.value.copy(
+                    isSaving = false,
+                    saveError = context.getString(R.string.alarmlist_cannot_modify_active_alarm)
+                )
             } catch (_: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,
