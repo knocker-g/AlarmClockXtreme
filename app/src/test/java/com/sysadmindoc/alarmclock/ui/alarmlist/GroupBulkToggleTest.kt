@@ -254,10 +254,23 @@ class GroupBulkToggleTest {
         val alarm1 = alarmRepo.save(Alarm(hour = 7, minute = 0, isEnabled = false, group = "Work", label = "Morning Work"))
         val alarm2 = alarmRepo.save(Alarm(hour = 8, minute = 0, isEnabled = false, group = "Work", label = "Standup Work"))
 
+        val cancelBarrier = CompletableDeferred<Unit>()
+        val trackingScheduler = mockk<AlarmScheduler>()
+
+        coEvery { trackingScheduler.schedule(any()) } returns ScheduleOutcome.Armed(1L, System.currentTimeMillis() + 600_000L)
+        coEvery { trackingScheduler.cancel(any()) } coAnswers {
+            val id = firstArg<Long>()
+            if (id == alarm1 && !cancelBarrier.isCompleted) {
+                cancelBarrier.complete(Unit)
+            }
+            Unit
+        }
+        coEvery { trackingScheduler.syncBedtimeDndRule() } returns Unit
+
         val viewModel = AlarmListViewModel(
             context = context,
             repository = alarmRepo,
-            scheduler = mockNormalScheduler,
+            scheduler = trackingScheduler,
             calculator = calculator,
             preferencesManager = preferencesManager,
             eventRepository = eventRepo,
@@ -270,6 +283,9 @@ class GroupBulkToggleTest {
         // 2. Individual toggle on alarm1 -> false
         val savedAlarm1 = alarmRepo.getById(alarm1)!!
         viewModel.toggleAlarm(savedAlarm1)
+
+        // Wait deterministically for toggleAlarm coroutine to complete cancellation
+        cancelBarrier.await()
 
         val finalAlarm1 = alarmRepo.getById(alarm1)!!
         val finalAlarm2 = alarmRepo.getById(alarm2)!!
@@ -466,12 +482,16 @@ class GroupBulkToggleTest {
         // Arrange
         val alarm1Id = alarmRepo.save(Alarm(hour = 7, minute = 0, isEnabled = true, group = "Work"))
 
+        val scheduledBarrier = CompletableDeferred<Unit>()
         val registeredAlarmIds = mutableSetOf<Long>(alarm1Id)
         val trackingScheduler = mockk<AlarmScheduler>()
 
         coEvery { trackingScheduler.schedule(any()) } coAnswers {
             val alarm = firstArg<Alarm>()
             registeredAlarmIds.add(alarm.id)
+            if (!scheduledBarrier.isCompleted) {
+                scheduledBarrier.complete(Unit)
+            }
             ScheduleOutcome.Armed(alarm.id, alarm.nextTriggerTime)
         }
 
@@ -502,6 +522,9 @@ class GroupBulkToggleTest {
         val disabledAlarm1 = alarmRepo.getById(alarm1Id)!!
         viewModel.toggleAlarm(disabledAlarm1)
 
+        // Wait deterministically for toggleAlarm coroutine to complete schedule
+        scheduledBarrier.await()
+
         // Verify PASS-after: Room DB truth is isEnabled == true AND OS AlarmManager registeredAlarmIds contains alarm1Id
         val finalAlarm1 = alarmRepo.getById(alarm1Id)!!
         assertTrue("Room DB truth: Alarm 1 is enabled", finalAlarm1.isEnabled)
@@ -512,6 +535,7 @@ class GroupBulkToggleTest {
     fun `Case B - Group ON followed by individual toggle OFF preserves DB and OS cancellation`() = runBlocking {
         val alarm1Id = alarmRepo.save(Alarm(hour = 7, minute = 0, isEnabled = false, group = "Work"))
 
+        val cancelBarrier = CompletableDeferred<Unit>()
         val registeredAlarmIds = mutableSetOf<Long>()
         val trackingScheduler = mockk<AlarmScheduler>()
 
@@ -524,6 +548,9 @@ class GroupBulkToggleTest {
         coEvery { trackingScheduler.cancel(any()) } coAnswers {
             val id = firstArg<Long>()
             registeredAlarmIds.remove(id)
+            if (id == alarm1Id && !cancelBarrier.isCompleted) {
+                cancelBarrier.complete(Unit)
+            }
             Unit
         }
 
@@ -548,6 +575,9 @@ class GroupBulkToggleTest {
         val enabledAlarm1 = alarmRepo.getById(alarm1Id)!!
         viewModel.toggleAlarm(enabledAlarm1)
 
+        // Wait deterministically for toggleAlarm coroutine to complete cancellation
+        cancelBarrier.await()
+
         assertFalse("Room DB truth: Alarm 1 is disabled", alarmRepo.getById(alarm1Id)!!.isEnabled)
         assertFalse("OS AlarmManager state: Alarm 1 is cancelled", registeredAlarmIds.contains(alarm1Id))
     }
@@ -557,10 +587,21 @@ class GroupBulkToggleTest {
         val alarm1Id = alarmRepo.save(Alarm(hour = 7, minute = 0, isEnabled = true, group = "Work"))
         val alarm2Id = alarmRepo.save(Alarm(hour = 8, minute = 0, isEnabled = true, group = "Work"))
 
+        val syncDndBarrier = CompletableDeferred<Unit>()
+        val trackingScheduler = mockk<AlarmScheduler>()
+
+        coEvery { trackingScheduler.cancel(any()) } returns Unit
+        coEvery { trackingScheduler.syncBedtimeDndRule() } coAnswers {
+            if (!syncDndBarrier.isCompleted) {
+                syncDndBarrier.complete(Unit)
+            }
+            Unit
+        }
+
         val viewModel = AlarmListViewModel(
             context = context,
             repository = alarmRepo,
-            scheduler = mockNormalScheduler,
+            scheduler = trackingScheduler,
             calculator = calculator,
             preferencesManager = preferencesManager,
             eventRepository = eventRepo,
@@ -570,6 +611,9 @@ class GroupBulkToggleTest {
         // Select alarm1 and alarm2, then disableSelected
         viewModel.selectMany(setOf(alarm1Id, alarm2Id))
         viewModel.disableSelected()
+
+        // Wait deterministically for disableSelected coroutine to complete syncBedtimeDndRule
+        syncDndBarrier.await()
 
         assertFalse(alarmRepo.getById(alarm1Id)!!.isEnabled)
         assertFalse(alarmRepo.getById(alarm2Id)!!.isEnabled)
@@ -604,10 +648,21 @@ class GroupBulkToggleTest {
         val alarm1Id = alarmRepo.save(Alarm(hour = 7, minute = 0, isEnabled = false, group = "Work"))
         val staleCardSnapshot = Alarm(id = alarm1Id, hour = 7, minute = 0, isEnabled = true, group = "Work")
 
+        val scheduleBarrier = CompletableDeferred<Unit>()
+        val trackingScheduler = mockk<AlarmScheduler>()
+
+        coEvery { trackingScheduler.schedule(any()) } coAnswers {
+            val alarm = firstArg<Alarm>()
+            if (!scheduleBarrier.isCompleted) {
+                scheduleBarrier.complete(Unit)
+            }
+            ScheduleOutcome.Armed(alarm.id, alarm.nextTriggerTime)
+        }
+
         val viewModel = AlarmListViewModel(
             context = context,
             repository = alarmRepo,
-            scheduler = mockNormalScheduler,
+            scheduler = trackingScheduler,
             calculator = calculator,
             preferencesManager = preferencesManager,
             eventRepository = eventRepo,
@@ -616,6 +671,9 @@ class GroupBulkToggleTest {
 
         // Pass stale snapshot with isEnabled == true into toggleAlarm
         viewModel.toggleAlarm(staleCardSnapshot)
+
+        // Wait deterministically for toggleAlarm coroutine to complete schedule
+        scheduleBarrier.await()
 
         // DB truth was isEnabled == false, so toggleAlarm revalidated DB truth and toggled it to true!
         assertTrue("Revalidated DB truth toggled alarm to enabled = true", alarmRepo.getById(alarm1Id)!!.isEnabled)
