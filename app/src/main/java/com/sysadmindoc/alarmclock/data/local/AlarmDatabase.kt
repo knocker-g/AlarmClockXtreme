@@ -671,9 +671,9 @@ abstract class AlarmDatabase : RoomDatabase() {
                         `alarmId` INTEGER NOT NULL,
                         `baseTriggerTime` INTEGER NOT NULL,
                         `exceptionType` TEXT NOT NULL,
-                        `overrideTriggerTime` INTEGER NOT NULL DEFAULT 0,
-                        `generation` INTEGER NOT NULL DEFAULT 1,
-                        `revision` INTEGER NOT NULL DEFAULT 1,
+                        `overrideTriggerTime` INTEGER NOT NULL,
+                        `generation` INTEGER NOT NULL,
+                        `revision` INTEGER NOT NULL,
                         `createdAt` INTEGER NOT NULL
                     )
                     """.trimIndent()

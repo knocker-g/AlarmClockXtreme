@@ -14,23 +14,25 @@ open class ScheduleExceptionRepository @Inject constructor(
     private val dao: ScheduleExceptionDao
 ) {
     open suspend fun addException(exception: ScheduleException): Long {
+        val insertedRowId = dao.insertIgnore(exception)
+        if (insertedRowId != -1L) {
+            return insertedRowId
+        }
         val existing = dao.getExceptionForOccurrence(
             exception.alarmId,
             exception.baseTriggerTime,
             exception.generation
-        )
-        if (existing != null) {
-            if (existing.exceptionType == exception.exceptionType &&
-                existing.overrideTriggerTime == exception.overrideTriggerTime
-            ) {
-                return existing.id
-            } else {
-                throw IllegalStateException(
-                    "ScheduleException conflict for alarm ${exception.alarmId} occurrence ${exception.baseTriggerTime} (gen ${exception.generation}): existing ${existing.exceptionType} vs new ${exception.exceptionType}"
-                )
-            }
+        ) ?: throw IllegalStateException("Failed to query existing exception for occurrence")
+
+        if (existing.exceptionType == exception.exceptionType &&
+            existing.overrideTriggerTime == exception.overrideTriggerTime
+        ) {
+            return existing.id
+        } else {
+            throw IllegalStateException(
+                "ScheduleException conflict for alarm ${exception.alarmId} occurrence ${exception.baseTriggerTime} (gen ${exception.generation}): existing ${existing.exceptionType} vs new ${exception.exceptionType}"
+            )
         }
-        return dao.insert(exception)
     }
 
     open suspend fun getExceptionsForAlarm(alarmId: Long): List<ScheduleException> {

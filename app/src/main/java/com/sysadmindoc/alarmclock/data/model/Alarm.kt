@@ -2,6 +2,7 @@ package com.sysadmindoc.alarmclock.data.model
 
 import androidx.annotation.StringRes
 import com.sysadmindoc.alarmclock.R
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 import com.squareup.moshi.JsonClass
@@ -161,10 +162,13 @@ data class Alarm(
     // KNO-20: Boot count when quickRelativeElapsedMs was written (-1 if unknown)
     val quickBootCount: Long = -1,
     // KNO-152: Explicit Normal schedule kind ("ONE_TIME" or "REPEATING")
+    @ColumnInfo(defaultValue = "ONE_TIME")
     val scheduleKind: String = SCHEDULE_KIND_ONE_TIME,
     // KNO-152: Schedule definition generation (increments on core definition changes)
+    @ColumnInfo(defaultValue = "1")
     val generation: Int = 1,
     // KNO-152: Schedule definition revision (increments on minor setting changes)
+    @ColumnInfo(defaultValue = "1")
     val revision: Int = 1
 ) {
     /**

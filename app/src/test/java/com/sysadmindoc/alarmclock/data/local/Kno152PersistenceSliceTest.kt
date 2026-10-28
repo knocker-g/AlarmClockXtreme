@@ -32,6 +32,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import java.io.File
 import java.time.DayOfWeek
 
 @RunWith(RobolectricTestRunner::class)
@@ -288,189 +289,193 @@ class Kno152PersistenceSliceTest {
     }
 
     @Test
-    fun `Migration 33 to 34 migrates alarms and populates scheduleKind generation revision and schedule_exceptions table`() {
-        val factory = FrameworkSQLiteOpenHelperFactory()
-        val config = SupportSQLiteOpenHelper.Configuration.builder(context)
-            .name(null)
-            .callback(object : SupportSQLiteOpenHelper.Callback(33) {
-                override fun onCreate(sqliteDb: SupportSQLiteDatabase) {
-                    sqliteDb.execSQL("""
-                        CREATE TABLE IF NOT EXISTS `alarms` (
-                            `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                            `hour` INTEGER NOT NULL,
-                            `minute` INTEGER NOT NULL,
-                            `label` TEXT NOT NULL,
-                            `isEnabled` INTEGER NOT NULL,
-                            `repeatDays` TEXT NOT NULL,
-                            `ringtoneUri` TEXT NOT NULL,
-                            `vibrationEnabled` INTEGER NOT NULL,
-                            `vibrationIntensity` INTEGER NOT NULL,
-                            `volume` INTEGER NOT NULL,
-                            `overrideSystemVolume` INTEGER NOT NULL,
-                            `gradualVolumeSeconds` INTEGER NOT NULL,
-                            `snoozeDurationMinutes` INTEGER NOT NULL,
-                            `maxSnoozeCount` INTEGER NOT NULL,
-                            `showOnLockScreen` INTEGER NOT NULL,
-                            `challengeType` TEXT NOT NULL,
-                            `group` TEXT NOT NULL,
-                            `flashWake` INTEGER NOT NULL,
-                            `vibrationPattern` TEXT NOT NULL,
-                            `createdAt` INTEGER NOT NULL,
-                            `nextTriggerTime` INTEGER NOT NULL,
-                            `ttsEnabled` INTEGER NOT NULL,
-                            `walkStepsRequired` INTEGER NOT NULL,
-                            `wakeConfirmEnabled` INTEGER NOT NULL,
-                            `wakeConfirmDelayMinutes` INTEGER NOT NULL,
-                            `smartAlarmEnabled` INTEGER NOT NULL,
-                            `smartAlarmWindowMinutes` INTEGER NOT NULL,
-                            `skipOnHolidays` INTEGER NOT NULL,
-                            `nfcTagId` TEXT NOT NULL,
-                            `barcodeValue` TEXT NOT NULL,
-                            `spotifyUri` TEXT NOT NULL,
-                            `hueEnabled` INTEGER NOT NULL,
-                            `huePreWakeMinutes` INTEGER NOT NULL,
-                            `photoMatchUri` TEXT NOT NULL,
-                            `challengeChain` TEXT NOT NULL,
-                            `progressiveSnooze` INTEGER NOT NULL,
-                            `backupSoundEnabled` INTEGER NOT NULL,
-                            `backupSoundDelaySec` INTEGER NOT NULL,
-                            `sunriseSimulation` INTEGER NOT NULL,
-                            `sunriseMinutes` INTEGER NOT NULL,
-                            `specificDate` TEXT NOT NULL,
-                            `profileName` TEXT NOT NULL,
-                            `earlyDismissMinutes` INTEGER NOT NULL,
-                            `guardianEnabled` INTEGER NOT NULL,
-                            `guardianPhone` TEXT NOT NULL,
-                            `guardianDelaySec` INTEGER NOT NULL,
-                            `locationDismissEnabled` INTEGER NOT NULL,
-                            `locationDismissLat` REAL NOT NULL,
-                            `locationDismissLng` REAL NOT NULL,
-                            `locationDismissRadius` INTEGER NOT NULL,
-                            `wifiDismissSsid` TEXT NOT NULL,
-                            `internetRadioUrl` TEXT NOT NULL,
-                            `flashlightStrobe` INTEGER NOT NULL,
-                            `morningRoutine` TEXT NOT NULL,
-                            `hardwareButtonAction` TEXT NOT NULL,
-                            `dismissAtRingtoneEnd` INTEGER NOT NULL,
-                            `holdToDismissEnabled` INTEGER NOT NULL,
-                            `ringtonePool` TEXT NOT NULL,
-                            `solarOffsetMinutes` INTEGER NOT NULL,
-                            `solarAnchor` TEXT NOT NULL,
-                            `vibrationDelaySeconds` INTEGER NOT NULL,
-                            `weatherEarlyMinutes` INTEGER NOT NULL,
-                            `requiredSquats` INTEGER NOT NULL,
-                            `dismissActionType` TEXT NOT NULL,
-                            `dismissActionPayload` TEXT NOT NULL,
-                            `firingBackgroundImageEnabled` INTEGER NOT NULL,
-                            `firingBackgroundImageUri` TEXT NOT NULL,
-                            `firingBackgroundBlurEnabled` INTEGER NOT NULL,
-                            `sortOrder` INTEGER NOT NULL,
-                            `shiftPattern` TEXT NOT NULL,
-                            `shiftPatternStartDate` TEXT NOT NULL,
-                            `timezonePolicy` TEXT NOT NULL,
-                            `fixedTimezoneId` TEXT NOT NULL,
-                            `kind` TEXT NOT NULL DEFAULT 'NORMAL',
-                            `quickTriggerEpochMs` INTEGER NOT NULL DEFAULT 0,
-                            `quickRelativeElapsedMs` INTEGER NOT NULL DEFAULT 0,
-                            `quickBootCount` INTEGER NOT NULL DEFAULT -1
-                        )
-                    """.trimIndent())
+    fun `Migration 33 to 34 migrates alarms and opens as valid Room v34 database`() {
+        val dbFile = context.getDatabasePath("v33_v34_migration_test.db")
+        if (dbFile.exists()) dbFile.delete()
+        dbFile.parentFile?.mkdirs()
 
-                    // Insert repeating Normal alarm into v33 database
-                    sqliteDb.execSQL("""
-                        INSERT INTO alarms (
-                            id, hour, minute, label, isEnabled, repeatDays, ringtoneUri, vibrationEnabled,
-                            vibrationIntensity, volume, overrideSystemVolume, gradualVolumeSeconds,
-                            snoozeDurationMinutes, maxSnoozeCount, showOnLockScreen, challengeType, `group`,
-                            flashWake, vibrationPattern, createdAt, nextTriggerTime, ttsEnabled,
-                            walkStepsRequired, wakeConfirmEnabled, wakeConfirmDelayMinutes, smartAlarmEnabled,
-                            smartAlarmWindowMinutes, skipOnHolidays, nfcTagId, barcodeValue, spotifyUri,
-                            hueEnabled, huePreWakeMinutes, photoMatchUri, challengeChain, progressiveSnooze,
-                            backupSoundEnabled, backupSoundDelaySec, sunriseSimulation, sunriseMinutes,
-                            specificDate, profileName, earlyDismissMinutes, guardianEnabled, guardianPhone,
-                            guardianDelaySec, locationDismissEnabled, locationDismissLat, locationDismissLng,
-                            locationDismissRadius, wifiDismissSsid, internetRadioUrl, flashlightStrobe,
-                            morningRoutine, hardwareButtonAction, dismissAtRingtoneEnd, holdToDismissEnabled,
-                            ringtonePool, solarOffsetMinutes, solarAnchor, vibrationDelaySeconds,
-                            weatherEarlyMinutes, requiredSquats, dismissActionType, dismissActionPayload,
-                            firingBackgroundImageEnabled, firingBackgroundImageUri, firingBackgroundBlurEnabled,
-                            sortOrder, shiftPattern, shiftPatternStartDate, timezonePolicy, fixedTimezoneId,
-                            kind, quickTriggerEpochMs, quickRelativeElapsedMs, quickBootCount
-                        ) VALUES (
-                            1, 7, 0, 'Morning Work', 1, 'MONDAY,TUESDAY', '', 1,
-                            2, 100, 1, 60,
-                            10, 3, 1, 'NONE', 'Work',
-                            0, 'default', 1600000000000, 1700000000000, 0,
-                            30, 0, 10, 0,
-                            30, 0, '', '', '',
-                            0, 30, '', '', 0,
-                            0, 40, 0, 15,
-                            '', '', 0, 0, '',
-                            300, 0, 0.0, 0.0,
-                            100, '', '', 0,
-                            '', 'NONE', 0, 0,
-                            '', 0, 'SUNRISE', 0,
-                            0, 10, 'NONE', '',
-                            0, '', 1,
-                            1, 'DDNNO', '2026-01-01', 'LOCAL', '',
-                            'NORMAL', 0, 0, -1
-                        )
-                    """.trimIndent())
+        val sqliteDb = android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(dbFile, null)
 
-                    // Insert ONE_TIME alarm with skipOnHolidays = 1 in v33 database
-                    sqliteDb.execSQL("""
-                        INSERT INTO alarms (
-                            id, hour, minute, label, isEnabled, repeatDays, ringtoneUri, vibrationEnabled,
-                            vibrationIntensity, volume, overrideSystemVolume, gradualVolumeSeconds,
-                            snoozeDurationMinutes, maxSnoozeCount, showOnLockScreen, challengeType, `group`,
-                            flashWake, vibrationPattern, createdAt, nextTriggerTime, ttsEnabled,
-                            walkStepsRequired, wakeConfirmEnabled, wakeConfirmDelayMinutes, smartAlarmEnabled,
-                            smartAlarmWindowMinutes, skipOnHolidays, nfcTagId, barcodeValue, spotifyUri,
-                            hueEnabled, huePreWakeMinutes, photoMatchUri, challengeChain, progressiveSnooze,
-                            backupSoundEnabled, backupSoundDelaySec, sunriseSimulation, sunriseMinutes,
-                            specificDate, profileName, earlyDismissMinutes, guardianEnabled, guardianPhone,
-                            guardianDelaySec, locationDismissEnabled, locationDismissLat, locationDismissLng,
-                            locationDismissRadius, wifiDismissSsid, internetRadioUrl, flashlightStrobe,
-                            morningRoutine, hardwareButtonAction, dismissAtRingtoneEnd, holdToDismissEnabled,
-                            ringtonePool, solarOffsetMinutes, solarAnchor, vibrationDelaySeconds,
-                            weatherEarlyMinutes, requiredSquats, dismissActionType, dismissActionPayload,
-                            firingBackgroundImageEnabled, firingBackgroundImageUri, firingBackgroundBlurEnabled,
-                            sortOrder, shiftPattern, shiftPatternStartDate, timezonePolicy, fixedTimezoneId,
-                            kind, quickTriggerEpochMs, quickRelativeElapsedMs, quickBootCount
-                        ) VALUES (
-                            2, 8, 0, 'One Time Holiday', 1, '', '', 1,
-                            2, 100, 1, 60,
-                            10, 3, 1, 'NONE', '',
-                            0, 'default', 1600000000000, 1700000900000, 0,
-                            30, 0, 10, 0,
-                            30, 1, '', '', '',
-                            0, 30, '', '', 0,
-                            0, 40, 0, 15,
-                            '', '', 0, 0, '',
-                            300, 0, 0.0, 0.0,
-                            100, '', '', 0,
-                            '', 'NONE', 0, 0,
-                            '', 0, 'SUNRISE', 0,
-                            0, 10, 'NONE', '',
-                            0, '', 1,
-                            2, '', '', 'LOCAL', '',
-                            'NORMAL', 0, 0, -1
-                        )
-                    """.trimIndent())
-                }
+        // Create v33 schema matching 33.json
+        sqliteDb.execSQL("""
+            CREATE TABLE IF NOT EXISTS `alarms` (
+                `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                `hour` INTEGER NOT NULL,
+                `minute` INTEGER NOT NULL,
+                `label` TEXT NOT NULL,
+                `isEnabled` INTEGER NOT NULL,
+                `repeatDays` TEXT NOT NULL,
+                `ringtoneUri` TEXT NOT NULL,
+                `vibrationEnabled` INTEGER NOT NULL,
+                `vibrationIntensity` INTEGER NOT NULL,
+                `volume` INTEGER NOT NULL,
+                `overrideSystemVolume` INTEGER NOT NULL,
+                `gradualVolumeSeconds` INTEGER NOT NULL,
+                `snoozeDurationMinutes` INTEGER NOT NULL,
+                `maxSnoozeCount` INTEGER NOT NULL,
+                `showOnLockScreen` INTEGER NOT NULL,
+                `challengeType` TEXT NOT NULL,
+                `group` TEXT NOT NULL,
+                `flashWake` INTEGER NOT NULL,
+                `vibrationPattern` TEXT NOT NULL,
+                `createdAt` INTEGER NOT NULL,
+                `nextTriggerTime` INTEGER NOT NULL,
+                `ttsEnabled` INTEGER NOT NULL,
+                `walkStepsRequired` INTEGER NOT NULL,
+                `wakeConfirmEnabled` INTEGER NOT NULL,
+                `wakeConfirmDelayMinutes` INTEGER NOT NULL,
+                `smartAlarmEnabled` INTEGER NOT NULL,
+                `smartAlarmWindowMinutes` INTEGER NOT NULL,
+                `skipOnHolidays` INTEGER NOT NULL,
+                `nfcTagId` TEXT NOT NULL,
+                `barcodeValue` TEXT NOT NULL,
+                `spotifyUri` TEXT NOT NULL,
+                `hueEnabled` INTEGER NOT NULL,
+                `huePreWakeMinutes` INTEGER NOT NULL,
+                `photoMatchUri` TEXT NOT NULL,
+                `challengeChain` TEXT NOT NULL,
+                `progressiveSnooze` INTEGER NOT NULL,
+                `backupSoundEnabled` INTEGER NOT NULL,
+                `backupSoundDelaySec` INTEGER NOT NULL,
+                `sunriseSimulation` INTEGER NOT NULL,
+                `sunriseMinutes` INTEGER NOT NULL,
+                `specificDate` TEXT NOT NULL,
+                `profileName` TEXT NOT NULL,
+                `earlyDismissMinutes` INTEGER NOT NULL,
+                `guardianEnabled` INTEGER NOT NULL,
+                `guardianPhone` TEXT NOT NULL,
+                `guardianDelaySec` INTEGER NOT NULL,
+                `locationDismissEnabled` INTEGER NOT NULL,
+                `locationDismissLat` REAL NOT NULL,
+                `locationDismissLng` REAL NOT NULL,
+                `locationDismissRadius` INTEGER NOT NULL,
+                `wifiDismissSsid` TEXT NOT NULL,
+                `internetRadioUrl` TEXT NOT NULL,
+                `flashlightStrobe` INTEGER NOT NULL,
+                `morningRoutine` TEXT NOT NULL,
+                `hardwareButtonAction` TEXT NOT NULL,
+                `dismissAtRingtoneEnd` INTEGER NOT NULL,
+                `holdToDismissEnabled` INTEGER NOT NULL,
+                `ringtonePool` TEXT NOT NULL,
+                `solarOffsetMinutes` INTEGER NOT NULL,
+                `solarAnchor` TEXT NOT NULL,
+                `vibrationDelaySeconds` INTEGER NOT NULL,
+                `weatherEarlyMinutes` INTEGER NOT NULL,
+                `requiredSquats` INTEGER NOT NULL,
+                `dismissActionType` TEXT NOT NULL,
+                `dismissActionPayload` TEXT NOT NULL,
+                `firingBackgroundImageEnabled` INTEGER NOT NULL,
+                `firingBackgroundImageUri` TEXT NOT NULL,
+                `firingBackgroundBlurEnabled` INTEGER NOT NULL,
+                `sortOrder` INTEGER NOT NULL,
+                `shiftPattern` TEXT NOT NULL,
+                `shiftPatternStartDate` TEXT NOT NULL,
+                `timezonePolicy` TEXT NOT NULL,
+                `fixedTimezoneId` TEXT NOT NULL,
+                `kind` TEXT NOT NULL,
+                `quickTriggerEpochMs` INTEGER NOT NULL,
+                `quickRelativeElapsedMs` INTEGER NOT NULL,
+                `quickBootCount` INTEGER NOT NULL
+            )
+        """.trimIndent())
 
-                override fun onUpgrade(sqliteDb: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {}
-            })
-            .build()
+        // Insert repeating Normal alarm into v33 database with real converter format 'MONDAY,TUESDAY'
+        sqliteDb.execSQL("""
+            INSERT INTO alarms (
+                id, hour, minute, label, isEnabled, repeatDays, ringtoneUri, vibrationEnabled,
+                vibrationIntensity, volume, overrideSystemVolume, gradualVolumeSeconds,
+                snoozeDurationMinutes, maxSnoozeCount, showOnLockScreen, challengeType, `group`,
+                flashWake, vibrationPattern, createdAt, nextTriggerTime, ttsEnabled,
+                walkStepsRequired, wakeConfirmEnabled, wakeConfirmDelayMinutes, smartAlarmEnabled,
+                smartAlarmWindowMinutes, skipOnHolidays, nfcTagId, barcodeValue, spotifyUri,
+                hueEnabled, huePreWakeMinutes, photoMatchUri, challengeChain, progressiveSnooze,
+                backupSoundEnabled, backupSoundDelaySec, sunriseSimulation, sunriseMinutes,
+                specificDate, profileName, earlyDismissMinutes, guardianEnabled, guardianPhone,
+                guardianDelaySec, locationDismissEnabled, locationDismissLat, locationDismissLng,
+                locationDismissRadius, wifiDismissSsid, internetRadioUrl, flashlightStrobe,
+                morningRoutine, hardwareButtonAction, dismissAtRingtoneEnd, holdToDismissEnabled,
+                ringtonePool, solarOffsetMinutes, solarAnchor, vibrationDelaySeconds,
+                weatherEarlyMinutes, requiredSquats, dismissActionType, dismissActionPayload,
+                firingBackgroundImageEnabled, firingBackgroundImageUri, firingBackgroundBlurEnabled,
+                sortOrder, shiftPattern, shiftPatternStartDate, timezonePolicy, fixedTimezoneId,
+                kind, quickTriggerEpochMs, quickRelativeElapsedMs, quickBootCount
+            ) VALUES (
+                1, 7, 0, 'Morning Work', 1, 'MONDAY,TUESDAY', '', 1,
+                2, 100, 1, 60,
+                10, 3, 1, 'NONE', 'Work',
+                0, 'default', 1600000000000, 1700000000000, 0,
+                30, 0, 10, 0,
+                30, 0, '', '', '',
+                0, 30, '', '', 0,
+                0, 40, 0, 15,
+                '', '', 0, 0, '',
+                300, 0, 0.0, 0.0,
+                100, '', '', 0,
+                '', 'NONE', 0, 0,
+                '', 0, 'SUNRISE', 0,
+                0, 10, 'NONE', '',
+                0, '', 1,
+                1, 'DDNNO', '2026-01-01', 'LOCAL', '',
+                'NORMAL', 0, 0, -1
+            )
+        """.trimIndent())
 
-        val openHelper = factory.create(config)
-        val sqliteDb = openHelper.writableDatabase
+        // Insert ONE_TIME alarm with skipOnHolidays = 1 in v33 database
+        sqliteDb.execSQL("""
+            INSERT INTO alarms (
+                id, hour, minute, label, isEnabled, repeatDays, ringtoneUri, vibrationEnabled,
+                vibrationIntensity, volume, overrideSystemVolume, gradualVolumeSeconds,
+                snoozeDurationMinutes, maxSnoozeCount, showOnLockScreen, challengeType, `group`,
+                flashWake, vibrationPattern, createdAt, nextTriggerTime, ttsEnabled,
+                walkStepsRequired, wakeConfirmEnabled, wakeConfirmDelayMinutes, smartAlarmEnabled,
+                smartAlarmWindowMinutes, skipOnHolidays, nfcTagId, barcodeValue, spotifyUri,
+                hueEnabled, huePreWakeMinutes, photoMatchUri, challengeChain, progressiveSnooze,
+                backupSoundEnabled, backupSoundDelaySec, sunriseSimulation, sunriseMinutes,
+                specificDate, profileName, earlyDismissMinutes, guardianEnabled, guardianPhone,
+                guardianDelaySec, locationDismissEnabled, locationDismissLat, locationDismissLng,
+                locationDismissRadius, wifiDismissSsid, internetRadioUrl, flashlightStrobe,
+                morningRoutine, hardwareButtonAction, dismissAtRingtoneEnd, holdToDismissEnabled,
+                ringtonePool, solarOffsetMinutes, solarAnchor, vibrationDelaySeconds,
+                weatherEarlyMinutes, requiredSquats, dismissActionType, dismissActionPayload,
+                firingBackgroundImageEnabled, firingBackgroundImageUri, firingBackgroundBlurEnabled,
+                sortOrder, shiftPattern, shiftPatternStartDate, timezonePolicy, fixedTimezoneId,
+                kind, quickTriggerEpochMs, quickRelativeElapsedMs, quickBootCount
+            ) VALUES (
+                2, 8, 0, 'One Time Holiday', 1, '', '', 1,
+                2, 100, 1, 60,
+                10, 3, 1, 'NONE', '',
+                0, 'default', 1600000000000, 1700000900000, 0,
+                30, 0, 10, 0,
+                30, 1, '', '', '',
+                0, 30, '', '', 0,
+                0, 40, 0, 15,
+                '', '', 0, 0, '',
+                300, 0, 0.0, 0.0,
+                100, '', '', 0,
+                '', 'NONE', 0, 0,
+                '', 0, 'SUNRISE', 0,
+                0, 10, 'NONE', '',
+                0, '', 1,
+                2, '', '', 'LOCAL', '',
+                'NORMAL', 0, 0, -1
+            )
+        """.trimIndent())
 
-        // Execute Room MIGRATION_33_34
-        AlarmDatabase.MIGRATION_33_34.migrate(sqliteDb)
+        // Execute Room MIGRATION_33_34 on SupportSQLiteDatabase wrapper
+        val supportDb = FrameworkSQLiteOpenHelperFactory().create(
+            SupportSQLiteOpenHelper.Configuration.builder(context)
+                .name("v33_v34_migration_test.db")
+                .callback(object : SupportSQLiteOpenHelper.Callback(33) {
+                    override fun onCreate(db: SupportSQLiteDatabase) {}
+                    override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+                })
+                .build()
+        ).writableDatabase
+
+        AlarmDatabase.MIGRATION_33_34.migrate(supportDb)
 
         // Verify migrated columns in alarms table
-        val cursor = sqliteDb.query("SELECT id, scheduleKind, generation, revision, kind FROM alarms ORDER BY id ASC")
+        val cursor = supportDb.query("SELECT id, scheduleKind, generation, revision, kind FROM alarms ORDER BY id ASC")
         assertTrue(cursor.moveToNext())
 
         // Alarm 1 (Repeating Normal)
@@ -488,13 +493,15 @@ class Kno152PersistenceSliceTest {
 
         cursor.close()
 
-        // Verify schedule_exceptions table exists
-        val exceptionsCursor = sqliteDb.query("SELECT count(*) FROM schedule_exceptions")
+        // Verify schedule_exceptions table exists with revision column and unique index
+        val exceptionsCursor = supportDb.query("SELECT count(*) FROM schedule_exceptions")
         assertTrue(exceptionsCursor.moveToNext())
         assertEquals(0, exceptionsCursor.getInt(0))
         exceptionsCursor.close()
 
+        supportDb.close()
         sqliteDb.close()
+        if (dbFile.exists()) dbFile.delete()
     }
 
     @Test
