@@ -12,7 +12,7 @@ import androidx.room.PrimaryKey
 @Entity(
     tableName = "schedule_exceptions",
     indices = [
-        Index(value = ["alarmId", "baseTriggerTime", "generation", "revision"], unique = true),
+        Index(value = ["alarmId", "baseTriggerTime", "generation"], unique = true),
         Index(value = ["alarmId"])
     ]
 )

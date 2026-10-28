@@ -170,11 +170,11 @@ data class Alarm(
     /**
      * Derives explicit schedule kind from Normal alarm parameters (KNO-152).
      * QUICK alarms are always ONE_TIME. Normal alarms are REPEATING if they have
-     * repeatDays or shiftPattern, otherwise ONE_TIME.
+     * repeatDays, shiftPattern, or skipOnHolidays, otherwise ONE_TIME.
      */
     fun deriveScheduleKind(): String {
         if (kind == KIND_QUICK) return SCHEDULE_KIND_ONE_TIME
-        return if (repeatDays.isNotEmpty() || shiftPattern.isNotBlank()) {
+        return if (repeatDays.isNotEmpty() || shiftPattern.isNotBlank() || skipOnHolidays) {
             SCHEDULE_KIND_REPEATING
         } else {
             SCHEDULE_KIND_ONE_TIME
@@ -183,8 +183,11 @@ data class Alarm(
 
     /**
      * Returns a copy of this alarm with scheduleKind updated to match parameters.
+     * Explicit REPEATING classification is preserved for Normal alarms.
      */
     fun withDerivedScheduleKind(): Alarm {
+        if (kind == KIND_QUICK) return if (scheduleKind != SCHEDULE_KIND_ONE_TIME) copy(scheduleKind = SCHEDULE_KIND_ONE_TIME) else this
+        if (scheduleKind == SCHEDULE_KIND_REPEATING) return this
         val derived = deriveScheduleKind()
         return if (this.scheduleKind != derived) copy(scheduleKind = derived) else this
     }

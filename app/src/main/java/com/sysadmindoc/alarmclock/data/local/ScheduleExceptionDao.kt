@@ -24,14 +24,11 @@ interface ScheduleExceptionDao {
     @Query("SELECT * FROM schedule_exceptions WHERE alarmId = :alarmId ORDER BY baseTriggerTime ASC")
     fun observeExceptionsForAlarm(alarmId: Long): Flow<List<ScheduleException>>
 
-    @Query("SELECT * FROM schedule_exceptions WHERE alarmId = :alarmId AND baseTriggerTime = :baseTriggerTime AND generation = :generation AND revision = :revision")
-    suspend fun getExceptionForOccurrence(alarmId: Long, baseTriggerTime: Long, generation: Int, revision: Int): ScheduleException?
+    @Query("SELECT * FROM schedule_exceptions WHERE alarmId = :alarmId AND baseTriggerTime = :baseTriggerTime AND generation = :generation")
+    suspend fun getExceptionForOccurrence(alarmId: Long, baseTriggerTime: Long, generation: Int): ScheduleException?
 
-    @Query("SELECT * FROM schedule_exceptions WHERE alarmId = :alarmId AND baseTriggerTime = :baseTriggerTime LIMIT 1")
-    suspend fun getExceptionForBaseTriggerTime(alarmId: Long, baseTriggerTime: Long): ScheduleException?
-
-    @Query("DELETE FROM schedule_exceptions WHERE alarmId = :alarmId AND baseTriggerTime = :baseTriggerTime AND generation = :generation AND revision = :revision")
-    suspend fun deleteForOccurrence(alarmId: Long, baseTriggerTime: Long, generation: Int, revision: Int)
+    @Query("DELETE FROM schedule_exceptions WHERE alarmId = :alarmId AND baseTriggerTime = :baseTriggerTime AND generation = :generation")
+    suspend fun deleteForOccurrence(alarmId: Long, baseTriggerTime: Long, generation: Int)
 
     @Query("DELETE FROM schedule_exceptions WHERE alarmId = :alarmId")
     suspend fun deleteForAlarm(alarmId: Long)

@@ -654,11 +654,11 @@ abstract class AlarmDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE alarms ADD COLUMN `generation` INTEGER NOT NULL DEFAULT 1")
                 db.execSQL("ALTER TABLE alarms ADD COLUMN `revision` INTEGER NOT NULL DEFAULT 1")
 
-                // Update scheduleKind = 'REPEATING' for existing alarms where repeatDays != '' OR shiftPattern IS NOT NULL AND shiftPattern != ''
+                // Update scheduleKind = 'REPEATING' for existing alarms where repeatDays != '' OR shiftPattern IS NOT NULL AND shiftPattern != '' OR skipOnHolidays = 1
                 db.execSQL(
                     """
                     UPDATE alarms SET `scheduleKind` = 'REPEATING'
-                    WHERE `repeatDays` != '' OR (`shiftPattern` IS NOT NULL AND `shiftPattern` != '')
+                    WHERE `repeatDays` != '' OR (`shiftPattern` IS NOT NULL AND `shiftPattern` != '') OR `skipOnHolidays` = 1
                     """.trimIndent()
                 )
 
@@ -676,7 +676,7 @@ abstract class AlarmDatabase : RoomDatabase() {
                     )
                     """.trimIndent()
                 )
-                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_schedule_exceptions_alarmId_baseTriggerTime_generation_revision` ON `schedule_exceptions` (`alarmId`, `baseTriggerTime`, `generation`, `revision`)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_schedule_exceptions_alarmId_baseTriggerTime_generation` ON `schedule_exceptions` (`alarmId`, `baseTriggerTime`, `generation`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_schedule_exceptions_alarmId` ON `schedule_exceptions` (`alarmId`)")
             }
         }

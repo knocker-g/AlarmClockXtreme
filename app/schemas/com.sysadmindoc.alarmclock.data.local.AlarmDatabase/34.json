@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 34,
-    "identityHash": "4b0ba3cdf5fb50712456e8262a5cc8da",
+    "identityHash": "56949156780bd350e124acf31a6f3ad2",
     "entities": [
       {
         "tableName": "alarms",
@@ -1475,16 +1475,15 @@
         },
         "indices": [
           {
-            "name": "index_schedule_exceptions_alarmId_baseTriggerTime_generation_revision",
+            "name": "index_schedule_exceptions_alarmId_baseTriggerTime_generation",
             "unique": true,
             "columnNames": [
               "alarmId",
               "baseTriggerTime",
-              "generation",
-              "revision"
+              "generation"
             ],
             "orders": [],
-            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_schedule_exceptions_alarmId_baseTriggerTime_generation_revision` ON `${TABLE_NAME}` (`alarmId`, `baseTriggerTime`, `generation`, `revision`)"
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_schedule_exceptions_alarmId_baseTriggerTime_generation` ON `${TABLE_NAME}` (`alarmId`, `baseTriggerTime`, `generation`)"
           },
           {
             "name": "index_schedule_exceptions_alarmId",
@@ -1502,7 +1501,7 @@
     "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '4b0ba3cdf5fb50712456e8262a5cc8da')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '56949156780bd350e124acf31a6f3ad2')"
     ]
   }
 }

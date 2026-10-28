@@ -29,16 +29,12 @@ open class ScheduleExceptionRepository @Inject constructor(
         return dao.observeExceptionsForAlarm(alarmId)
     }
 
-    open suspend fun getExceptionForOccurrence(alarmId: Long, baseTriggerTime: Long, generation: Int = 1, revision: Int = 1): ScheduleException? {
-        return dao.getExceptionForOccurrence(alarmId, baseTriggerTime, generation, revision)
+    open suspend fun getExceptionForOccurrence(alarmId: Long, baseTriggerTime: Long, generation: Int = 1): ScheduleException? {
+        return dao.getExceptionForOccurrence(alarmId, baseTriggerTime, generation)
     }
 
-    open suspend fun getExceptionForBaseTriggerTime(alarmId: Long, baseTriggerTime: Long): ScheduleException? {
-        return dao.getExceptionForBaseTriggerTime(alarmId, baseTriggerTime)
-    }
-
-    open suspend fun deleteForOccurrence(alarmId: Long, baseTriggerTime: Long, generation: Int = 1, revision: Int = 1) {
-        dao.deleteForOccurrence(alarmId, baseTriggerTime, generation, revision)
+    open suspend fun deleteForOccurrence(alarmId: Long, baseTriggerTime: Long, generation: Int = 1) {
+        dao.deleteForOccurrence(alarmId, baseTriggerTime, generation)
     }
 
     open suspend fun deleteForAlarm(alarmId: Long) {

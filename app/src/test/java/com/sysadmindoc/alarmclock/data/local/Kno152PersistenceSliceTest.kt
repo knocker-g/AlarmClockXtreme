@@ -12,6 +12,7 @@ import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.model.AlarmOccurrenceId
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.data.repository.ScheduleExceptionRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -49,6 +50,7 @@ class Kno152PersistenceSliceTest {
 
     @After
     fun tearDown() {
+        try { io.mockk.clearAllMocks() } catch (_: Exception) {}
         db.close()
     }
 
@@ -74,6 +76,14 @@ class Kno152PersistenceSliceTest {
         // Repeating normal alarm with shiftPattern
         val shiftPatternNormal = Alarm(hour = 7, minute = 0, shiftPattern = "D/N/W")
         assertEquals(Alarm.SCHEDULE_KIND_REPEATING, shiftPatternNormal.deriveScheduleKind())
+
+        // Repeating normal alarm with skipOnHolidays
+        val holidayNormal = Alarm(hour = 7, minute = 0, skipOnHolidays = true)
+        assertEquals(Alarm.SCHEDULE_KIND_REPEATING, holidayNormal.deriveScheduleKind())
+
+        // Explicit REPEATING classification is preserved
+        val explicitRepeating = Alarm(hour = 7, minute = 0, scheduleKind = Alarm.SCHEDULE_KIND_REPEATING)
+        assertEquals(Alarm.SCHEDULE_KIND_REPEATING, explicitRepeating.withDerivedScheduleKind().scheduleKind)
 
         // Quick Alarm is always ONE_TIME
         val quickAlarm = Alarm(hour = 7, minute = 0, kind = Alarm.KIND_QUICK, repeatDays = setOf(DayOfWeek.MONDAY))
@@ -107,26 +117,29 @@ class Kno152PersistenceSliceTest {
     }
 
     @Test
-    fun `AlarmOccurrenceId provides stable key based on alarmId baseTriggerTime generation and revision`() {
-        val alarm = Alarm(id = 42L, generation = 2, revision = 3)
-        val baseTriggerTime = 1700000000000L
+    fun `KNO-32 Alignment - Occurrence identity depends on generation so revision changes keep occurrence identity stable`() {
+        val baseTime = 1700000000000L
+        val alarmRev1 = Alarm(id = 42L, generation = 2, revision = 1, label = "Morning")
+        val alarmRev2 = alarmRev1.copy(revision = 2, label = "Morning - Edited Volume")
 
-        val occurrenceId1 = AlarmOccurrenceId.fromAlarm(alarm, baseTriggerTime)
-        val occurrenceId2 = AlarmOccurrenceId.fromAlarm(alarm, baseTriggerTime)
+        val occurrenceRev1 = AlarmOccurrenceId.fromAlarm(alarmRev1, baseTime)
+        val occurrenceRev2 = AlarmOccurrenceId.fromAlarm(alarmRev2, baseTime)
 
-        assertEquals(occurrenceId1, occurrenceId2)
-        assertEquals("alarm_42_gen_2_rev_3_base_1700000000000", occurrenceId1.key)
+        // KNO-32 invariant: Occurrence identity is stable across revision edits
+        assertEquals(occurrenceRev1, occurrenceRev2)
+        assertEquals("alarm_42_gen_2_base_1700000000000", occurrenceRev1.key)
+        assertEquals("alarm_42_gen_2_base_1700000000000", occurrenceRev2.key)
 
-        // Identity changes if generation or revision changes, even with same baseTriggerTime
-        val mutatedAlarm = alarm.copy(revision = 4)
-        val mutatedOccurrenceId = AlarmOccurrenceId.fromAlarm(mutatedAlarm, baseTriggerTime)
+        // Identity changes ONLY when schedule generation increments
+        val alarmGen3 = alarmRev2.copy(generation = 3, revision = 1, hour = 8)
+        val occurrenceGen3 = AlarmOccurrenceId.fromAlarm(alarmGen3, baseTime)
 
-        assertNotEquals(occurrenceId1, mutatedOccurrenceId)
-        assertNotEquals(occurrenceId1.key, mutatedOccurrenceId.key)
+        assertNotEquals(occurrenceRev1, occurrenceGen3)
+        assertEquals("alarm_43_gen_3_base_1700000000000".replace("43", "42"), occurrenceGen3.key)
     }
 
     @Test
-    fun `ScheduleException CRUD operations persist and filter by generation and revision correctly`() = runBlocking {
+    fun `ScheduleException CRUD operations persist and filter by generation correctly`() = runBlocking {
         val alarmId = 100L
         val baseTime = 1700000000000L
 
@@ -158,21 +171,21 @@ class Kno152PersistenceSliceTest {
         assertEquals(1, gen2Exceptions.size)
         assertEquals(ScheduleException.TYPE_TIME_OVERRIDE, gen2Exceptions[0].exceptionType)
 
-        // Query by exact occurrence (alarmId, baseTime, generation, revision)
-        val gen1Exact = exceptionRepo.getExceptionForOccurrence(alarmId, baseTime, 1, 1)
+        // Query by exact occurrence (alarmId, baseTime, generation)
+        val gen1Exact = exceptionRepo.getExceptionForOccurrence(alarmId, baseTime, 1)
         assertNotNull(gen1Exact)
         assertEquals(ScheduleException.TYPE_SKIP, gen1Exact!!.exceptionType)
 
-        val gen2Exact = exceptionRepo.getExceptionForOccurrence(alarmId, baseTime, 2, 1)
+        val gen2Exact = exceptionRepo.getExceptionForOccurrence(alarmId, baseTime, 2)
         assertNotNull(gen2Exact)
         assertEquals(ScheduleException.TYPE_TIME_OVERRIDE, gen2Exact!!.exceptionType)
 
         // Test deletion for specific occurrence
-        exceptionRepo.deleteForOccurrence(alarmId, baseTime, 1, 1)
-        val afterDeleteGen1 = exceptionRepo.getExceptionForOccurrence(alarmId, baseTime, 1, 1)
+        exceptionRepo.deleteForOccurrence(alarmId, baseTime, 1)
+        val afterDeleteGen1 = exceptionRepo.getExceptionForOccurrence(alarmId, baseTime, 1)
         assertEquals(null, afterDeleteGen1)
 
-        val afterDeleteGen2 = exceptionRepo.getExceptionForOccurrence(alarmId, baseTime, 2, 1)
+        val afterDeleteGen2 = exceptionRepo.getExceptionForOccurrence(alarmId, baseTime, 2)
         assertNotNull(afterDeleteGen2)
     }
 
@@ -397,7 +410,7 @@ class Kno152PersistenceSliceTest {
 
         cursor.close()
 
-        // Verify schedule_exceptions table exists with revision column
+        // Verify schedule_exceptions table exists with revision column and unique index
         val exceptionsCursor = sqliteDb.query("SELECT count(*), id, generation, revision FROM schedule_exceptions")
         assertTrue(exceptionsCursor.moveToNext())
         assertEquals(0, exceptionsCursor.getInt(0))
