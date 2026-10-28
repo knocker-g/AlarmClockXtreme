@@ -376,7 +376,7 @@ class GroupBulkToggleTest {
 
         val dbCommittedBarrier = CompletableDeferred<Unit>()
         val resumeCancelBarrier = CompletableDeferred<Unit>()
-        val toggleStartedBarrier = CompletableDeferred<Unit>()
+        val setEnabledEnteredBarrier = CompletableDeferred<Unit>()
         val registeredAlarmIds = mutableSetOf<Long>(alarm1Id)
 
         val spyRepo = spyk(alarmRepo)
@@ -387,6 +387,16 @@ class GroupBulkToggleTest {
             if (!dbCommittedBarrier.isCompleted) {
                 dbCommittedBarrier.complete(Unit)
                 resumeCancelBarrier.await()
+            }
+        }
+
+        coEvery { spyRepo.setEnabled(any(), any(), any()) } coAnswers {
+            val id = firstArg<Long>()
+            val enabled = secondArg<Boolean>()
+            val nextTrigger = thirdArg<Long>()
+            alarmRepo.setEnabled(id, enabled, nextTrigger)
+            if (!setEnabledEnteredBarrier.isCompleted) {
+                setEnabledEnteredBarrier.complete(Unit)
             }
         }
 
@@ -430,19 +440,26 @@ class GroupBulkToggleTest {
 
         // 3. User taps UI to toggle alarm1 back ON in parallel
         val toggleJob = launch(Dispatchers.Default) {
-            toggleStartedBarrier.complete(Unit)
             viewModel.toggleAlarm(disabledInDb)
         }
-        toggleStartedBarrier.await()
+
+        // Under mutationMutex serialization, toggleAlarm MUST suspend at mutationMutex.withLock
+        // while setGroupEnabled holds mutationMutex, so setEnabled MUST NOT have been entered yet!
+        assertFalse(
+            "Individual toggle MUST NOT enter repository setEnabled while Group operation holds mutationMutex",
+            setEnabledEnteredBarrier.isCompleted
+        )
 
         // 4. Release Group OFF post-commit reconciliation loop
         resumeCancelBarrier.complete(Unit)
 
-        // Wait for both coroutine jobs to finish
+        // Wait for Group OFF coroutine to complete and release mutationMutex
         groupJob.join()
-        toggleJob.join()
 
-        // Wait for toggleAlarm's viewModelScope coroutine to complete DB update and schedule
+        // Wait for toggleAlarm coroutine to enter setEnabled, update DB, and complete
+        toggleJob.join()
+        setEnabledEnteredBarrier.await()
+
         var attempts = 0
         while (spyRepo.getById(alarm1Id)?.isEnabled != true && attempts < 20) {
             delay(20)
@@ -456,7 +473,7 @@ class GroupBulkToggleTest {
     }
 
     @Test
-    fun `Post-commit DB re-verification prevents stale cancel from removing concurrent toggle ON registration`() = runBlocking {
+    fun `Sequential Group OFF followed by toggle ON reconciles DB and scheduler state`() = runBlocking {
         // Arrange
         val alarm1Id = alarmRepo.save(Alarm(hour = 7, minute = 0, isEnabled = true, group = "Work"))
 
@@ -559,7 +576,7 @@ class GroupBulkToggleTest {
     }
 
     @Test
-    fun `Case C - Group operations interleave safely with multi-select disableSelected`() = runBlocking {
+    fun `Multi-select disableSelected deactivates all selected group members`() = runBlocking {
         val alarm1Id = alarmRepo.save(Alarm(hour = 7, minute = 0, isEnabled = true, group = "Work"))
         val alarm2Id = alarmRepo.save(Alarm(hour = 8, minute = 0, isEnabled = true, group = "Work"))
 
