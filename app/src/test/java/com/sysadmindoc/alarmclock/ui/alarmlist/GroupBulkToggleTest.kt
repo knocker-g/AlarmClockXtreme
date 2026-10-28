@@ -20,7 +20,6 @@ import io.mockk.spyk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -272,12 +271,6 @@ class GroupBulkToggleTest {
         val savedAlarm1 = alarmRepo.getById(alarm1)!!
         viewModel.toggleAlarm(savedAlarm1)
 
-        var attempts = 0
-        while (alarmRepo.getById(alarm1)?.isEnabled != false && attempts < 20) {
-            delay(20)
-            attempts++
-        }
-
         val finalAlarm1 = alarmRepo.getById(alarm1)!!
         val finalAlarm2 = alarmRepo.getById(alarm2)!!
 
@@ -377,6 +370,7 @@ class GroupBulkToggleTest {
         val dbCommittedBarrier = CompletableDeferred<Unit>()
         val resumeCancelBarrier = CompletableDeferred<Unit>()
         val setEnabledEnteredBarrier = CompletableDeferred<Unit>()
+        val toggleScheduledBarrier = CompletableDeferred<Unit>()
         val registeredAlarmIds = mutableSetOf<Long>(alarm1Id)
 
         val spyRepo = spyk(alarmRepo)
@@ -394,10 +388,10 @@ class GroupBulkToggleTest {
             val id = firstArg<Long>()
             val enabled = secondArg<Boolean>()
             val nextTrigger = thirdArg<Long>()
-            alarmRepo.setEnabled(id, enabled, nextTrigger)
             if (!setEnabledEnteredBarrier.isCompleted) {
                 setEnabledEnteredBarrier.complete(Unit)
             }
+            alarmRepo.setEnabled(id, enabled, nextTrigger)
         }
 
         val trackingScheduler = mockk<AlarmScheduler>()
@@ -405,6 +399,9 @@ class GroupBulkToggleTest {
         coEvery { trackingScheduler.schedule(any()) } coAnswers {
             val alarm = firstArg<Alarm>()
             registeredAlarmIds.add(alarm.id)
+            if (alarm.id == alarm1Id && !toggleScheduledBarrier.isCompleted) {
+                toggleScheduledBarrier.complete(Unit)
+            }
             ScheduleOutcome.Armed(alarm.id, alarm.nextTriggerTime)
         }
 
@@ -438,13 +435,12 @@ class GroupBulkToggleTest {
         val disabledInDb = spyRepo.getById(alarm1Id)!!
         assertFalse("DB update committed isEnabled == false", disabledInDb.isEnabled)
 
-        // 3. User taps UI to toggle alarm1 back ON in parallel
-        val toggleJob = launch(Dispatchers.Default) {
-            viewModel.toggleAlarm(disabledInDb)
-        }
+        // 3. Directly dispatch user toggleAlarm ON on the test thread.
+        // Under UnconfinedTestDispatcher, viewModelScope.launch executes synchronously up to the first
+        // suspension point (mutationMutex.withLock). Under corrected production code, it suspends at mutationMutex.withLock,
+        // so spyRepo.setEnabled is NOT entered yet!
+        viewModel.toggleAlarm(disabledInDb)
 
-        // Under mutationMutex serialization, toggleAlarm MUST suspend at mutationMutex.withLock
-        // while setGroupEnabled holds mutationMutex, so setEnabled MUST NOT have been entered yet!
         assertFalse(
             "Individual toggle MUST NOT enter repository setEnabled while Group operation holds mutationMutex",
             setEnabledEnteredBarrier.isCompleted
@@ -453,18 +449,11 @@ class GroupBulkToggleTest {
         // 4. Release Group OFF post-commit reconciliation loop
         resumeCancelBarrier.complete(Unit)
 
-        // Wait for Group OFF coroutine to complete and release mutationMutex
+        // Wait for Group OFF coroutine to finish and release mutationMutex
         groupJob.join()
 
-        // Wait for toggleAlarm coroutine to enter setEnabled, update DB, and complete
-        toggleJob.join()
-        setEnabledEnteredBarrier.await()
-
-        var attempts = 0
-        while (spyRepo.getById(alarm1Id)?.isEnabled != true && attempts < 20) {
-            delay(20)
-            attempts++
-        }
+        // Wait for toggleAlarm coroutine to finish scheduling
+        toggleScheduledBarrier.await()
 
         // 5. Assert Final State
         val finalAlarm = spyRepo.getById(alarm1Id)!!
@@ -513,12 +502,6 @@ class GroupBulkToggleTest {
         val disabledAlarm1 = alarmRepo.getById(alarm1Id)!!
         viewModel.toggleAlarm(disabledAlarm1)
 
-        var attempts = 0
-        while (alarmRepo.getById(alarm1Id)?.isEnabled != true && attempts < 20) {
-            delay(20)
-            attempts++
-        }
-
         // Verify PASS-after: Room DB truth is isEnabled == true AND OS AlarmManager registeredAlarmIds contains alarm1Id
         val finalAlarm1 = alarmRepo.getById(alarm1Id)!!
         assertTrue("Room DB truth: Alarm 1 is enabled", finalAlarm1.isEnabled)
@@ -565,12 +548,6 @@ class GroupBulkToggleTest {
         val enabledAlarm1 = alarmRepo.getById(alarm1Id)!!
         viewModel.toggleAlarm(enabledAlarm1)
 
-        var attempts = 0
-        while (alarmRepo.getById(alarm1Id)?.isEnabled != false && attempts < 20) {
-            delay(20)
-            attempts++
-        }
-
         assertFalse("Room DB truth: Alarm 1 is disabled", alarmRepo.getById(alarm1Id)!!.isEnabled)
         assertFalse("OS AlarmManager state: Alarm 1 is cancelled", registeredAlarmIds.contains(alarm1Id))
     }
@@ -593,12 +570,6 @@ class GroupBulkToggleTest {
         // Select alarm1 and alarm2, then disableSelected
         viewModel.selectMany(setOf(alarm1Id, alarm2Id))
         viewModel.disableSelected()
-
-        var attempts = 0
-        while (alarmRepo.getById(alarm1Id)?.isEnabled != false && attempts < 20) {
-            delay(20)
-            attempts++
-        }
 
         assertFalse(alarmRepo.getById(alarm1Id)!!.isEnabled)
         assertFalse(alarmRepo.getById(alarm2Id)!!.isEnabled)
@@ -645,12 +616,6 @@ class GroupBulkToggleTest {
 
         // Pass stale snapshot with isEnabled == true into toggleAlarm
         viewModel.toggleAlarm(staleCardSnapshot)
-
-        var attempts = 0
-        while (alarmRepo.getById(alarm1Id)?.isEnabled != true && attempts < 20) {
-            delay(20)
-            attempts++
-        }
 
         // DB truth was isEnabled == false, so toggleAlarm revalidated DB truth and toggled it to true!
         assertTrue("Revalidated DB truth toggled alarm to enabled = true", alarmRepo.getById(alarm1Id)!!.isEnabled)
