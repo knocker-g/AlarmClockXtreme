@@ -57,7 +57,7 @@ class AlarmRepository @Inject constructor(
     suspend fun save(alarm: Alarm): Long {
         return database.withTransaction {
             val existing = if (alarm.id != 0L) dao.getById(alarm.id) else null
-            val versioned = prepareVersionedAlarm(alarm, existing)
+            val versioned = prepareVersionedAlarmForSave(alarm, existing)
             val sanitized = versioned.sanitized()
             if (sanitized.group.isNotBlank()) {
                 groupDao.insert(AlarmGroup(sanitized.group))
@@ -71,9 +71,25 @@ class AlarmRepository @Inject constructor(
         }
     }
 
-    private fun prepareVersionedAlarm(alarm: Alarm, existing: Alarm?): Alarm {
+    suspend fun update(alarm: Alarm) {
+        database.withTransaction {
+            val existing = if (alarm.id != 0L) dao.getById(alarm.id) else null
+            val versioned = prepareVersionedAlarmForUpdate(alarm, existing)
+            dao.update(versioned.sanitized())
+        }
+    }
+
+    private fun prepareVersionedAlarmForSave(alarm: Alarm, existing: Alarm?): Alarm {
+        return prepareVersionedAlarmInternal(alarm, existing, isUpdateCall = false)
+    }
+
+    private fun prepareVersionedAlarmForUpdate(alarm: Alarm, existing: Alarm?): Alarm {
+        return prepareVersionedAlarmInternal(alarm, existing, isUpdateCall = true)
+    }
+
+    private fun prepareVersionedAlarmInternal(alarm: Alarm, existing: Alarm?, isUpdateCall: Boolean): Alarm {
         val withKind = alarm.withDerivedScheduleKind()
-        if (alarm.id != 0L && existing == null) {
+        if (isUpdateCall && !alarm.isQuickAlarm && alarm.id != 0L && existing == null) {
             throw StaleAlarmException("Alarm ${alarm.id} was deleted in another session and cannot be updated")
         }
         if (existing == null) {
@@ -83,13 +99,11 @@ class AlarmRepository @Inject constructor(
             )
         }
 
-        // Optimistic Concurrency Control Check:
-        // Reject stale drafts where draft version is older than current DB version.
-        if (alarm.generation < existing.generation ||
-            (alarm.generation == existing.generation && alarm.revision < existing.revision)
-        ) {
+        // Optimistic Concurrency Control Check (Normal Alarms in update flows):
+        // Reject stale drafts where draft schedule generation is strictly older than current DB generation.
+        if (isUpdateCall && !existing.isQuickAlarm && !alarm.isQuickAlarm && alarm.generation < existing.generation) {
             throw StaleAlarmException(
-                "Stale alarm draft (gen ${alarm.generation}, rev ${alarm.revision}) cannot overwrite newer DB version (gen ${existing.generation}, rev ${existing.revision})"
+                "Stale alarm draft (gen ${alarm.generation}) cannot overwrite newer DB schedule generation (gen ${existing.generation})"
             )
         }
 
@@ -166,13 +180,6 @@ class AlarmRepository @Inject constructor(
                 it.copy(id = 0L, isEnabled = false, nextTriggerTime = 0L).sanitized()
             }
         )
-    suspend fun update(alarm: Alarm) {
-        database.withTransaction {
-            val existing = if (alarm.id != 0L) dao.getById(alarm.id) else null
-            val versioned = prepareVersionedAlarm(alarm, existing)
-            dao.update(versioned.sanitized())
-        }
-    }
     suspend fun delete(alarm: Alarm) = dao.delete(alarm)
     suspend fun deleteById(id: Long) = dao.deleteById(id)
 

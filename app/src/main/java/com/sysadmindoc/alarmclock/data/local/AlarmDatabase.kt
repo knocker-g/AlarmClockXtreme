@@ -654,11 +654,12 @@ abstract class AlarmDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE alarms ADD COLUMN `generation` INTEGER NOT NULL DEFAULT 1")
                 db.execSQL("ALTER TABLE alarms ADD COLUMN `revision` INTEGER NOT NULL DEFAULT 1")
 
-                // Update scheduleKind = 'REPEATING' for existing alarms where repeatDays != '' OR shiftPattern IS NOT NULL AND shiftPattern != '' OR skipOnHolidays = 1
+                // Update scheduleKind = 'REPEATING' for existing alarms where repeatDays != '' OR (shiftPattern != '' AND shiftPatternStartDate != '')
                 db.execSQL(
                     """
                     UPDATE alarms SET `scheduleKind` = 'REPEATING'
-                    WHERE `repeatDays` != '' OR (`shiftPattern` IS NOT NULL AND `shiftPattern` != '') OR `skipOnHolidays` = 1
+                    WHERE (`repeatDays` IS NOT NULL AND `repeatDays` != '')
+                       OR (`shiftPattern` IS NOT NULL AND `shiftPattern` != '' AND `shiftPatternStartDate` IS NOT NULL AND `shiftPatternStartDate` != '')
                     """.trimIndent()
                 )
 

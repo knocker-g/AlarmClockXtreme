@@ -157,7 +157,7 @@ fun AlarmBackup.toAlarmOrNull(): Alarm? {
             shiftPatternStartDate = shiftPatternStartDate,
             timezonePolicy = timezonePolicy,
             fixedTimezoneId = fixedTimezoneId,
-            scheduleKind = if (scheduleKind.isNotBlank()) scheduleKind else if (repeatDays.isNotEmpty()) Alarm.SCHEDULE_KIND_REPEATING else Alarm.SCHEDULE_KIND_ONE_TIME
+            scheduleKind = if (!scheduleKind.isNullOrBlank()) scheduleKind else if (repeatDays.isNotEmpty() || (shiftPattern.isNotBlank() && shiftPatternStartDate.isNotBlank())) Alarm.SCHEDULE_KIND_REPEATING else Alarm.SCHEDULE_KIND_ONE_TIME
         ).sanitized()
     }.getOrNull()
 }

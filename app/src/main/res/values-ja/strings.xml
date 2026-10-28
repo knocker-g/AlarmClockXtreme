@@ -1196,6 +1196,7 @@
     <string name="alarm_edit_save_error_missing_refs">最初にチャレンジのセットアップを完了してください: %1$s が不足しています。</string>
     <string name="alarm_edit_save_error_location">現在の場所を保存してから位置情報による停止を有効にしてください。</string>
     <string name="alarm_edit_save_error_generic">このアラームを保存できませんでした。詳細を確認して再試行してください。</string>
+    <string name="alarm_edit_save_error_stale">このアラームは別のセッションで変更されました。再読み込みしてやり直してください。</string>
     <string name="alarm_edit_challenge_ref_nfc">NFCタグ</string>
     <string name="alarm_edit_challenge_ref_barcode">バーコード値</string>
     <string name="alarm_edit_challenge_ref_photo">参照写真</string>

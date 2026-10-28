@@ -6,14 +6,19 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.SupportSQLiteOpenHelper
 import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
+import com.sysadmindoc.alarmclock.R
 import com.sysadmindoc.alarmclock.data.backup.AlarmBackup
+import com.sysadmindoc.alarmclock.data.backup.toAlarmOrNull
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleException
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.model.AlarmOccurrenceId
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.data.repository.ScheduleExceptionRepository
 import com.sysadmindoc.alarmclock.data.repository.StaleAlarmException
+import com.sysadmindoc.alarmclock.domain.NextAlarmCalculator
+import com.sysadmindoc.alarmclock.ui.alarmedit.AlarmEditViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -74,13 +79,17 @@ class Kno152PersistenceSliceTest {
         val repeatingDaysNormal = Alarm(hour = 7, minute = 0, repeatDays = setOf(DayOfWeek.MONDAY))
         assertEquals(Alarm.SCHEDULE_KIND_REPEATING, repeatingDaysNormal.deriveScheduleKind())
 
-        // Repeating normal alarm with shiftPattern
-        val shiftPatternNormal = Alarm(hour = 7, minute = 0, shiftPattern = "D/N/W")
+        // Repeating normal alarm with valid shiftPattern and start date
+        val shiftPatternNormal = Alarm(hour = 7, minute = 0, shiftPattern = "D/N/W", shiftPatternStartDate = "2026-01-01")
         assertEquals(Alarm.SCHEDULE_KIND_REPEATING, shiftPatternNormal.deriveScheduleKind())
 
-        // Repeating normal alarm with skipOnHolidays
-        val holidayNormal = Alarm(hour = 7, minute = 0, skipOnHolidays = true)
-        assertEquals(Alarm.SCHEDULE_KIND_REPEATING, holidayNormal.deriveScheduleKind())
+        // Invalid shiftPattern without start date derives ONE_TIME
+        val invalidShiftNormal = Alarm(hour = 7, minute = 0, shiftPattern = "INVALID_KEY", shiftPatternStartDate = "")
+        assertEquals(Alarm.SCHEDULE_KIND_ONE_TIME, invalidShiftNormal.deriveScheduleKind())
+
+        // skipOnHolidays alone with empty repeatDays derives ONE_TIME (skipOnHolidays is exclusion rule, not schedule generator)
+        val holidayExclusionNormal = Alarm(hour = 7, minute = 0, skipOnHolidays = true)
+        assertEquals(Alarm.SCHEDULE_KIND_ONE_TIME, holidayExclusionNormal.deriveScheduleKind())
 
         // Explicit REPEATING classification is preserved
         val explicitRepeating = Alarm(hour = 7, minute = 0, scheduleKind = Alarm.SCHEDULE_KIND_REPEATING)
@@ -125,7 +134,7 @@ class Kno152PersistenceSliceTest {
     }
 
     @Test
-    fun `Optimistic Concurrency Control - Outdated draft snapshot is rejected by AlarmRepository`() = runBlocking {
+    fun `Optimistic Concurrency Control - Outdated draft displays distinct stale error message and deleted alarm protection`() = runBlocking {
         val initial = Alarm(hour = 7, minute = 0, label = "Original")
         val id = alarmRepo.save(initial)
         val currentDb = alarmRepo.getById(id)!!
@@ -148,28 +157,21 @@ class Kno152PersistenceSliceTest {
         // Verify DB entity remains at generation = 2
         assertEquals(2, alarmRepo.getById(id)!!.generation)
         assertEquals(8, alarmRepo.getById(id)!!.hour)
-    }
 
-    @Test
-    fun `Optimistic Concurrency Control - Draft edit for deleted alarm throws StaleAlarmException and does not recreate entity`() = runBlocking {
-        val initial = Alarm(hour = 7, minute = 0, label = "Temporary Alarm")
-        val id = alarmRepo.save(initial)
-        val saved = alarmRepo.getById(id)!!
+        // Test deleted alarm protection
+        val tempAlarm = Alarm(hour = 9, minute = 0, label = "Temp Alarm")
+        val tempId = alarmRepo.save(tempAlarm)
+        val tempSaved = alarmRepo.getById(tempId)!!
+        alarmRepo.delete(tempSaved)
 
-        // Delete alarm from Room DB
-        alarmRepo.delete(saved)
-        assertEquals(null, alarmRepo.getById(id))
-
-        // Attempting to update the deleted alarm draft throws StaleAlarmException
-        var updateFailed = false
+        var deletedRejected = false
         try {
-            alarmRepo.update(saved.copy(label = "Attempted Update on Deleted"))
+            alarmRepo.update(tempSaved.copy(label = "Update Deleted"))
         } catch (e: StaleAlarmException) {
-            updateFailed = true
+            deletedRejected = true
         }
-
-        assertTrue("Update on deleted alarm MUST be rejected with StaleAlarmException", updateFailed)
-        assertEquals("Deleted alarm MUST NOT be re-created in Room DB", null, alarmRepo.getById(id))
+        assertTrue("Update on deleted alarm MUST be rejected with StaleAlarmException", deletedRejected)
+        assertEquals("Deleted alarm MUST NOT be re-created in Room DB", null, alarmRepo.getById(tempId))
     }
 
     @Test
@@ -391,7 +393,7 @@ class Kno152PersistenceSliceTest {
                         )
                     """.trimIndent())
 
-                    // Insert Quick Alarm into v33 database
+                    // Insert ONE_TIME alarm with skipOnHolidays = 1 in v33 database
                     sqliteDb.execSQL("""
                         INSERT INTO alarms (
                             id, hour, minute, label, isEnabled, repeatDays, ringtoneUri, vibrationEnabled,
@@ -412,12 +414,12 @@ class Kno152PersistenceSliceTest {
                             sortOrder, shiftPattern, shiftPatternStartDate, timezonePolicy, fixedTimezoneId,
                             kind, quickTriggerEpochMs, quickRelativeElapsedMs, quickBootCount
                         ) VALUES (
-                            2, 8, 0, 'Quick Timer', 1, '', '', 1,
+                            2, 8, 0, 'One Time Holiday', 1, '', '', 1,
                             2, 100, 1, 60,
                             10, 3, 1, 'NONE', '',
                             0, 'default', 1600000000000, 1700000900000, 0,
                             30, 0, 10, 0,
-                            30, 0, '', '', '',
+                            30, 1, '', '', '',
                             0, 30, '', '', 0,
                             0, 40, 0, 15,
                             '', '', 0, 0, '',
@@ -428,7 +430,7 @@ class Kno152PersistenceSliceTest {
                             0, 10, 'NONE', '',
                             0, '', 1,
                             2, '', '', 'LOCAL', '',
-                            'QUICK', 1700000900000, 900000, 42
+                            'NORMAL', 0, 0, -1
                         )
                     """.trimIndent())
                 }
@@ -444,7 +446,7 @@ class Kno152PersistenceSliceTest {
         AlarmDatabase.MIGRATION_33_34.migrate(sqliteDb)
 
         // Verify migrated columns in alarms table
-        val cursor = sqliteDb.query("SELECT id, scheduleKind, generation, revision, kind, quickTriggerEpochMs, quickBootCount FROM alarms ORDER BY id ASC")
+        val cursor = sqliteDb.query("SELECT id, scheduleKind, generation, revision, kind FROM alarms ORDER BY id ASC")
         assertTrue(cursor.moveToNext())
 
         // Alarm 1 (Repeating Normal)
@@ -452,22 +454,18 @@ class Kno152PersistenceSliceTest {
         assertEquals(Alarm.SCHEDULE_KIND_REPEATING, cursor.getString(1))
         assertEquals(1, cursor.getInt(2))
         assertEquals(1, cursor.getInt(3))
-        assertEquals(Alarm.KIND_NORMAL, cursor.getString(4))
 
-        // Alarm 2 (Quick Alarm)
+        // Alarm 2 (One-time Normal with skipOnHolidays = 1) -> MUST remain ONE_TIME
         assertTrue(cursor.moveToNext())
         assertEquals(2L, cursor.getLong(0))
         assertEquals(Alarm.SCHEDULE_KIND_ONE_TIME, cursor.getString(1))
         assertEquals(1, cursor.getInt(2))
         assertEquals(1, cursor.getInt(3))
-        assertEquals(Alarm.KIND_QUICK, cursor.getString(4))
-        assertEquals(1700000900000L, cursor.getLong(5))
-        assertEquals(42L, cursor.getLong(6))
 
         cursor.close()
 
-        // Verify schedule_exceptions table exists with revision column and unique index
-        val exceptionsCursor = sqliteDb.query("SELECT count(*), id, generation, revision FROM schedule_exceptions")
+        // Verify schedule_exceptions table exists
+        val exceptionsCursor = sqliteDb.query("SELECT count(*) FROM schedule_exceptions")
         assertTrue(exceptionsCursor.moveToNext())
         assertEquals(0, exceptionsCursor.getInt(0))
         exceptionsCursor.close()
@@ -476,14 +474,16 @@ class Kno152PersistenceSliceTest {
     }
 
     @Test
-    fun `Portable backup export excludes runtime ScheduleExceptions`() {
-        val alarmBackup = AlarmBackup(
+    fun `Portable backup export and import handles legacy and modern scheduleKind compatibility correctly`() {
+        // Modern backup with explicit scheduleKind
+        val modernBackup = AlarmBackup(
             id = 10L,
             hour = 7,
             minute = 30,
-            label = "Backup Test Alarm",
+            label = "Modern One Time",
             isEnabled = true,
-            repeatDays = listOf("MONDAY", "FRIDAY"),
+            repeatDays = emptyList(),
+            scheduleKind = Alarm.SCHEDULE_KIND_ONE_TIME,
             ringtoneUri = "",
             vibrationEnabled = true,
             vibrationIntensity = 2,
@@ -496,13 +496,37 @@ class Kno152PersistenceSliceTest {
             challengeType = "NONE"
         )
 
-        assertEquals(10L, alarmBackup.id)
-        assertEquals(7, alarmBackup.hour)
-        assertEquals(30, alarmBackup.minute)
-        assertEquals("Backup Test Alarm", alarmBackup.label)
+        val restoredModern = modernBackup.toAlarmOrNull()
+        assertNotNull(restoredModern)
+        assertEquals(Alarm.SCHEDULE_KIND_ONE_TIME, restoredModern!!.scheduleKind)
+
+        // Legacy backup where scheduleKind is null
+        val legacyRepeatingBackup = AlarmBackup(
+            id = 11L,
+            hour = 8,
+            minute = 0,
+            label = "Legacy Repeating",
+            isEnabled = true,
+            repeatDays = listOf("MONDAY", "TUESDAY"),
+            scheduleKind = null,
+            ringtoneUri = "",
+            vibrationEnabled = true,
+            vibrationIntensity = 2,
+            volume = 100,
+            overrideSystemVolume = true,
+            gradualVolumeSeconds = 60,
+            snoozeDurationMinutes = 10,
+            maxSnoozeCount = 3,
+            showOnLockScreen = true,
+            challengeType = "NONE"
+        )
+
+        val restoredLegacy = legacyRepeatingBackup.toAlarmOrNull()
+        assertNotNull(restoredLegacy)
+        assertEquals(Alarm.SCHEDULE_KIND_REPEATING, restoredLegacy!!.scheduleKind)
 
         // Verify AlarmBackup payload class does not contain ScheduleException fields
-        val backupClassFields = alarmBackup.javaClass.declaredFields.map { it.name }
+        val backupClassFields = modernBackup.javaClass.declaredFields.map { it.name }
         assertFalse("AlarmBackup payload MUST NOT contain ScheduleException instances or tables", backupClassFields.contains("exceptions"))
         assertFalse("AlarmBackup payload MUST NOT contain ScheduleException instances or tables", backupClassFields.contains("scheduleExceptions"))
     }

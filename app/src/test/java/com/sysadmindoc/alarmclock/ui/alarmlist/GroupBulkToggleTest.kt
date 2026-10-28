@@ -78,7 +78,7 @@ class GroupBulkToggleTest {
     @After
     fun tearDown() {
         try { io.mockk.clearAllMocks() } catch (_: Exception) {}
-        Dispatchers.resetMain()
+        try { Dispatchers.resetMain() } catch (_: Exception) {}
         db.close()
     }
 
