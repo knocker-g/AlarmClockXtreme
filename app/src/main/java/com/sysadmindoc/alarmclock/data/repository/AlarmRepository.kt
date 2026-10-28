@@ -15,6 +15,8 @@ import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
 
+class StaleAlarmException(message: String) : IllegalStateException(message)
+
 @Singleton
 class AlarmRepository @Inject constructor(
     private val database: AlarmDatabase,
@@ -54,7 +56,9 @@ class AlarmRepository @Inject constructor(
 
     suspend fun save(alarm: Alarm): Long {
         return database.withTransaction {
-            val sanitized = alarm.sanitized()
+            val existing = if (alarm.id != 0L) dao.getById(alarm.id) else null
+            val versioned = prepareVersionedAlarmForSave(alarm, existing)
+            val sanitized = versioned.sanitized()
             if (sanitized.group.isNotBlank()) {
                 groupDao.insert(AlarmGroup(sanitized.group))
             }
@@ -64,6 +68,74 @@ class AlarmRepository @Inject constructor(
                 sanitized
             }
             dao.insert(ordered)
+        }
+    }
+
+    suspend fun update(alarm: Alarm) {
+        database.withTransaction {
+            val existing = if (alarm.id != 0L) dao.getById(alarm.id) else null
+            val versioned = prepareVersionedAlarmForUpdate(alarm, existing)
+            dao.update(versioned.sanitized())
+        }
+    }
+
+    private fun prepareVersionedAlarmForSave(alarm: Alarm, existing: Alarm?): Alarm {
+        return prepareVersionedAlarmInternal(alarm, existing, isUpdateCall = false)
+    }
+
+    private fun prepareVersionedAlarmForUpdate(alarm: Alarm, existing: Alarm?): Alarm {
+        return prepareVersionedAlarmInternal(alarm, existing, isUpdateCall = true)
+    }
+
+    private fun prepareVersionedAlarmInternal(alarm: Alarm, existing: Alarm?, isUpdateCall: Boolean): Alarm {
+        val withKind = alarm.withDerivedScheduleKind()
+        if (isUpdateCall && !alarm.isQuickAlarm && alarm.id != 0L && existing == null) {
+            throw StaleAlarmException("Alarm ${alarm.id} was deleted in another session and cannot be updated")
+        }
+        if (existing == null) {
+            return withKind.copy(
+                generation = if (withKind.generation > 0) withKind.generation else 1,
+                revision = if (withKind.revision > 0) withKind.revision else 1
+            )
+        }
+
+        // Optimistic Concurrency Control Check (Normal Alarms in update flows):
+        // Enforce exact version match: reject drafts with outdated or invalid future versions.
+        if (isUpdateCall && !existing.isQuickAlarm && !alarm.isQuickAlarm) {
+            if (alarm.generation != existing.generation || alarm.revision != existing.revision) {
+                throw StaleAlarmException(
+                    "Alarm version mismatch: draft (gen ${alarm.generation}, rev ${alarm.revision}) does not match DB version (gen ${existing.generation}, rev ${existing.revision})"
+                )
+            }
+        }
+
+        val isScheduleChanged = existing.hour != withKind.hour ||
+                existing.minute != withKind.minute ||
+                existing.repeatDays != withKind.repeatDays ||
+                existing.specificDate != withKind.specificDate ||
+                existing.shiftPattern != withKind.shiftPattern ||
+                existing.shiftPatternStartDate != withKind.shiftPatternStartDate ||
+                existing.timezonePolicy != withKind.timezonePolicy ||
+                existing.fixedTimezoneId != withKind.fixedTimezoneId ||
+                existing.scheduleKind != withKind.scheduleKind ||
+                existing.skipOnHolidays != withKind.skipOnHolidays ||
+                existing.solarOffsetMinutes != withKind.solarOffsetMinutes ||
+                existing.solarAnchor != withKind.solarAnchor
+
+        val isSecondaryChanged = existing.label != withKind.label ||
+                existing.ringtoneUri != withKind.ringtoneUri ||
+                existing.vibrationEnabled != withKind.vibrationEnabled ||
+                existing.volume != withKind.volume ||
+                existing.group != withKind.group ||
+                existing.snoozeDurationMinutes != withKind.snoozeDurationMinutes ||
+                existing.maxSnoozeCount != withKind.maxSnoozeCount ||
+                existing.vibrationPattern != withKind.vibrationPattern ||
+                existing.challengeType != withKind.challengeType
+
+        return when {
+            isScheduleChanged -> withKind.copy(generation = existing.generation + 1, revision = 1)
+            isSecondaryChanged -> withKind.copy(generation = existing.generation, revision = existing.revision + 1)
+            else -> withKind.copy(generation = existing.generation, revision = existing.revision)
         }
     }
 
@@ -110,7 +182,6 @@ class AlarmRepository @Inject constructor(
                 it.copy(id = 0L, isEnabled = false, nextTriggerTime = 0L).sanitized()
             }
         )
-    suspend fun update(alarm: Alarm) = dao.update(alarm.sanitized())
     suspend fun delete(alarm: Alarm) = dao.delete(alarm)
     suspend fun deleteById(id: Long) = dao.deleteById(id)
 

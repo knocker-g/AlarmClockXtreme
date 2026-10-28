@@ -157,6 +157,8 @@ class AlarmEditViewModel @Inject constructor(
     private val alarmId: Long = savedStateHandle.get<Long>("alarmId") ?: -1
 
     private var loadedDraft: AlarmEditUiState? = null
+    private var initialAlarm: Alarm? = null
+
     private val _uiState = MutableStateFlow(AlarmEditUiState())
     val uiState: StateFlow<AlarmEditUiState> = combine(
         _uiState,
@@ -177,6 +179,7 @@ class AlarmEditViewModel @Inject constructor(
             if (alarmId > 0) {
                 val alarm = repository.getById(alarmId)
                 if (alarm != null && !alarm.isQuickAlarm) {
+                    initialAlarm = alarm
                     _uiState.value = AlarmEditUiState(
                         hour = alarm.hour,
                         minute = alarm.minute,
@@ -752,20 +755,36 @@ class AlarmEditViewModel @Inject constructor(
                 shiftPattern = s.shiftPattern,
                 shiftPatternStartDate = s.shiftPatternStartDate,
                 timezonePolicy = s.timezonePolicy,
-                fixedTimezoneId = s.fixedTimezoneId
+                fixedTimezoneId = s.fixedTimezoneId,
+                generation = initialAlarm?.generation ?: 1,
+                revision = initialAlarm?.revision ?: 1,
+                scheduleKind = if (s.repeatDays.isNotEmpty() || s.shiftPattern.isNotBlank()) {
+                    Alarm.SCHEDULE_KIND_REPEATING
+                } else if (initialAlarm != null && initialAlarm?.scheduleKind == Alarm.SCHEDULE_KIND_REPEATING) {
+                    if (loadedDraft?.repeatDays?.isNotEmpty() == true && s.repeatDays.isEmpty()) {
+                        Alarm.SCHEDULE_KIND_ONE_TIME
+                    } else {
+                        Alarm.SCHEDULE_KIND_REPEATING
+                    }
+                } else {
+                    initialAlarm?.scheduleKind ?: Alarm.SCHEDULE_KIND_ONE_TIME
+                }
             ).sanitized()
 
             try {
-                val savedId = repository.save(alarm)
-                val savedAlarm = alarm.copy(
-                    id = if (s.isEditing) alarmId else savedId
-                )
+                val targetId = if (s.isEditing) {
+                    repository.update(alarm)
+                    alarmId
+                } else {
+                    repository.save(alarm)
+                }
+                val savedAlarm = repository.getById(targetId) ?: alarm.copy(id = targetId)
                 if (savedAlarm.isEnabled) {
                     val outcome = scheduler.schedule(savedAlarm)
                     if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.PermissionBlocked) {
-                        android.util.Log.w("AlarmEditViewModel", "Alarm $savedId saved in DB, but exact alarm permission is revoked (${outcome.reason})")
+                        android.util.Log.w("AlarmEditViewModel", "Alarm $targetId saved in DB, but exact alarm permission is revoked (${outcome.reason})")
                     } else if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed) {
-                        android.util.Log.w("AlarmEditViewModel", "Alarm $savedId saved in DB; OS registration failed, pending background recovery")
+                        android.util.Log.w("AlarmEditViewModel", "Alarm $targetId saved in DB; OS registration failed, pending background recovery")
                     }
                 } else {
                     // Edit flow may have just disabled the alarm — make sure any
@@ -774,6 +793,11 @@ class AlarmEditViewModel @Inject constructor(
                     scheduler.syncBedtimeDndRule()
                 }
                 onComplete()
+            } catch (e: com.sysadmindoc.alarmclock.data.repository.StaleAlarmException) {
+                _uiState.value = _uiState.value.copy(
+                    isSaving = false,
+                    saveError = context.getString(R.string.alarm_edit_save_error_stale)
+                )
             } catch (_: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,

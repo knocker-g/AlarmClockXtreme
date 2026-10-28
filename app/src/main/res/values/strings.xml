@@ -1228,6 +1228,7 @@
     <string name="alarm_edit_save_error_missing_refs">Finish the challenge setup first: missing %1$s.</string>
     <string name="alarm_edit_save_error_location">Save your current place before enabling location dismissal.</string>
     <string name="alarm_edit_save_error_generic">Could not save this alarm. Check the details and try again.</string>
+    <string name="alarm_edit_save_error_stale">This alarm was modified in another session. Please reload and try again.</string>
     <string name="alarm_edit_challenge_ref_nfc">an NFC tag</string>
     <string name="alarm_edit_challenge_ref_barcode">a barcode value</string>
     <string name="alarm_edit_challenge_ref_photo">a reference photo</string>

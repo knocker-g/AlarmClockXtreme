@@ -17,6 +17,7 @@ import com.sysadmindoc.alarmclock.data.local.entity.IssuedOccurrence
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta
 import com.sysadmindoc.alarmclock.data.local.entity.SnoreEvent
+import com.sysadmindoc.alarmclock.data.local.entity.ScheduleException
 import com.sysadmindoc.alarmclock.data.model.Alarm
 
 @Database(
@@ -33,7 +34,8 @@ import com.sysadmindoc.alarmclock.data.model.Alarm
         ScheduleAuthorityMeta::class,
         DurableOperationIntent::class,
         IssuedOccurrence::class,
-        IssueSlot::class
+        IssueSlot::class,
+        ScheduleException::class
     ],
     version = AlarmDatabase.VERSION,
     exportSchema = true
@@ -51,9 +53,10 @@ abstract class AlarmDatabase : RoomDatabase() {
     abstract fun scheduleAuthorityDao(): ScheduleAuthorityDao
     abstract fun durableOperationIntentDao(): DurableOperationIntentDao
     abstract fun issuedOccurrenceDao(): IssuedOccurrenceDao
+    abstract fun scheduleExceptionDao(): ScheduleExceptionDao
 
     companion object {
-        const val VERSION = 33
+        const val VERSION = 34
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -640,6 +643,46 @@ abstract class AlarmDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v34: KNO-152 Slice A schedule foundation & schedule exceptions.
+         * Adds `scheduleKind`, `generation`, `revision` columns to `alarms`.
+         * Creates `schedule_exceptions` table with indexes.
+         */
+        val MIGRATION_33_34 = object : Migration(33, 34) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `scheduleKind` TEXT NOT NULL DEFAULT 'ONE_TIME'")
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `generation` INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `revision` INTEGER NOT NULL DEFAULT 1")
+
+                // Update scheduleKind = 'REPEATING' for existing alarms where repeatDays != '' OR valid shiftPattern with start date
+                db.execSQL(
+                    """
+                    UPDATE alarms SET `scheduleKind` = 'REPEATING'
+                    WHERE (`repeatDays` IS NOT NULL AND `repeatDays` != '')
+                       OR (`shiftPattern` IN ('DDNNO', 'FOUR_ON_FOUR_OFF', 'PANAMA', 'DUPONT', 'PITMAN')
+                           AND `shiftPatternStartDate` IS NOT NULL AND `shiftPatternStartDate` != '')
+                    """.trimIndent()
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `schedule_exceptions` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `alarmId` INTEGER NOT NULL,
+                        `baseTriggerTime` INTEGER NOT NULL,
+                        `exceptionType` TEXT NOT NULL,
+                        `overrideTriggerTime` INTEGER NOT NULL,
+                        `generation` INTEGER NOT NULL,
+                        `revision` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_schedule_exceptions_alarmId_baseTriggerTime_generation` ON `schedule_exceptions` (`alarmId`, `baseTriggerTime`, `generation`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_schedule_exceptions_alarmId` ON `schedule_exceptions` (`alarmId`)")
+            }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -672,7 +715,8 @@ abstract class AlarmDatabase : RoomDatabase() {
             MIGRATION_29_30,
             MIGRATION_30_31,
             MIGRATION_31_32,
-            MIGRATION_32_33
+            MIGRATION_32_33,
+            MIGRATION_33_34
         )
     }
 }

@@ -76,7 +76,8 @@ fun Alarm.toAlarmBackup(): AlarmBackup {
         shiftPattern = shiftPattern,
         shiftPatternStartDate = shiftPatternStartDate,
         timezonePolicy = timezonePolicy,
-        fixedTimezoneId = fixedTimezoneId
+        fixedTimezoneId = fixedTimezoneId,
+        scheduleKind = scheduleKind
     )
 }
 
@@ -155,7 +156,8 @@ fun AlarmBackup.toAlarmOrNull(): Alarm? {
             shiftPattern = shiftPattern,
             shiftPatternStartDate = shiftPatternStartDate,
             timezonePolicy = timezonePolicy,
-            fixedTimezoneId = fixedTimezoneId
+            fixedTimezoneId = fixedTimezoneId,
+            scheduleKind = if (!scheduleKind.isNullOrBlank()) scheduleKind else if (repeatDays.isNotEmpty() || (shiftPattern.isNotBlank() && shiftPatternStartDate.isNotBlank())) Alarm.SCHEDULE_KIND_REPEATING else Alarm.SCHEDULE_KIND_ONE_TIME
         ).sanitized()
     }.getOrNull()
 }
