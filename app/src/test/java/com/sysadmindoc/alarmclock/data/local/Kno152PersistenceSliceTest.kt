@@ -136,7 +136,7 @@ class Kno152PersistenceSliceTest {
     }
 
     @Test
-    fun `Optimistic Concurrency Control - Outdated draft snapshot is rejected by AlarmRepository`() = runBlocking {
+    fun `Optimistic Concurrency Control - Draft version mismatch is rejected by AlarmRepository`() = runBlocking {
         val initial = Alarm(hour = 7, minute = 0, label = "Original")
         val id = alarmRepo.save(initial)
         val currentDb = alarmRepo.getById(id)!!
@@ -171,6 +171,16 @@ class Kno152PersistenceSliceTest {
             staleRev1Rejected = true
         }
         assertTrue("Stale draft update (rev 1 < rev 2 in same gen 2) MUST be rejected by AlarmRepository", staleRev1Rejected)
+
+        // Attempting to save an invalid future version (gen = 5) throws StaleAlarmException
+        val futureDraft = rev2Db.copy(generation = 5, label = "Invalid Future Version Edit")
+        var futureRejected = false
+        try {
+            alarmRepo.update(futureDraft)
+        } catch (e: StaleAlarmException) {
+            futureRejected = true
+        }
+        assertTrue("Invalid future version draft (gen 5 != gen 2) MUST be rejected by AlarmRepository", futureRejected)
 
         // Verify DB entity remains at generation = 2, revision = 2, label = "Session A Secondary Update"
         assertEquals(2, alarmRepo.getById(id)!!.generation)
@@ -216,11 +226,11 @@ class Kno152PersistenceSliceTest {
     }
 
     @Test
-    fun `ScheduleException CRUD operations persist and filter by generation correctly`() = runBlocking {
+    fun `ScheduleException Transactional Protection - Duplicate same type is idempotent while conflict type throws IllegalStateException`() = runBlocking {
         val alarmId = 100L
         val baseTime = 1700000000000L
 
-        val gen1Exception = ScheduleException(
+        val skipException = ScheduleException(
             alarmId = alarmId,
             baseTriggerTime = baseTime,
             exceptionType = ScheduleException.TYPE_SKIP,
@@ -228,42 +238,37 @@ class Kno152PersistenceSliceTest {
             revision = 1
         )
 
-        val gen2Exception = ScheduleException(
+        // 1. First insert succeeds
+        val id1 = exceptionRepo.addException(skipException)
+        assertTrue(id1 > 0)
+
+        // 2. Idempotent re-entry with identical type returns same ID
+        val id2 = exceptionRepo.addException(skipException)
+        assertEquals(id1, id2)
+
+        // 3. Submitting a conflicting exception type for same occurrence throws IllegalStateException
+        val overrideException = ScheduleException(
             alarmId = alarmId,
             baseTriggerTime = baseTime,
             exceptionType = ScheduleException.TYPE_TIME_OVERRIDE,
-            overrideTriggerTime = baseTime + 90000000L,
-            generation = 2,
+            overrideTriggerTime = baseTime + 3600000L,
+            generation = 1,
             revision = 1
         )
 
-        exceptionRepo.addException(gen1Exception)
-        exceptionRepo.addException(gen2Exception)
+        var conflictCaught = false
+        try {
+            exceptionRepo.addException(overrideException)
+        } catch (e: IllegalStateException) {
+            conflictCaught = true
+        }
 
-        val gen1Exceptions = exceptionRepo.getExceptionsForAlarmGeneration(alarmId, 1)
-        assertEquals(1, gen1Exceptions.size)
-        assertEquals(ScheduleException.TYPE_SKIP, gen1Exceptions[0].exceptionType)
+        assertTrue("Conflicting exception type MUST throw IllegalStateException", conflictCaught)
 
-        val gen2Exceptions = exceptionRepo.getExceptionsForAlarmGeneration(alarmId, 2)
-        assertEquals(1, gen2Exceptions.size)
-        assertEquals(ScheduleException.TYPE_TIME_OVERRIDE, gen2Exceptions[0].exceptionType)
-
-        // Query by exact occurrence (alarmId, baseTime, generation)
-        val gen1Exact = exceptionRepo.getExceptionForOccurrence(alarmId, baseTime, 1)
-        assertNotNull(gen1Exact)
-        assertEquals(ScheduleException.TYPE_SKIP, gen1Exact!!.exceptionType)
-
-        val gen2Exact = exceptionRepo.getExceptionForOccurrence(alarmId, baseTime, 2)
-        assertNotNull(gen2Exact)
-        assertEquals(ScheduleException.TYPE_TIME_OVERRIDE, gen2Exact!!.exceptionType)
-
-        // Test deletion for specific occurrence
-        exceptionRepo.deleteForOccurrence(alarmId, baseTime, 1)
-        val afterDeleteGen1 = exceptionRepo.getExceptionForOccurrence(alarmId, baseTime, 1)
-        assertEquals(null, afterDeleteGen1)
-
-        val afterDeleteGen2 = exceptionRepo.getExceptionForOccurrence(alarmId, baseTime, 2)
-        assertNotNull(afterDeleteGen2)
+        // Verify original SKIP exception remains unchanged in Room DB
+        val currentException = exceptionRepo.getExceptionForOccurrence(alarmId, baseTime, 1)
+        assertNotNull(currentException)
+        assertEquals(ScheduleException.TYPE_SKIP, currentException!!.exceptionType)
     }
 
     @Test

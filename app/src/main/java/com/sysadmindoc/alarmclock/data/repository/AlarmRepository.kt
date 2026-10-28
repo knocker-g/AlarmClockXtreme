@@ -100,13 +100,11 @@ class AlarmRepository @Inject constructor(
         }
 
         // Optimistic Concurrency Control Check (Normal Alarms in update flows):
-        // Reject stale drafts where draft version (generation or revision in same generation) is strictly older than current DB version.
+        // Enforce exact version match: reject drafts with outdated or invalid future versions.
         if (isUpdateCall && !existing.isQuickAlarm && !alarm.isQuickAlarm) {
-            if (alarm.generation < existing.generation ||
-                (alarm.generation == existing.generation && alarm.revision < existing.revision)
-            ) {
+            if (alarm.generation != existing.generation || alarm.revision != existing.revision) {
                 throw StaleAlarmException(
-                    "Stale alarm draft (gen ${alarm.generation}, rev ${alarm.revision}) cannot overwrite newer DB version (gen ${existing.generation}, rev ${existing.revision})"
+                    "Alarm version mismatch: draft (gen ${alarm.generation}, rev ${alarm.revision}) does not match DB version (gen ${existing.generation}, rev ${existing.revision})"
                 )
             }
         }

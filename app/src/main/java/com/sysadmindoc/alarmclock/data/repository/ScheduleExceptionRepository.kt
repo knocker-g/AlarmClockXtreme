@@ -14,6 +14,22 @@ open class ScheduleExceptionRepository @Inject constructor(
     private val dao: ScheduleExceptionDao
 ) {
     open suspend fun addException(exception: ScheduleException): Long {
+        val existing = dao.getExceptionForOccurrence(
+            exception.alarmId,
+            exception.baseTriggerTime,
+            exception.generation
+        )
+        if (existing != null) {
+            if (existing.exceptionType == exception.exceptionType &&
+                existing.overrideTriggerTime == exception.overrideTriggerTime
+            ) {
+                return existing.id
+            } else {
+                throw IllegalStateException(
+                    "ScheduleException conflict for alarm ${exception.alarmId} occurrence ${exception.baseTriggerTime} (gen ${exception.generation}): existing ${existing.exceptionType} vs new ${exception.exceptionType}"
+                )
+            }
+        }
         return dao.insert(exception)
     }
 
