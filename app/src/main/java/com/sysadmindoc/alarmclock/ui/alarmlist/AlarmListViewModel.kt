@@ -333,9 +333,9 @@ class AlarmListViewModel @Inject constructor(
         }
     }
 
-    private val groupMutex = Mutex()
+    private val mutationMutex = Mutex()
 
-    suspend fun setGroupEnabled(groupName: String, targetEnabled: Boolean): GroupBulkToggleResult = groupMutex.withLock {
+    suspend fun setGroupEnabled(groupName: String, targetEnabled: Boolean): GroupBulkToggleResult = mutationMutex.withLock {
         if (groupName.isBlank()) {
             return@withLock GroupBulkToggleResult(groupName, targetEnabled, 0, 0)
         }
@@ -388,16 +388,26 @@ class AlarmListViewModel @Inject constructor(
             // 3. Transactional DB update for eligible member definitions
             repository.updateAlarmsEnabledTransaction(preparedAlarms)
 
-            // 4. Reconcile OS schedules after DB commit
+            // 4. Reconcile OS schedules after DB commit against current DB truth
             alarmIdsToCancel.forEach { id ->
-                scheduler.cancel(id)
+                val current = repository.getById(id)
+                if (current == null || !current.isEnabled) {
+                    scheduler.cancel(id)
+                } else {
+                    scheduler.schedule(current)
+                }
             }
             alarmsToSchedule.forEach { alarm ->
-                val outcome = scheduler.schedule(alarm)
-                when (outcome) {
-                    is ScheduleOutcome.PermissionBlocked -> scheduleBlockedCount++
-                    is ScheduleOutcome.RegistrationFailed -> scheduleFailedCount++
-                    else -> {}
+                val current = repository.getById(alarm.id)
+                if (current != null && current.isEnabled) {
+                    val outcome = scheduler.schedule(current)
+                    when (outcome) {
+                        is ScheduleOutcome.PermissionBlocked -> scheduleBlockedCount++
+                        is ScheduleOutcome.RegistrationFailed -> scheduleFailedCount++
+                        else -> {}
+                    }
+                } else if (current != null) {
+                    scheduler.cancel(current.id)
                 }
             }
             scheduler.syncBedtimeDndRule()
@@ -512,69 +522,75 @@ class AlarmListViewModel @Inject constructor(
 
     fun deleteSelected() {
         viewModelScope.launch {
-            val activeId = preferencesManager.getCachedSettings().activeAlarmId
-            val ids = _selectedIds.value.toList().filter { it != activeId }
-            ids.forEach { id ->
-                scheduler.cancel(id)
-                repository.getById(id)?.let { repository.delete(it) }
-            }
-            scheduler.syncBedtimeDndRule()
-            clearSelection()
-            if (ids.isNotEmpty()) {
-                emitFeedback(
-                    context.resources.getQuantityString(R.plurals.feedback_multialarm_deleted, ids.size, ids.size)
-                )
+            mutationMutex.withLock {
+                val activeId = preferencesManager.getCurrentSettings().activeAlarmId
+                val ids = _selectedIds.value.toList().filter { it != activeId }
+                ids.forEach { id ->
+                    scheduler.cancel(id)
+                    repository.getById(id)?.let { repository.delete(it) }
+                }
+                scheduler.syncBedtimeDndRule()
+                clearSelection()
+                if (ids.isNotEmpty()) {
+                    emitFeedback(
+                        context.resources.getQuantityString(R.plurals.feedback_multialarm_deleted, ids.size, ids.size)
+                    )
+                }
             }
         }
     }
 
     fun enableSelected() {
         viewModelScope.launch {
-            val activeId = preferencesManager.getCachedSettings().activeAlarmId
-            var enabledCount = 0
-            var blockedCount = 0
-            var failedCount = 0
-            _selectedIds.value.forEach { id ->
-                if (id == activeId) return@forEach
-                val alarm = repository.getById(id) ?: return@forEach
-                if (!alarm.isEnabled) {
-                    val nextTrigger = calculator.calculate(alarm)
-                    repository.setEnabled(id, enabled = true, nextTrigger = nextTrigger)
-                    val outcome = scheduler.schedule(alarm.copy(isEnabled = true, nextTriggerTime = nextTrigger))
-                    when (outcome) {
-                        is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.PermissionBlocked -> blockedCount++
-                        is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed -> failedCount++
-                        else -> enabledCount++
+            mutationMutex.withLock {
+                val activeId = preferencesManager.getCurrentSettings().activeAlarmId
+                var enabledCount = 0
+                var blockedCount = 0
+                var failedCount = 0
+                _selectedIds.value.forEach { id ->
+                    if (id == activeId) return@forEach
+                    val alarm = repository.getById(id) ?: return@forEach
+                    if (!alarm.isEnabled) {
+                        val nextTrigger = calculator.calculate(alarm)
+                        repository.setEnabled(id, enabled = true, nextTrigger = nextTrigger)
+                        val outcome = scheduler.schedule(alarm.copy(isEnabled = true, nextTriggerTime = nextTrigger))
+                        when (outcome) {
+                            is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.PermissionBlocked -> blockedCount++
+                            is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed -> failedCount++
+                            else -> enabledCount++
+                        }
                     }
                 }
-            }
-            clearSelection()
-            val totalProcessed = enabledCount + blockedCount + failedCount
-            if (totalProcessed > 0) {
-                val message = when {
-                    blockedCount > 0 -> context.getString(R.string.feedback_multialarm_enabled_blocked, enabledCount, blockedCount)
-                    failedCount > 0 -> context.getString(R.string.feedback_multialarm_enabled_failed, enabledCount, failedCount)
-                    else -> context.resources.getQuantityString(R.plurals.feedback_multialarm_enabled, enabledCount, enabledCount)
+                clearSelection()
+                val totalProcessed = enabledCount + blockedCount + failedCount
+                if (totalProcessed > 0) {
+                    val message = when {
+                        blockedCount > 0 -> context.getString(R.string.feedback_multialarm_enabled_blocked, enabledCount, blockedCount)
+                        failedCount > 0 -> context.getString(R.string.feedback_multialarm_enabled_failed, enabledCount, failedCount)
+                        else -> context.resources.getQuantityString(R.plurals.feedback_multialarm_enabled, enabledCount, enabledCount)
+                    }
+                    emitFeedback(message)
                 }
-                emitFeedback(message)
             }
         }
     }
 
     fun disableSelected() {
         viewModelScope.launch {
-            val activeId = preferencesManager.getCachedSettings().activeAlarmId
-            val ids = _selectedIds.value.toList().filter { it != activeId }
-            ids.forEach { id ->
-                repository.setEnabled(id, enabled = false, nextTrigger = 0)
-                scheduler.cancel(id)
-            }
-            scheduler.syncBedtimeDndRule()
-            clearSelection()
-            if (ids.isNotEmpty()) {
-                emitFeedback(
-                    context.resources.getQuantityString(R.plurals.feedback_multialarm_paused, ids.size, ids.size)
-                )
+            mutationMutex.withLock {
+                val activeId = preferencesManager.getCurrentSettings().activeAlarmId
+                val ids = _selectedIds.value.toList().filter { it != activeId }
+                ids.forEach { id ->
+                    repository.setEnabled(id, enabled = false, nextTrigger = 0)
+                    scheduler.cancel(id)
+                }
+                scheduler.syncBedtimeDndRule()
+                clearSelection()
+                if (ids.isNotEmpty()) {
+                    emitFeedback(
+                        context.resources.getQuantityString(R.plurals.feedback_multialarm_paused, ids.size, ids.size)
+                    )
+                }
             }
         }
     }
@@ -582,8 +598,10 @@ class AlarmListViewModel @Inject constructor(
     /** Ends a "Pause alarms for N days" window early and re-arms everything. */
     fun resumeAlarms() {
         viewModelScope.launch {
-            preferencesManager.update { it.copy(pauseUntilMillis = 0L) }
-            scheduler.rescheduleAll(forceRecalculate = true)
+            mutationMutex.withLock {
+                preferencesManager.update { it.copy(pauseUntilMillis = 0L) }
+                scheduler.rescheduleAll(forceRecalculate = true)
+            }
         }
     }
 
@@ -593,38 +611,54 @@ class AlarmListViewModel @Inject constructor(
             return
         }
         viewModelScope.launch {
-            val newEnabled = !alarm.isEnabled
-            if (newEnabled) {
-                val nextTrigger = calculator.calculate(alarm)
-                repository.setEnabled(alarm.id, enabled = true, nextTrigger = nextTrigger)
-                val outcome = scheduler.schedule(alarm.copy(isEnabled = true, nextTriggerTime = nextTrigger))
-                val message = when (outcome) {
-                    is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.PermissionBlocked ->
-                        context.getString(R.string.feedback_alarm_enabled_permission_blocked)
-                    is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed ->
-                        context.getString(R.string.feedback_alarm_enabled_registration_failed)
-                    else ->
-                        context.getString(R.string.feedback_alarm_enabled_for, formatFeedbackTime(nextTrigger))
+            mutationMutex.withLock {
+                val activeId = preferencesManager.getCurrentSettings().activeAlarmId
+                if (activeId == alarm.id) {
+                    emitFeedback(context.getString(R.string.alarmlist_cannot_modify_active_alarm))
+                    return@withLock
                 }
-                emitFeedback(message)
-            } else {
-                val lockMinutes = preferencesManager.getCachedSettings().cancellationLockMinutes
-                if (lockMinutes > 0 && alarm.nextTriggerTime > 0) {
-                    val minutesUntilFire = (alarm.nextTriggerTime - System.currentTimeMillis()) / 60_000
-                    if (minutesUntilFire in 0..lockMinutes) {
-                        emitFeedback(context.getString(R.string.alarmlist_cancellation_locked, minutesUntilFire.toInt()))
-                        return@launch
+                val current = repository.getById(alarm.id) ?: return@withLock
+                val newEnabled = !current.isEnabled
+                if (newEnabled) {
+                    val nextTrigger = calculator.calculate(current)
+                    repository.setEnabled(current.id, enabled = true, nextTrigger = nextTrigger)
+                    val outcome = scheduler.schedule(current.copy(isEnabled = true, nextTriggerTime = nextTrigger))
+                    val message = when (outcome) {
+                        is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.PermissionBlocked ->
+                            context.getString(R.string.feedback_alarm_enabled_permission_blocked)
+                        is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed ->
+                            context.getString(R.string.feedback_alarm_enabled_registration_failed)
+                        else ->
+                            context.getString(R.string.feedback_alarm_enabled_for, formatFeedbackTime(nextTrigger))
                     }
+                    emitFeedback(message)
+                } else {
+                    val lockMinutes = preferencesManager.getCachedSettings().cancellationLockMinutes
+                    if (lockMinutes > 0 && current.nextTriggerTime > 0) {
+                        val minutesUntilFire = (current.nextTriggerTime - System.currentTimeMillis()) / 60_000
+                        if (minutesUntilFire in 0..lockMinutes) {
+                            emitFeedback(context.getString(R.string.alarmlist_cancellation_locked, minutesUntilFire.toInt()))
+                            return@withLock
+                        }
+                    }
+                    disableAlarm(current)
                 }
-                disableAlarm(alarm)
             }
         }
     }
 
     fun forceDisableAlarm(alarm: Alarm) {
         viewModelScope.launch {
-            disableAlarm(alarm)
-            emitFeedback(context.getString(R.string.feedback_cancellation_lock_overridden_paused))
+            mutationMutex.withLock {
+                val activeId = preferencesManager.getCurrentSettings().activeAlarmId
+                if (activeId == alarm.id) {
+                    emitFeedback(context.getString(R.string.alarmlist_cannot_modify_active_alarm))
+                    return@withLock
+                }
+                val current = repository.getById(alarm.id) ?: return@withLock
+                disableAlarm(current)
+                emitFeedback(context.getString(R.string.feedback_cancellation_lock_overridden_paused))
+            }
         }
     }
 
@@ -641,10 +675,18 @@ class AlarmListViewModel @Inject constructor(
             return
         }
         viewModelScope.launch {
-            scheduler.cancel(alarm.id)
-            repository.delete(alarm)
-            scheduler.syncBedtimeDndRule()
-            _undoAlarm.value = alarm
+            mutationMutex.withLock {
+                val currentActiveId = preferencesManager.getCurrentSettings().activeAlarmId
+                if (currentActiveId == alarm.id) {
+                    emitFeedback(context.getString(R.string.alarmlist_cannot_modify_active_alarm))
+                    return@withLock
+                }
+                val current = repository.getById(alarm.id) ?: return@withLock
+                scheduler.cancel(current.id)
+                repository.delete(current)
+                scheduler.syncBedtimeDndRule()
+                _undoAlarm.value = current
+            }
         }
     }
 
