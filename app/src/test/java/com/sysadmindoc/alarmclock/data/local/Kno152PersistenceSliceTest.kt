@@ -6,8 +6,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.SupportSQLiteOpenHelper
 import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
+import com.squareup.moshi.Moshi
 import com.sysadmindoc.alarmclock.R
 import com.sysadmindoc.alarmclock.data.backup.AlarmBackup
+import com.sysadmindoc.alarmclock.data.backup.BackupData
 import com.sysadmindoc.alarmclock.data.backup.toAlarmOrNull
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleException
 import com.sysadmindoc.alarmclock.data.model.Alarm
@@ -80,7 +82,7 @@ class Kno152PersistenceSliceTest {
         assertEquals(Alarm.SCHEDULE_KIND_REPEATING, repeatingDaysNormal.deriveScheduleKind())
 
         // Repeating normal alarm with valid shiftPattern and start date
-        val shiftPatternNormal = Alarm(hour = 7, minute = 0, shiftPattern = "D/N/W", shiftPatternStartDate = "2026-01-01")
+        val shiftPatternNormal = Alarm(hour = 7, minute = 0, shiftPattern = "2D2N2O", shiftPatternStartDate = "2026-01-01")
         assertEquals(Alarm.SCHEDULE_KIND_REPEATING, shiftPatternNormal.deriveScheduleKind())
 
         // Invalid shiftPattern without start date derives ONE_TIME
@@ -388,7 +390,7 @@ class Kno152PersistenceSliceTest {
                             '', 0, 'SUNRISE', 0,
                             0, 10, 'NONE', '',
                             0, '', 1,
-                            1, 'D/N/W', '2026-01-01', 'LOCAL', '',
+                            1, '2D2N2O', '2026-01-01', 'LOCAL', '',
                             'NORMAL', 0, 0, -1
                         )
                     """.trimIndent())
@@ -474,60 +476,90 @@ class Kno152PersistenceSliceTest {
     }
 
     @Test
-    fun `Portable backup export and import handles legacy and modern scheduleKind compatibility correctly`() {
-        // Modern backup with explicit scheduleKind
-        val modernBackup = AlarmBackup(
-            id = 10L,
-            hour = 7,
-            minute = 30,
-            label = "Modern One Time",
-            isEnabled = true,
-            repeatDays = emptyList(),
-            scheduleKind = Alarm.SCHEDULE_KIND_ONE_TIME,
-            ringtoneUri = "",
-            vibrationEnabled = true,
-            vibrationIntensity = 2,
-            volume = 100,
-            overrideSystemVolume = true,
-            gradualVolumeSeconds = 60,
-            snoozeDurationMinutes = 10,
-            maxSnoozeCount = 3,
-            showOnLockScreen = true,
-            challengeType = "NONE"
-        )
+    fun `Moshi JSON deserialization restores legacy and modern backup scheduleKind correctly`() {
+        val moshi = Moshi.Builder().build()
+        val adapter = moshi.adapter(BackupData::class.java)
 
-        val restoredModern = modernBackup.toAlarmOrNull()
-        assertNotNull(restoredModern)
-        assertEquals(Alarm.SCHEDULE_KIND_ONE_TIME, restoredModern!!.scheduleKind)
+        // 1. Legacy Backup JSON string without scheduleKind field
+        val legacyJson = """
+            {
+              "version": 20,
+              "appVersion": "1.15.28",
+              "exportedAt": 1700000000000,
+              "alarms": [
+                {
+                  "id": 1,
+                  "hour": 7,
+                  "minute": 0,
+                  "label": "Legacy Work",
+                  "isEnabled": true,
+                  "repeatDays": ["MONDAY", "FRIDAY"],
+                  "ringtoneUri": "",
+                  "vibrationEnabled": true,
+                  "vibrationIntensity": 2,
+                  "volume": 100,
+                  "overrideSystemVolume": true,
+                  "gradualVolumeSeconds": 60,
+                  "snoozeDurationMinutes": 10,
+                  "maxSnoozeCount": 3,
+                  "showOnLockScreen": true,
+                  "challengeType": "NONE"
+                }
+              ],
+              "settings": null
+            }
+        """.trimIndent()
 
-        // Legacy backup where scheduleKind is null
-        val legacyRepeatingBackup = AlarmBackup(
-            id = 11L,
-            hour = 8,
-            minute = 0,
-            label = "Legacy Repeating",
-            isEnabled = true,
-            repeatDays = listOf("MONDAY", "TUESDAY"),
-            scheduleKind = null,
-            ringtoneUri = "",
-            vibrationEnabled = true,
-            vibrationIntensity = 2,
-            volume = 100,
-            overrideSystemVolume = true,
-            gradualVolumeSeconds = 60,
-            snoozeDurationMinutes = 10,
-            maxSnoozeCount = 3,
-            showOnLockScreen = true,
-            challengeType = "NONE"
-        )
+        val parsedLegacyData = adapter.fromJson(legacyJson)
+        assertNotNull(parsedLegacyData)
+        assertEquals(1, parsedLegacyData!!.alarms.size)
+        val legacyBackupItem = parsedLegacyData.alarms[0]
+        assertEquals(null, legacyBackupItem.scheduleKind)
 
-        val restoredLegacy = legacyRepeatingBackup.toAlarmOrNull()
-        assertNotNull(restoredLegacy)
-        assertEquals(Alarm.SCHEDULE_KIND_REPEATING, restoredLegacy!!.scheduleKind)
+        val restoredLegacyAlarm = legacyBackupItem.toAlarmOrNull()
+        assertNotNull(restoredLegacyAlarm)
+        assertEquals(Alarm.SCHEDULE_KIND_REPEATING, restoredLegacyAlarm!!.scheduleKind)
 
-        // Verify AlarmBackup payload class does not contain ScheduleException fields
-        val backupClassFields = modernBackup.javaClass.declaredFields.map { it.name }
-        assertFalse("AlarmBackup payload MUST NOT contain ScheduleException instances or tables", backupClassFields.contains("exceptions"))
-        assertFalse("AlarmBackup payload MUST NOT contain ScheduleException instances or tables", backupClassFields.contains("scheduleExceptions"))
+        // 2. Modern Backup JSON string with explicit scheduleKind
+        val modernJson = """
+            {
+              "version": 20,
+              "appVersion": "1.16.0",
+              "exportedAt": 1700000000000,
+              "alarms": [
+                {
+                  "id": 2,
+                  "hour": 8,
+                  "minute": 30,
+                  "label": "Modern One Time",
+                  "isEnabled": true,
+                  "repeatDays": [],
+                  "scheduleKind": "ONE_TIME",
+                  "ringtoneUri": "",
+                  "vibrationEnabled": true,
+                  "vibrationIntensity": 2,
+                  "volume": 100,
+                  "overrideSystemVolume": true,
+                  "gradualVolumeSeconds": 60,
+                  "snoozeDurationMinutes": 10,
+                  "maxSnoozeCount": 3,
+                  "showOnLockScreen": true,
+                  "challengeType": "NONE"
+                }
+              ],
+              "settings": null
+            }
+        """.trimIndent()
+
+        val parsedModernData = adapter.fromJson(modernJson)
+        assertNotNull(parsedModernData)
+        val restoredModernAlarm = parsedModernData!!.alarms[0].toAlarmOrNull()
+        assertNotNull(restoredModernAlarm)
+        assertEquals(Alarm.SCHEDULE_KIND_ONE_TIME, restoredModernAlarm!!.scheduleKind)
+
+        // 3. Serialized JSON output does NOT contain schedule_exceptions
+        val serializedJson = adapter.toJson(parsedModernData)
+        assertFalse("Backup JSON output MUST NOT contain schedule_exceptions", serializedJson.contains("schedule_exceptions"))
+        assertFalse("Backup JSON output MUST NOT contain ScheduleException", serializedJson.contains("ScheduleException"))
     }
 }
