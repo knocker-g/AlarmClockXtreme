@@ -82,7 +82,7 @@ class Kno152PersistenceSliceTest {
         assertEquals(Alarm.SCHEDULE_KIND_REPEATING, repeatingDaysNormal.deriveScheduleKind())
 
         // Repeating normal alarm with valid shiftPattern and start date
-        val shiftPatternNormal = Alarm(hour = 7, minute = 0, shiftPattern = "2D2N2O", shiftPatternStartDate = "2026-01-01")
+        val shiftPatternNormal = Alarm(hour = 7, minute = 0, shiftPattern = "DDNNO", shiftPatternStartDate = "2026-01-01")
         assertEquals(Alarm.SCHEDULE_KIND_REPEATING, shiftPatternNormal.deriveScheduleKind())
 
         // Invalid shiftPattern without start date derives ONE_TIME
@@ -136,29 +136,46 @@ class Kno152PersistenceSliceTest {
     }
 
     @Test
-    fun `Optimistic Concurrency Control - Outdated draft displays distinct stale error message and deleted alarm protection`() = runBlocking {
+    fun `Optimistic Concurrency Control - Outdated draft snapshot is rejected by AlarmRepository`() = runBlocking {
         val initial = Alarm(hour = 7, minute = 0, label = "Original")
         val id = alarmRepo.save(initial)
         val currentDb = alarmRepo.getById(id)!!
 
-        // Save a newer edit first (e.g. User changed hour to 8)
+        // Save a newer edit first (e.g. User changed hour to 8 -> generation = 2)
         alarmRepo.update(currentDb.copy(hour = 8))
         val updatedDb = alarmRepo.getById(id)!!
         assertEquals(2, updatedDb.generation)
 
         // Attempting to save an outdated draft snapshot holding generation = 1 throws StaleAlarmException
-        val staleDraft = currentDb.copy(label = "Stale Edit from Old Draft")
-        var staleRejected = false
+        val staleDraftGen1 = currentDb.copy(label = "Stale Edit from Old Draft")
+        var staleGen1Rejected = false
         try {
-            alarmRepo.update(staleDraft)
+            alarmRepo.update(staleDraftGen1)
         } catch (e: StaleAlarmException) {
-            staleRejected = true
+            staleGen1Rejected = true
         }
+        assertTrue("Stale draft update (gen 1 < gen 2) MUST be rejected by AlarmRepository", staleGen1Rejected)
 
-        assertTrue("Stale draft update MUST be rejected by AlarmRepository", staleRejected)
-        // Verify DB entity remains at generation = 2
+        // Save a secondary edit on current DB (label update -> generation = 2, revision = 2)
+        alarmRepo.update(updatedDb.copy(label = "Session A Secondary Update"))
+        val rev2Db = alarmRepo.getById(id)!!
+        assertEquals(2, rev2Db.generation)
+        assertEquals(2, rev2Db.revision)
+
+        // Attempting to save a stale draft holding revision = 1 in same generation = 2 throws StaleAlarmException
+        val staleDraftRev1 = updatedDb.copy(label = "Session B Stale Revision Edit")
+        var staleRev1Rejected = false
+        try {
+            alarmRepo.update(staleDraftRev1)
+        } catch (e: StaleAlarmException) {
+            staleRev1Rejected = true
+        }
+        assertTrue("Stale draft update (rev 1 < rev 2 in same gen 2) MUST be rejected by AlarmRepository", staleRev1Rejected)
+
+        // Verify DB entity remains at generation = 2, revision = 2, label = "Session A Secondary Update"
         assertEquals(2, alarmRepo.getById(id)!!.generation)
-        assertEquals(8, alarmRepo.getById(id)!!.hour)
+        assertEquals(2, alarmRepo.getById(id)!!.revision)
+        assertEquals("Session A Secondary Update", alarmRepo.getById(id)!!.label)
 
         // Test deleted alarm protection
         val tempAlarm = Alarm(hour = 9, minute = 0, label = "Temp Alarm")
@@ -390,7 +407,7 @@ class Kno152PersistenceSliceTest {
                             '', 0, 'SUNRISE', 0,
                             0, 10, 'NONE', '',
                             0, '', 1,
-                            1, '2D2N2O', '2026-01-01', 'LOCAL', '',
+                            1, 'DDNNO', '2026-01-01', 'LOCAL', '',
                             'NORMAL', 0, 0, -1
                         )
                     """.trimIndent())

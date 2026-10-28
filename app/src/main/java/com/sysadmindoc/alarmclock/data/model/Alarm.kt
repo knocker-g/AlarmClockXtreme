@@ -170,13 +170,16 @@ data class Alarm(
     /**
      * Derives explicit schedule kind from Normal alarm parameters (KNO-152).
      * QUICK alarms are always ONE_TIME. Normal alarms are REPEATING if they have
-     * repeatDays or a shiftPattern with start date, otherwise ONE_TIME.
+     * repeatDays or a valid shiftPattern with valid start date, otherwise ONE_TIME.
      * Note: skipOnHolidays is a holiday exclusion rule, NOT a schedule repeating rule.
      */
     fun deriveScheduleKind(): String {
         if (kind == KIND_QUICK) return SCHEDULE_KIND_ONE_TIME
-        val hasShift = shiftPattern.isNotBlank() && shiftPatternStartDate.isNotBlank()
-        return if (repeatDays.isNotEmpty() || hasShift) {
+        val hasValidShiftPattern = shiftPattern.isNotBlank() &&
+                ShiftPattern.fromKey(shiftPattern) != null &&
+                shiftPatternStartDate.isNotBlank() &&
+                runCatching { LocalDate.parse(shiftPatternStartDate) }.isSuccess
+        return if (repeatDays.isNotEmpty() || hasValidShiftPattern) {
             SCHEDULE_KIND_REPEATING
         } else {
             SCHEDULE_KIND_ONE_TIME

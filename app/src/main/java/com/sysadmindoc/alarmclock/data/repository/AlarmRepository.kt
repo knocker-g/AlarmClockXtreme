@@ -100,11 +100,15 @@ class AlarmRepository @Inject constructor(
         }
 
         // Optimistic Concurrency Control Check (Normal Alarms in update flows):
-        // Reject stale drafts where draft schedule generation is strictly older than current DB generation.
-        if (isUpdateCall && !existing.isQuickAlarm && !alarm.isQuickAlarm && alarm.generation < existing.generation) {
-            throw StaleAlarmException(
-                "Stale alarm draft (gen ${alarm.generation}) cannot overwrite newer DB schedule generation (gen ${existing.generation})"
-            )
+        // Reject stale drafts where draft version (generation or revision in same generation) is strictly older than current DB version.
+        if (isUpdateCall && !existing.isQuickAlarm && !alarm.isQuickAlarm) {
+            if (alarm.generation < existing.generation ||
+                (alarm.generation == existing.generation && alarm.revision < existing.revision)
+            ) {
+                throw StaleAlarmException(
+                    "Stale alarm draft (gen ${alarm.generation}, rev ${alarm.revision}) cannot overwrite newer DB version (gen ${existing.generation}, rev ${existing.revision})"
+                )
+            }
         }
 
         val isScheduleChanged = existing.hour != withKind.hour ||
