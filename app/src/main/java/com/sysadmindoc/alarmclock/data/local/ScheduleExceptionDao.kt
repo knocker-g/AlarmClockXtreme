@@ -12,11 +12,8 @@ import kotlinx.coroutines.flow.Flow
  */
 @Dao
 interface ScheduleExceptionDao {
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insert(exception: ScheduleException): Long
-
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insertIgnore(exception: ScheduleException): Long
+    suspend fun insert(exception: ScheduleException): Long
 
     @Query("SELECT * FROM schedule_exceptions WHERE alarmId = :alarmId ORDER BY baseTriggerTime ASC")
     suspend fun getExceptionsForAlarm(alarmId: Long): List<ScheduleException>

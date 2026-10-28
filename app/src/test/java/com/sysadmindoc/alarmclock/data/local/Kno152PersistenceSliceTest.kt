@@ -290,11 +290,14 @@ class Kno152PersistenceSliceTest {
 
     @Test
     fun `Migration 33 to 34 migrates alarms and opens as valid Room v34 database`() {
-        val dbFile = context.getDatabasePath("v33_v34_migration_test.db")
+        val dbFile = context.getDatabasePath("v33_v34_room_open_test.db")
         if (dbFile.exists()) dbFile.delete()
         dbFile.parentFile?.mkdirs()
 
         val sqliteDb = android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(dbFile, null)
+
+        // Set sqliteDb.version = 33
+        sqliteDb.version = 33
 
         // Create v33 schema matching 33.json
         sqliteDb.execSQL("""
@@ -461,10 +464,12 @@ class Kno152PersistenceSliceTest {
             )
         """.trimIndent())
 
+        sqliteDb.close()
+
         // Execute Room MIGRATION_33_34 on SupportSQLiteDatabase wrapper
         val supportDb = FrameworkSQLiteOpenHelperFactory().create(
             SupportSQLiteOpenHelper.Configuration.builder(context)
-                .name("v33_v34_migration_test.db")
+                .name("v33_v34_room_open_test.db")
                 .callback(object : SupportSQLiteOpenHelper.Callback(33) {
                     override fun onCreate(db: SupportSQLiteDatabase) {}
                     override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {}
@@ -500,7 +505,6 @@ class Kno152PersistenceSliceTest {
         exceptionsCursor.close()
 
         supportDb.close()
-        sqliteDb.close()
         if (dbFile.exists()) dbFile.delete()
     }
 

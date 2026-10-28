@@ -14,7 +14,7 @@ open class ScheduleExceptionRepository @Inject constructor(
     private val dao: ScheduleExceptionDao
 ) {
     open suspend fun addException(exception: ScheduleException): Long {
-        val insertedRowId = dao.insertIgnore(exception)
+        val insertedRowId = dao.insert(exception)
         if (insertedRowId != -1L) {
             return insertedRowId
         }
