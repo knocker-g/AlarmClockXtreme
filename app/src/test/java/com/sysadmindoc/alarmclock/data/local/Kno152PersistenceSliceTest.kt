@@ -1,10 +1,8 @@
 package com.sysadmindoc.alarmclock.data.local
 
 import android.content.Context
+import android.database.sqlite.SQLiteDatabase
 import androidx.room.Room
-import androidx.sqlite.db.SupportSQLiteDatabase
-import androidx.sqlite.db.SupportSQLiteOpenHelper
-import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
 import com.squareup.moshi.Moshi
 import com.sysadmindoc.alarmclock.R
@@ -61,6 +59,128 @@ class Kno152PersistenceSliceTest {
     fun tearDown() {
         try { io.mockk.clearAllMocks() } catch (_: Exception) {}
         db.close()
+    }
+
+    private fun populateFullV33Schema(sqliteDb: SQLiteDatabase) {
+        sqliteDb.execSQL("CREATE TABLE IF NOT EXISTS `room_master_table` (`id` INTEGER PRIMARY KEY, `identity_hash` TEXT)")
+        sqliteDb.execSQL("INSERT OR REPLACE INTO `room_master_table` (`id`, `identity_hash`) VALUES (42, '66f16889237275acc708ed34bc8e54a6')")
+
+        sqliteDb.execSQL("""
+            CREATE TABLE IF NOT EXISTS `alarms` (
+                `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                `hour` INTEGER NOT NULL,
+                `minute` INTEGER NOT NULL,
+                `label` TEXT NOT NULL,
+                `isEnabled` INTEGER NOT NULL,
+                `repeatDays` TEXT NOT NULL,
+                `ringtoneUri` TEXT NOT NULL,
+                `vibrationEnabled` INTEGER NOT NULL,
+                `vibrationIntensity` INTEGER NOT NULL,
+                `volume` INTEGER NOT NULL,
+                `overrideSystemVolume` INTEGER NOT NULL,
+                `gradualVolumeSeconds` INTEGER NOT NULL,
+                `snoozeDurationMinutes` INTEGER NOT NULL,
+                `maxSnoozeCount` INTEGER NOT NULL,
+                `showOnLockScreen` INTEGER NOT NULL,
+                `challengeType` TEXT NOT NULL,
+                `group` TEXT NOT NULL,
+                `flashWake` INTEGER NOT NULL,
+                `vibrationPattern` TEXT NOT NULL,
+                `createdAt` INTEGER NOT NULL,
+                `nextTriggerTime` INTEGER NOT NULL,
+                `ttsEnabled` INTEGER NOT NULL,
+                `walkStepsRequired` INTEGER NOT NULL,
+                `wakeConfirmEnabled` INTEGER NOT NULL,
+                `wakeConfirmDelayMinutes` INTEGER NOT NULL,
+                `smartAlarmEnabled` INTEGER NOT NULL,
+                `smartAlarmWindowMinutes` INTEGER NOT NULL,
+                `skipOnHolidays` INTEGER NOT NULL,
+                `nfcTagId` TEXT NOT NULL,
+                `barcodeValue` TEXT NOT NULL,
+                `spotifyUri` TEXT NOT NULL,
+                `hueEnabled` INTEGER NOT NULL,
+                `huePreWakeMinutes` INTEGER NOT NULL,
+                `photoMatchUri` TEXT NOT NULL,
+                `challengeChain` TEXT NOT NULL,
+                `progressiveSnooze` INTEGER NOT NULL,
+                `backupSoundEnabled` INTEGER NOT NULL,
+                `backupSoundDelaySec` INTEGER NOT NULL,
+                `sunriseSimulation` INTEGER NOT NULL,
+                `sunriseMinutes` INTEGER NOT NULL,
+                `specificDate` TEXT NOT NULL,
+                `profileName` TEXT NOT NULL,
+                `earlyDismissMinutes` INTEGER NOT NULL,
+                `guardianEnabled` INTEGER NOT NULL,
+                `guardianPhone` TEXT NOT NULL,
+                `guardianDelaySec` INTEGER NOT NULL,
+                `locationDismissEnabled` INTEGER NOT NULL,
+                `locationDismissLat` REAL NOT NULL,
+                `locationDismissLng` REAL NOT NULL,
+                `locationDismissRadius` INTEGER NOT NULL,
+                `wifiDismissSsid` TEXT NOT NULL,
+                `internetRadioUrl` TEXT NOT NULL,
+                `flashlightStrobe` INTEGER NOT NULL,
+                `morningRoutine` TEXT NOT NULL,
+                `hardwareButtonAction` TEXT NOT NULL,
+                `dismissAtRingtoneEnd` INTEGER NOT NULL,
+                `holdToDismissEnabled` INTEGER NOT NULL,
+                `ringtonePool` TEXT NOT NULL,
+                `solarOffsetMinutes` INTEGER NOT NULL,
+                `solarAnchor` TEXT NOT NULL,
+                `vibrationDelaySeconds` INTEGER NOT NULL,
+                `weatherEarlyMinutes` INTEGER NOT NULL,
+                `requiredSquats` INTEGER NOT NULL,
+                `dismissActionType` TEXT NOT NULL,
+                `dismissActionPayload` TEXT NOT NULL,
+                `firingBackgroundImageEnabled` INTEGER NOT NULL,
+                `firingBackgroundImageUri` TEXT NOT NULL,
+                `firingBackgroundBlurEnabled` INTEGER NOT NULL,
+                `sortOrder` INTEGER NOT NULL,
+                `shiftPattern` TEXT NOT NULL,
+                `shiftPatternStartDate` TEXT NOT NULL,
+                `timezonePolicy` TEXT NOT NULL,
+                `fixedTimezoneId` TEXT NOT NULL,
+                `kind` TEXT NOT NULL,
+                `quickTriggerEpochMs` INTEGER NOT NULL,
+                `quickRelativeElapsedMs` INTEGER NOT NULL,
+                `quickBootCount` INTEGER NOT NULL
+            )
+        """.trimIndent())
+
+        sqliteDb.execSQL("CREATE TABLE IF NOT EXISTS `alarm_events` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `alarmId` INTEGER NOT NULL, `alarmLabel` TEXT NOT NULL, `scheduledTime` INTEGER NOT NULL, `firedAt` INTEGER NOT NULL, `action` TEXT NOT NULL, `actionAt` INTEGER NOT NULL, `challengeType` TEXT NOT NULL, `challengeSolveTimeMs` INTEGER NOT NULL, `challengeRetryCount` INTEGER NOT NULL, `snoozeCount` INTEGER NOT NULL, `dayOfWeek` INTEGER NOT NULL)")
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_alarm_events_action` ON `alarm_events` (`action`)")
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_alarm_events_firedAt` ON `alarm_events` (`firedAt`)")
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_alarm_events_alarmId_firedAt` ON `alarm_events` (`alarmId`, `firedAt`)")
+
+        sqliteDb.execSQL("CREATE TABLE IF NOT EXISTS `actigraphy_sessions` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `alarmId` INTEGER NOT NULL, `startedAt` INTEGER NOT NULL, `endedAt` INTEGER NOT NULL, `targetTime` INTEGER NOT NULL, `totalMinutes` INTEGER NOT NULL, `awakeMinutes` INTEGER NOT NULL, `lightMinutes` INTEGER NOT NULL, `deepMinutes` INTEGER NOT NULL, `averageSleepIndex` REAL NOT NULL, `firedEarly` INTEGER NOT NULL, `algorithm` TEXT NOT NULL, `decisionReason` TEXT NOT NULL, `observedMinutesBeforeDecision` INTEGER NOT NULL, `smartWakeMode` TEXT NOT NULL)")
+
+        sqliteDb.execSQL("CREATE TABLE IF NOT EXISTS `alarm_incident_events` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `fireId` TEXT NOT NULL, `alarmId` INTEGER NOT NULL, `scheduledAt` INTEGER NOT NULL, `eventAt` INTEGER NOT NULL, `elapsedMs` INTEGER NOT NULL, `type` TEXT NOT NULL, `status` TEXT NOT NULL, `reasonCode` TEXT NOT NULL, `source` TEXT NOT NULL, `sdkInt` INTEGER NOT NULL, `standbyBucket` TEXT NOT NULL, `exactAlarmAllowed` TEXT NOT NULL, `notificationPermissionGranted` TEXT NOT NULL, `fullScreenIntentAllowed` TEXT NOT NULL, `batteryOptimizationsIgnored` TEXT NOT NULL, `algorithmVersion` TEXT NOT NULL)")
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_alarm_incident_events_alarmId` ON `alarm_incident_events` (`alarmId`)")
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_alarm_incident_events_fireId` ON `alarm_incident_events` (`fireId`)")
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_alarm_incident_events_eventAt` ON `alarm_incident_events` (`eventAt`)")
+
+        sqliteDb.execSQL("CREATE TABLE IF NOT EXISTS `snore_events` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `sessionStartedAt` INTEGER NOT NULL, `startedAt` INTEGER NOT NULL, `endedAt` INTEGER NOT NULL, `durationMillis` INTEGER NOT NULL, `peakDb` REAL NOT NULL, `averageDb` REAL NOT NULL, `windowCount` INTEGER NOT NULL, `source` TEXT NOT NULL)")
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_snore_events_sessionStartedAt` ON `snore_events` (`sessionStartedAt`)")
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_snore_events_startedAt` ON `snore_events` (`startedAt`)")
+
+        sqliteDb.execSQL("CREATE TABLE IF NOT EXISTS `pre_sleep_tag_entries` (`localDate` TEXT NOT NULL, `tagKey` TEXT NOT NULL, `loggedAt` INTEGER NOT NULL, PRIMARY KEY(`localDate`, `tagKey`))")
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_pre_sleep_tag_entries_localDate` ON `pre_sleep_tag_entries` (`localDate`)")
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_pre_sleep_tag_entries_tagKey` ON `pre_sleep_tag_entries` (`tagKey`)")
+
+        sqliteDb.execSQL("CREATE TABLE IF NOT EXISTS `alarm_groups` (`name` TEXT NOT NULL, PRIMARY KEY(`name`))")
+        sqliteDb.execSQL("CREATE TABLE IF NOT EXISTS `news_sources` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `feedUrl` TEXT NOT NULL, `sortOrder` INTEGER NOT NULL)")
+        sqliteDb.execSQL("CREATE TABLE IF NOT EXISTS `schedule_authority` (`alarmId` INTEGER NOT NULL, `instanceToken` TEXT NOT NULL, `definitionRevision` INTEGER NOT NULL, `scheduleRevision` INTEGER NOT NULL, `lifecycle` TEXT NOT NULL, `desiredOperation` TEXT NOT NULL, `desiredTriggerMillis` INTEGER, `reconcileState` TEXT NOT NULL, `restoreEpoch` INTEGER NOT NULL, `actionKey` TEXT, PRIMARY KEY(`alarmId`))")
+        sqliteDb.execSQL("CREATE TABLE IF NOT EXISTS `schedule_authority_meta` (`id` INTEGER NOT NULL, `restoreEpoch` INTEGER NOT NULL, `bootstrapState` TEXT NOT NULL, PRIMARY KEY(`id`))")
+
+        sqliteDb.execSQL("CREATE TABLE IF NOT EXISTS `durable_operation_intent` (`operationToken` TEXT NOT NULL, `alarmId` INTEGER NOT NULL, `operationEpoch` INTEGER NOT NULL, `incarnationId` TEXT NOT NULL, `operationKind` TEXT NOT NULL, `expectedOwnerToken` TEXT, `expectedScheduleRevision` INTEGER, `expectedRestoreEpoch` INTEGER, `phase` TEXT NOT NULL, `intentRevision` INTEGER NOT NULL, `originalFireId` TEXT, `originalScheduledAt` INTEGER, `candidateSnoozeAt` INTEGER, PRIMARY KEY(`operationToken`))")
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_durable_operation_intent_alarmId_phase` ON `durable_operation_intent` (`alarmId`, `phase`)")
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_durable_operation_intent_alarmId` ON `durable_operation_intent` (`alarmId`)")
+
+        sqliteDb.execSQL("CREATE TABLE IF NOT EXISTS `issued_occurrences` (`issueToken` TEXT NOT NULL, `alarmId` INTEGER NOT NULL, `scheduledAt` INTEGER NOT NULL, `fireId` TEXT NOT NULL, `generationId` INTEGER NOT NULL, `status` TEXT NOT NULL, `activatedAt` INTEGER, `recoveryLeaseToken` TEXT, `recoveryLeaseExpiresAt` INTEGER, `outcome` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`issueToken`))")
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_issued_occurrences_alarmId_scheduledAt` ON `issued_occurrences` (`alarmId`, `scheduledAt`)")
+        sqliteDb.execSQL("CREATE INDEX IF NOT EXISTS `index_issued_occurrences_status` ON `issued_occurrences` (`status`)")
+
+        sqliteDb.execSQL("CREATE TABLE IF NOT EXISTS `issue_slots` (`alarmId` INTEGER NOT NULL, `currentIssueToken` TEXT, `generationId` INTEGER NOT NULL, PRIMARY KEY(`alarmId`))")
     }
 
     @Test
@@ -295,94 +415,12 @@ class Kno152PersistenceSliceTest {
         dbFile.parentFile?.mkdirs()
 
         val sqliteDb = android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(dbFile, null)
-
-        // Set sqliteDb.version = 33
         sqliteDb.version = 33
 
-        // Create v33 schema matching 33.json
-        sqliteDb.execSQL("""
-            CREATE TABLE IF NOT EXISTS `alarms` (
-                `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                `hour` INTEGER NOT NULL,
-                `minute` INTEGER NOT NULL,
-                `label` TEXT NOT NULL,
-                `isEnabled` INTEGER NOT NULL,
-                `repeatDays` TEXT NOT NULL,
-                `ringtoneUri` TEXT NOT NULL,
-                `vibrationEnabled` INTEGER NOT NULL,
-                `vibrationIntensity` INTEGER NOT NULL,
-                `volume` INTEGER NOT NULL,
-                `overrideSystemVolume` INTEGER NOT NULL,
-                `gradualVolumeSeconds` INTEGER NOT NULL,
-                `snoozeDurationMinutes` INTEGER NOT NULL,
-                `maxSnoozeCount` INTEGER NOT NULL,
-                `showOnLockScreen` INTEGER NOT NULL,
-                `challengeType` TEXT NOT NULL,
-                `group` TEXT NOT NULL,
-                `flashWake` INTEGER NOT NULL,
-                `vibrationPattern` TEXT NOT NULL,
-                `createdAt` INTEGER NOT NULL,
-                `nextTriggerTime` INTEGER NOT NULL,
-                `ttsEnabled` INTEGER NOT NULL,
-                `walkStepsRequired` INTEGER NOT NULL,
-                `wakeConfirmEnabled` INTEGER NOT NULL,
-                `wakeConfirmDelayMinutes` INTEGER NOT NULL,
-                `smartAlarmEnabled` INTEGER NOT NULL,
-                `smartAlarmWindowMinutes` INTEGER NOT NULL,
-                `skipOnHolidays` INTEGER NOT NULL,
-                `nfcTagId` TEXT NOT NULL,
-                `barcodeValue` TEXT NOT NULL,
-                `spotifyUri` TEXT NOT NULL,
-                `hueEnabled` INTEGER NOT NULL,
-                `huePreWakeMinutes` INTEGER NOT NULL,
-                `photoMatchUri` TEXT NOT NULL,
-                `challengeChain` TEXT NOT NULL,
-                `progressiveSnooze` INTEGER NOT NULL,
-                `backupSoundEnabled` INTEGER NOT NULL,
-                `backupSoundDelaySec` INTEGER NOT NULL,
-                `sunriseSimulation` INTEGER NOT NULL,
-                `sunriseMinutes` INTEGER NOT NULL,
-                `specificDate` TEXT NOT NULL,
-                `profileName` TEXT NOT NULL,
-                `earlyDismissMinutes` INTEGER NOT NULL,
-                `guardianEnabled` INTEGER NOT NULL,
-                `guardianPhone` TEXT NOT NULL,
-                `guardianDelaySec` INTEGER NOT NULL,
-                `locationDismissEnabled` INTEGER NOT NULL,
-                `locationDismissLat` REAL NOT NULL,
-                `locationDismissLng` REAL NOT NULL,
-                `locationDismissRadius` INTEGER NOT NULL,
-                `wifiDismissSsid` TEXT NOT NULL,
-                `internetRadioUrl` TEXT NOT NULL,
-                `flashlightStrobe` INTEGER NOT NULL,
-                `morningRoutine` TEXT NOT NULL,
-                `hardwareButtonAction` TEXT NOT NULL,
-                `dismissAtRingtoneEnd` INTEGER NOT NULL,
-                `holdToDismissEnabled` INTEGER NOT NULL,
-                `ringtonePool` TEXT NOT NULL,
-                `solarOffsetMinutes` INTEGER NOT NULL,
-                `solarAnchor` TEXT NOT NULL,
-                `vibrationDelaySeconds` INTEGER NOT NULL,
-                `weatherEarlyMinutes` INTEGER NOT NULL,
-                `requiredSquats` INTEGER NOT NULL,
-                `dismissActionType` TEXT NOT NULL,
-                `dismissActionPayload` TEXT NOT NULL,
-                `firingBackgroundImageEnabled` INTEGER NOT NULL,
-                `firingBackgroundImageUri` TEXT NOT NULL,
-                `firingBackgroundBlurEnabled` INTEGER NOT NULL,
-                `sortOrder` INTEGER NOT NULL,
-                `shiftPattern` TEXT NOT NULL,
-                `shiftPatternStartDate` TEXT NOT NULL,
-                `timezonePolicy` TEXT NOT NULL,
-                `fixedTimezoneId` TEXT NOT NULL,
-                `kind` TEXT NOT NULL,
-                `quickTriggerEpochMs` INTEGER NOT NULL,
-                `quickRelativeElapsedMs` INTEGER NOT NULL,
-                `quickBootCount` INTEGER NOT NULL
-            )
-        """.trimIndent())
+        // Populate full v33 schema matching 33.json
+        populateFullV33Schema(sqliteDb)
 
-        // Insert repeating Normal alarm into v33 database with real converter format 'MONDAY,TUESDAY'
+        // Insert repeating Normal alarm into v33 database with real converter format '1,2'
         sqliteDb.execSQL("""
             INSERT INTO alarms (
                 id, hour, minute, label, isEnabled, repeatDays, ringtoneUri, vibrationEnabled,
@@ -403,7 +441,7 @@ class Kno152PersistenceSliceTest {
                 sortOrder, shiftPattern, shiftPatternStartDate, timezonePolicy, fixedTimezoneId,
                 kind, quickTriggerEpochMs, quickRelativeElapsedMs, quickBootCount
             ) VALUES (
-                1, 7, 0, 'Morning Work', 1, 'MONDAY,TUESDAY', '', 1,
+                1, 7, 0, 'Morning Work', 1, '1,2', '', 1,
                 2, 100, 1, 60,
                 10, 3, 1, 'NONE', 'Work',
                 0, 'default', 1600000000000, 1700000000000, 0,
@@ -466,45 +504,35 @@ class Kno152PersistenceSliceTest {
 
         sqliteDb.close()
 
-        // Execute Room MIGRATION_33_34 on SupportSQLiteDatabase wrapper
-        val supportDb = FrameworkSQLiteOpenHelperFactory().create(
-            SupportSQLiteOpenHelper.Configuration.builder(context)
-                .name("v33_v34_room_open_test.db")
-                .callback(object : SupportSQLiteOpenHelper.Callback(33) {
-                    override fun onCreate(db: SupportSQLiteDatabase) {}
-                    override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {}
-                })
-                .build()
-        ).writableDatabase
+        // Open via Room.databaseBuilder and trigger migration + schema validation
+        val database = Room.databaseBuilder(
+            context,
+            AlarmDatabase::class.java,
+            dbFile.absolutePath
+        )
+            .allowMainThreadQueries()
+            .addMigrations(*AlarmDatabase.ALL_MIGRATIONS)
+            .addCallback(AlarmDatabase.DATABASE_CALLBACK)
+            .build()
 
-        AlarmDatabase.MIGRATION_33_34.migrate(supportDb)
+        val migratedDb = database.openHelper.writableDatabase
+        assertEquals(AlarmDatabase.VERSION, migratedDb.version)
 
-        // Verify migrated columns in alarms table
-        val cursor = supportDb.query("SELECT id, scheduleKind, generation, revision, kind FROM alarms ORDER BY id ASC")
-        assertTrue(cursor.moveToNext())
+        runBlocking {
+            val alarm1 = database.alarmDao().getById(1L)
+            assertNotNull(alarm1)
+            assertEquals(Alarm.SCHEDULE_KIND_REPEATING, alarm1!!.scheduleKind)
+            assertEquals(1, alarm1.generation)
+            assertEquals(1, alarm1.revision)
 
-        // Alarm 1 (Repeating Normal)
-        assertEquals(1L, cursor.getLong(0))
-        assertEquals(Alarm.SCHEDULE_KIND_REPEATING, cursor.getString(1))
-        assertEquals(1, cursor.getInt(2))
-        assertEquals(1, cursor.getInt(3))
+            val alarm2 = database.alarmDao().getById(2L)
+            assertNotNull(alarm2)
+            assertEquals(Alarm.SCHEDULE_KIND_ONE_TIME, alarm2!!.scheduleKind)
+            assertEquals(1, alarm2.generation)
+            assertEquals(1, alarm2.revision)
+        }
 
-        // Alarm 2 (One-time Normal with skipOnHolidays = 1) -> MUST remain ONE_TIME
-        assertTrue(cursor.moveToNext())
-        assertEquals(2L, cursor.getLong(0))
-        assertEquals(Alarm.SCHEDULE_KIND_ONE_TIME, cursor.getString(1))
-        assertEquals(1, cursor.getInt(2))
-        assertEquals(1, cursor.getInt(3))
-
-        cursor.close()
-
-        // Verify schedule_exceptions table exists with revision column and unique index
-        val exceptionsCursor = supportDb.query("SELECT count(*) FROM schedule_exceptions")
-        assertTrue(exceptionsCursor.moveToNext())
-        assertEquals(0, exceptionsCursor.getInt(0))
-        exceptionsCursor.close()
-
-        supportDb.close()
+        database.close()
         if (dbFile.exists()) dbFile.delete()
     }
 
