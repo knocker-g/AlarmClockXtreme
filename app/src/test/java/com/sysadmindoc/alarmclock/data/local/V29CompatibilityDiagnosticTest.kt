@@ -178,12 +178,7 @@ class V29CompatibilityDiagnosticTest {
         val database = Room.databaseBuilder(context, AlarmDatabase::class.java, "alarm_clock.db")
             .allowMainThreadQueries()
             .setJournalMode(RoomDatabase.JournalMode.TRUNCATE)
-            .addMigrations(
-                AlarmDatabase.MIGRATION_29_30,
-                AlarmDatabase.MIGRATION_30_31,
-                AlarmDatabase.MIGRATION_31_32,
-                AlarmDatabase.MIGRATION_32_33
-            )
+            .addMigrations(*AlarmDatabase.ALL_MIGRATIONS)
             .addCallback(AlarmDatabase.DATABASE_CALLBACK)
             .build()
 

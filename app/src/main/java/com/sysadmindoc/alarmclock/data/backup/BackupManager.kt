@@ -121,7 +121,7 @@ data class AlarmBackup(
 
 @JsonClass(generateAdapter = true)
 data class BackupData(
-    val version: Int = 20,
+    val version: Int = 21,
     val appVersion: String = BuildConfig.VERSION_NAME,
     val exportedAt: Long = System.currentTimeMillis(),
     val alarms: List<AlarmBackup>,
@@ -298,7 +298,7 @@ class BackupManager @Inject constructor(
 
     companion object {
         /** Highest backup format version we know how to read end-to-end. */
-        const val MAX_SUPPORTED_BACKUP_VERSION = 20
+        const val MAX_SUPPORTED_BACKUP_VERSION = 21
 
         /**
          * Ceiling on an imported file. A full export of the maximum alarm count
