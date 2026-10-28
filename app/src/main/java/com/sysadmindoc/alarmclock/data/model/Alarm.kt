@@ -159,11 +159,60 @@ data class Alarm(
     // KNO-20: Quick Alarm monotonic elapsed target (relative duration)
     val quickRelativeElapsedMs: Long = 0,
     // KNO-20: Boot count when quickRelativeElapsedMs was written (-1 if unknown)
-    val quickBootCount: Long = -1
+    val quickBootCount: Long = -1,
+    // KNO-152: Explicit Normal schedule kind ("ONE_TIME" or "REPEATING")
+    val scheduleKind: String = SCHEDULE_KIND_ONE_TIME,
+    // KNO-152: Schedule definition generation (increments on core definition changes)
+    val generation: Int = 1,
+    // KNO-152: Schedule definition revision (increments on minor setting changes)
+    val revision: Int = 1
 ) {
+    /**
+     * Derives explicit schedule kind from Normal alarm parameters (KNO-152).
+     * QUICK alarms are always ONE_TIME. Normal alarms are REPEATING if they have
+     * repeatDays or shiftPattern, otherwise ONE_TIME.
+     */
+    fun deriveScheduleKind(): String {
+        if (kind == KIND_QUICK) return SCHEDULE_KIND_ONE_TIME
+        return if (repeatDays.isNotEmpty() || shiftPattern.isNotBlank()) {
+            SCHEDULE_KIND_REPEATING
+        } else {
+            SCHEDULE_KIND_ONE_TIME
+        }
+    }
+
+    /**
+     * Returns a copy of this alarm with scheduleKind updated to match parameters.
+     */
+    fun withDerivedScheduleKind(): Alarm {
+        val derived = deriveScheduleKind()
+        return if (this.scheduleKind != derived) copy(scheduleKind = derived) else this
+    }
+
+    /**
+     * Returns a copy with incremented schedule generation (resets revision to 1).
+     */
+    fun withIncrementedGeneration(): Alarm {
+        return copy(
+            generation = generation + 1,
+            revision = 1
+        ).withDerivedScheduleKind()
+    }
+
+    /**
+     * Returns a copy with incremented revision (keeps same generation).
+     */
+    fun withIncrementedRevision(): Alarm {
+        return copy(
+            revision = revision + 1
+        ).withDerivedScheduleKind()
+    }
+
     companion object {
         const val KIND_NORMAL = "NORMAL"
         const val KIND_QUICK = "QUICK"
+        const val SCHEDULE_KIND_ONE_TIME = "ONE_TIME"
+        const val SCHEDULE_KIND_REPEATING = "REPEATING"
         const val TIMEZONE_POLICY_LOCAL = "LOCAL"
         const val TIMEZONE_POLICY_FIXED = "FIXED"
         const val MAX_SMART_ALARM_WINDOW_MINUTES = 60
