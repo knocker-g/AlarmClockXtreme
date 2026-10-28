@@ -73,6 +73,9 @@ class AlarmRepository @Inject constructor(
 
     private fun prepareVersionedAlarm(alarm: Alarm, existing: Alarm?): Alarm {
         val withKind = alarm.withDerivedScheduleKind()
+        if (alarm.id != 0L && existing == null) {
+            throw StaleAlarmException("Alarm ${alarm.id} was deleted in another session and cannot be updated")
+        }
         if (existing == null) {
             return withKind.copy(
                 generation = if (withKind.generation > 0) withKind.generation else 1,

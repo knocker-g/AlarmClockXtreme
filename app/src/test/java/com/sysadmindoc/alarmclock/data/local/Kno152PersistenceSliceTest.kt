@@ -151,6 +151,28 @@ class Kno152PersistenceSliceTest {
     }
 
     @Test
+    fun `Optimistic Concurrency Control - Draft edit for deleted alarm throws StaleAlarmException and does not recreate entity`() = runBlocking {
+        val initial = Alarm(hour = 7, minute = 0, label = "Temporary Alarm")
+        val id = alarmRepo.save(initial)
+        val saved = alarmRepo.getById(id)!!
+
+        // Delete alarm from Room DB
+        alarmRepo.delete(saved)
+        assertEquals(null, alarmRepo.getById(id))
+
+        // Attempting to update the deleted alarm draft throws StaleAlarmException
+        var updateFailed = false
+        try {
+            alarmRepo.update(saved.copy(label = "Attempted Update on Deleted"))
+        } catch (e: StaleAlarmException) {
+            updateFailed = true
+        }
+
+        assertTrue("Update on deleted alarm MUST be rejected with StaleAlarmException", updateFailed)
+        assertEquals("Deleted alarm MUST NOT be re-created in Room DB", null, alarmRepo.getById(id))
+    }
+
+    @Test
     fun `KNO-32 Alignment - Occurrence identity depends on generation so revision changes keep occurrence identity stable`() {
         val baseTime = 1700000000000L
         val alarmRev1 = Alarm(id = 42L, generation = 2, revision = 1, label = "Morning")

@@ -760,8 +760,12 @@ class AlarmEditViewModel @Inject constructor(
                 revision = initialAlarm?.revision ?: 1,
                 scheduleKind = if (s.repeatDays.isNotEmpty() || s.shiftPattern.isNotBlank()) {
                     Alarm.SCHEDULE_KIND_REPEATING
-                } else if (initialAlarm != null && initialAlarm?.scheduleKind == Alarm.SCHEDULE_KIND_REPEATING && s.repeatDays.isEmpty() && s.shiftPattern.isBlank() && !s.skipOnHolidays) {
-                    Alarm.SCHEDULE_KIND_ONE_TIME
+                } else if (initialAlarm != null && initialAlarm?.scheduleKind == Alarm.SCHEDULE_KIND_REPEATING) {
+                    if (loadedDraft?.repeatDays?.isNotEmpty() == true && s.repeatDays.isEmpty()) {
+                        Alarm.SCHEDULE_KIND_ONE_TIME
+                    } else {
+                        Alarm.SCHEDULE_KIND_REPEATING
+                    }
                 } else {
                     initialAlarm?.scheduleKind ?: Alarm.SCHEDULE_KIND_ONE_TIME
                 }
@@ -787,7 +791,7 @@ class AlarmEditViewModel @Inject constructor(
             } catch (e: com.sysadmindoc.alarmclock.data.repository.StaleAlarmException) {
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,
-                    saveError = context.getString(R.string.alarmlist_cannot_modify_active_alarm)
+                    saveError = context.getString(R.string.alarm_edit_save_error_stale)
                 )
             } catch (_: Exception) {
                 _uiState.value = _uiState.value.copy(

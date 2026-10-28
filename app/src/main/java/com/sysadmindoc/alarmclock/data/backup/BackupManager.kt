@@ -114,7 +114,9 @@ data class AlarmBackup(
     val shiftPatternStartDate: String = "",
     // v1.15.28: optional IANA zone pin. Older backups follow the device zone.
     val timezonePolicy: String = Alarm.TIMEZONE_POLICY_LOCAL,
-    val fixedTimezoneId: String = ""
+    val fixedTimezoneId: String = "",
+    // KNO-152: explicit schedule kind
+    val scheduleKind: String = Alarm.SCHEDULE_KIND_ONE_TIME
 )
 
 @JsonClass(generateAdapter = true)
