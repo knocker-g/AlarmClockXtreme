@@ -78,6 +78,7 @@ class GroupBulkToggleTest {
 
     @After
     fun tearDown() {
+        try { io.mockk.clearAllMocks() } catch (_: Exception) {}
         Dispatchers.resetMain()
         db.close()
     }
@@ -427,7 +428,7 @@ class GroupBulkToggleTest {
         val disabledInDb = spyRepo.getById(alarm1Id)!!
         assertFalse("DB update committed isEnabled == false", disabledInDb.isEnabled)
 
-        // 3. Launch user toggleAlarm back ON in parallel coroutine
+        // 3. User taps UI to toggle alarm1 back ON in parallel
         val toggleJob = launch(Dispatchers.Default) {
             toggleStartedBarrier.complete(Unit)
             viewModel.toggleAlarm(disabledInDb)
@@ -437,10 +438,11 @@ class GroupBulkToggleTest {
         // 4. Release Group OFF post-commit reconciliation loop
         resumeCancelBarrier.complete(Unit)
 
-        // Wait for both coroutines to complete
+        // Wait for both coroutine jobs to finish
         groupJob.join()
         toggleJob.join()
 
+        // Wait for toggleAlarm's viewModelScope coroutine to complete DB update and schedule
         var attempts = 0
         while (spyRepo.getById(alarm1Id)?.isEnabled != true && attempts < 20) {
             delay(20)
