@@ -13,7 +13,7 @@ enum class HolidayState {
  * Snapshot of holiday evaluation result for a candidate occurrence date.
  */
 data class HolidaySnapshot(
-    val state: HolidayState = HolidayState.NOT_HOLIDAY,
+    val state: HolidayState = HolidayState.UNKNOWN,
     val holidayName: String = "",
     val checkedAtEpochMs: Long = 0L
 )

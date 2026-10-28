@@ -70,15 +70,13 @@ class ScheduleOccurrenceEvaluatorTest {
 
     @Test
     fun `2 Explicit REPEATING vs legacy inferred scheduleKind distinction`() {
-        // Explicit REPEATING with contradictory specificDate is evaluated strictly as REPEATING
         val explicitRepeating = Alarm(
             id = 4L,
             hour = 8,
             minute = 0,
             isEnabled = true,
             scheduleKind = Alarm.SCHEDULE_KIND_REPEATING,
-            repeatDays = setOf(DayOfWeek.WEDNESDAY),
-            specificDate = "2026-10-25"
+            repeatDays = setOf(DayOfWeek.WEDNESDAY)
         )
         val evaluated = evaluator.evaluateOccurrence(explicitRepeating, fromTimeMs, evaluationZoneId = zoneId)
         assertNotNull(evaluated)
@@ -561,5 +559,94 @@ class ScheduleOccurrenceEvaluatorTest {
         val evaluatedFixed = evaluator.evaluateOccurrence(fixedZoneAlarm, fromTimeMs, evaluationZoneId = zoneId)
         assertNotNull(evaluatedFixed)
         assertEquals("Personal runtime mode MUST flag HIDE FIXED timezone as INVALID_SCHEDULE_NEEDS_REPAIR", OccurrenceDecision.INVALID_SCHEDULE_NEEDS_REPAIR, evaluatedFixed!!.decision)
+    }
+
+    @Test
+    fun `17 Contradictory REPEATING with specificDate under Personal mode returns INVALID_SCHEDULE_NEEDS_REPAIR`() {
+        val mixedAlarm = Alarm(
+            id = 20L,
+            hour = 7,
+            minute = 0,
+            isEnabled = true,
+            scheduleKind = Alarm.SCHEDULE_KIND_REPEATING,
+            repeatDays = setOf(DayOfWeek.WEDNESDAY),
+            specificDate = "2026-10-28"
+        )
+
+        val evaluated = evaluator.evaluateOccurrence(mixedAlarm, fromTimeMs, evaluationZoneId = zoneId)
+        assertNotNull(evaluated)
+        assertEquals("Contradictory REPEATING with specificDate in Personal mode MUST return INVALID_SCHEDULE_NEEDS_REPAIR", OccurrenceDecision.INVALID_SCHEDULE_NEEDS_REPAIR, evaluated!!.decision)
+    }
+
+    @Test
+    fun `18 REPEATING with specificDate in compatibility mode passes through Exception pipeline`() {
+        val mixedAlarm = Alarm(
+            id = 21L,
+            hour = 7,
+            minute = 0,
+            isEnabled = true,
+            scheduleKind = Alarm.SCHEDULE_KIND_REPEATING,
+            repeatDays = setOf(DayOfWeek.WEDNESDAY),
+            specificDate = "2026-10-28",
+            generation = 1,
+            revision = 1
+        )
+
+        val wedBase0700Ms = LocalDate.of(2026, 10, 28)
+            .atTime(LocalTime.of(7, 0))
+            .atZone(zoneId)
+            .toInstant()
+            .toEpochMilli()
+
+        val skipException = ScheduleException(
+            alarmId = mixedAlarm.id,
+            baseTriggerTime = wedBase0700Ms,
+            exceptionType = ScheduleException.TYPE_SKIP,
+            generation = 1,
+            revision = 1
+        )
+
+        val evaluated = evaluator.evaluateOccurrence(
+            mixedAlarm,
+            fromTimeMs,
+            exceptions = listOf(skipException),
+            evaluationZoneId = zoneId,
+            allowHidePersonalRuntimeFeatures = true
+        )
+
+        assertNotNull(evaluated)
+        // When Oct 28 candidate is skipped, the resolver advances to the next valid candidate on Nov 4
+        val expectedNov4Ms = LocalDate.of(2026, 11, 4)
+            .atTime(LocalTime.of(7, 0))
+            .atZone(zoneId)
+            .toInstant()
+            .toEpochMilli()
+        assertEquals("Skipping Oct 28 candidate MUST advance resolver to Nov 4 candidate", expectedNov4Ms, evaluated!!.baseTriggerTimeEpochMs)
+        assertEquals(OccurrenceDecision.NORMAL_TRIGGER, evaluated.decision)
+    }
+
+    @Test
+    fun `19 Personal HIDE timing fields solarOffset, smartAlarm, and weatherEarly return INVALID_SCHEDULE_NEEDS_REPAIR`() {
+        val solarAlarm = Alarm(id = 22L, hour = 7, minute = 0, isEnabled = true, scheduleKind = Alarm.SCHEDULE_KIND_REPEATING, repeatDays = setOf(DayOfWeek.WEDNESDAY), solarOffsetMinutes = 15)
+        val evaluatedSolar = evaluator.evaluateOccurrence(solarAlarm, fromTimeMs, evaluationZoneId = zoneId)
+        assertNotNull(evaluatedSolar)
+        assertEquals(OccurrenceDecision.INVALID_SCHEDULE_NEEDS_REPAIR, evaluatedSolar!!.decision)
+
+        val smartAlarm = Alarm(id = 23L, hour = 7, minute = 0, isEnabled = true, scheduleKind = Alarm.SCHEDULE_KIND_REPEATING, repeatDays = setOf(DayOfWeek.WEDNESDAY), smartAlarmEnabled = true)
+        val evaluatedSmart = evaluator.evaluateOccurrence(smartAlarm, fromTimeMs, evaluationZoneId = zoneId)
+        assertNotNull(evaluatedSmart)
+        assertEquals(OccurrenceDecision.INVALID_SCHEDULE_NEEDS_REPAIR, evaluatedSmart!!.decision)
+
+        val weatherAlarm = Alarm(id = 24L, hour = 7, minute = 0, isEnabled = true, scheduleKind = Alarm.SCHEDULE_KIND_REPEATING, repeatDays = setOf(DayOfWeek.WEDNESDAY), weatherEarlyMinutes = 10)
+        val evaluatedWeather = evaluator.evaluateOccurrence(weatherAlarm, fromTimeMs, evaluationZoneId = zoneId)
+        assertNotNull(evaluatedWeather)
+        assertEquals(OccurrenceDecision.INVALID_SCHEDULE_NEEDS_REPAIR, evaluatedWeather!!.decision)
+    }
+
+    @Test
+    fun `20 Default HolidaySnapshot state is UNKNOWN`() {
+        val defaultSnapshot = HolidaySnapshot()
+        assertEquals(HolidayState.UNKNOWN, defaultSnapshot.state)
+        assertEquals(0L, defaultSnapshot.checkedAtEpochMs)
     }
 }
