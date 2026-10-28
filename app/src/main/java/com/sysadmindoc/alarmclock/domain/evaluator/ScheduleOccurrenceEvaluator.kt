@@ -13,7 +13,7 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 
 /**
- * Pure, side-effect-free Schedule Candidate Occurrence Resolver for Normal Alarms (KNO-30 / KNO-31 / KNO-32 / KNO-153).
+ * Pure, side-effect-free Schedule Candidate Occurrence Resolver for Normal Alarms (KNO-30 / KNO-31 / KNO-32 / KNO-76 / KNO-153).
  * Evaluates candidate occurrences, exception overrides, and holiday policies without mutating state.
  */
 class ScheduleOccurrenceEvaluator(
@@ -47,7 +47,8 @@ class ScheduleOccurrenceEvaluator(
         holidaySnapshotProvider: (LocalDate) -> HolidaySnapshot = { HolidaySnapshot() },
         holidayPolicyOverride: HolidayPolicy? = null,
         consumedOccurrenceKeys: Set<String> = emptySet(),
-        evaluationZoneId: ZoneId = ZoneId.systemDefault()
+        evaluationZoneId: ZoneId = ZoneId.systemDefault(),
+        allowHidePersonalRuntimeFeatures: Boolean = false
     ): EvaluatedOccurrence? {
         // 1. Guard against disabled or Quick alarms (Quick alarms are handled by QuickAlarmScheduler)
         if (!alarm.isEnabled || alarm.isQuickAlarm) {
@@ -76,6 +77,22 @@ class ScheduleOccurrenceEvaluator(
                 revision = alarm.revision,
                 holidayPolicy = policy
             )
+        }
+
+        // KNO-76 Personal Runtime Boundary Check
+        if (!allowHidePersonalRuntimeFeatures) {
+            if (alarm.shiftPattern.isNotBlank() || alarm.timezonePolicy == Alarm.TIMEZONE_POLICY_FIXED) {
+                return EvaluatedOccurrence(
+                    occurrenceId = null,
+                    alarmId = alarm.id,
+                    baseTriggerTimeEpochMs = 0L,
+                    targetTriggerTimeEpochMs = 0L,
+                    decision = OccurrenceDecision.INVALID_SCHEDULE_NEEDS_REPAIR,
+                    generation = alarm.generation,
+                    revision = alarm.revision,
+                    holidayPolicy = policy
+                )
+            }
         }
 
         // Validate Shift Pattern contract
@@ -115,7 +132,53 @@ class ScheduleOccurrenceEvaluator(
         val schedulingZone = alarm.schedulingZone(evaluationZoneId)
         val fromZdt = Instant.ofEpochMilli(fromEpochMs).atZone(schedulingZone)
 
-        // 3. ONE_TIME Alarm Evaluation
+        // 3. Mixed Schedule Check: Future specificDate on REPEATING takes one-off priority
+        if (isExplicitRepeating && alarm.specificDate.isNotBlank()) {
+            val parsedSpecificDate = runCatching { LocalDate.parse(alarm.specificDate) }.getOrNull()
+            if (parsedSpecificDate == null) {
+                return EvaluatedOccurrence(
+                    occurrenceId = null,
+                    alarmId = alarm.id,
+                    baseTriggerTimeEpochMs = 0L,
+                    targetTriggerTimeEpochMs = 0L,
+                    decision = OccurrenceDecision.INVALID_SCHEDULE_NEEDS_REPAIR,
+                    generation = alarm.generation,
+                    revision = alarm.revision,
+                    holidayPolicy = policy
+                )
+            }
+            val specificDateTime = resolveZoned(parsedSpecificDate, alarm.time, schedulingZone)
+            val specificEpochMs = specificDateTime.toInstant().toEpochMilli()
+
+            if (specificEpochMs > fromEpochMs) {
+                val occurrenceId = AlarmOccurrenceId.fromAlarm(alarm, specificEpochMs)
+                if (occurrenceId.key in consumedOccurrenceKeys) {
+                    return EvaluatedOccurrence(
+                        occurrenceId = occurrenceId,
+                        alarmId = alarm.id,
+                        baseTriggerTimeEpochMs = specificEpochMs,
+                        targetTriggerTimeEpochMs = specificEpochMs,
+                        decision = OccurrenceDecision.ALREADY_CONSUMED,
+                        generation = alarm.generation,
+                        revision = alarm.revision,
+                        holidayPolicy = policy
+                    )
+                }
+                return EvaluatedOccurrence(
+                    occurrenceId = occurrenceId,
+                    alarmId = alarm.id,
+                    baseTriggerTimeEpochMs = specificEpochMs,
+                    targetTriggerTimeEpochMs = specificEpochMs,
+                    decision = OccurrenceDecision.NORMAL_TRIGGER,
+                    generation = alarm.generation,
+                    revision = alarm.revision,
+                    holidayPolicy = policy
+                )
+            }
+            // If specificDate <= fromEpochMs, the one-off override has expired. Fall through to REPEATING schedule loop below!
+        }
+
+        // 4. ONE_TIME Alarm Evaluation
         if (isExplicitOneTime) {
             if (alarm.specificDate.isBlank()) {
                 return EvaluatedOccurrence(
@@ -184,7 +247,7 @@ class ScheduleOccurrenceEvaluator(
             )
         }
 
-        // 4. Candidate Search Window Initialization (Search from 00:00 on evaluation date to catch same-day Time Overrides and Holiday candidates)
+        // 5. Candidate Search Window Initialization (Search from 00:00 on evaluation date to catch same-day Time Overrides and Holiday candidates)
         val searchStartDate = fromZdt.toLocalDate()
         var currentDate = searchStartDate
         var steps = 0
@@ -195,15 +258,20 @@ class ScheduleOccurrenceEvaluator(
 
             val holidaySnapshot = holidaySnapshotProvider(currentDate)
 
-            // Determine if currentDate is a Base schedule day or a Holiday INCLUDE day
-            val isBaseDay = if (alarm.repeatDays.isNotEmpty()) {
-                alarm.repeatDays.contains(currentDate.dayOfWeek)
-            } else if (alarm.shiftPattern.isNotBlank()) {
+            // Determine if currentDate is a Base schedule day (AND evaluation when both repeatDays and shiftPattern are present)
+            val matchesRepeat = alarm.repeatDays.isEmpty() || alarm.repeatDays.contains(currentDate.dayOfWeek)
+            val matchesShift = if (alarm.shiftPattern.isNotBlank()) {
                 val shiftStart = LocalDate.parse(alarm.shiftPatternStartDate)
                 val pattern = ShiftPattern.fromKey(alarm.shiftPattern)
-                if (pattern != null && !currentDate.isBefore(shiftStart)) {
-                    pattern.isWorkDate(shiftStart, currentDate)
-                } else false
+                pattern != null && !currentDate.isBefore(shiftStart) && pattern.isWorkDate(shiftStart, currentDate)
+            } else true
+
+            val isBaseDay = if (alarm.repeatDays.isNotEmpty() && alarm.shiftPattern.isNotBlank()) {
+                matchesRepeat && matchesShift
+            } else if (alarm.repeatDays.isNotEmpty()) {
+                matchesRepeat
+            } else if (alarm.shiftPattern.isNotBlank()) {
+                matchesShift
             } else false
 
             val isHolidayIncludeDay = policy == HolidayPolicy.INCLUDE && holidaySnapshot.state == HolidayState.IS_HOLIDAY

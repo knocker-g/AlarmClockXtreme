@@ -70,7 +70,7 @@ class ScheduleOccurrenceEvaluatorTest {
 
     @Test
     fun `2 Explicit REPEATING vs legacy inferred scheduleKind distinction`() {
-        // Explicit REPEATING with contradict specificDate is evaluated strictly as REPEATING
+        // Explicit REPEATING with contradictory specificDate is evaluated strictly as REPEATING
         val explicitRepeating = Alarm(
             id = 4L,
             hour = 8,
@@ -413,14 +413,19 @@ class ScheduleOccurrenceEvaluatorTest {
             shiftPatternStartDate = "2026-01-01"
         )
 
-        val evaluated = evaluator.evaluateOccurrence(invalidShiftAlarm, fromTimeMs, evaluationZoneId = zoneId)
+        val evaluated = evaluator.evaluateOccurrence(
+            invalidShiftAlarm,
+            fromTimeMs,
+            evaluationZoneId = zoneId,
+            allowHidePersonalRuntimeFeatures = true
+        )
 
         assertNotNull(evaluated)
         assertEquals(OccurrenceDecision.INVALID_SCHEDULE_NEEDS_REPAIR, evaluated!!.decision)
     }
 
     @Test
-    fun `12 Unknown or TYPE_CANCEL exception returns UNSUPPORTED_EXCEPTION_TYPE`() {
+    fun `12 Real ScheduleException TYPE_CANCEL and UNKNOWN_TYPE both return UNSUPPORTED_EXCEPTION_TYPE`() {
         val alarm = Alarm(
             id = 13L,
             hour = 7,
@@ -433,20 +438,35 @@ class ScheduleOccurrenceEvaluatorTest {
         )
         val baseOccurrence = evaluator.evaluateOccurrence(alarm, fromTimeMs, evaluationZoneId = zoneId)!!
 
-        val unknownException = ScheduleException(
+        // 1. Real ScheduleException.TYPE_CANCEL ("CANCEL")
+        val cancelException = ScheduleException(
             alarmId = alarm.id,
             baseTriggerTime = baseOccurrence.baseTriggerTimeEpochMs,
-            exceptionType = "TYPE_CANCEL",
+            exceptionType = ScheduleException.TYPE_CANCEL,
             generation = 1,
             revision = 1
         )
 
-        val evaluated = evaluator.evaluateOccurrence(alarm, fromTimeMs, exceptions = listOf(unknownException), evaluationZoneId = zoneId)
+        val evaluatedCancel = evaluator.evaluateOccurrence(alarm, fromTimeMs, exceptions = listOf(cancelException), evaluationZoneId = zoneId)
+        assertNotNull(evaluatedCancel)
+        assertEquals("TYPE_CANCEL MUST return UNSUPPORTED_EXCEPTION_TYPE", OccurrenceDecision.UNSUPPORTED_EXCEPTION_TYPE, evaluatedCancel!!.decision)
+        assertTrue(evaluatedCancel.isExceptionApplied)
+        assertEquals(ScheduleException.TYPE_CANCEL, evaluatedCancel.appliedExceptionType)
 
-        assertNotNull(evaluated)
-        assertEquals("TYPE_CANCEL or unknown exception type MUST return UNSUPPORTED_EXCEPTION_TYPE", OccurrenceDecision.UNSUPPORTED_EXCEPTION_TYPE, evaluated!!.decision)
-        assertTrue(evaluated.isExceptionApplied)
-        assertEquals("TYPE_CANCEL", evaluated.appliedExceptionType)
+        // 2. Unknown exception type ("UNKNOWN_TYPE")
+        val unknownException = ScheduleException(
+            alarmId = alarm.id,
+            baseTriggerTime = baseOccurrence.baseTriggerTimeEpochMs,
+            exceptionType = "UNKNOWN_TYPE",
+            generation = 1,
+            revision = 1
+        )
+
+        val evaluatedUnknown = evaluator.evaluateOccurrence(alarm, fromTimeMs, exceptions = listOf(unknownException), evaluationZoneId = zoneId)
+        assertNotNull(evaluatedUnknown)
+        assertEquals("Unknown exception type MUST return UNSUPPORTED_EXCEPTION_TYPE", OccurrenceDecision.UNSUPPORTED_EXCEPTION_TYPE, evaluatedUnknown!!.decision)
+        assertTrue(evaluatedUnknown.isExceptionApplied)
+        assertEquals("UNKNOWN_TYPE", evaluatedUnknown.appliedExceptionType)
     }
 
     @Test
@@ -507,5 +527,39 @@ class ScheduleOccurrenceEvaluatorTest {
             .toEpochMilli()
 
         assertEquals("DST Overlap MUST resolve to earlier offset (EDT -04:00)", expectedEarlierOffsetMs, evaluatedOverlap.targetTriggerTimeEpochMs)
+    }
+
+    @Test
+    fun `16 Personal HIDE runtime boundary flags shiftPattern and FIXED timezone as INVALID_SCHEDULE_NEEDS_REPAIR`() {
+        // Shift pattern alarm evaluated under Personal default mode (allowHidePersonalRuntimeFeatures = false)
+        val shiftAlarm = Alarm(
+            id = 18L,
+            hour = 7,
+            minute = 0,
+            isEnabled = true,
+            scheduleKind = Alarm.SCHEDULE_KIND_REPEATING,
+            shiftPattern = "DDNNO",
+            shiftPatternStartDate = "2026-01-01"
+        )
+
+        val evaluatedShift = evaluator.evaluateOccurrence(shiftAlarm, fromTimeMs, evaluationZoneId = zoneId)
+        assertNotNull(evaluatedShift)
+        assertEquals("Personal runtime mode MUST flag HIDE shiftPattern as INVALID_SCHEDULE_NEEDS_REPAIR", OccurrenceDecision.INVALID_SCHEDULE_NEEDS_REPAIR, evaluatedShift!!.decision)
+
+        // Fixed timezone alarm evaluated under Personal default mode (allowHidePersonalRuntimeFeatures = false)
+        val fixedZoneAlarm = Alarm(
+            id = 19L,
+            hour = 7,
+            minute = 0,
+            isEnabled = true,
+            scheduleKind = Alarm.SCHEDULE_KIND_REPEATING,
+            repeatDays = setOf(DayOfWeek.WEDNESDAY),
+            timezonePolicy = Alarm.TIMEZONE_POLICY_FIXED,
+            fixedTimezoneId = "Europe/London"
+        )
+
+        val evaluatedFixed = evaluator.evaluateOccurrence(fixedZoneAlarm, fromTimeMs, evaluationZoneId = zoneId)
+        assertNotNull(evaluatedFixed)
+        assertEquals("Personal runtime mode MUST flag HIDE FIXED timezone as INVALID_SCHEDULE_NEEDS_REPAIR", OccurrenceDecision.INVALID_SCHEDULE_NEEDS_REPAIR, evaluatedFixed!!.decision)
     }
 }
