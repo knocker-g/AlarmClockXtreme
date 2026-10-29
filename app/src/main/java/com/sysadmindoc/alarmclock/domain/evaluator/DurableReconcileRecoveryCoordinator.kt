@@ -14,12 +14,21 @@ import com.sysadmindoc.alarmclock.domain.RecoveryEvidenceSnapshot
  * without invoking OS AlarmManager, creating PendingIntents, or switching scheduler ownership.
  *
  * Enforces OS Settlement Safety: Does NOT transition intents to PHASE_COMPLETED based solely on DB IssuedOccurrence
- * presence when explicit OS registration confirmation (OsOperationOutcome.ACCEPTED) is absent.
+ * or un-connected caller ACCEPTED inputs until KNO-228 trusted OS adapter attachment.
  */
 class DurableReconcileRecoveryCoordinator(
     private val database: AlarmDatabase,
     private val adjudicator: RecoveryAdjudicator = RecoveryAdjudicator()
 ) {
+    companion object {
+        const val REASON_INTENT_NOT_FOUND = "INTENT_NOT_FOUND"
+        const val REASON_DEFINITION_MISSING = "ALARM_DEFINITION_MISSING"
+        const val REASON_DISABLED_OR_QUICK = "ALARM_DISABLED_OR_QUICK"
+        const val REASON_MISSING_AUTHORITY = "MISSING_OR_BLANK_SCHEDULE_AUTHORITY"
+        const val REASON_OS_CONFIRMED = "OS_REGISTRATION_CONFIRMED_COMPLETED"
+        const val REASON_OS_PENDING = "OS_REGISTRATION_PENDING_RETRY"
+    }
+
     /**
      * Recovers and adjudicates an unresolved [DurableOperationIntent] by its [intentToken].
      */
@@ -41,7 +50,7 @@ class DurableReconcileRecoveryCoordinator(
                     intentToken = intentToken,
                     adjudicationDecision = null,
                     updatedIntent = null,
-                    decisionReason = "Intent not found in database"
+                    decisionReason = REASON_INTENT_NOT_FOUND
                 )
 
             val alarmId = intent.alarmId
@@ -54,7 +63,7 @@ class DurableReconcileRecoveryCoordinator(
                     intentToken = intentToken,
                     adjudicationDecision = null,
                     updatedIntent = intent,
-                    decisionReason = "Intent already resolved in phase ${intent.phase}"
+                    decisionReason = "INTENT_ALREADY_RESOLVED_${intent.phase}"
                 )
             }
 
@@ -69,7 +78,7 @@ class DurableReconcileRecoveryCoordinator(
                     intentToken = intentToken,
                     adjudicationDecision = null,
                     updatedIntent = updated,
-                    decisionReason = if (alarm == null) "Alarm definition missing" else "Alarm disabled or Quick"
+                    decisionReason = if (alarm == null) REASON_DEFINITION_MISSING else REASON_DISABLED_OR_QUICK
                 )
             }
 
@@ -84,11 +93,11 @@ class DurableReconcileRecoveryCoordinator(
                     intentToken = intentToken,
                     adjudicationDecision = null,
                     updatedIntent = updated,
-                    decisionReason = "ScheduleAuthority missing or blank"
+                    decisionReason = REASON_MISSING_AUTHORITY
                 )
             }
 
-            // 5. Adjudicate via RecoveryAdjudicator with provided osOutcome
+            // 5. Adjudicate via RecoveryAdjudicator
             val snapshot = RecoveryEvidenceSnapshot(
                 alarmId = alarmId,
                 authority = storedAuthority,
@@ -127,28 +136,14 @@ class DurableReconcileRecoveryCoordinator(
                     )
                 }
                 else -> {
-                    // OS Settlement Safety: Only mark PHASE_COMPLETED when explicit OS registration confirmation (osOutcome == ACCEPTED) is present!
-                    if (osOutcome == OsOperationOutcome.ACCEPTED) {
-                        durableDao.updateIntentPhase(intentToken, DurableOperationIntent.PHASE_COMPLETED)
-                        val updated = durableDao.getIntentByToken(intentToken)
-                        return@withTransaction DurableRecoveryResult(
-                            outcome = DurableRecoveryOutcome.ALREADY_SETTLED_IDEMPOTENT,
-                            alarmId = alarmId,
-                            intentToken = intentToken,
-                            adjudicationDecision = decision,
-                            updatedIntent = updated,
-                            decisionReason = "OS registration confirmed; intent marked COMPLETED"
-                        )
-                    }
-
-                    // When OS state is unverified/pending, maintain PHASE_PENDING for OS dispatch retry without false COMPLETED transition
+                    // OS Settlement Safety: Until KNO-228 trusted OS adapter attachment, keep PHASE_PENDING for retry eligibility
                     return@withTransaction DurableRecoveryResult(
                         outcome = DurableRecoveryOutcome.RECOVERY_DISPATCH_ELIGIBLE,
                         alarmId = alarmId,
                         intentToken = intentToken,
                         adjudicationDecision = decision,
                         updatedIntent = intent,
-                        decisionReason = "Occurrence issued in DB, but OS registration pending/unverified; intent remains PENDING for retry"
+                        decisionReason = REASON_OS_PENDING
                     )
                 }
             }

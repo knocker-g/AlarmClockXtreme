@@ -375,7 +375,7 @@ class Subtask3RecoveryFoundationTest {
     }
 
     @Test
-    fun `9 Confirmed OS registration ACCEPTED marks intent COMPLETED`() = runBlocking {
+    fun `9 Un-connected OS ACCEPTED input maintains PHASE_PENDING until KNO-228 trusted OS adapter attachment`() = runBlocking {
         val (alarm, authority, intent) = insertTestSetup()
 
         val result = recoveryCoordinator.recoverUnresolvedIntent(
@@ -384,10 +384,10 @@ class Subtask3RecoveryFoundationTest {
             osOutcome = OsOperationOutcome.ACCEPTED
         )
 
-        assertEquals(DurableRecoveryOutcome.ALREADY_SETTLED_IDEMPOTENT, result.outcome)
-        assertEquals("OS registration confirmed; intent marked COMPLETED", result.decisionReason)
+        assertEquals(DurableRecoveryOutcome.RECOVERY_DISPATCH_ELIGIBLE, result.outcome)
+        assertEquals("OS_REGISTRATION_PENDING_RETRY", result.decisionReason)
 
         val dbIntent = durableDao.getIntentByToken(intent.operationToken)
-        assertEquals(DurableOperationIntent.PHASE_COMPLETED, dbIntent!!.phase)
+        assertEquals(DurableOperationIntent.PHASE_PENDING, dbIntent!!.phase)
     }
 }

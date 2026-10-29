@@ -21,6 +21,20 @@ class OccurrenceIssuanceProducer(
     private val database: AlarmDatabase,
     private val occurrenceEvaluator: ScheduleOccurrenceEvaluator = ScheduleOccurrenceEvaluator()
 ) {
+    companion object {
+        const val REASON_INVALID_TIMESTAMP = "INVALID_TRIGGER_TIMESTAMP"
+        const val REASON_NOT_FOUND = "ALARM_NOT_FOUND"
+        const val REASON_DISABLED_OR_QUICK = "ALARM_DISABLED_OR_QUICK"
+        const val REASON_UNSUPPORTED_HIDE_FEATURE = "UNSUPPORTED_PERSONAL_HIDE_FEATURE"
+        const val REASON_MISSING_AUTHORITY = "MISSING_OR_BLANK_SCHEDULE_AUTHORITY"
+        const val REASON_FINGERPRINT_MISMATCH = "AUTHORITY_FINGERPRINT_MISMATCH"
+        const val REASON_EVALUATION_NULL = "CANONICAL_EVALUATION_NULL"
+        const val REASON_EVALUATION_MISMATCH = "CANONICAL_EVALUATION_MISMATCH"
+        const val REASON_CALLER_EVALUATION_MISMATCH = "CALLER_EVALUATION_MISMATCH"
+        const val REASON_CAS_FAILED = "ISSUE_SLOT_CAS_FAILED"
+        const val REASON_ISSUANCE_COMMITTED = "ISSUANCE_PROVENANCE_COMMITTED"
+    }
+
     /**
      * Issues and persists a new [IssuedOccurrence] with complete V35 provenance.
      */
@@ -45,7 +59,7 @@ class OccurrenceIssuanceProducer(
                 alarmId = alarmId,
                 issuedOccurrence = null,
                 issueSlot = null,
-                decisionReason = "Invalid base or target trigger timestamp"
+                decisionReason = REASON_INVALID_TIMESTAMP
             )
         }
 
@@ -63,7 +77,7 @@ class OccurrenceIssuanceProducer(
                     alarmId = alarmId,
                     issuedOccurrence = null,
                     issueSlot = null,
-                    decisionReason = if (alarm == null) "Alarm not found" else "Alarm disabled or Quick"
+                    decisionReason = if (alarm == null) REASON_NOT_FOUND else REASON_DISABLED_OR_QUICK
                 )
             }
 
@@ -81,12 +95,12 @@ class OccurrenceIssuanceProducer(
                         alarmId = alarmId,
                         issuedOccurrence = null,
                         issueSlot = null,
-                        decisionReason = "Unsupported Personal HIDE feature"
+                        decisionReason = REASON_UNSUPPORTED_HIDE_FEATURE
                     )
                 }
             }
 
-            // 3. Re-read ScheduleAuthority & mandatory fingerprint verification
+            // 3. Defect 4: Re-read ScheduleAuthority & mandatory fingerprint verification
             val storedAuthority = authorityDao.getAuthorityByAlarmId(alarmId)
             if (storedAuthority == null || storedAuthority.alarmId != alarmId || storedAuthority.instanceToken.isBlank()) {
                 return@withTransaction IssuanceProducerResult(
@@ -94,7 +108,7 @@ class OccurrenceIssuanceProducer(
                     alarmId = alarmId,
                     issuedOccurrence = null,
                     issueSlot = null,
-                    decisionReason = "Missing or blank ScheduleAuthority"
+                    decisionReason = REASON_MISSING_AUTHORITY
                 )
             }
 
@@ -113,7 +127,7 @@ class OccurrenceIssuanceProducer(
                         alarmId = alarmId,
                         issuedOccurrence = null,
                         issueSlot = null,
-                        decisionReason = "Authority fingerprint mismatch"
+                        decisionReason = REASON_FINGERPRINT_MISMATCH
                     )
                 }
             }
@@ -138,7 +152,7 @@ class OccurrenceIssuanceProducer(
                     alarmId = alarmId,
                     issuedOccurrence = null,
                     issueSlot = null,
-                    decisionReason = "In-transaction canonical occurrence evaluation returned null"
+                    decisionReason = REASON_EVALUATION_NULL
                 )
             }
 
@@ -156,7 +170,7 @@ class OccurrenceIssuanceProducer(
                     alarmId = alarmId,
                     issuedOccurrence = null,
                     issueSlot = null,
-                    decisionReason = "Canonical occurrence evaluation mismatch (occurrenceId/base/target)"
+                    decisionReason = REASON_EVALUATION_MISMATCH
                 )
             }
 
@@ -179,7 +193,7 @@ class OccurrenceIssuanceProducer(
                         alarmId = alarmId,
                         issuedOccurrence = null,
                         issueSlot = null,
-                        decisionReason = "Caller-provided EvaluatedOccurrence mismatches in-transaction evaluation"
+                        decisionReason = REASON_CALLER_EVALUATION_MISMATCH
                     )
                 }
             }
@@ -194,7 +208,7 @@ class OccurrenceIssuanceProducer(
                     alarmId = alarmId,
                     issuedOccurrence = null,
                     issueSlot = null,
-                    decisionReason = "Occurrence decision is non-issuable: ${inTxEvaluated.decision}"
+                    decisionReason = "NON_ISSUABLE_DECISION_${inTxEvaluated.decision}"
                 )
             }
 
@@ -226,7 +240,7 @@ class OccurrenceIssuanceProducer(
                     alarmId = alarmId,
                     issuedOccurrence = null,
                     issueSlot = slot,
-                    decisionReason = "IssueSlot CAS update failed due to concurrent modification"
+                    decisionReason = REASON_CAS_FAILED
                 )
             }
 
@@ -257,7 +271,7 @@ class OccurrenceIssuanceProducer(
                 alarmId = alarmId,
                 issuedOccurrence = newOccurrence,
                 issueSlot = updatedSlot,
-                decisionReason = "ISSUANCE_PROVENANCE_COMMITTED"
+                decisionReason = REASON_ISSUANCE_COMMITTED
             )
         }
     }

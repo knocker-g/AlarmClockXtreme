@@ -8,7 +8,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 
 /**
- * In-Transaction Durable Reconcile Producer (KNO-154 Phase 0C-B Subtask 2 Final Interface Closure).
+ * In-Transaction Durable Reconcile Producer (KNO-154 Phase 0C-B Final Interface Closure).
  * Consumes [ReconcileDecision], updates DB stored projection [Alarm.nextTriggerTime],
  * produces a new V35 [IssuedOccurrence], and commits a [DurableOperationIntent] record
  * for OS rescheduling dispatch inside a single transaction.
@@ -22,6 +22,15 @@ class DurableReconcileProducer(
     private val issuanceProducer: OccurrenceIssuanceProducer = OccurrenceIssuanceProducer(database),
     private val occurrenceEvaluator: ScheduleOccurrenceEvaluator = ScheduleOccurrenceEvaluator()
 ) {
+    companion object {
+        const val REASON_NOT_FOUND = "ALARM_NOT_FOUND"
+        const val REASON_DISABLED_OR_QUICK = "ALARM_DISABLED_OR_QUICK"
+        const val REASON_MISSING_AUTHORITY = "MISSING_OR_INVALID_SCHEDULE_AUTHORITY"
+        const val REASON_UNVERIFIED_OS = "PROJECTION_MATCHES_UNVERIFIED_OS_STATE"
+        const val REASON_EVALUATION_NULL = "RECONCILE_EVALUATION_NULL"
+        const val REASON_RECONCILE_COMMITTED = "RECONCILE_PROVENANCE_COMMITTED"
+    }
+
     /**
      * Executes reconciliation production for [alarmId] at [nowEpochMs].
      */
@@ -51,11 +60,11 @@ class DurableReconcileProducer(
                     updatedAlarm = null,
                     issuedOccurrence = null,
                     durableIntent = null,
-                    decisionReason = if (alarm == null) "Alarm not found" else "Alarm disabled or Quick"
+                    decisionReason = if (alarm == null) REASON_NOT_FOUND else REASON_DISABLED_OR_QUICK
                 )
             }
 
-            // 2. Re-read ScheduleAuthority to bind authentic owner identity
+            // 2. Modification A: Re-read ScheduleAuthority to bind authentic owner identity
             val storedAuthority = authorityDao.getAuthorityByAlarmId(alarmId)
             if (storedAuthority == null || storedAuthority.alarmId != alarmId || storedAuthority.instanceToken.isBlank()) {
                 return@withTransaction DurableReconcileProducerResult(
@@ -65,7 +74,7 @@ class DurableReconcileProducer(
                     updatedAlarm = null,
                     issuedOccurrence = null,
                     durableIntent = null,
-                    decisionReason = "Missing or invalid ScheduleAuthority"
+                    decisionReason = REASON_MISSING_AUTHORITY
                 )
             }
 
@@ -88,7 +97,7 @@ class DurableReconcileProducer(
                     updatedAlarm = alarm,
                     issuedOccurrence = null,
                     durableIntent = null,
-                    decisionReason = "Projection matches post-skip target but OS registration state remains unverified"
+                    decisionReason = REASON_UNVERIFIED_OS
                 )
             }
 
@@ -136,7 +145,7 @@ class DurableReconcileProducer(
                     updatedAlarm = null,
                     issuedOccurrence = null,
                     durableIntent = null,
-                    decisionReason = "Reconcile evaluation returned null occurrence model"
+                    decisionReason = REASON_EVALUATION_NULL
                 )
             }
 
@@ -189,7 +198,7 @@ class DurableReconcileProducer(
                 updatedAlarm = updatedAlarm,
                 issuedOccurrence = issuanceResult.issuedOccurrence,
                 durableIntent = durableIntent,
-                decisionReason = "RECONCILE_PROVENANCE_COMMITTED"
+                decisionReason = REASON_RECONCILE_COMMITTED
             )
         }
     }

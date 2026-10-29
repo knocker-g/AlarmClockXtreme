@@ -9,7 +9,7 @@ import com.sysadmindoc.alarmclock.domain.RecoveryDecisionOutcome
 import com.sysadmindoc.alarmclock.domain.RecoveryEvidenceSnapshot
 
 /**
- * In-DB Durable Reconcile Dispatch Admission & Settlement Coordinator (KNO-154 Phase 0C-B Lease Attempt Fencing Closure).
+ * In-DB Durable Reconcile Dispatch Admission & Settlement Coordinator (KNO-154 Phase 0C-B Safety Closure).
  * Evaluates dispatch admission eligibility and enforces strict settlement state machine safety in-DB
  * without invoking OS AlarmManager, creating PendingIntents, or switching scheduler ownership.
  *
@@ -21,6 +21,18 @@ class DurableReconcileDispatchAdmissionCoordinator(
     private val database: AlarmDatabase,
     private val adjudicator: RecoveryAdjudicator = RecoveryAdjudicator()
 ) {
+    companion object {
+        const val REASON_INTENT_NOT_FOUND = "INTENT_NOT_FOUND"
+        const val REASON_DEFINITION_MISSING = "ALARM_DEFINITION_MISSING"
+        const val REASON_DISABLED_OR_QUICK = "ALARM_DISABLED_OR_QUICK"
+        const val REASON_MISSING_AUTHORITY = "MISSING_OR_BLANK_SCHEDULE_AUTHORITY"
+        const val REASON_LEASE_ACTIVE = "IN_FLIGHT_LEASE_ACTIVE"
+        const val REASON_ADMISSION_GRANTED = "DISPATCH_ADMISSION_GRANTED_IN_FLIGHT"
+        const val REASON_NOT_IN_FLIGHT = "SETTLEMENT_REJECTED_NOT_IN_FLIGHT"
+        const val REASON_STALE_AUTHORITY = "SETTLEMENT_REJECTED_STALE_AUTHORITY"
+        const val REASON_UNCONNECTED_OS = "SETTLEMENT_REJECTED_UNCONNECTED_OS_ADAPTER"
+    }
+
     /**
      * Evaluates whether an unresolved [DurableOperationIntent] is eligible for OS dispatch admission.
      * Transitions intent phase to [DurableOperationIntent.PHASE_IN_FLIGHT] if admission is granted.
@@ -42,7 +54,7 @@ class DurableReconcileDispatchAdmissionCoordinator(
                     intentToken = intentToken,
                     adjudicationDecision = null,
                     updatedIntent = null,
-                    decisionReason = "Intent not found in database"
+                    decisionReason = REASON_INTENT_NOT_FOUND
                 )
 
             val alarmId = intent.alarmId
@@ -58,7 +70,7 @@ class DurableReconcileDispatchAdmissionCoordinator(
                     intentToken = intentToken,
                     adjudicationDecision = null,
                     updatedIntent = intent,
-                    decisionReason = "Intent already terminal in phase ${intent.phase}"
+                    decisionReason = "INTENT_TERMINAL_${intent.phase}"
                 )
             }
 
@@ -70,7 +82,7 @@ class DurableReconcileDispatchAdmissionCoordinator(
                     intentToken = intentToken,
                     adjudicationDecision = null,
                     updatedIntent = intent,
-                    decisionReason = "Intent currently in-flight; duplicate admission rejected"
+                    decisionReason = REASON_LEASE_ACTIVE
                 )
             }
 
@@ -85,7 +97,7 @@ class DurableReconcileDispatchAdmissionCoordinator(
                     intentToken = intentToken,
                     adjudicationDecision = null,
                     updatedIntent = updated,
-                    decisionReason = if (alarm == null) "Alarm definition missing" else "Alarm disabled or Quick"
+                    decisionReason = if (alarm == null) REASON_DEFINITION_MISSING else REASON_DISABLED_OR_QUICK
                 )
             }
 
@@ -100,7 +112,7 @@ class DurableReconcileDispatchAdmissionCoordinator(
                     intentToken = intentToken,
                     adjudicationDecision = null,
                     updatedIntent = updated,
-                    decisionReason = "ScheduleAuthority missing or blank"
+                    decisionReason = REASON_MISSING_AUTHORITY
                 )
             }
 
@@ -144,7 +156,7 @@ class DurableReconcileDispatchAdmissionCoordinator(
                 intentToken = intentToken,
                 adjudicationDecision = decision,
                 updatedIntent = updated,
-                decisionReason = "Dispatch admission granted; intent transitioned to PHASE_IN_FLIGHT"
+                decisionReason = REASON_ADMISSION_GRANTED
             )
         }
     }
@@ -172,7 +184,7 @@ class DurableReconcileDispatchAdmissionCoordinator(
                     intentToken = intentToken,
                     adjudicationDecision = null,
                     updatedIntent = null,
-                    decisionReason = "Intent not found in database"
+                    decisionReason = REASON_INTENT_NOT_FOUND
                 )
 
             val alarmId = intent.alarmId
@@ -185,7 +197,7 @@ class DurableReconcileDispatchAdmissionCoordinator(
                     intentToken = intentToken,
                     adjudicationDecision = null,
                     updatedIntent = intent,
-                    decisionReason = "Settlement rejected: intent phase is ${intent.phase}, MUST be IN_FLIGHT"
+                    decisionReason = REASON_NOT_IN_FLIGHT
                 )
             }
 
@@ -204,7 +216,7 @@ class DurableReconcileDispatchAdmissionCoordinator(
                     intentToken = intentToken,
                     adjudicationDecision = null,
                     updatedIntent = updated,
-                    decisionReason = "Stale authority detected during settlement; intent aborted"
+                    decisionReason = REASON_STALE_AUTHORITY
                 )
             }
 
@@ -218,7 +230,7 @@ class DurableReconcileDispatchAdmissionCoordinator(
                 intentToken = intentToken,
                 adjudicationDecision = null,
                 updatedIntent = updated,
-                decisionReason = "OS adapter un-connected; settlement to PHASE_COMPLETED disabled until KNO-228 trusted OS adapter attachment"
+                decisionReason = REASON_UNCONNECTED_OS
             )
         }
     }
