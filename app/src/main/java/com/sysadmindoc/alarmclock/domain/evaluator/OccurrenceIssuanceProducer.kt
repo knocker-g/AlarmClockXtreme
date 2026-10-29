@@ -177,10 +177,6 @@ class OccurrenceIssuanceProducer(
             // If caller provided an evaluatedOccurrence, verify strict 1-to-1 match against in-transaction model
             if (evaluatedOccurrence != null) {
                 val callerOccId = evaluatedOccurrence.occurrenceId
-                val callerDecisionIssuable = evaluatedOccurrence.decision == OccurrenceDecision.NORMAL_TRIGGER || evaluatedOccurrence.decision == OccurrenceDecision.TIME_OVERRIDDEN
-                val inTxDecisionIssuable = inTxEvaluated.decision == OccurrenceDecision.NORMAL_TRIGGER || inTxEvaluated.decision == OccurrenceDecision.TIME_OVERRIDDEN
-                val isIssuableMatch = evaluatedOccurrence.decision == inTxEvaluated.decision || (callerDecisionIssuable && inTxDecisionIssuable)
-
                 val callerMatch = callerOccId != null &&
                         callerOccId == inTxEvaluated.occurrenceId &&
                         evaluatedOccurrence.alarmId == inTxEvaluated.alarmId &&
@@ -189,7 +185,7 @@ class OccurrenceIssuanceProducer(
                         evaluatedOccurrence.targetTriggerTimeEpochMs == inTxEvaluated.targetTriggerTimeEpochMs &&
                         evaluatedOccurrence.baseTriggerTimeEpochMs == baseTriggerTimeEpochMs &&
                         evaluatedOccurrence.targetTriggerTimeEpochMs == scheduledTargetEpochMs &&
-                        isIssuableMatch
+                        evaluatedOccurrence.decision == inTxEvaluated.decision
 
                 if (!callerMatch) {
                     return@withTransaction IssuanceProducerResult(
