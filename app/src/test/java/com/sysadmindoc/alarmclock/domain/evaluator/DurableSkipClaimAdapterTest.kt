@@ -246,23 +246,21 @@ class DurableSkipClaimAdapterTest {
     fun `6 Transaction rollback on reconcile failure leaves exception uncommitted`() = runBlocking {
         val (alarm, _) = insertTestAlarmAndAuthority()
 
-        // Delete ScheduleAuthority to cause reconcile producer failure
-        authorityDao.deleteAuthorityByAlarmId(alarm.id)
+        // Disable alarm in DB so reconcile producer returns UNSUPPORTED_SCHEDULE and fails closed
+        alarmDao.update(alarm.copy(isEnabled = false))
 
-        try {
-            adapter.executeSkipClaimAndReconcile(
-                alarmId = alarm.id,
-                expectedScheduledAt = wed0700Ms,
-                nowEpochMs = nowEpochMs,
-                evaluationZoneId = zoneId
-            )
-        } catch (e: Exception) {
-            // Expected exception thrown to force transaction rollback
-        }
+        val result = adapter.executeSkipClaimAndReconcile(
+            alarmId = alarm.id,
+            expectedScheduledAt = wed0700Ms,
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
 
-        // Verify ScheduleException was 100% rolled back in DB
+        assertEquals(DurableSkipClaimAdapterOutcome.UNSUPPORTED_SCHEDULE, result.outcome)
+
+        // Verify ScheduleException was 100% NOT committed in DB
         val exceptions = exceptionDao.getExceptionsForAlarmGeneration(alarm.id, alarm.generation)
-        assertTrue("ScheduleException MUST be rolled back when reconcile fails", exceptions.isEmpty())
+        assertTrue("ScheduleException MUST be empty on reconcile failure", exceptions.isEmpty())
     }
 
     @Test
