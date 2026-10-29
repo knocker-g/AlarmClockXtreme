@@ -56,7 +56,7 @@ abstract class AlarmDatabase : RoomDatabase() {
     abstract fun scheduleExceptionDao(): ScheduleExceptionDao
 
     companion object {
-        const val VERSION = 34
+        const val VERSION = 35
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -683,6 +683,18 @@ abstract class AlarmDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_34_35 = object : Migration(34, 35) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `issued_occurrences` ADD COLUMN `baseTriggerTime` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `issued_occurrences` ADD COLUMN `alarmGeneration` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `issued_occurrences` ADD COLUMN `authorityInstanceToken` TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE `issued_occurrences` ADD COLUMN `restoreEpoch` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `issued_occurrences` ADD COLUMN `scheduleRevision` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `issued_occurrences` ADD COLUMN `definitionRevision` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_issued_occurrences_alarmId_baseTriggerTime` ON `issued_occurrences` (`alarmId`, `baseTriggerTime`)")
+            }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -716,7 +728,8 @@ abstract class AlarmDatabase : RoomDatabase() {
             MIGRATION_30_31,
             MIGRATION_31_32,
             MIGRATION_32_33,
-            MIGRATION_33_34
+            MIGRATION_33_34,
+            MIGRATION_34_35
         )
     }
 }
