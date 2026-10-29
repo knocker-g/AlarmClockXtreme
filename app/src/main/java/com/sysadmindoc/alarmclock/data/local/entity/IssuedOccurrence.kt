@@ -8,7 +8,8 @@ import androidx.room.PrimaryKey
     tableName = "issued_occurrences",
     indices = [
         Index(value = ["alarmId", "scheduledAt"]),
-        Index(value = ["status"])
+        Index(value = ["status"]),
+        Index(value = ["alarmId", "baseTriggerTime"])
     ]
 )
 data class IssuedOccurrence(
@@ -24,7 +25,13 @@ data class IssuedOccurrence(
     val recoveryLeaseExpiresAt: Long? = null,
     val outcome: String = OUTCOME_PENDING,
     val createdAt: Long = System.currentTimeMillis(),
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    val baseTriggerTime: Long = 0L,
+    val alarmGeneration: Int = 0,
+    val authorityInstanceToken: String? = null,
+    val restoreEpoch: Long = 0L,
+    val scheduleRevision: Long = 0L,
+    val definitionRevision: Long = 0L
 ) {
     companion object {
         const val STATUS_PREPARED = "PREPARED"
