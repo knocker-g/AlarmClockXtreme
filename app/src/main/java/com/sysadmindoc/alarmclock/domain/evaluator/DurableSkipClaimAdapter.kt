@@ -4,12 +4,10 @@ import androidx.room.withTransaction
 import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 import com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent
 import com.sysadmindoc.alarmclock.data.local.entity.IssuedOccurrence
-import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleException
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import java.time.LocalDate
 import java.time.ZoneId
-import java.util.UUID
 
 enum class DurableSkipClaimAdapterOutcome {
     SUCCESS_COMMITTED,
@@ -106,29 +104,21 @@ class DurableSkipClaimAdapter(
                 )
             }
 
-            // 3. Re-read ScheduleAuthority & auto-bootstrap if missing for legacy alarm
-            var storedAuthority = authorityDao.getAuthorityByAlarmId(alarmId)
+            // 3. Re-read ScheduleAuthority — fail closed if authority record is missing or blank
+            val storedAuthority = authorityDao.getAuthorityByAlarmId(alarmId)
             if (storedAuthority == null || storedAuthority.alarmId != alarmId || storedAuthority.instanceToken.isBlank()) {
-                val autoAuth = ScheduleAuthority(
+                return@withTransaction DurableSkipClaimAdapterResult(
+                    outcome = DurableSkipClaimAdapterOutcome.UNSUPPORTED_SCHEDULE,
                     alarmId = alarmId,
-                    instanceToken = "auth_${alarmId}_gen_${alarm.generation}_${UUID.randomUUID()}",
-                    definitionRevision = alarm.revision.toLong(),
-                    scheduleRevision = alarm.revision.toLong(),
-                    lifecycle = if (alarm.isEnabled) "LIVE" else "DISABLED",
-                    desiredOperation = "SET",
-                    desiredTriggerMillis = alarm.nextTriggerTime,
-                    reconcileState = "SETTLED",
-                    restoreEpoch = nowEpochMs,
-                    actionKey = null
+                    expectedScheduledAt = expectedScheduledAt,
+                    updatedAlarm = null,
+                    issuedOccurrence = null,
+                    durableIntent = null,
+                    decisionReason = REASON_UNSUPPORTED_SCHEDULE
                 )
-                authorityDao.insertAuthority(autoAuth)
-                storedAuthority = autoAuth
             }
 
             val fingerprint = ScheduleAuthorityFingerprint.fromAuthority(storedAuthority)
-
-            // Clamp evaluation time horizon to ensure expectedScheduledAt is evaluated as active current occurrence
-            val evalNowMs = if (nowEpochMs > expectedScheduledAt) expectedScheduledAt - 1000L else nowEpochMs
 
             // 4. Construct CurrentNextActionSnapshot for Skip-Once action
             val actionSnapshot = CurrentNextActionSnapshot(
@@ -142,7 +132,7 @@ class DurableSkipClaimAdapter(
             // 5. Claim Durable Skip in Coordinator
             val claimResult = skipClaimCoordinator.claimDurableSkip(
                 actionSnapshot = actionSnapshot,
-                nowEpochMs = evalNowMs,
+                nowEpochMs = nowEpochMs,
                 holidaySnapshotProvider = holidaySnapshotProvider,
                 holidayPolicyOverride = holidayPolicyOverride,
                 consumedOccurrenceKeys = consumedOccurrenceKeys,
@@ -193,7 +183,7 @@ class DurableSkipClaimAdapter(
             // 6. Produce Reconcile
             val reconcileResult = reconcileProducer.produceReconcile(
                 alarmId = alarmId,
-                nowEpochMs = evalNowMs,
+                nowEpochMs = nowEpochMs,
                 expectedAuthorityFingerprint = fingerprint,
                 holidaySnapshotProvider = holidaySnapshotProvider,
                 holidayPolicyOverride = holidayPolicyOverride,
@@ -203,7 +193,6 @@ class DurableSkipClaimAdapter(
             )
 
             if (reconcileResult.outcome != DurableReconcileProducerOutcome.RECONCILE_COMMITTED_PENDING_OS || reconcileResult.updatedAlarm == null) {
-                android.util.Log.e("DEBUG_RECONCILE", "reconcileResult.outcome=${reconcileResult.outcome}, reason=${reconcileResult.decisionReason}")
                 throw IllegalStateException("Reconcile producer failed inside skip claim transaction: ${reconcileResult.decisionReason}")
             }
 
