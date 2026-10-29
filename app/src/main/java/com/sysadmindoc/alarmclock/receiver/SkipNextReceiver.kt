@@ -96,19 +96,21 @@ class SkipNextReceiver : BroadcastReceiver() {
                         scheduler.cancel(alarm.id)
                         outcome = com.sysadmindoc.alarmclock.domain.ScheduleOutcome.NoArm(alarm.id, "ONE_SHOT_DISABLED")
                     } else {
-                        val skipFloorMs = alarm.nextTriggerTime.coerceAtLeast(System.currentTimeMillis()) + 60_000L
-                        val nextTrigger = ep.nextAlarmCalculator().calculate(
-                            alarm,
-                            Instant.ofEpochMilli(skipFloorMs).atZone(ZoneId.systemDefault())
+                        // Durable Skip Claim Adapter: Single-transaction DB skip claim + V35 occurrence + Durable intent
+                        val adapter = com.sysadmindoc.alarmclock.domain.evaluator.DurableSkipClaimAdapter(database = ep.alarmDatabase())
+                        val adapterResult = adapter.executeSkipClaimAndReconcile(
+                            alarmId = alarm.id,
+                            expectedScheduledAt = expectedScheduledAt,
+                            nowEpochMs = System.currentTimeMillis()
                         )
-                        // Atomic Room CAS update: claim occurrence transition in DB
-                        val rowsUpdated = repo.casUpdateNextTrigger(alarm.id, expectedTrigger = expectedScheduledAt, newTrigger = nextTrigger)
-                        if (rowsUpdated == 0) {
-                            Log.i("SkipNextReceiver", "Concurrent duplicate skip rejected for alarm $alarmId at expected $expectedScheduledAt")
+
+                        if (adapterResult.outcome != com.sysadmindoc.alarmclock.domain.evaluator.DurableSkipClaimAdapterOutcome.SUCCESS_COMMITTED || adapterResult.updatedAlarm == null) {
+                            Log.i("SkipNextReceiver", "Durable skip claim rejected or already committed for alarm $alarmId: ${adapterResult.decisionReason}")
                             return@withTimeout
                         }
 
-                        outcome = scheduler.scheduleAt(alarm.copy(nextTriggerTime = nextTrigger), nextTrigger)
+                        val updatedAlarm = adapterResult.updatedAlarm!!
+                        outcome = scheduler.scheduleAt(updatedAlarm, updatedAlarm.nextTriggerTime)
                         if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed) {
                             Log.w("SkipNextReceiver", "Replacement re-arm registration failed for skipped alarm $alarmId; enqueuing background recovery")
                             try {
