@@ -19,7 +19,7 @@ class StaleAlarmException(message: String) : IllegalStateException(message)
 
 @Singleton
 class AlarmRepository @Inject constructor(
-    private val database: AlarmDatabase,
+    val database: AlarmDatabase,
     private val dao: AlarmDao,
     private val groupDao: AlarmGroupDao
 ) {

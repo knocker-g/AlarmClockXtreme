@@ -180,7 +180,8 @@ class AlarmListViewModel @Inject constructor(
     private val calculator: NextAlarmCalculator,
     private val preferencesManager: PreferencesManager,
     private val eventRepository: AlarmEventRepository,
-    private val quickAlarmScheduler: QuickAlarmScheduler? = null
+    private val quickAlarmScheduler: QuickAlarmScheduler? = null,
+    private val database: com.sysadmindoc.alarmclock.data.local.AlarmDatabase? = null
 ) : ViewModel() {
 
     /** One-shot events for polished list action feedback. */
@@ -1066,19 +1067,25 @@ class AlarmListViewModel @Inject constructor(
                 return@launch
             }
 
-            val skipFloorMs = expectedScheduledAt.coerceAtLeast(System.currentTimeMillis()) + 60_000L
-            val afterSkipTime = Instant.ofEpochMilli(skipFloorMs).atZone(ZoneId.systemDefault())
-            val afterSkip = calculator.calculate(current, afterSkipTime)
-
-            // Atomic Room CAS update: claim occurrence transition in DB
-            val rowsUpdated = repository.casUpdateNextTrigger(alarm.id, expectedTrigger = expectedScheduledAt, newTrigger = afterSkip)
-            if (rowsUpdated == 0) {
-                android.util.Log.i("AlarmListViewModel", "Concurrent duplicate UI skip rejected for alarm ${alarm.id} at $expectedScheduledAt")
+            val db = database ?: run {
+                android.util.Log.w("AlarmListViewModel", "Database unavailable for durable skip claim for alarm ${alarm.id}")
                 return@launch
             }
 
-            val updatedAlarm = current.copy(nextTriggerTime = afterSkip)
-            val outcome = scheduler.scheduleAt(updatedAlarm, afterSkip)
+            val adapter = com.sysadmindoc.alarmclock.domain.evaluator.DurableSkipClaimAdapter(database = db)
+            val adapterResult = adapter.executeSkipClaimAndReconcile(
+                alarmId = alarm.id,
+                expectedScheduledAt = expectedScheduledAt,
+                nowEpochMs = System.currentTimeMillis()
+            )
+
+            if (adapterResult.outcome != com.sysadmindoc.alarmclock.domain.evaluator.DurableSkipClaimAdapterOutcome.SUCCESS_COMMITTED || adapterResult.updatedAlarm == null) {
+                android.util.Log.i("AlarmListViewModel", "Durable UI skip claim rejected or already committed for alarm ${alarm.id}: ${adapterResult.decisionReason}")
+                return@launch
+            }
+
+            val updatedAlarm = adapterResult.updatedAlarm!!
+            val outcome = scheduler.scheduleAt(updatedAlarm, updatedAlarm.nextTriggerTime)
             if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed) {
                 android.util.Log.w("AlarmListViewModel", "Replacement re-arm registration failed for skipped alarm ${alarm.id}; enqueuing background recovery")
                 try {
@@ -1110,10 +1117,10 @@ class AlarmListViewModel @Inject constructor(
             val datePattern = context.getString(R.string.alarmlist_date_pattern)
             val format = context.getString(R.string.alarmlist_next_occurrence_format)
 
-            val dateFormatted = Instant.ofEpochMilli(afterSkip)
+            val dateFormatted = Instant.ofEpochMilli(updatedAlarm.nextTriggerTime)
                 .atZone(ZoneId.systemDefault())
                 .format(DateTimeFormatter.ofPattern(datePattern, locale))
-            val timeFormatted = AlarmTimeFormatter.format(afterSkip, is24h, locale = locale)
+            val timeFormatted = AlarmTimeFormatter.format(updatedAlarm.nextTriggerTime, is24h, locale = locale)
 
             val feedback = when (outcome) {
                 is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.PermissionBlocked ->

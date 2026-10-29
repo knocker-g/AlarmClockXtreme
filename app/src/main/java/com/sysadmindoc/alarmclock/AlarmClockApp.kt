@@ -70,6 +70,7 @@ class AlarmClockApp : Application(), Configuration.Provider {
     interface AppEntryPoint {
         fun nextAlarmNotifier(): NextAlarmNotifier
         fun alarmRepository(): com.sysadmindoc.alarmclock.data.repository.AlarmRepository
+        fun alarmDatabase(): com.sysadmindoc.alarmclock.data.local.AlarmDatabase
         fun alarmScheduler(): com.sysadmindoc.alarmclock.domain.AlarmScheduler
         fun nextAlarmCalculator(): com.sysadmindoc.alarmclock.domain.NextAlarmCalculator
         fun alarmEventRepository(): com.sysadmindoc.alarmclock.data.repository.AlarmEventRepository
