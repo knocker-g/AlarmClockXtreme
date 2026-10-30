@@ -29,7 +29,8 @@ class HolidayRepository internal constructor(
     private val context: Context,
     private val holidayApi: HolidayApi,
     private val preferencesManager: PreferencesManager,
-    private val manualOverrideSource: ManualHolidayOverrideSource
+    private val manualOverrideSource: ManualHolidayOverrideSource,
+    private val clockMillis: () -> Long = { System.currentTimeMillis() }
 ) {
     /** Main Hilt injection constructor defaulting to [ManualHolidayOverrideSource.NONE]. */
     @Inject
@@ -42,7 +43,9 @@ class HolidayRepository internal constructor(
     // Durable atomic snapshot store
     private val snapshotFile get() = File(context.filesDir, "holiday_snapshot_v1.txt")
     private val store: HolidaySnapshotStore by lazy { FileHolidaySnapshotStore(snapshotFile) }
-    private val coordinator: HolidayRefreshCoordinator by lazy { HolidayRefreshCoordinator(holidayApi, store) }
+    private val coordinator: HolidayRefreshCoordinator by lazy {
+        HolidayRefreshCoordinator(holidayApi, store, clockMillis)
+    }
     private val mutex = Mutex()
 
     // In-memory cache snapshot guarded by volatile reference
@@ -62,29 +65,31 @@ class HolidayRepository internal constructor(
      *
      * Pure local evaluation; NEVER accesses network inline.
      * Evaluates manual override first, then durable provider snapshot.
+     * Legacy global `holidayAutoSkipEnabled` is non-authoritative (KNO-31 Consistency LOCK)
+     * and never disables provider or manual classification.
      */
     suspend fun classify(date: LocalDate): HolidayClassification {
         val settings = preferencesManager.getCurrentSettings()
-        if (!settings.holidayAutoSkipEnabled || settings.holidayCountryCode.isBlank()) {
-            // Even if provider is disabled, manual override remains authoritative
-            val manual = manualOverrideSource.overrideFor(date)
+        val manual = manualOverrideSource.overrideFor(date)
+        if (settings.holidayCountryCode.isBlank()) {
+            // When provider country is unconfigured, manual override remains authoritative;
+            // Manual AUTO yields UNKNOWN (PROVIDER_NOT_CONFIGURED).
             return HolidayClassifier.classify(
                 date = date,
                 manualOverride = manual,
                 snapshot = null,
                 configuredCountry = null,
-                nowMillis = System.currentTimeMillis()
+                nowMillis = clockMillis()
             )
         }
 
-        val manual = manualOverrideSource.overrideFor(date)
         val snapshot = getOrLoadSnapshot()
         return HolidayClassifier.classify(
             date = date,
             manualOverride = manual,
             snapshot = snapshot,
             configuredCountry = settings.holidayCountryCode,
-            nowMillis = System.currentTimeMillis()
+            nowMillis = clockMillis()
         )
     }
 
@@ -101,7 +106,7 @@ class HolidayRepository internal constructor(
         return HolidaySnapshot(
             state = state,
             holidayName = if (state == HolidayState.IS_HOLIDAY) "Holiday" else "",
-            checkedAtEpochMs = System.currentTimeMillis()
+            checkedAtEpochMs = clockMillis()
         )
     }
 

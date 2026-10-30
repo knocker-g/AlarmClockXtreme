@@ -1,7 +1,14 @@
 package com.sysadmindoc.alarmclock.data.repository
 
+import android.content.Context
+import com.sysadmindoc.alarmclock.data.preferences.AppSettings
+import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import com.sysadmindoc.alarmclock.data.remote.HolidayApi
 import com.sysadmindoc.alarmclock.data.remote.HolidayDto
+import com.sysadmindoc.alarmclock.domain.evaluator.HolidayState
+import io.mockk.coEvery
+import io.mockk.every
+import io.mockk.mockk
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -20,7 +27,7 @@ import java.time.LocalDate
  * Deterministic tests for KNO-158 Holiday Provider / Cache Truth & Refresh.
  * No live HTTP, no Hilt/WorkManager harness.
  *
- * Covers T01 - T26 as specified in the execution contract.
+ * Covers T01 - T35 as specified in the execution contract.
  */
 class HolidayProviderSnapshotTest {
 
@@ -586,5 +593,187 @@ class HolidayProviderSnapshotTest {
 
         // Worker mapping decision should RETRY because 2028 is transient
         assertEquals(HolidayWorkerDecision.RETRY, HolidayWorkerResultMapper.map(partial, runAttemptCount = 0, maxRetries = 3))
+    }
+
+    private fun createRepository(
+        filesDir: File,
+        settingsProvider: () -> AppSettings,
+        manualOverrideSource: ManualHolidayOverrideSource = ManualHolidayOverrideSource.NONE
+    ): HolidayRepository {
+        val context = mockk<Context>()
+        every { context.filesDir } returns filesDir
+        val preferencesManager = mockk<PreferencesManager>()
+        coEvery { preferencesManager.getCurrentSettings() } answers { settingsProvider() }
+        val forbiddenNetworkApi = object : HolidayApi {
+            override suspend fun getPublicHolidays(year: Int, countryCode: String): List<HolidayDto> {
+                throw AssertionError("Inline network I/O is forbidden during Holiday classification")
+            }
+        }
+        return HolidayRepository(
+            context = context,
+            holidayApi = forbiddenNetworkApi,
+            preferencesManager = preferencesManager,
+            manualOverrideSource = manualOverrideSource,
+            clockMillis = { nowMillis }
+        )
+    }
+
+    // T30: Legacy global=false, JP configured, valid snapshot holiday -> HOLIDAY
+    @Test
+    fun t30_legacyGlobalDisabled_jpConfigured_validSnapshotHoliday_returnsHoliday() = runTest {
+        val dir = tempFolder.newFolder("repo_t30")
+        FileHolidaySnapshotStore(File(dir, "holiday_snapshot_v1.txt")).writeAtomically(sampleSnapshot("JP"))
+
+        val repo = createRepository(
+            filesDir = dir,
+            settingsProvider = {
+                AppSettings(holidayAutoSkipEnabled = false, holidayCountryCode = "JP")
+            }
+        )
+
+        val classification = repo.classify(jan1)
+        assertEquals(HolidayClassificationKind.HOLIDAY, classification.kind)
+        assertEquals(HolidayClassificationSource.PROVIDER, classification.source)
+        assertEquals(HolidayProviderFreshness.FRESH, classification.freshness)
+
+        val domainSnapshot = repo.getHolidaySnapshot(jan1)
+        assertEquals(HolidayState.IS_HOLIDAY, domainSnapshot.state)
+    }
+
+    // T31: Legacy global=false, JP configured, valid snapshot non-holiday -> WORKDAY
+    @Test
+    fun t31_legacyGlobalDisabled_jpConfigured_validSnapshotNonHoliday_returnsWorkday() = runTest {
+        val dir = tempFolder.newFolder("repo_t31")
+        FileHolidaySnapshotStore(File(dir, "holiday_snapshot_v1.txt")).writeAtomically(sampleSnapshot("JP"))
+
+        val repo = createRepository(
+            filesDir = dir,
+            settingsProvider = {
+                AppSettings(holidayAutoSkipEnabled = false, holidayCountryCode = "JP")
+            }
+        )
+
+        val classification = repo.classify(feb1)
+        assertEquals(HolidayClassificationKind.WORKDAY, classification.kind)
+        assertEquals(HolidayClassificationSource.PROVIDER, classification.source)
+        assertEquals(HolidayProviderFreshness.FRESH, classification.freshness)
+
+        val domainSnapshot = repo.getHolidaySnapshot(feb1)
+        assertEquals(HolidayState.NOT_HOLIDAY, domainSnapshot.state)
+    }
+
+    // T32: Canonical classification is invariant across legacy holidayAutoSkipEnabled=true/false
+    @Test
+    fun t32_canonicalClassificationInvariantAcrossLegacyGlobalFlag() = runTest {
+        val dir = tempFolder.newFolder("repo_t32")
+        FileHolidaySnapshotStore(File(dir, "holiday_snapshot_v1.txt")).writeAtomically(sampleSnapshot("JP"))
+        val manualHolidayDate = LocalDate.of(2026, 3, 1)
+
+        var legacyGlobalEnabled = false
+        val repo = createRepository(
+            filesDir = dir,
+            settingsProvider = {
+                AppSettings(holidayAutoSkipEnabled = legacyGlobalEnabled, holidayCountryCode = "JP")
+            },
+            manualOverrideSource = ManualHolidayOverrideSource { date ->
+                if (date == manualHolidayDate) ManualHolidayOverride.FORCE_HOLIDAY else ManualHolidayOverride.AUTO
+            }
+        )
+
+        val probes = listOf(jan1, feb1, nextYearJan1, manualHolidayDate)
+        val whenGlobalFalse = probes.map { repo.classify(it) }
+        val snapshotsWhenFalse = probes.map { repo.getHolidaySnapshot(it) }
+
+        legacyGlobalEnabled = true
+        val whenGlobalTrue = probes.map { repo.classify(it) }
+        val snapshotsWhenTrue = probes.map { repo.getHolidaySnapshot(it) }
+
+        assertEquals(whenGlobalFalse, whenGlobalTrue)
+        assertEquals(snapshotsWhenFalse, snapshotsWhenTrue)
+    }
+
+    // T33: Country unconfigured still honors Manual Holiday / Workday override with highest priority
+    @Test
+    fun t33_countryUnconfigured_manualOverrideRemainsAuthoritative() = runTest {
+        val dir = tempFolder.newFolder("repo_t33")
+        val repo = createRepository(
+            filesDir = dir,
+            settingsProvider = {
+                AppSettings(holidayAutoSkipEnabled = false, holidayCountryCode = "")
+            },
+            manualOverrideSource = ManualHolidayOverrideSource { date ->
+                when (date) {
+                    feb1 -> ManualHolidayOverride.FORCE_HOLIDAY
+                    jan1 -> ManualHolidayOverride.FORCE_WORKDAY
+                    else -> ManualHolidayOverride.AUTO
+                }
+            }
+        )
+
+        val forcedHoliday = repo.classify(feb1)
+        assertEquals(HolidayClassificationKind.HOLIDAY, forcedHoliday.kind)
+        assertEquals(HolidayClassificationSource.MANUAL_OVERRIDE, forcedHoliday.source)
+        assertEquals(HolidayState.IS_HOLIDAY, repo.getHolidaySnapshot(feb1).state)
+        assertTrue(repo.isHoliday(feb1))
+
+        val forcedWorkday = repo.classify(jan1)
+        assertEquals(HolidayClassificationKind.WORKDAY, forcedWorkday.kind)
+        assertEquals(HolidayClassificationSource.MANUAL_OVERRIDE, forcedWorkday.source)
+        assertEquals(HolidayState.NOT_HOLIDAY, repo.getHolidaySnapshot(jan1).state)
+        assertFalse(repo.isHoliday(jan1))
+    }
+
+    // T34: Country unconfigured with Manual AUTO -> UNKNOWN
+    @Test
+    fun t34_countryUnconfigured_manualAuto_returnsUnknown() = runTest {
+        val dir = tempFolder.newFolder("repo_t34")
+        // Even if a leftover snapshot file exists on disk, blank country must yield UNKNOWN
+        FileHolidaySnapshotStore(File(dir, "holiday_snapshot_v1.txt")).writeAtomically(sampleSnapshot("JP"))
+
+        val repo = createRepository(
+            filesDir = dir,
+            settingsProvider = {
+                AppSettings(holidayAutoSkipEnabled = true, holidayCountryCode = "   ")
+            },
+            manualOverrideSource = ManualHolidayOverrideSource.NONE
+        )
+
+        val classification = repo.classify(jan1)
+        assertEquals(HolidayClassificationKind.UNKNOWN, classification.kind)
+        assertEquals(HolidayClassificationSource.NONE, classification.source)
+        assertEquals(HolidayUnknownReason.PROVIDER_NOT_CONFIGURED, classification.unknownReason)
+        assertEquals(HolidayState.UNKNOWN, repo.getHolidaySnapshot(jan1).state)
+    }
+
+    // T35: Legacy isHoliday maps UNKNOWN -> false to preserve Base schedule
+    @Test
+    fun t35_legacyIsHoliday_unknownReturnsFalseToPreserveBaseSchedule() = runTest {
+        // Case A: Country unconfigured -> UNKNOWN -> false
+        val emptyCountryDir = tempFolder.newFolder("repo_t35_a")
+        val unconfiguredRepo = createRepository(
+            filesDir = emptyCountryDir,
+            settingsProvider = { AppSettings(holidayAutoSkipEnabled = true, holidayCountryCode = "") }
+        )
+        assertEquals(HolidayClassificationKind.UNKNOWN, unconfiguredRepo.classify(jan1).kind)
+        assertFalse(unconfiguredRepo.isHoliday(jan1))
+
+        // Case B: Country configured, no snapshot on disk -> UNKNOWN -> false
+        val missingSnapDir = tempFolder.newFolder("repo_t35_b")
+        val missingSnapRepo = createRepository(
+            filesDir = missingSnapDir,
+            settingsProvider = { AppSettings(holidayAutoSkipEnabled = true, holidayCountryCode = "JP") }
+        )
+        assertEquals(HolidayClassificationKind.UNKNOWN, missingSnapRepo.classify(jan1).kind)
+        assertFalse(missingSnapRepo.isHoliday(jan1))
+
+        // Case C: Uncovered year (2027) on valid 2026 JP snapshot -> UNKNOWN -> false
+        val coveredDir = tempFolder.newFolder("repo_t35_c")
+        FileHolidaySnapshotStore(File(coveredDir, "holiday_snapshot_v1.txt")).writeAtomically(sampleSnapshot("JP"))
+        val uncoveredYearRepo = createRepository(
+            filesDir = coveredDir,
+            settingsProvider = { AppSettings(holidayAutoSkipEnabled = false, holidayCountryCode = "JP") }
+        )
+        assertEquals(HolidayClassificationKind.UNKNOWN, uncoveredYearRepo.classify(nextYearJan1).kind)
+        assertFalse(uncoveredYearRepo.isHoliday(nextYearJan1))
     }
 }
