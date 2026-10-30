@@ -109,9 +109,68 @@ class AlarmRepository @Inject constructor(
 
     suspend fun update(alarm: Alarm) {
         database.withTransaction {
+            val authorityDao = database.scheduleAuthorityDao()
+            val issuedDao = database.issuedOccurrenceDao()
             val existing = if (alarm.id != 0L) dao.getById(alarm.id) else null
             val versioned = prepareVersionedAlarmForUpdate(alarm, existing)
-            dao.update(versioned.sanitized())
+            val sanitized = versioned.sanitized()
+            dao.update(sanitized)
+
+            // KNO-30 P2: Fenced CAS update for ScheduleAuthority and revoke obsolete occurrences on schedule change
+            val existingAuthority = authorityDao.getAuthorityByAlarmId(sanitized.id)
+            if (existingAuthority != null && !sanitized.isQuickAlarm) {
+                val isScheduleChanged = existing != null && (
+                    existing.hour != sanitized.hour ||
+                    existing.minute != sanitized.minute ||
+                    existing.repeatDays != sanitized.repeatDays ||
+                    existing.specificDate != sanitized.specificDate ||
+                    existing.scheduleKind != sanitized.scheduleKind ||
+                    existing.skipOnHolidays != sanitized.skipOnHolidays ||
+                    existing.solarOffsetMinutes != sanitized.solarOffsetMinutes ||
+                    existing.solarAnchor != sanitized.solarAnchor ||
+                    existing.timezonePolicy != sanitized.timezonePolicy ||
+                    existing.fixedTimezoneId != sanitized.fixedTimezoneId ||
+                    existing.shiftPattern != sanitized.shiftPattern ||
+                    existing.shiftPatternStartDate != sanitized.shiftPatternStartDate
+                )
+
+                val newDefRev = com.sysadmindoc.alarmclock.domain.ScheduleAuthorityBootstrapAdapter.computeDefinitionRevision(sanitized)
+                val newLifecycle = if (sanitized.isEnabled) "LIVE" else "DISABLED"
+                val newDesiredOperation = if (sanitized.isEnabled) "SET" else "CANCEL"
+                val newDesiredTriggerMillis = if (sanitized.isEnabled) sanitized.nextTriggerTime else null
+
+                val rows = if (isScheduleChanged) {
+                    authorityDao.casUpdateScheduleAuthority(
+                        alarmId = sanitized.id,
+                        instanceToken = existingAuthority.instanceToken,
+                        restoreEpoch = existingAuthority.restoreEpoch,
+                        expectedRevision = existingAuthority.scheduleRevision,
+                        newDefinitionRevision = newDefRev,
+                        newLifecycle = newLifecycle,
+                        desiredOperation = newDesiredOperation,
+                        desiredTriggerMillis = newDesiredTriggerMillis
+                    )
+                } else {
+                    authorityDao.casUpdateNonScheduleAuthority(
+                        alarmId = sanitized.id,
+                        instanceToken = existingAuthority.instanceToken,
+                        restoreEpoch = existingAuthority.restoreEpoch,
+                        expectedRevision = existingAuthority.scheduleRevision,
+                        newDefinitionRevision = newDefRev,
+                        newLifecycle = newLifecycle,
+                        desiredOperation = newDesiredOperation,
+                        desiredTriggerMillis = newDesiredTriggerMillis
+                    )
+                }
+
+                if (rows == 0) {
+                    throw StaleAlarmException("ScheduleAuthority CAS update failed for alarm ${sanitized.id}: stale token, revision, or epoch")
+                }
+
+                if (isScheduleChanged) {
+                    issuedDao.revokePendingOccurrencesForAlarm(sanitized.id, System.currentTimeMillis())
+                }
+            }
         }
     }
 
@@ -231,8 +290,57 @@ class AlarmRepository @Inject constructor(
         }
     }
 
-    suspend fun setEnabled(id: Long, enabled: Boolean, nextTrigger: Long) =
-        dao.setEnabled(id, enabled, nextTrigger)
+    suspend fun setEnabled(id: Long, enabled: Boolean, nextTrigger: Long) {
+        database.withTransaction {
+            dao.setEnabled(id, enabled, nextTrigger)
+
+            val authorityDao = database.scheduleAuthorityDao()
+            val existingAuthority = authorityDao.getAuthorityByAlarmId(id)
+            if (existingAuthority != null) {
+                val rows = authorityDao.casUpdateToggleAuthority(
+                    alarmId = id,
+                    instanceToken = existingAuthority.instanceToken,
+                    restoreEpoch = existingAuthority.restoreEpoch,
+                    expectedRevision = existingAuthority.scheduleRevision,
+                    newLifecycle = if (enabled) "LIVE" else "DISABLED",
+                    desiredOperation = if (enabled) "SET" else "CANCEL",
+                    desiredTriggerMillis = if (enabled) nextTrigger else null
+                )
+                if (rows == 0) {
+                    throw StaleAlarmException("ScheduleAuthority CAS toggle failed for alarm $id: stale token, revision, or epoch")
+                }
+            }
+        }
+    }
+
+    suspend fun updateAlarmsEnabledTransaction(alarmIds: List<Long>, enabled: Boolean, triggerTimeCalculator: (Alarm) -> Long) {
+        database.withTransaction {
+            val authorityDao = database.scheduleAuthorityDao()
+            val alarms = alarmIds.mapNotNull { dao.getById(it) }
+            for (alarm in alarms) {
+                if (alarm.isQuickAlarm) continue
+                val nextTrigger = if (enabled) triggerTimeCalculator(alarm) else 0L
+                val updatedAlarm = alarm.copy(isEnabled = enabled, nextTriggerTime = nextTrigger)
+                dao.update(updatedAlarm)
+
+                val existingAuthority = authorityDao.getAuthorityByAlarmId(alarm.id)
+                if (existingAuthority != null) {
+                    val rows = authorityDao.casUpdateToggleAuthority(
+                        alarmId = alarm.id,
+                        instanceToken = existingAuthority.instanceToken,
+                        restoreEpoch = existingAuthority.restoreEpoch,
+                        expectedRevision = existingAuthority.scheduleRevision,
+                        newLifecycle = if (enabled) "LIVE" else "DISABLED",
+                        desiredOperation = if (enabled) "SET" else "CANCEL",
+                        desiredTriggerMillis = if (enabled) nextTrigger else null
+                    )
+                    if (rows == 0) {
+                        throw StaleAlarmException("ScheduleAuthority CAS group toggle failed for alarm ${alarm.id}: stale token, revision, or epoch")
+                    }
+                }
+            }
+        }
+    }
 
     suspend fun updateNextTrigger(id: Long, nextTrigger: Long) =
         dao.updateNextTrigger(id, nextTrigger)
