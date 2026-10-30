@@ -19,8 +19,56 @@ import java.time.ZonedDateTime
 class ScheduleOccurrenceEvaluator(
     private val calculator: NextAlarmCalculator = NextAlarmCalculator()
 ) {
-    private companion object {
+    companion object {
         const val MAX_CANDIDATE_SEARCH_STEPS = 100
+
+        /**
+         * Resolves the effective [HolidayPolicy] for [alarm].
+         *
+         * Per KNO-31 / KNO-159 Section 5:
+         * - Holiday policy applies ONLY to eligible repeating Normal Alarms (`SCHEDULE_KIND_REPEATING`).
+         * - Normal `ONE_TIME` and Quick alarms do not apply Holiday policy.
+         */
+        fun resolveEffectiveHolidayPolicy(
+            alarm: Alarm,
+            holidayPolicyOverride: HolidayPolicy? = null
+        ): HolidayPolicy {
+            if (alarm.isQuickAlarm || alarm.scheduleKind != Alarm.SCHEDULE_KIND_REPEATING) {
+                return HolidayPolicy.FOLLOW_BASE
+            }
+            return holidayPolicyOverride ?: if (alarm.skipOnHolidays) {
+                HolidayPolicy.EXCLUDE
+            } else {
+                HolidayPolicy.FOLLOW_BASE
+            }
+        }
+
+        /**
+         * Canonical Base schedule date predicate shared with [HolidayMaterialChangeDetector]
+         * so Base-vs-Holiday eligibility stays 1:1 aligned across evaluation and delta detection.
+         */
+        fun isBaseScheduleDate(alarm: Alarm, date: LocalDate): Boolean {
+            val matchesRepeat = alarm.repeatDays.isEmpty() || alarm.repeatDays.contains(date.dayOfWeek)
+            val matchesShift = if (alarm.shiftPattern.isNotBlank()) {
+                val shiftStart = runCatching { LocalDate.parse(alarm.shiftPatternStartDate) }.getOrNull()
+                val pattern = ShiftPattern.fromKey(alarm.shiftPattern)
+                shiftStart != null && pattern != null && !date.isBefore(shiftStart) && pattern.isWorkDate(shiftStart, date)
+            } else {
+                true
+            }
+            val matchesSpecificDate = if (alarm.specificDate.isNotBlank()) {
+                runCatching { LocalDate.parse(alarm.specificDate) }.getOrNull() == date
+            } else {
+                false
+            }
+            val matchesRecurringPattern = when {
+                alarm.repeatDays.isNotEmpty() && alarm.shiftPattern.isNotBlank() -> matchesRepeat && matchesShift
+                alarm.repeatDays.isNotEmpty() -> matchesRepeat
+                alarm.shiftPattern.isNotBlank() -> matchesShift
+                else -> false
+            }
+            return matchesSpecificDate || matchesRecurringPattern
+        }
     }
 
     /**
@@ -35,6 +83,33 @@ class ScheduleOccurrenceEvaluator(
             ZonedDateTime.of(date, time, zone)
         }
     }
+
+    /**
+     * Evaluates the next active candidate occurrence using KNO-158's typed local
+     * [LocalHolidayClassifier] (`HOLIDAY | WORKDAY | UNKNOWN`).
+     *
+     * Pure local evaluation; never performs inline network I/O and never consults
+     * legacy `HolidayRepository.isHoliday(): Boolean`.
+     */
+    fun evaluateWithHolidayClassifier(
+        alarm: Alarm,
+        fromEpochMs: Long,
+        holidayClassifier: LocalHolidayClassifier,
+        exceptions: List<ScheduleException> = emptyList(),
+        holidayPolicyOverride: HolidayPolicy? = null,
+        consumedOccurrenceKeys: Set<String> = emptySet(),
+        evaluationZoneId: ZoneId = ZoneId.systemDefault(),
+        allowHidePersonalRuntimeFeatures: Boolean = false
+    ): EvaluatedOccurrence? = evaluateOccurrence(
+        alarm = alarm,
+        fromEpochMs = fromEpochMs,
+        exceptions = exceptions,
+        holidaySnapshotProvider = holidayClassifier.asHolidaySnapshotProvider(),
+        holidayPolicyOverride = holidayPolicyOverride,
+        consumedOccurrenceKeys = consumedOccurrenceKeys,
+        evaluationZoneId = evaluationZoneId,
+        allowHidePersonalRuntimeFeatures = allowHidePersonalRuntimeFeatures
+    )
 
     /**
      * Evaluates the next active candidate occurrence for a given Normal [alarm] evaluated from [fromEpochMs].
@@ -59,12 +134,8 @@ class ScheduleOccurrenceEvaluator(
         val isExplicitOneTime = alarm.scheduleKind == Alarm.SCHEDULE_KIND_ONE_TIME
         val isExplicitRepeating = alarm.scheduleKind == Alarm.SCHEDULE_KIND_REPEATING
 
-        // Resolve Effective Holiday Policy
-        val policy = holidayPolicyOverride ?: if (alarm.skipOnHolidays) {
-            HolidayPolicy.EXCLUDE
-        } else {
-            HolidayPolicy.FOLLOW_BASE
-        }
+        // Resolve Effective Holiday Policy (applies only to repeating Normal Alarms)
+        val policy = resolveEffectiveHolidayPolicy(alarm, holidayPolicyOverride)
 
         if (!isExplicitOneTime && !isExplicitRepeating) {
             return EvaluatedOccurrence(
@@ -219,27 +290,7 @@ class ScheduleOccurrenceEvaluator(
 
             val holidaySnapshot = holidaySnapshotProvider(currentDate)
 
-            // Determine if currentDate is a Base schedule day (AND evaluation when both repeatDays and shiftPattern are present)
-            val matchesRepeat = alarm.repeatDays.isEmpty() || alarm.repeatDays.contains(currentDate.dayOfWeek)
-            val matchesShift = if (alarm.shiftPattern.isNotBlank()) {
-                val shiftStart = LocalDate.parse(alarm.shiftPatternStartDate)
-                val pattern = ShiftPattern.fromKey(alarm.shiftPattern)
-                pattern != null && !currentDate.isBefore(shiftStart) && pattern.isWorkDate(shiftStart, currentDate)
-            } else true
-
-            val matchesSpecificDate = if (alarm.specificDate.isNotBlank()) {
-                runCatching { LocalDate.parse(alarm.specificDate) }.getOrNull() == currentDate
-            } else false
-
-            val matchesRecurringPattern = if (alarm.repeatDays.isNotEmpty() && alarm.shiftPattern.isNotBlank()) {
-                matchesRepeat && matchesShift
-            } else if (alarm.repeatDays.isNotEmpty()) {
-                matchesRepeat
-            } else if (alarm.shiftPattern.isNotBlank()) {
-                matchesShift
-            } else false
-
-            val isBaseDay = matchesSpecificDate || matchesRecurringPattern
+            val isBaseDay = isBaseScheduleDate(alarm, currentDate)
 
             val isHolidayIncludeDay = policy == HolidayPolicy.INCLUDE && holidaySnapshot.state == HolidayState.IS_HOLIDAY
 
@@ -270,6 +321,19 @@ class ScheduleOccurrenceEvaluator(
 
             // Pipeline Layer 1: Holiday Exclusion
             if (policy == HolidayPolicy.EXCLUDE && holidaySnapshot.state == HolidayState.IS_HOLIDAY) {
+                if (firstValidNoCandidateResult == null) {
+                    firstValidNoCandidateResult = EvaluatedOccurrence(
+                        occurrenceId = null,
+                        alarmId = alarm.id,
+                        baseTriggerTimeEpochMs = 0L,
+                        targetTriggerTimeEpochMs = 0L,
+                        decision = OccurrenceDecision.VALID_NO_CURRENT_OCCURRENCE,
+                        generation = alarm.generation,
+                        revision = alarm.revision,
+                        holidayState = HolidayState.IS_HOLIDAY,
+                        holidayPolicy = policy
+                    )
+                }
                 currentDate = currentDate.plusDays(1)
                 continue
             }

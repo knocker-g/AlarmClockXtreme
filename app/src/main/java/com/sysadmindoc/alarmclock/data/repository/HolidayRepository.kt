@@ -47,17 +47,48 @@ class HolidayRepository internal constructor(
         HolidayRefreshCoordinator(holidayApi, store, clockMillis)
     }
     private val mutex = Mutex()
+    private val snapshotCacheLock = Any()
 
-    // In-memory cache snapshot guarded by volatile reference
+    // In-memory cache snapshot guarded by volatile reference + snapshotCacheLock on writes/cold-load
     @Volatile private var memorySnapshot: HolidayProviderSnapshot? = null
 
     init {
         // Safe preload of durable snapshot
         memorySnapshot = try {
-            store.read()
+            store.read()?.takeIf { it.isValid() }
         } catch (_: Exception) {
             null
         }
+    }
+
+    /**
+     * Captures one coherent, immutable [CapturedHolidayAuthorityWindow] for
+     * `[startDate, endDateInclusive]` using a single settings read, a single immutable
+     * local [HolidayProviderSnapshot] read, a single clock sample, and one synchronous
+     * manual-override pass.
+     *
+     * Never performs network I/O and never acquires the refresh network [mutex].
+     */
+    suspend fun captureAuthorityWindow(
+        startDate: LocalDate,
+        endDateInclusive: LocalDate
+    ): CapturedHolidayAuthorityWindow {
+        require(!endDateInclusive.isBefore(startDate)) {
+            "endDateInclusive ($endDateInclusive) must not be before startDate ($startDate)"
+        }
+        val rawCountry = preferencesManager.getCurrentSettings().holidayCountryCode
+        val normalizedCountry = HolidayProviderSnapshot.normalizeCountry(rawCountry)
+        val capturedNow = clockMillis()
+        val snapshot = if (normalizedCountry == null) null else getOrLoadSnapshot()
+        val manualMap = manualOverrideSource.snapshotOverrides(startDate, endDateInclusive).toMap()
+        return CapturedHolidayAuthorityWindow(
+            startDate = startDate,
+            endDateInclusive = endDateInclusive,
+            configuredCountry = normalizedCountry,
+            providerSnapshot = snapshot,
+            manualOverrides = manualMap,
+            capturedAtMillis = capturedNow
+        )
     }
 
     /**
@@ -71,8 +102,9 @@ class HolidayRepository internal constructor(
     suspend fun classify(date: LocalDate): HolidayClassification {
         val settings = preferencesManager.getCurrentSettings()
         val manual = manualOverrideSource.overrideFor(date)
-        if (settings.holidayCountryCode.isBlank()) {
-            // When provider country is unconfigured, manual override remains authoritative;
+        val normalizedCountry = HolidayProviderSnapshot.normalizeCountry(settings.holidayCountryCode)
+        if (normalizedCountry == null) {
+            // When provider country is unconfigured/invalid, manual override remains authoritative;
             // Manual AUTO yields UNKNOWN (PROVIDER_NOT_CONFIGURED).
             return HolidayClassifier.classify(
                 date = date,
@@ -88,7 +120,7 @@ class HolidayRepository internal constructor(
             date = date,
             manualOverride = manual,
             snapshot = snapshot,
-            configuredCountry = settings.holidayCountryCode,
+            configuredCountry = normalizedCountry,
             nowMillis = clockMillis()
         )
     }
@@ -140,9 +172,9 @@ class HolidayRepository internal constructor(
         return mutex.withLock {
             val outcome = coordinator.refresh(country, requestedYears, force)
             when (outcome) {
-                is HolidayRefreshOutcome.Success -> memorySnapshot = outcome.snapshot
-                is HolidayRefreshOutcome.PartialSuccess -> memorySnapshot = outcome.snapshot
-                is HolidayRefreshOutcome.Unchanged -> memorySnapshot = outcome.snapshot
+                is HolidayRefreshOutcome.Success -> publishMemorySnapshot(outcome.snapshot)
+                is HolidayRefreshOutcome.PartialSuccess -> publishMemorySnapshot(outcome.snapshot)
+                is HolidayRefreshOutcome.Unchanged -> publishMemorySnapshot(outcome.snapshot)
                 else -> Unit
             }
             outcome
@@ -162,11 +194,24 @@ class HolidayRepository internal constructor(
         }
     }
 
+    private fun publishMemorySnapshot(snapshot: HolidayProviderSnapshot) {
+        synchronized(snapshotCacheLock) {
+            memorySnapshot = snapshot
+        }
+    }
+
     private fun getOrLoadSnapshot(): HolidayProviderSnapshot? {
         val current = memorySnapshot
         if (current != null && current.isValid()) return current
-        val loaded = store.read()
-        memorySnapshot = loaded
-        return loaded
+        return synchronized(snapshotCacheLock) {
+            val rechecked = memorySnapshot
+            if (rechecked != null && rechecked.isValid()) {
+                rechecked
+            } else {
+                val loaded = store.read()?.takeIf { it.isValid() }
+                memorySnapshot = loaded
+                loaded
+            }
+        }
     }
 }
