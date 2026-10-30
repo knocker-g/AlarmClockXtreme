@@ -9,7 +9,7 @@ import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta
 
 @Dao
 interface ScheduleAuthorityDao {
-    @Insert(onConflict = OnConflictStrategy.ABORT)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAuthority(authority: ScheduleAuthority)
 
     @Query("SELECT * FROM schedule_authority WHERE alarmId = :alarmId")
@@ -143,5 +143,86 @@ interface ScheduleAuthorityDao {
         desiredOperation: String,
         desiredTriggerMillis: Long?,
         actionKey: String?
+    ): Int
+
+    /**
+     * Generation-qualified CAS update for schedule-affecting edits.
+     * Strictly increments scheduleRevision by 1 and transitions reconcileState = 'RECONCILING'.
+     */
+    @Query("""
+        UPDATE schedule_authority
+        SET definitionRevision = :newDefinitionRevision,
+            scheduleRevision = scheduleRevision + 1,
+            lifecycle = :newLifecycle,
+            desiredOperation = :desiredOperation,
+            desiredTriggerMillis = :desiredTriggerMillis,
+            reconcileState = 'RECONCILING'
+        WHERE alarmId = :alarmId
+          AND instanceToken = :instanceToken
+          AND restoreEpoch = :restoreEpoch
+          AND scheduleRevision = :expectedRevision
+    """)
+    suspend fun casUpdateScheduleAuthority(
+        alarmId: Long,
+        instanceToken: String,
+        restoreEpoch: Long,
+        expectedRevision: Long,
+        newDefinitionRevision: Long,
+        newLifecycle: String,
+        desiredOperation: String,
+        desiredTriggerMillis: Long?
+    ): Int
+
+    /**
+     * Generation-qualified CAS update for non-schedule secondary edits (e.g. label/ringtone).
+     * Updates definitionRevision while preserving existing scheduleRevision and reconcileState.
+     */
+    @Query("""
+        UPDATE schedule_authority
+        SET definitionRevision = :newDefinitionRevision,
+            lifecycle = :newLifecycle,
+            desiredOperation = :desiredOperation,
+            desiredTriggerMillis = :desiredTriggerMillis
+        WHERE alarmId = :alarmId
+          AND instanceToken = :instanceToken
+          AND restoreEpoch = :restoreEpoch
+          AND scheduleRevision = :expectedRevision
+    """)
+    suspend fun casUpdateNonScheduleAuthority(
+        alarmId: Long,
+        instanceToken: String,
+        restoreEpoch: Long,
+        expectedRevision: Long,
+        newDefinitionRevision: Long,
+        newLifecycle: String,
+        desiredOperation: String,
+        desiredTriggerMillis: Long?
+    ): Int
+
+    /**
+     * Generation-qualified CAS update for enable/disable toggle.
+     * Fenced by matching alarmId, instanceToken, restoreEpoch, and expectedRevision.
+     * Strictly increments scheduleRevision by 1 and transitions reconcileState = 'RECONCILING'.
+     */
+    @Query("""
+        UPDATE schedule_authority
+        SET scheduleRevision = scheduleRevision + 1,
+            lifecycle = :newLifecycle,
+            desiredOperation = :desiredOperation,
+            desiredTriggerMillis = :desiredTriggerMillis,
+            reconcileState = 'RECONCILING'
+        WHERE alarmId = :alarmId
+          AND instanceToken = :instanceToken
+          AND restoreEpoch = :restoreEpoch
+          AND scheduleRevision = :expectedRevision
+    """)
+    suspend fun casUpdateToggleAuthority(
+        alarmId: Long,
+        instanceToken: String,
+        restoreEpoch: Long,
+        expectedRevision: Long,
+        newLifecycle: String,
+        desiredOperation: String,
+        desiredTriggerMillis: Long?
     ): Int
 }
