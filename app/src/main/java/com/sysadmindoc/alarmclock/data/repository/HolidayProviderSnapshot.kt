@@ -227,9 +227,92 @@ enum class ManualHolidayOverride { AUTO, FORCE_HOLIDAY, FORCE_WORKDAY }
 fun interface ManualHolidayOverrideSource {
     fun overrideFor(date: LocalDate): ManualHolidayOverride
 
+    /**
+     * Materializes overrides for `[startDate, endDateInclusive]` as an immutable map
+     * in a single non-suspending pass.
+     *
+     * Note: production [HolidayRepository] currently uses [NONE] (durable Manual Holiday
+     * storage is KNO-31 residual scope). Future durable manual-override implementations
+     * must override this method to read from a single transactional / atomic store snapshot
+     * so concurrent writes on other threads cannot interleave across dates in the range.
+     */
+    fun snapshotOverrides(
+        startDate: LocalDate,
+        endDateInclusive: LocalDate
+    ): Map<LocalDate, ManualHolidayOverride> {
+        if (endDateInclusive.isBefore(startDate)) return emptyMap()
+        val overrides = LinkedHashMap<LocalDate, ManualHolidayOverride>()
+        var cursor = startDate
+        while (!cursor.isAfter(endDateInclusive)) {
+            val override = overrideFor(cursor)
+            if (override != ManualHolidayOverride.AUTO) {
+                overrides[cursor] = override
+            }
+            cursor = cursor.plusDays(1)
+        }
+        return overrides
+    }
+
     companion object {
         /** No manual overrides recorded: every date defers to the provider. */
-        val NONE: ManualHolidayOverrideSource = ManualHolidayOverrideSource { ManualHolidayOverride.AUTO }
+        val NONE: ManualHolidayOverrideSource = object : ManualHolidayOverrideSource {
+            override fun overrideFor(date: LocalDate): ManualHolidayOverride = ManualHolidayOverride.AUTO
+            override fun snapshotOverrides(
+                startDate: LocalDate,
+                endDateInclusive: LocalDate
+            ): Map<LocalDate, ManualHolidayOverride> = emptyMap()
+        }
+    }
+}
+
+/**
+ * Coherent, immutable local Holiday authority captured for a bounded `[startDate, endDateInclusive]`
+ * evaluation window without inline network I/O (KNO-159 P1).
+ *
+ * Guarantees within one captured window:
+ * - Single normalized [configuredCountry] identity (`null` when unconfigured/invalid).
+ * - Single immutable [providerSnapshot] generation (never mixes old and new provider snapshots).
+ * - Single [capturedAtMillis] sample (never flips freshness mid-window within a covered year).
+ * - Frozen [manualOverrides] map for `[startDate, endDateInclusive]` with manual precedence intact.
+ * - Dates outside `[startDate, endDateInclusive]` fail safe to [HolidayClassificationKind.UNKNOWN].
+ */
+data class CapturedHolidayAuthorityWindow(
+    val startDate: LocalDate,
+    val endDateInclusive: LocalDate,
+    val configuredCountry: String?,
+    val providerSnapshot: HolidayProviderSnapshot?,
+    val manualOverrides: Map<LocalDate, ManualHolidayOverride> = emptyMap(),
+    val capturedAtMillis: Long
+) {
+    init {
+        require(!endDateInclusive.isBefore(startDate)) {
+            "endDateInclusive ($endDateInclusive) must not be before startDate ($startDate)"
+        }
+    }
+
+    /** Generation of the pinned provider snapshot, or null when no snapshot was pinned. */
+    val snapshotGeneration: Long?
+        get() = providerSnapshot?.generation
+
+    fun contains(date: LocalDate): Boolean =
+        !date.isBefore(startDate) && !date.isAfter(endDateInclusive)
+
+    fun classify(date: LocalDate): HolidayClassification {
+        if (!contains(date)) {
+            return HolidayClassification(
+                kind = HolidayClassificationKind.UNKNOWN,
+                source = HolidayClassificationSource.NONE,
+                unknownReason = HolidayUnknownReason.YEAR_NOT_COVERED
+            )
+        }
+        val manual = manualOverrides[date] ?: ManualHolidayOverride.AUTO
+        return HolidayClassifier.classify(
+            date = date,
+            manualOverride = manual,
+            snapshot = if (configuredCountry == null) null else providerSnapshot,
+            configuredCountry = configuredCountry,
+            nowMillis = capturedAtMillis
+        )
     }
 }
 
