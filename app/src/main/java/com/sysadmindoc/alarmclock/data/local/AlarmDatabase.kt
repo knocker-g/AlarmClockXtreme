@@ -465,6 +465,10 @@ abstract class AlarmDatabase : RoomDatabase() {
                     )
                     """.trimIndent()
                 )
+                db.execSQL(
+                    "INSERT OR IGNORE INTO schedule_authority_meta (id, restoreEpoch, bootstrapState) " +
+                        "VALUES (1, ${System.currentTimeMillis()}, 'INITIALIZED')"
+                )
             }
         }
 
@@ -477,6 +481,10 @@ abstract class AlarmDatabase : RoomDatabase() {
                 db.execSQL(
                     "INSERT OR IGNORE INTO alarm_groups (name) " +
                         "VALUES ('Work'), ('School'), ('Gym'), ('Medication'), ('Personal'), ('Calendar')"
+                )
+                db.execSQL(
+                    "INSERT OR IGNORE INTO schedule_authority_meta (id, restoreEpoch, bootstrapState) " +
+                        "VALUES (1, ${System.currentTimeMillis()}, 'INITIALIZED')"
                 )
                 installDurableIntentTriggers(db)
             }

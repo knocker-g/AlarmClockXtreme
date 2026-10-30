@@ -149,6 +149,7 @@ class RecoveryDiagnosticBridgeTest {
 
     @Test
     fun `missing restore epoch returns NOT_EVALUATED with RESTORE_EPOCH_MISSING`() = runBlocking {
+        database.compileStatement("DELETE FROM schedule_authority_meta").executeUpdateDelete()
         database.alarmDao().insert(testAlarm)
         authorityDao.insertAuthority(readyAuthority)
 

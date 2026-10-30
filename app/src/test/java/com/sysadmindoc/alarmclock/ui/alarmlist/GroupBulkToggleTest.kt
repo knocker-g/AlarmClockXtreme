@@ -58,6 +58,7 @@ class GroupBulkToggleTest {
         org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(true)
 
         db = Room.inMemoryDatabaseBuilder(context, AlarmDatabase::class.java)
+            .addCallback(AlarmDatabase.DATABASE_CALLBACK)
             .allowMainThreadQueries()
             .build()
         alarmDao = db.alarmDao()
