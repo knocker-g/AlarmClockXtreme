@@ -217,12 +217,11 @@ class AlarmClockIntentHandler @Inject constructor(
             repository.setEnabled(alarm.id, enabled = false, nextTrigger = 0L)
             return
         }
-        val nextFromMillis = alarm.nextTriggerTime
-            .coerceAtLeast(System.currentTimeMillis()) + 60_000L
-        val nextFrom = Instant.ofEpochMilli(nextFromMillis).atZone(ZoneId.systemDefault())
-        val nextTrigger = calculator.calculate(alarm, nextFrom)
-        repository.updateNextTrigger(alarm.id, nextTrigger)
-        scheduler.scheduleAt(alarm.copy(nextTriggerTime = nextTrigger), nextTrigger)
+        val notBefore = System.currentTimeMillis() + 60_000L
+        val outcome = scheduler.schedule(alarm, notBeforeMillis = notBefore)
+        if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed) {
+            android.util.Log.w("AlarmClockIntentHandler", "DISMISS_ALARM scheduled next occurrence for alarm ${alarm.id}, but OS registration failed; pending background recovery")
+        }
     }
 
     private fun timerLabel(totalSeconds: Int): String = buildString {
