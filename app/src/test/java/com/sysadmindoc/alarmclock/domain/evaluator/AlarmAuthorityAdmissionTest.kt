@@ -413,4 +413,38 @@ class AlarmAuthorityAdmissionTest {
         assertEquals(wed0700Ms, authority.desiredTriggerMillis)
         assertEquals("SETTLED", authority.reconcileState)
     }
+
+    @Test
+    fun `10 Fresh DB created with AlarmDatabase DATABASE_CALLBACK automatically initializes ScheduleAuthorityMeta`() = runBlocking {
+        val freshDb = Room.inMemoryDatabaseBuilder(context, AlarmDatabase::class.java)
+            .addCallback(AlarmDatabase.DATABASE_CALLBACK)
+            .allowMainThreadQueries()
+            .build()
+
+        val freshRepo = AlarmRepository(
+            database = freshDb,
+            dao = freshDb.alarmDao(),
+            groupDao = freshDb.alarmGroupDao()
+        )
+
+        val newAlarm = Alarm(
+            hour = 7,
+            minute = 0,
+            isEnabled = true,
+            scheduleKind = Alarm.SCHEDULE_KIND_REPEATING,
+            repeatDays = setOf(DayOfWeek.WEDNESDAY),
+            nextTriggerTime = wed0700Ms
+        )
+        val savedId = freshRepo.save(newAlarm)
+
+        // Verify fresh DB meta was initialized canonically via DATABASE_CALLBACK
+        val meta = freshDb.scheduleAuthorityDao().getMetaById(1)
+        assertNotNull("ScheduleAuthorityMeta MUST be initialized on fresh DB via DATABASE_CALLBACK", meta)
+
+        val authority = freshDb.scheduleAuthorityDao().getAuthorityByAlarmId(savedId)
+        assertNotNull("ScheduleAuthority MUST be admitted successfully on fresh DB", authority)
+        assertEquals(meta!!.restoreEpoch, authority!!.restoreEpoch)
+
+        freshDb.close()
+    }
 }

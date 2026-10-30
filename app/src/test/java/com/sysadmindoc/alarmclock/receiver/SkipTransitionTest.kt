@@ -7,6 +7,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.sysadmindoc.alarmclock.AlarmClockApp
 import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
+import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import java.time.DayOfWeek
 import com.sysadmindoc.alarmclock.data.preferences.AppSettings
@@ -75,48 +76,51 @@ class SkipTransitionTest {
 
     @Before
     fun setUp() {
-        context = ApplicationProvider.getApplicationContext()
-        org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(true)
-        db = Room.inMemoryDatabaseBuilder(context, AlarmDatabase::class.java)
-            .allowMainThreadQueries()
-            .build()
+        runBlocking {
+            context = ApplicationProvider.getApplicationContext()
+            org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(true)
+            db = Room.inMemoryDatabaseBuilder(context, AlarmDatabase::class.java)
+                .addCallback(AlarmDatabase.DATABASE_CALLBACK)
+                .allowMainThreadQueries()
+                .build()
 
-        alarmRepo = AlarmRepository(
-            database = db,
-            dao = db.alarmDao(),
-            groupDao = db.alarmGroupDao()
-        )
+            alarmRepo = AlarmRepository(
+                database = db,
+                dao = db.alarmDao(),
+                groupDao = db.alarmGroupDao()
+            )
 
-        incidentRepo = AlarmIncidentRepository(
-            dao = db.alarmIncidentEventDao(),
-            context = context
-        )
+            incidentRepo = AlarmIncidentRepository(
+                dao = db.alarmIncidentEventDao(),
+                context = context
+            )
 
-        eventRepo = AlarmEventRepository(
-            dao = db.alarmEventDao()
-        )
+            eventRepo = AlarmEventRepository(
+                dao = db.alarmEventDao()
+            )
 
-        every { preferencesManager.getCachedSettings() } returns AppSettings(activeAlarmId = null)
-        coEvery { preferencesManager.getCurrentSettings() } returns AppSettings(activeAlarmId = null)
+            every { preferencesManager.getCachedSettings() } returns AppSettings(activeAlarmId = null)
+            coEvery { preferencesManager.getCurrentSettings() } returns AppSettings(activeAlarmId = null)
 
-        scheduler = AlarmScheduler(
-            context = context,
-            repository = alarmRepo,
-            calculator = calculator,
-            preferencesManager = preferencesManager,
-            holidayRepository = mockk(relaxed = true),
-            alarmIncidentRepository = incidentRepo,
-            weatherRepository = mockk(relaxed = true)
-        )
+            scheduler = AlarmScheduler(
+                context = context,
+                repository = alarmRepo,
+                calculator = calculator,
+                preferencesManager = preferencesManager,
+                holidayRepository = mockk(relaxed = true),
+                alarmIncidentRepository = incidentRepo,
+                weatherRepository = mockk(relaxed = true)
+            )
 
-        mockEntryPoint = mockk<AlarmClockApp.AppEntryPoint>(relaxed = true)
-        every { mockEntryPoint.alarmRepository() } returns alarmRepo
-        every { mockEntryPoint.alarmDatabase() } returns db
-        every { mockEntryPoint.alarmScheduler() } returns scheduler
-        every { mockEntryPoint.nextAlarmCalculator() } returns calculator
-        every { mockEntryPoint.alarmEventRepository() } returns eventRepo
-        every { mockEntryPoint.webhookService() } returns webhookService
-        every { mockEntryPoint.preferencesManager() } returns preferencesManager
+            mockEntryPoint = mockk<AlarmClockApp.AppEntryPoint>(relaxed = true)
+            every { mockEntryPoint.alarmRepository() } returns alarmRepo
+            every { mockEntryPoint.alarmDatabase() } returns db
+            every { mockEntryPoint.alarmScheduler() } returns scheduler
+            every { mockEntryPoint.nextAlarmCalculator() } returns calculator
+            every { mockEntryPoint.alarmEventRepository() } returns eventRepo
+            every { mockEntryPoint.webhookService() } returns webhookService
+            every { mockEntryPoint.preferencesManager() } returns preferencesManager
+        }
     }
 
     @After
@@ -124,21 +128,27 @@ class SkipTransitionTest {
         db.close()
     }
 
-    private suspend fun insertAuthorityForAlarm(alarmId: Long, triggerMillis: Long) {
-        val authority = ScheduleAuthority(
-            alarmId = alarmId,
-            instanceToken = "auth-token-$alarmId",
-            definitionRevision = 1L,
-            scheduleRevision = 1L,
-            lifecycle = "LIVE",
-            desiredOperation = "SET",
-            desiredTriggerMillis = triggerMillis,
-            reconcileState = "SETTLED",
-            restoreEpoch = 100L,
-            actionKey = null
-        )
-        db.scheduleAuthorityDao().insertAuthority(authority)
-        db.issuedOccurrenceDao().insertSlotInitial(com.sysadmindoc.alarmclock.data.local.entity.IssueSlot(alarmId = alarmId, generationId = 1L, currentIssueToken = null))
+    private fun insertAuthorityForAlarm(alarmId: Long, triggerMillis: Long) {
+        runBlocking {
+            if (db.scheduleAuthorityDao().getAuthorityByAlarmId(alarmId) == null) {
+                val authority = ScheduleAuthority(
+                    alarmId = alarmId,
+                    instanceToken = "auth-token-$alarmId",
+                    definitionRevision = 1L,
+                    scheduleRevision = 1L,
+                    lifecycle = "LIVE",
+                    desiredOperation = "SET",
+                    desiredTriggerMillis = triggerMillis,
+                    reconcileState = "SETTLED",
+                    restoreEpoch = 100L,
+                    actionKey = null
+                )
+                db.scheduleAuthorityDao().insertAuthority(authority)
+            }
+            if (db.issuedOccurrenceDao().getSlot(alarmId) == null) {
+                db.issuedOccurrenceDao().insertSlotInitial(com.sysadmindoc.alarmclock.data.local.entity.IssueSlot(alarmId = alarmId, generationId = 1L, currentIssueToken = null))
+            }
+        }
     }
 
     @Test
@@ -154,6 +164,7 @@ class SkipTransitionTest {
                 hour = 7,
                 minute = 0,
                 isEnabled = true,
+                scheduleKind = Alarm.SCHEDULE_KIND_REPEATING,
                 repeatDays = setOf(DayOfWeek.MONDAY, DayOfWeek.TUESDAY),
                 nextTriggerTime = currentTrigger
             )
