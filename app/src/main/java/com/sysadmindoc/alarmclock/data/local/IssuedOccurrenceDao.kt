@@ -20,6 +20,12 @@ abstract class IssuedOccurrenceDao {
     @Query("SELECT * FROM issue_slots WHERE alarmId = :alarmId")
     abstract suspend fun getSlot(alarmId: Long): IssueSlot?
 
+    @Query("DELETE FROM issue_slots WHERE alarmId = :alarmId")
+    abstract suspend fun deleteSlotByAlarmId(alarmId: Long)
+
+    @Query("DELETE FROM issue_slots")
+    abstract suspend fun deleteAllSlots()
+
     @Query("SELECT * FROM issued_occurrences WHERE issueToken = :issueToken")
     abstract suspend fun getOccurrence(issueToken: String): IssuedOccurrence?
 

@@ -271,12 +271,49 @@ class AlarmRepository @Inject constructor(
         }
     }
 
-    suspend fun importDisabledAtomically(alarms: List<Alarm>): List<Long> =
-        dao.insertAllWithStableOrder(
-            alarms.map {
-                it.copy(id = 0L, isEnabled = false, nextTriggerTime = 0L).sanitized()
+    suspend fun importDisabledAtomically(alarms: List<Alarm>): List<Long> {
+        return database.withTransaction {
+            val authorityDao = database.scheduleAuthorityDao()
+            val issuedDao = database.issuedOccurrenceDao()
+
+            val meta = authorityDao.getMetaById(1)
+                ?: throw IllegalStateException("Cannot import alarms: ScheduleAuthorityMeta missing")
+
+            val savedIds = mutableListOf<Long>()
+            for (alarm in alarms) {
+                val disabledAlarm = alarm.copy(id = 0L, isEnabled = false, nextTriggerTime = 0L).sanitized()
+                val savedId = dao.insert(disabledAlarm)
+                savedIds.add(savedId)
+
+                if (!disabledAlarm.isQuickAlarm) {
+                    val currentDefRev = com.sysadmindoc.alarmclock.domain.ScheduleAuthorityBootstrapAdapter.computeDefinitionRevision(disabledAlarm)
+                    val authority = com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority(
+                        alarmId = savedId,
+                        instanceToken = "auth_${savedId}_gen_${disabledAlarm.generation}_${java.util.UUID.randomUUID()}",
+                        definitionRevision = currentDefRev,
+                        scheduleRevision = disabledAlarm.revision.toLong(),
+                        lifecycle = "DISABLED",
+                        desiredOperation = "CANCEL",
+                        desiredTriggerMillis = null,
+                        reconcileState = "RECONCILING",
+                        restoreEpoch = meta.restoreEpoch,
+                        actionKey = null
+                    )
+                    authorityDao.insertAuthority(authority)
+
+                    if (issuedDao.getSlot(savedId) == null) {
+                        val slot = com.sysadmindoc.alarmclock.data.local.entity.IssueSlot(
+                            alarmId = savedId,
+                            generationId = disabledAlarm.generation.toLong(),
+                            currentIssueToken = null
+                        )
+                        issuedDao.insertSlotInitial(slot)
+                    }
+                }
             }
-        )
+            savedIds
+        }
+    }
     suspend fun delete(alarm: Alarm) = dao.delete(alarm)
     suspend fun deleteById(id: Long) = dao.deleteById(id)
 
@@ -440,25 +477,54 @@ class AlarmRepository @Inject constructor(
         isReplace: Boolean
     ): List<Long> {
         return database.withTransaction {
+            val authorityDao = database.scheduleAuthorityDao()
+            val issuedDao = database.issuedOccurrenceDao()
+
             if (isReplace) {
                 dao.deleteAll()
+                authorityDao.getAllAuthorities().forEach { authorityDao.deleteAuthorityByAlarmId(it.alarmId) }
+                issuedDao.deleteAllSlots()
             }
-            val prepared = alarms.map { alarm ->
+
+            val meta = authorityDao.getMetaById(1)
+                ?: throw IllegalStateException("Cannot restore alarms: ScheduleAuthorityMeta missing")
+
+            val savedIds = mutableListOf<Long>()
+            for (alarm in alarms) {
                 val sanitized = alarm.sanitized()
                 if (sanitized.group.isNotBlank()) {
                     groupDao.insert(AlarmGroup(sanitized.group))
                 }
-                if (isReplace) {
-                    sanitized
-                } else {
-                    sanitized.copy(id = 0L)
+                val prepared = if (isReplace) sanitized else sanitized.copy(id = 0L)
+                val savedId = dao.insert(prepared)
+                savedIds.add(savedId)
+
+                if (!prepared.isQuickAlarm) {
+                    issuedDao.deleteSlotByAlarmId(savedId)
+                    val currentDefRev = com.sysadmindoc.alarmclock.domain.ScheduleAuthorityBootstrapAdapter.computeDefinitionRevision(prepared)
+                    val authority = com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority(
+                        alarmId = savedId,
+                        instanceToken = "auth_${savedId}_gen_${prepared.generation}_${java.util.UUID.randomUUID()}",
+                        definitionRevision = currentDefRev,
+                        scheduleRevision = prepared.revision.toLong(),
+                        lifecycle = if (prepared.isEnabled) "LIVE" else "DISABLED",
+                        desiredOperation = if (prepared.isEnabled) "SET" else "CANCEL",
+                        desiredTriggerMillis = if (prepared.isEnabled) prepared.nextTriggerTime else null,
+                        reconcileState = "RECONCILING",
+                        restoreEpoch = meta.restoreEpoch,
+                        actionKey = null
+                    )
+                    authorityDao.insertAuthority(authority)
+
+                    val slot = com.sysadmindoc.alarmclock.data.local.entity.IssueSlot(
+                        alarmId = savedId,
+                        generationId = prepared.generation.toLong(),
+                        currentIssueToken = null
+                    )
+                    issuedDao.insertSlotInitial(slot)
                 }
             }
-            if (prepared.isNotEmpty()) {
-                dao.insertAll(prepared)
-            } else {
-                emptyList()
-            }
+            savedIds
         }
     }
 }
