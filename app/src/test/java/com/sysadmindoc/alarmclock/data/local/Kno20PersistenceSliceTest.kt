@@ -39,6 +39,7 @@ class Kno20PersistenceSliceTest {
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
         db = Room.inMemoryDatabaseBuilder(context, AlarmDatabase::class.java)
+            .addCallback(AlarmDatabase.DATABASE_CALLBACK)
             .allowMainThreadQueries()
             .build()
         alarmDao = db.alarmDao()
