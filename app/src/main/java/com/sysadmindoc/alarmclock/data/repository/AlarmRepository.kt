@@ -56,7 +56,8 @@ class AlarmRepository @Inject constructor(
 
     suspend fun save(alarm: Alarm): Long {
         return database.withTransaction {
-            val existing = if (alarm.id != 0L) dao.getById(alarm.id) else null
+            val isTrueNewAlarm = (alarm.id == 0L)
+            val existing = if (!isTrueNewAlarm) dao.getById(alarm.id) else null
             val versioned = prepareVersionedAlarmForSave(alarm, existing)
             val sanitized = versioned.sanitized()
             if (sanitized.group.isNotBlank()) {
@@ -67,7 +68,42 @@ class AlarmRepository @Inject constructor(
             } else {
                 sanitized
             }
-            dao.insert(ordered)
+            val savedId = dao.insert(ordered)
+
+            // When a brand-new Normal Alarm (id == 0) is created, admit V35 ScheduleAuthority & IssueSlot
+            if (isTrueNewAlarm && !sanitized.isQuickAlarm) {
+                val authorityDao = database.scheduleAuthorityDao()
+                val issuedDao = database.issuedOccurrenceDao()
+
+                val meta = authorityDao.getMetaById(1)
+                    ?: throw IllegalStateException("Cannot admit ScheduleAuthority: ScheduleAuthorityMeta missing")
+
+                val currentDefRev = com.sysadmindoc.alarmclock.domain.ScheduleAuthorityBootstrapAdapter.computeDefinitionRevision(sanitized)
+                val authority = com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority(
+                    alarmId = savedId,
+                    instanceToken = "auth_${savedId}_gen_${sanitized.generation}_${java.util.UUID.randomUUID()}",
+                    definitionRevision = currentDefRev,
+                    scheduleRevision = sanitized.revision.toLong(),
+                    lifecycle = if (sanitized.isEnabled) "LIVE" else "DISABLED",
+                    desiredOperation = if (sanitized.isEnabled) "SET" else "CANCEL",
+                    desiredTriggerMillis = if (sanitized.isEnabled) sanitized.nextTriggerTime else null,
+                    reconcileState = "SETTLED",
+                    restoreEpoch = meta.restoreEpoch,
+                    actionKey = null
+                )
+                authorityDao.insertAuthority(authority)
+
+                if (issuedDao.getSlot(savedId) == null) {
+                    val slot = com.sysadmindoc.alarmclock.data.local.entity.IssueSlot(
+                        alarmId = savedId,
+                        generationId = sanitized.generation.toLong(),
+                        currentIssueToken = null
+                    )
+                    issuedDao.insertSlotInitial(slot)
+                }
+            }
+
+            savedId
         }
     }
 
