@@ -116,12 +116,14 @@ data class AlarmBackup(
     val timezonePolicy: String = Alarm.TIMEZONE_POLICY_LOCAL,
     val fixedTimezoneId: String = "",
     // KNO-152: explicit schedule kind (nullable for backward compatibility with legacy backups)
-    val scheduleKind: String? = null
+    val scheduleKind: String? = null,
+    // KNO-159 P2: explicit canonical HolidayPolicy (nullable for backward compatibility with v1-v21 backups)
+    val holidayPolicy: String? = null
 )
 
 @JsonClass(generateAdapter = true)
 data class BackupData(
-    val version: Int = 21,
+    val version: Int = 22,
     val appVersion: String = BuildConfig.VERSION_NAME,
     val exportedAt: Long = System.currentTimeMillis(),
     val alarms: List<AlarmBackup>,
@@ -298,7 +300,7 @@ class BackupManager @Inject constructor(
 
     companion object {
         /** Highest backup format version we know how to read end-to-end. */
-        const val MAX_SUPPORTED_BACKUP_VERSION = 21
+        const val MAX_SUPPORTED_BACKUP_VERSION = 22
 
         /**
          * Ceiling on an imported file. A full export of the maximum alarm count

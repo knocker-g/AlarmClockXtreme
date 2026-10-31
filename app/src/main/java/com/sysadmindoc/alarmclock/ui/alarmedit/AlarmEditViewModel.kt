@@ -758,7 +758,20 @@ class AlarmEditViewModel @Inject constructor(
                 fixedTimezoneId = s.fixedTimezoneId,
                 generation = initialAlarm?.generation ?: 1,
                 revision = initialAlarm?.revision ?: 1,
+                holidayPolicy = if (s.isEditing && initialAlarm != null && s.skipOnHolidays == loadedDraft?.skipOnHolidays) {
+                    initialAlarm!!.holidayPolicy
+                } else if (s.skipOnHolidays) {
+                    Alarm.HOLIDAY_POLICY_EXCLUDE
+                } else {
+                    Alarm.HOLIDAY_POLICY_FOLLOW_BASE
+                },
                 scheduleKind = if (s.repeatDays.isNotEmpty() || s.shiftPattern.isNotBlank()) {
+                    Alarm.SCHEDULE_KIND_REPEATING
+                } else if (s.isEditing &&
+                    initialAlarm != null &&
+                    s.skipOnHolidays == loadedDraft?.skipOnHolidays &&
+                    initialAlarm!!.canonicalHolidayPolicy() == com.sysadmindoc.alarmclock.domain.evaluator.HolidayPolicy.INCLUDE
+                ) {
                     Alarm.SCHEDULE_KIND_REPEATING
                 } else if (initialAlarm != null && initialAlarm?.scheduleKind == Alarm.SCHEDULE_KIND_REPEATING) {
                     if (loadedDraft?.repeatDays?.isNotEmpty() == true && s.repeatDays.isEmpty()) {

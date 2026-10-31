@@ -17,8 +17,8 @@ class BackupVersionStampTest {
 
     private companion object {
         /** Bump with [BackupData.version] whenever these change. */
-        // 72 since v21 added AlarmBackup.scheduleKind (KNO-152).
-        const val ALARM_BACKUP_FIELDS = 72
+        // 73 since v22 added AlarmBackup.holidayPolicy (KNO-159 P2).
+        const val ALARM_BACKUP_FIELDS = 73
         // 80 since v20 added Quick delivery defaults.
         const val SETTINGS_BACKUP_FIELDS = 80
     }

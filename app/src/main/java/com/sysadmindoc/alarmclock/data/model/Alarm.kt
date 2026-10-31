@@ -169,21 +169,51 @@ data class Alarm(
     val generation: Int = 1,
     // KNO-152: Schedule definition revision (increments on minor setting changes)
     @ColumnInfo(defaultValue = "1")
-    val revision: Int = 1
+    val revision: Int = 1,
+    // KNO-159 P2: Canonical Alarm-level HolidayPolicy ("FOLLOW_BASE", "EXCLUDE", or "INCLUDE").
+    // Legacy constructor callers omitting holidayPolicy derive initial policy from skipOnHolidays;
+    // explicit holidayPolicy (including explicit "FOLLOW_BASE") always takes precedence.
+    @ColumnInfo(defaultValue = "FOLLOW_BASE")
+    val holidayPolicy: String = if (skipOnHolidays) HOLIDAY_POLICY_EXCLUDE else HOLIDAY_POLICY_FOLLOW_BASE
 ) {
     /**
-     * Derives explicit schedule kind from Normal alarm parameters (KNO-152).
+     * Resolves the canonical persisted [com.sysadmindoc.alarmclock.domain.evaluator.HolidayPolicy]
+     * for this alarm definition. Quick alarms always resolve to FOLLOW_BASE.
+     * Explicit canonical [holidayPolicy] takes precedence over legacy [skipOnHolidays].
+     */
+    fun canonicalHolidayPolicy(): com.sysadmindoc.alarmclock.domain.evaluator.HolidayPolicy {
+        if (isQuickAlarm) return com.sysadmindoc.alarmclock.domain.evaluator.HolidayPolicy.FOLLOW_BASE
+        return com.sysadmindoc.alarmclock.domain.evaluator.HolidayPolicy.parseCanonicalOrNull(holidayPolicy)
+            ?: com.sysadmindoc.alarmclock.domain.evaluator.HolidayPolicy.fromLegacySkipOnHolidays(skipOnHolidays)
+    }
+
+    /**
+     * Validates that a non-blank [holidayPolicy] matches a supported canonical token.
+     * Rejects unknown or future policy values fail-closed.
+     */
+    fun requireValidHolidayPolicy() {
+        if (holidayPolicy.isNotBlank() &&
+            com.sysadmindoc.alarmclock.domain.evaluator.HolidayPolicy.parseCanonicalOrNull(holidayPolicy) == null
+        ) {
+            throw IllegalArgumentException("Unsupported holidayPolicy: $holidayPolicy")
+        }
+    }
+
+    /**
+     * Derives explicit schedule kind from Normal alarm parameters (KNO-152 / KNO-159).
      * QUICK alarms are always ONE_TIME. Normal alarms are REPEATING if they have
-     * repeatDays or a valid shiftPattern with valid start date, otherwise ONE_TIME.
-     * Note: skipOnHolidays is a holiday exclusion rule, NOT a schedule repeating rule.
+     * repeatDays, a valid shiftPattern with valid start date, or HolidayPolicy.INCLUDE.
+     * Note: skipOnHolidays / EXCLUDE is a holiday exclusion rule, NOT a schedule repeating rule.
      */
     fun deriveScheduleKind(): String {
-        if (kind == KIND_QUICK) return SCHEDULE_KIND_ONE_TIME
+        if (isQuickAlarm) return SCHEDULE_KIND_ONE_TIME
         val hasValidShiftPattern = shiftPattern.isNotBlank() &&
                 ShiftPattern.fromKey(shiftPattern) != null &&
                 shiftPatternStartDate.isNotBlank() &&
                 runCatching { LocalDate.parse(shiftPatternStartDate) }.isSuccess
-        return if (repeatDays.isNotEmpty() || hasValidShiftPattern) {
+        val isHolidayInclude = com.sysadmindoc.alarmclock.domain.evaluator.HolidayPolicy.parseCanonicalOrNull(holidayPolicy) ==
+                com.sysadmindoc.alarmclock.domain.evaluator.HolidayPolicy.INCLUDE
+        return if (repeatDays.isNotEmpty() || hasValidShiftPattern || isHolidayInclude) {
             SCHEDULE_KIND_REPEATING
         } else {
             SCHEDULE_KIND_ONE_TIME
@@ -195,7 +225,7 @@ data class Alarm(
      * Explicit REPEATING classification is preserved for Normal alarms.
      */
     fun withDerivedScheduleKind(): Alarm {
-        if (kind == KIND_QUICK) return if (scheduleKind != SCHEDULE_KIND_ONE_TIME) copy(scheduleKind = SCHEDULE_KIND_ONE_TIME) else this
+        if (isQuickAlarm) return if (scheduleKind != SCHEDULE_KIND_ONE_TIME) copy(scheduleKind = SCHEDULE_KIND_ONE_TIME) else this
         if (scheduleKind == SCHEDULE_KIND_REPEATING) return this
         val derived = deriveScheduleKind()
         return if (this.scheduleKind != derived) copy(scheduleKind = derived) else this
@@ -225,6 +255,9 @@ data class Alarm(
         const val KIND_QUICK = "QUICK"
         const val SCHEDULE_KIND_ONE_TIME = "ONE_TIME"
         const val SCHEDULE_KIND_REPEATING = "REPEATING"
+        const val HOLIDAY_POLICY_FOLLOW_BASE = "FOLLOW_BASE"
+        const val HOLIDAY_POLICY_EXCLUDE = "EXCLUDE"
+        const val HOLIDAY_POLICY_INCLUDE = "INCLUDE"
         const val TIMEZONE_POLICY_LOCAL = "LOCAL"
         const val TIMEZONE_POLICY_FIXED = "FIXED"
         const val MAX_SMART_ALARM_WINDOW_MINUTES = 60
@@ -465,6 +498,26 @@ data class Alarm(
                 kind.equals(KIND_QUICK, ignoreCase = true) -> KIND_QUICK
                 kind.isBlank() || kind.equals(KIND_NORMAL, ignoreCase = true) -> KIND_NORMAL
                 else -> kind.trim().take(40)
+            },
+            holidayPolicy = when {
+                kind.equals(KIND_QUICK, ignoreCase = true) -> HOLIDAY_POLICY_FOLLOW_BASE
+                holidayPolicy.isBlank() ->
+                    com.sysadmindoc.alarmclock.domain.evaluator.HolidayPolicy
+                        .fromLegacySkipOnHolidays(skipOnHolidays).name
+                else ->
+                    com.sysadmindoc.alarmclock.domain.evaluator.HolidayPolicy
+                        .parseCanonicalOrNull(holidayPolicy)?.name
+                        ?: com.sysadmindoc.alarmclock.domain.evaluator.HolidayPolicy
+                            .fromLegacySkipOnHolidays(skipOnHolidays).name
+            },
+            scheduleKind = when {
+                kind.equals(KIND_QUICK, ignoreCase = true) -> SCHEDULE_KIND_ONE_TIME
+                com.sysadmindoc.alarmclock.domain.evaluator.HolidayPolicy
+                    .parseCanonicalOrNull(holidayPolicy) ==
+                    com.sysadmindoc.alarmclock.domain.evaluator.HolidayPolicy.INCLUDE -> SCHEDULE_KIND_REPEATING
+                scheduleKind == SCHEDULE_KIND_REPEATING -> SCHEDULE_KIND_REPEATING
+                repeatDays.isNotEmpty() || normalizedShiftPattern.isNotBlank() -> SCHEDULE_KIND_REPEATING
+                else -> SCHEDULE_KIND_ONE_TIME
             }
         )
     }
