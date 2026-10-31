@@ -56,7 +56,7 @@ abstract class AlarmDatabase : RoomDatabase() {
     abstract fun scheduleExceptionDao(): ScheduleExceptionDao
 
     companion object {
-        const val VERSION = 35
+        const val VERSION = 36
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -703,6 +703,18 @@ abstract class AlarmDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v36: KNO-159 P2 durable Alarm-level HolidayPolicy foundation.
+         * Adds canonical `holidayPolicy` column to `alarms` (`FOLLOW_BASE`, `EXCLUDE`, `INCLUDE`)
+         * and migrates legacy `skipOnHolidays = 1` Normal alarm rows to `EXCLUDE`.
+         */
+        val MIGRATION_35_36 = object : Migration(35, 36) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `alarms` ADD COLUMN `holidayPolicy` TEXT NOT NULL DEFAULT 'FOLLOW_BASE'")
+                db.execSQL("UPDATE `alarms` SET `holidayPolicy` = 'EXCLUDE' WHERE `skipOnHolidays` != 0 AND UPPER(`kind`) != 'QUICK'")
+            }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -737,7 +749,8 @@ abstract class AlarmDatabase : RoomDatabase() {
             MIGRATION_31_32,
             MIGRATION_32_33,
             MIGRATION_33_34,
-            MIGRATION_34_35
+            MIGRATION_34_35,
+            MIGRATION_35_36
         )
     }
 }

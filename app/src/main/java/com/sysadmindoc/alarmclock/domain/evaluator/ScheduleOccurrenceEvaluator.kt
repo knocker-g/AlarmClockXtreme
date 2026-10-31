@@ -36,11 +36,7 @@ class ScheduleOccurrenceEvaluator(
             if (alarm.isQuickAlarm || alarm.scheduleKind != Alarm.SCHEDULE_KIND_REPEATING) {
                 return HolidayPolicy.FOLLOW_BASE
             }
-            return holidayPolicyOverride ?: if (alarm.skipOnHolidays) {
-                HolidayPolicy.EXCLUDE
-            } else {
-                HolidayPolicy.FOLLOW_BASE
-            }
+            return holidayPolicyOverride ?: alarm.canonicalHolidayPolicy()
         }
 
         /**

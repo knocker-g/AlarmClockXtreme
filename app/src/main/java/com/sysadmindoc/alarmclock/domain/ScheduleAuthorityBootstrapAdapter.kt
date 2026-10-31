@@ -54,7 +54,7 @@ class ScheduleAuthorityBootstrapAdapter @Inject constructor(
         private const val TAG = "ScheduleAuthorityBootstrapAdapter"
 
         fun computeDefinitionRevision(alarm: Alarm): Long {
-            val content = "${alarm.id}:${alarm.hour}:${alarm.minute}:${alarm.repeatDays}:${alarm.label}:${alarm.ringtoneUri}"
+            val content = "${alarm.id}:${alarm.hour}:${alarm.minute}:${alarm.repeatDays}:${alarm.label}:${alarm.ringtoneUri}:${alarm.scheduleKind}:${alarm.canonicalHolidayPolicy()}"
             return (content.hashCode().toLong() and 0x7FFFFFFFFFFFFFFFL).coerceAtLeast(1L)
         }
     }

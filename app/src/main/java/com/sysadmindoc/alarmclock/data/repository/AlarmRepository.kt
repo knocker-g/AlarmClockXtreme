@@ -55,6 +55,7 @@ class AlarmRepository @Inject constructor(
     fun durableOperationIntentDao(): com.sysadmindoc.alarmclock.data.local.DurableOperationIntentDao = database.durableOperationIntentDao()
 
     suspend fun save(alarm: Alarm): Long {
+        alarm.requireValidHolidayPolicy()
         return database.withTransaction {
             val isTrueNewAlarm = (alarm.id == 0L)
             val existing = if (!isTrueNewAlarm) dao.getById(alarm.id) else null
@@ -108,6 +109,7 @@ class AlarmRepository @Inject constructor(
     }
 
     suspend fun update(alarm: Alarm) {
+        alarm.requireValidHolidayPolicy()
         database.withTransaction {
             val authorityDao = database.scheduleAuthorityDao()
             val issuedDao = database.issuedOccurrenceDao()
@@ -116,7 +118,7 @@ class AlarmRepository @Inject constructor(
             val sanitized = versioned.sanitized()
             dao.update(sanitized)
 
-            // KNO-30 P2: Fenced CAS update for ScheduleAuthority and revoke obsolete occurrences on schedule change
+            // KNO-30 P2 / KNO-159 P2: Fenced CAS update for ScheduleAuthority and revoke obsolete occurrences on schedule change
             val existingAuthority = authorityDao.getAuthorityByAlarmId(sanitized.id)
             if (existingAuthority != null && !sanitized.isQuickAlarm) {
                 val isScheduleChanged = existing != null && (
@@ -125,6 +127,7 @@ class AlarmRepository @Inject constructor(
                     existing.repeatDays != sanitized.repeatDays ||
                     existing.specificDate != sanitized.specificDate ||
                     existing.scheduleKind != sanitized.scheduleKind ||
+                    existing.canonicalHolidayPolicy() != sanitized.canonicalHolidayPolicy() ||
                     existing.skipOnHolidays != sanitized.skipOnHolidays ||
                     existing.solarOffsetMinutes != sanitized.solarOffsetMinutes ||
                     existing.solarAnchor != sanitized.solarAnchor ||
@@ -213,6 +216,7 @@ class AlarmRepository @Inject constructor(
                 existing.timezonePolicy != withKind.timezonePolicy ||
                 existing.fixedTimezoneId != withKind.fixedTimezoneId ||
                 existing.scheduleKind != withKind.scheduleKind ||
+                existing.canonicalHolidayPolicy() != withKind.canonicalHolidayPolicy() ||
                 existing.skipOnHolidays != withKind.skipOnHolidays ||
                 existing.solarOffsetMinutes != withKind.solarOffsetMinutes ||
                 existing.solarAnchor != withKind.solarAnchor
@@ -235,6 +239,7 @@ class AlarmRepository @Inject constructor(
     }
 
     suspend fun createGroupAndAlarm(groupName: String, alarm: Alarm): Long {
+        alarm.requireValidHolidayPolicy()
         return database.withTransaction {
             if (groupName.isNotBlank()) {
                 groupDao.insert(AlarmGroup(groupName))
@@ -272,6 +277,7 @@ class AlarmRepository @Inject constructor(
     }
 
     suspend fun importDisabledAtomically(alarms: List<Alarm>): List<Long> {
+        alarms.forEach { it.requireValidHolidayPolicy() }
         return database.withTransaction {
             val authorityDao = database.scheduleAuthorityDao()
             val issuedDao = database.issuedOccurrenceDao()
@@ -476,6 +482,7 @@ class AlarmRepository @Inject constructor(
         alarms: List<Alarm>,
         isReplace: Boolean
     ): List<Long> {
+        alarms.forEach { it.requireValidHolidayPolicy() }
         return database.withTransaction {
             val authorityDao = database.scheduleAuthorityDao()
             val issuedDao = database.issuedOccurrenceDao()
