@@ -37,6 +37,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import com.sysadmindoc.alarmclock.domain.evaluator.HolidayPolicy
 import com.sysadmindoc.alarmclock.domain.evaluator.MAX_HOLIDAY_EVALUATION_WINDOW_DAYS
 import com.sysadmindoc.alarmclock.domain.evaluator.OccurrenceDecision
 import com.sysadmindoc.alarmclock.domain.evaluator.ScheduleOccurrenceEvaluator
@@ -153,16 +154,8 @@ class AlarmScheduler @Inject constructor(
         val isRepeatingNormalAlarm = !sanitizedAlarm.isQuickAlarm &&
             sanitizedAlarm.scheduleKind == Alarm.SCHEDULE_KIND_REPEATING
 
-        var triggerTime = if (isRepeatingNormalAlarm) {
-            val schedulingZone = sanitizedAlarm.schedulingZone(ZoneId.systemDefault())
-            val notBefore = if (notBeforeMillis > System.currentTimeMillis()) notBeforeMillis else System.currentTimeMillis()
-            val notBeforeDate = Instant.ofEpochMilli(notBefore).atZone(schedulingZone).toLocalDate()
-            val authorityWindow = holidayRepository.captureAuthorityWindow(
-                startDate = notBeforeDate,
-                endDateInclusive = notBeforeDate.plusDays(MAX_HOLIDAY_EVALUATION_WINDOW_DAYS - 1L)
-            )
-            val classifier = authorityWindow.asLocalHolidayClassifier()
-            val exceptions = try {
+        val exceptions = if (isRepeatingNormalAlarm) {
+            try {
                 repository.database.scheduleExceptionDao().getExceptionsForAlarmGeneration(
                     sanitizedAlarm.id,
                     sanitizedAlarm.generation
@@ -171,6 +164,24 @@ class AlarmScheduler @Inject constructor(
                 Log.e("AlarmScheduler", "Failed to load schedule exceptions for alarm ${sanitizedAlarm.id}; aborting schedule to fail-closed", e)
                 return ScheduleOutcome.RegistrationFailed(sanitizedAlarm.id, e)
             }
+        } else {
+            emptyList()
+        }
+
+        val requiresHolidayOrExceptionEvaluation = isRepeatingNormalAlarm && (
+            sanitizedAlarm.canonicalHolidayPolicy() != HolidayPolicy.FOLLOW_BASE ||
+            exceptions.isNotEmpty()
+        )
+
+        var triggerTime = if (requiresHolidayOrExceptionEvaluation) {
+            val schedulingZone = sanitizedAlarm.schedulingZone(ZoneId.systemDefault())
+            val notBefore = if (notBeforeMillis > System.currentTimeMillis()) notBeforeMillis else System.currentTimeMillis()
+            val notBeforeDate = Instant.ofEpochMilli(notBefore).atZone(schedulingZone).toLocalDate()
+            val authorityWindow = holidayRepository.captureAuthorityWindow(
+                startDate = notBeforeDate,
+                endDateInclusive = notBeforeDate.plusDays(MAX_HOLIDAY_EVALUATION_WINDOW_DAYS - 1L)
+            )
+            val classifier = authorityWindow.asLocalHolidayClassifier()
             val evaluated = occurrenceEvaluator.evaluateWithHolidayClassifier(
                 alarm = sanitizedAlarm,
                 fromEpochMs = notBefore,
