@@ -170,7 +170,9 @@ class SettingsViewModel @Inject constructor(
     private val commuteHistoryStore: CommuteHistoryStore,
     private val fossifyImportManager: FossifyImportManager,
     private val newsSourceRepository: NewsSourceRepository,
-    private val newsRepository: NewsRepository
+    private val newsRepository: NewsRepository,
+    private val holidayRepository: com.sysadmindoc.alarmclock.data.repository.HolidayRepository? = null,
+    private val holidayReconcileCoordinator: com.sysadmindoc.alarmclock.data.repository.HolidayReconcileCoordinator? = null
 ) : AndroidViewModel(application) {
     /** For strings that end up in UI state built here rather than on screen. */
     private val appContext: android.content.Context get() = getApplication()
@@ -446,8 +448,22 @@ class SettingsViewModel @Inject constructor(
     // F13: Holidays
     fun toggleHolidayAutoSkip(enabled: Boolean) =
         updateSettingsAndReschedule { it.copy(holidayAutoSkipEnabled = enabled) }
-    fun updateHolidayCountryCode(code: String) = updateSettingsAndReschedule {
-        it.copy(holidayCountryCode = code.trim().uppercase(Locale.US))
+    fun updateHolidayCountryCode(code: String) {
+        val currentSettings = preferencesManager.getCachedSettings()
+        val currentNormalized = com.sysadmindoc.alarmclock.data.repository.HolidayProviderSnapshot.normalizeCountry(currentSettings.holidayCountryCode) ?: ""
+        val newNormalized = com.sysadmindoc.alarmclock.data.repository.HolidayProviderSnapshot.normalizeCountry(code) ?: ""
+        if (currentNormalized == newNormalized) return
+
+        viewModelScope.launch {
+            preferencesManager.update { it.copy(holidayCountryCode = newNormalized) }
+            val outcome = holidayRepository?.refreshWithOutcome(force = true)
+            val isMaterial = (outcome is com.sysadmindoc.alarmclock.data.repository.HolidayRefreshOutcome.Success && outcome.materialChange) ||
+                (outcome is com.sysadmindoc.alarmclock.data.repository.HolidayRefreshOutcome.PartialSuccess && outcome.materialChange)
+            val reconcileResult = holidayReconcileCoordinator?.reconcile(isMaterialChange = isMaterial || outcome == null)
+            if (reconcileResult == null) {
+                alarmScheduler.rescheduleAll(forceRecalculate = true)
+            }
+        }
     }
     // F15: Hue
     fun updateHueBridgeIp(ip: String) = updateSettings { it.copy(hueBridgeIp = ip.trim()) }
