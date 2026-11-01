@@ -37,6 +37,10 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import com.sysadmindoc.alarmclock.domain.evaluator.MAX_HOLIDAY_EVALUATION_WINDOW_DAYS
+import com.sysadmindoc.alarmclock.domain.evaluator.OccurrenceDecision
+import com.sysadmindoc.alarmclock.domain.evaluator.ScheduleOccurrenceEvaluator
+import com.sysadmindoc.alarmclock.domain.evaluator.asLocalHolidayClassifier
 
 @Singleton
 class AlarmScheduler @Inject constructor(
@@ -56,10 +60,19 @@ class AlarmScheduler @Inject constructor(
     private val alarmManager: AlarmManager
         get() = testAlarmManager ?: (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager)
 
+    @androidx.annotation.VisibleForTesting
+    internal var testOccurrenceEvaluator: ScheduleOccurrenceEvaluator? = null
+
+    private val occurrenceEvaluator: ScheduleOccurrenceEvaluator
+        get() = testOccurrenceEvaluator ?: ScheduleOccurrenceEvaluator(calculator)
+
     private val mainSlotMutexMap = ConcurrentHashMap<Long, Mutex>()
 
     @androidx.annotation.VisibleForTesting
     internal var testOnPreOsRegistrationBarrier: (suspend (alarmId: Long, triggerTime: Long) -> Unit)? = null
+
+    @androidx.annotation.VisibleForTesting
+    internal var testOnImmediatePreOsBarrier: (suspend (alarmId: Long, triggerTime: Long) -> Unit)? = null
 
     companion object {
         const val EXTRA_ALARM_ID = "alarm_id"
@@ -137,13 +150,49 @@ class AlarmScheduler @Inject constructor(
             return ScheduleOutcome.NoArm(sanitizedAlarm.id, "PAUSED")
         }
 
-        var triggerTime = if (notBeforeMillis > System.currentTimeMillis()) {
-            calculator.calculate(
-                sanitizedAlarm,
-                Instant.ofEpochMilli(notBeforeMillis).atZone(ZoneId.systemDefault())
+        val isRepeatingNormalAlarm = !sanitizedAlarm.isQuickAlarm &&
+            sanitizedAlarm.scheduleKind == Alarm.SCHEDULE_KIND_REPEATING
+
+        var triggerTime = if (isRepeatingNormalAlarm) {
+            val schedulingZone = sanitizedAlarm.schedulingZone(ZoneId.systemDefault())
+            val notBefore = if (notBeforeMillis > System.currentTimeMillis()) notBeforeMillis else System.currentTimeMillis()
+            val notBeforeDate = Instant.ofEpochMilli(notBefore).atZone(schedulingZone).toLocalDate()
+            val authorityWindow = holidayRepository.captureAuthorityWindow(
+                startDate = notBeforeDate,
+                endDateInclusive = notBeforeDate.plusDays(MAX_HOLIDAY_EVALUATION_WINDOW_DAYS - 1L)
             )
+            val classifier = authorityWindow.asLocalHolidayClassifier()
+            val exceptions = try {
+                repository.database.scheduleExceptionDao().getExceptionsForAlarmGeneration(
+                    sanitizedAlarm.id,
+                    sanitizedAlarm.generation
+                )
+            } catch (e: Exception) {
+                Log.e("AlarmScheduler", "Failed to load schedule exceptions for alarm ${sanitizedAlarm.id}; aborting schedule to fail-closed", e)
+                return ScheduleOutcome.RegistrationFailed(sanitizedAlarm.id, e)
+            }
+            val evaluated = occurrenceEvaluator.evaluateWithHolidayClassifier(
+                alarm = sanitizedAlarm,
+                fromEpochMs = notBefore,
+                holidayClassifier = classifier,
+                exceptions = exceptions,
+                evaluationZoneId = schedulingZone,
+                allowHidePersonalRuntimeFeatures = true
+            )
+            if (evaluated != null && (evaluated.decision == OccurrenceDecision.NORMAL_TRIGGER || evaluated.decision == OccurrenceDecision.TIME_OVERRIDDEN)) {
+                evaluated.targetTriggerTimeEpochMs
+            } else {
+                0L
+            }
         } else {
-            calculator.calculate(sanitizedAlarm)
+            if (notBeforeMillis > System.currentTimeMillis()) {
+                calculator.calculate(
+                    sanitizedAlarm,
+                    Instant.ofEpochMilli(notBeforeMillis).atZone(ZoneId.systemDefault())
+                )
+            } else {
+                calculator.calculate(sanitizedAlarm)
+            }
         }
         if (triggerTime <= System.currentTimeMillis()) {
             cancelScheduledEntries(sanitizedAlarm.id, expectedRevision = originRevision)
@@ -181,39 +230,15 @@ class AlarmScheduler @Inject constructor(
         )
         triggerTime = vacationAdjustment.triggerTime
 
-        if (sanitizedAlarm.skipOnHolidays && settings.holidayAutoSkipEnabled) {
+        if (!isRepeatingNormalAlarm && sanitizedAlarm.skipOnHolidays && settings.holidayAutoSkipEnabled) {
             val holidayZone = sanitizedAlarm.schedulingZone(ZoneId.systemDefault())
-            if (!sanitizedAlarm.isRecurringSchedule) {
-                val triggerDate = Instant.ofEpochMilli(triggerTime)
-                    .atZone(holidayZone).toLocalDate()
-                if (holidayRepository.isHoliday(triggerDate)) {
-                    cancelScheduledEntries(sanitizedAlarm.id)
-                    repository.updateNextTrigger(sanitizedAlarm.id, 0)
-                    requestWidgetUpdateIfNeeded(requestWidgetUpdate)
-                    return ScheduleOutcome.NoArm(sanitizedAlarm.id, "HOLIDAY_SKIPPED")
-                }
-            } else {
-                var advanced = advanceTriggerPastHolidays(sanitizedAlarm, triggerTime, holidayZone)
-                if (advanced != null && advanced != triggerTime) {
-                    val revacationed = VacationAlarmPolicy.adjustTrigger(
-                        alarm = sanitizedAlarm,
-                        initialTriggerTime = advanced,
-                        settings = settings,
-                        calculateFrom = calculator::calculate
-                    ).triggerTime
-                    if (revacationed != advanced) {
-                        advanced = advanceTriggerPastHolidays(
-                            sanitizedAlarm, revacationed, holidayZone
-                        )
-                    }
-                }
-                if (advanced == null) {
-                    cancelScheduledEntries(sanitizedAlarm.id)
-                    repository.updateNextTrigger(sanitizedAlarm.id, 0)
-                    requestWidgetUpdateIfNeeded(requestWidgetUpdate)
-                    return ScheduleOutcome.NoArm(sanitizedAlarm.id, "HOLIDAY_SKIPPED")
-                }
-                triggerTime = advanced
+            val triggerDate = Instant.ofEpochMilli(triggerTime)
+                .atZone(holidayZone).toLocalDate()
+            if (holidayRepository.isHoliday(triggerDate)) {
+                cancelScheduledEntries(sanitizedAlarm.id)
+                repository.updateNextTrigger(sanitizedAlarm.id, 0)
+                requestWidgetUpdateIfNeeded(requestWidgetUpdate)
+                return ScheduleOutcome.NoArm(sanitizedAlarm.id, "HOLIDAY_SKIPPED")
             }
         }
 
@@ -317,6 +342,18 @@ class AlarmScheduler @Inject constructor(
         return scheduleAt(alarm, snoozeAtMillis, targetGen = targetGen, expectedRevision = expectedRevision)
     }
 
+    suspend fun reconcileRegistration(
+        alarm: Alarm,
+        targetTrigger: Long,
+        isOsConfirmed: Boolean = false
+    ): ScheduleOutcome {
+        val sanitizedAlarm = alarm.sanitized()
+        if (isOsConfirmed && sanitizedAlarm.nextTriggerTime == targetTrigger) {
+            return ScheduleOutcome.Armed(sanitizedAlarm.id, targetTrigger)
+        }
+        return scheduleAt(sanitizedAlarm, targetTrigger)
+    }
+
     internal suspend fun scheduleAt(
         alarm: Alarm,
         triggerTime: Long,
@@ -339,7 +376,13 @@ class AlarmScheduler @Inject constructor(
 
         val slotMutex = mainSlotMutexMap.computeIfAbsent(sanitizedAlarm.id) { Mutex() }
         return slotMutex.withLock {
-            val previousTrigger = repository.getById(sanitizedAlarm.id)?.nextTriggerTime ?: 0L
+            val currentDbAlarm = repository.getById(sanitizedAlarm.id)
+            if (currentDbAlarm != null && !sanitizedAlarm.isQuickAlarm && currentDbAlarm.generation > sanitizedAlarm.generation) {
+                Log.i("AlarmScheduler", "Aborting stale scheduleAt for alarm ${sanitizedAlarm.id}: current DB generation ${currentDbAlarm.generation} > requested generation ${sanitizedAlarm.generation}")
+                return@withLock ScheduleOutcome.RegistrationFailed(sanitizedAlarm.id, IllegalStateException("Stale scheduleAt: generation mismatch"))
+            }
+
+            val previousTrigger = currentDbAlarm?.nextTriggerTime ?: 0L
 
             if (targetGen != null) {
                 val currentDbTrigger = repository.getById(sanitizedAlarm.id)?.nextTriggerTime ?: 0L
@@ -399,9 +442,15 @@ class AlarmScheduler @Inject constructor(
 
             testOnPreOsRegistrationBarrier?.invoke(sanitizedAlarm.id, triggerTime)
 
+            val postBarrierAlarm = repository.getById(sanitizedAlarm.id)
+            if (postBarrierAlarm != null && !sanitizedAlarm.isQuickAlarm && postBarrierAlarm.generation > sanitizedAlarm.generation) {
+                Log.i("AlarmScheduler", "Aborting OS registration for alarm ${sanitizedAlarm.id}: DB generation advanced to ${postBarrierAlarm.generation} while operation was in-flight")
+                return@withLock ScheduleOutcome.RegistrationFailed(sanitizedAlarm.id, IllegalStateException("DB generation advanced while operation in-flight"))
+            }
+
             var registrationCause: Throwable? = null
             val success = try {
-                scheduleAlarmClock(sanitizedAlarm.id, triggerTime, expectedRevision = expectedRevision)
+                scheduleAlarmClock(sanitizedAlarm.id, triggerTime, expectedRevision = expectedRevision, expectedGeneration = sanitizedAlarm.generation)
             } catch (e: Exception) {
                 Log.e("AlarmScheduler", "OS AlarmManager registration threw exception for alarm ${sanitizedAlarm.id}", e)
                 registrationCause = e
@@ -638,13 +687,19 @@ class AlarmScheduler @Inject constructor(
         expectedInstanceToken: String? = null,
         expectedRestoreEpoch: Long? = null,
         expectedScheduleRevision: Long? = null,
-        expectedIssueToken: String? = null
+        expectedIssueToken: String? = null,
+        expectedGeneration: Int? = null
     ): Boolean {
         val alarm = runBlocking { repository.getById(alarmId)?.sanitized() }
             ?: run {
                 Log.w("AlarmScheduler", "Alarm $alarmId missing; rejecting SmartWake cancellation")
                 return false
             }
+
+        if (expectedGeneration != null && !alarm.isQuickAlarm && alarm.generation > expectedGeneration) {
+            Log.w("AlarmScheduler", "Stale SmartWake cancellation ignored for alarm $alarmId (generation mismatch: current ${alarm.generation} > expected $expectedGeneration)")
+            return false
+        }
 
         val authority = runBlocking { repository.getAuthorityByAlarmId(alarmId) }
         val activeSlotToken = runBlocking { repository.issuedOccurrenceDao().getSlotCurrentToken(alarmId) }
@@ -712,27 +767,7 @@ class AlarmScheduler @Inject constructor(
         BedtimeZenRuleManager.syncRule(context, settings, nextAlarmTrigger)
     }
 
-    /**
-     * Walks a repeating alarm's trigger past consecutive holidays (max 30
-     * candidates, covering multi-week national holiday clusters). Returns null
-     * when every candidate was a holiday — the caller suppresses that occurrence.
-     */
-    private suspend fun advanceTriggerPastHolidays(
-        alarm: Alarm,
-        startTrigger: Long,
-        zone: ZoneId
-    ): Long? {
-        var trigger = startTrigger
-        var attempts = 0
-        while (attempts < 30) {
-            val date = Instant.ofEpochMilli(trigger).atZone(zone).toLocalDate()
-            if (!holidayRepository.isHoliday(date)) return trigger
-            trigger = calculator.calculate(alarm, date.plusDays(1).atStartOfDay(zone))
-            attempts++
-        }
-        val finalDate = Instant.ofEpochMilli(trigger).atZone(zone).toLocalDate()
-        return if (holidayRepository.isHoliday(finalDate)) null else trigger
-    }
+
 
     internal fun canScheduleExactAlarms(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -931,8 +966,19 @@ class AlarmScheduler @Inject constructor(
     private suspend fun scheduleAlarmClock(
         alarmId: Long,
         triggerTime: Long,
-        expectedRevision: Long? = null
+        expectedRevision: Long? = null,
+        expectedGeneration: Int? = null
     ): Boolean {
+        testOnImmediatePreOsBarrier?.invoke(alarmId, triggerTime)
+
+        if (expectedGeneration != null) {
+            val currentAlarm = repository.getById(alarmId)
+            if (currentAlarm != null && !currentAlarm.isQuickAlarm && currentAlarm.generation > expectedGeneration) {
+                Log.i("AlarmScheduler", "Aborting raw OS set for alarm $alarmId: DB generation advanced to ${currentAlarm.generation} > expected $expectedGeneration")
+                return false
+            }
+        }
+
         val fireId = AlarmIncidentEvent.fireIdFor(alarmId, triggerTime)
         val showAlarmClockIcon = preferencesManager.getCachedSettings().showAlarmClockIcon
         recordScheduleIncident(
@@ -1118,18 +1164,23 @@ class AlarmScheduler @Inject constructor(
         )
     }
 
-    private fun cancelScheduledEntries(
+    internal fun cancelScheduledEntries(
         alarmId: Long,
         includeFollowUpWorkers: Boolean = false,
         targetGen: com.sysadmindoc.alarmclock.service.AlarmGeneration? = null,
-        expectedRevision: Long? = null
+        expectedRevision: Long? = null,
+        expectedGeneration: Int? = null
     ) {
         val slotMutex = mainSlotMutexMap.computeIfAbsent(alarmId) { Mutex() }
         var isCancelAccepted = false
         runBlocking {
             slotMutex.withLock {
+                val currentAlarm = repository.getById(alarmId)
+                if (expectedGeneration != null && currentAlarm != null && !currentAlarm.isQuickAlarm && currentAlarm.generation > expectedGeneration) {
+                    Log.i("AlarmScheduler", "Aborting stale cancelScheduledEntries for alarm $alarmId: current DB generation ${currentAlarm.generation} > expected $expectedGeneration")
+                    return@withLock
+                }
                 if (targetGen != null) {
-                    val currentAlarm = repository.getById(alarmId)
                     if (currentAlarm != null && currentAlarm.nextTriggerTime > targetGen.scheduledAt) {
                         Log.i("AlarmScheduler", "Aborting stale cancelScheduledEntries for alarm $alarmId: targetGen $targetGen is older than current DB trigger ${currentAlarm.nextTriggerTime}")
                         return@withLock

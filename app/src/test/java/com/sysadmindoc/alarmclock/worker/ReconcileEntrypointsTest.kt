@@ -175,8 +175,8 @@ class ReconcileEntrypointsTest {
         every { workerParams.runAttemptCount } returns 3 // Max attempts reached
         val worker = BootRescheduleWorker(context, workerParams, mockScheduler)
         val result = worker.doWork()
-        // Stops retrying when max attempts reached
-        assertEquals(Result.success(), result)
+        // Stops retrying and reports failure when max attempts reached with failures
+        assertEquals(Result.failure(), result)
     }
 
     @Test

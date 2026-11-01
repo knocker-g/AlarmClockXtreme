@@ -233,7 +233,8 @@ class HolidayMaterialChangeDetector(
         evaluationZoneId: ZoneId,
         alarms: List<AlarmHolidayEvaluationInput> = emptyList(),
         lastObservedSignature: HolidayTruthSignature? = null,
-        horizonDays: Int = ScheduleOccurrenceEvaluator.MAX_CANDIDATE_SEARCH_STEPS
+        horizonDays: Int = ScheduleOccurrenceEvaluator.MAX_CANDIDATE_SEARCH_STEPS,
+        isRecovery: Boolean = (previousClassifier === currentClassifier)
     ): HolidayMaterialChangeDecision {
         val boundedDays = horizonDays.coerceIn(1, ScheduleOccurrenceEvaluator.MAX_CANDIDATE_SEARCH_STEPS)
         val range = resolveEvaluationDateRange(
@@ -285,7 +286,8 @@ class HolidayMaterialChangeDetector(
             currentClassifier = currentClassifier,
             evaluationEpochMs = evaluationEpochMs,
             evaluationZoneId = evaluationZoneId,
-            boundedDays = boundedDays
+            boundedDays = boundedDays,
+            isRecovery = isRecovery
         )
 
         val hasWindowBoundaryDelta = boundaryDates.isNotEmpty()
@@ -320,7 +322,8 @@ class HolidayMaterialChangeDetector(
         currentClassifier: LocalHolidayClassifier,
         evaluationEpochMs: Long,
         evaluationZoneId: ZoneId,
-        boundedDays: Int
+        boundedDays: Int,
+        isRecovery: Boolean = false
     ): List<AffectedAlarmHolidayDelta> {
         if (alarms.isEmpty()) return emptyList()
         val results = ArrayList<AffectedAlarmHolidayDelta>()
@@ -403,7 +406,19 @@ class HolidayMaterialChangeDetector(
                     prevTarget != currTarget ||
                     previousEval?.decision != currentEval?.decision
 
-            if (eligibilityChangedDates.isEmpty() && !nextTargetChanged) {
+            val expectedStoredTarget = if (
+                currentEval != null &&
+                (currentEval.decision == OccurrenceDecision.NORMAL_TRIGGER ||
+                        currentEval.decision == OccurrenceDecision.TIME_OVERRIDDEN)
+            ) {
+                currentEval.targetTriggerTimeEpochMs
+            } else {
+                0L
+            }
+            val storedProjectionNeedsReconcile = alarm.nextTriggerTime != expectedStoredTarget
+            val recoveryNeedsReconcile = isRecovery && storedProjectionNeedsReconcile
+
+            if (eligibilityChangedDates.isEmpty() && !nextTargetChanged && !recoveryNeedsReconcile) {
                 continue
             }
 
@@ -418,17 +433,6 @@ class HolidayMaterialChangeDetector(
                             prevTarget != currTarget ||
                             previousEval.decision != currentEval?.decision
                 }
-
-            val expectedStoredTarget = if (
-                currentEval != null &&
-                (currentEval.decision == OccurrenceDecision.NORMAL_TRIGGER ||
-                        currentEval.decision == OccurrenceDecision.TIME_OVERRIDDEN)
-            ) {
-                currentEval.targetTriggerTimeEpochMs
-            } else {
-                0L
-            }
-            val storedProjectionNeedsReconcile = alarm.nextTriggerTime != expectedStoredTarget
 
             results.add(
                 AffectedAlarmHolidayDelta(

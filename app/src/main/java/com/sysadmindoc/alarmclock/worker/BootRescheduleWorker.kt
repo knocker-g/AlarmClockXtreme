@@ -30,7 +30,8 @@ class BootRescheduleWorker @AssistedInject constructor(
     private val alarmScheduler: AlarmScheduler,
     private val scheduleAuthorityReconciler: ScheduleAuthorityReconciler? = null,
     private val routeAuthority: com.sysadmindoc.alarmclock.domain.ProductionSchedulingRouteAuthority = com.sysadmindoc.alarmclock.domain.ProductionSchedulingRouteAuthority(),
-    private val quickAlarmScheduler: com.sysadmindoc.alarmclock.domain.QuickAlarmScheduler? = null
+    private val quickAlarmScheduler: com.sysadmindoc.alarmclock.domain.QuickAlarmScheduler? = null,
+    private val holidayReconcileCoordinator: com.sysadmindoc.alarmclock.data.repository.HolidayReconcileCoordinator? = null
 ) : CoroutineWorker(context, workerParams) {
 
     override suspend fun doWork(): Result {
@@ -54,9 +55,24 @@ class BootRescheduleWorker @AssistedInject constructor(
                     "(armed: ${batchResult.armedCount}, blocked: ${batchResult.blockedCount}, failed: ${batchResult.failedCount}, noArm: ${batchResult.noArmCount})"
             )
 
-            if (batchResult.failedCount > 0 && runAttemptCount < MAX_ATTEMPTS) {
-                Log.w(TAG, "Reschedule completed with ${batchResult.failedCount} registration failures; requesting retry (attempt ${runAttemptCount + 1}/$MAX_ATTEMPTS)")
-                Result.retry()
+            val reconcileResult = holidayReconcileCoordinator?.reconcile(isMaterialChange = false)
+
+            if (reconcileResult is com.sysadmindoc.alarmclock.data.repository.HolidayReconcileResult.PendingRetry) {
+                if (runAttemptCount < MAX_ATTEMPTS) {
+                    Log.w(TAG, "Holiday reconciliation pending; requesting retry (attempt ${runAttemptCount + 1}/$MAX_ATTEMPTS)")
+                    Result.retry()
+                } else {
+                    Log.e(TAG, "Holiday reconciliation exhausted max attempts ($MAX_ATTEMPTS) with pending work; returning failure")
+                    Result.failure()
+                }
+            } else if (batchResult.failedCount > 0) {
+                if (runAttemptCount < MAX_ATTEMPTS) {
+                    Log.w(TAG, "Reschedule completed with ${batchResult.failedCount} registration failures; requesting retry (attempt ${runAttemptCount + 1}/$MAX_ATTEMPTS)")
+                    Result.retry()
+                } else {
+                    Log.e(TAG, "Reschedule exhausted max attempts ($MAX_ATTEMPTS) with ${batchResult.failedCount} registration failures; returning failure")
+                    Result.failure()
+                }
             } else {
                 Result.success()
             }
