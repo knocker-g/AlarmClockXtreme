@@ -21,6 +21,9 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import com.sysadmindoc.alarmclock.data.holiday.FileManualHolidayOverrideStore
+import com.sysadmindoc.alarmclock.data.holiday.ManualHolidayOverrideStore
+import com.sysadmindoc.alarmclock.data.repository.ManualHolidayOverrideSource
 import javax.inject.Singleton
 
 @Module
@@ -117,5 +120,23 @@ object DatabaseModule {
                 true
             }
         }
+    }
+
+    @Provides
+    @Singleton
+    fun provideManualHolidayOverrideStore(
+        @ApplicationContext context: Context,
+        coordinatorProvider: javax.inject.Provider<com.sysadmindoc.alarmclock.data.repository.HolidayReconcileCoordinator>
+    ): ManualHolidayOverrideStore {
+        return FileManualHolidayOverrideStore(
+            context = context,
+            reconcileCoordinatorProvider = { coordinatorProvider.get() }
+        )
+    }
+
+    @Provides
+    @Singleton
+    fun provideManualHolidayOverrideSource(store: ManualHolidayOverrideStore): ManualHolidayOverrideSource {
+        return store
     }
 }

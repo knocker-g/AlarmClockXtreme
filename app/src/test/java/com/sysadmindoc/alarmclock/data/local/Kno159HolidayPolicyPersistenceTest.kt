@@ -866,8 +866,8 @@ class Kno159HolidayPolicyPersistenceTest {
 
         val exportedJson = backupManager.export()
         val parsed = backupAdapter.fromJson(exportedJson)!!
-        assertEquals(22, BackupManager.MAX_SUPPORTED_BACKUP_VERSION)
-        assertEquals(22, parsed.version)
+        assertEquals(23, BackupManager.MAX_SUPPORTED_BACKUP_VERSION)
+        assertEquals(23, parsed.version)
         assertEquals(3, parsed.alarms.size)
 
         val byLabelExport = parsed.alarms.associateBy { it.label }
@@ -929,12 +929,12 @@ class Kno159HolidayPolicyPersistenceTest {
             )
         )
 
-        val futureBackupJson = backupManager.export().replace("\"version\": 22", "\"version\": 23")
+        val futureBackupJson = backupManager.export().replace("\"version\": 23", "\"version\": 24")
         val importResult = backupManager.importFromUriStringForTest(
             futureBackupJson,
             BackupImportOptions(mode = BackupImportMode.Replace, importSettings = false)
         )
-        assertTrue("Future backup version > 22 must fail closed", importResult.isFailure)
+        assertTrue("Future backup version > 23 must fail closed", importResult.isFailure)
 
         // Existing DB truth must remain completely untouched
         val remaining = alarmRepo.getAll()

@@ -151,21 +151,50 @@ internal fun LazyListScope.alarmEditScheduleSections(
         }
     }
 
-    // Holiday Skip
+    // Holiday Policy
     SettingsSection(editorPage, AlarmEditorSection.HOLIDAYS) {
-        SettingsRow(
-            label = stringResource(R.string.alarm_edit_skip_holidays),
-            trailing = {
-                Switch(
-                    checked = state.skipOnHolidays,
-                    onCheckedChange = viewModel::updateSkipOnHolidays,
-                    colors = appSwitchColors()
-                )
-            }
+        val policies = listOf(
+            com.sysadmindoc.alarmclock.data.model.Alarm.HOLIDAY_POLICY_FOLLOW_BASE to stringResource(R.string.holiday_policy_follow_base),
+            com.sysadmindoc.alarmclock.data.model.Alarm.HOLIDAY_POLICY_EXCLUDE to stringResource(R.string.holiday_policy_exclude),
+            com.sysadmindoc.alarmclock.data.model.Alarm.HOLIDAY_POLICY_INCLUDE to stringResource(R.string.holiday_policy_include)
         )
+        Text(
+            text = stringResource(R.string.holiday_policy_title),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            policies.forEach { (policyValue, label) ->
+                val selected = state.holidayPolicy == policyValue
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .selectable(
+                            selected = selected,
+                            onClick = { viewModel.updateHolidayPolicy(policyValue) },
+                            role = Role.RadioButton
+                        )
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = selected,
+                        onClick = null
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+        }
         SettingsHint(
             stringResource(R.string.alarm_edit_holidays_hint),
-            tone = HintTone.Warning
+            tone = HintTone.Neutral
         )
     }
 }

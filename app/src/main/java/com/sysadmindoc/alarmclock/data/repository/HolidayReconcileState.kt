@@ -22,12 +22,13 @@ interface HolidayReconcileStateStore {
 }
 
 class FileHolidayReconcileStateStore(
-    private val context: Context,
-    private val fileName: String = "holiday_reconcile_state.json"
+    private val file: File
 ) : HolidayReconcileStateStore {
 
-    private val file: File
-        get() = File(context.filesDir, fileName)
+    constructor(
+        context: Context,
+        fileName: String = "holiday_reconcile_state.json"
+    ) : this(File(context.filesDir, fileName))
 
     private val atomicFile: AtomicFile
         get() = AtomicFile(file)

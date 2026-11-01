@@ -5,18 +5,25 @@ import android.util.AtomicFile
 import androidx.room.withTransaction
 import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
+import com.sysadmindoc.alarmclock.data.holiday.ManualHolidayOverrideStore
 import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmGroup
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.preferences.AppSettings
 import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
+import com.sysadmindoc.alarmclock.data.repository.HolidayReconcileCoordinator
+import com.sysadmindoc.alarmclock.data.repository.HolidayReconcileResult
+import com.sysadmindoc.alarmclock.data.repository.ManualHolidayOverride
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.time.LocalDate
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -24,14 +31,16 @@ import javax.inject.Singleton
 enum class RecoveryOutcome {
     NONE,
     RESTORED_OLD,
-    RECOVERED_NEW
+    RECOVERED_NEW,
+    PENDING_RETRY
 }
 
 @JsonClass(generateAdapter = true)
 internal data class RestoreSnapshot(
     val settings: AppSettings,
     val alarms: List<Alarm>,
-    val groups: List<AlarmGroup>
+    val groups: List<AlarmGroup>,
+    val manualOverrides: Map<String, String>? = null
 )
 
 @Singleton
@@ -40,19 +49,63 @@ class RestoreJournalCoordinator @Inject constructor(
     private val database: AlarmDatabase,
     private val preferencesManager: PreferencesManager,
     private val alarmScheduler: AlarmScheduler,
-    moshi: Moshi
+    moshi: Moshi,
+    private val manualHolidayOverrideStore: ManualHolidayOverrideStore? = null,
+    private val holidayReconcileCoordinator: HolidayReconcileCoordinator? = null
 ) {
     private val journalFile = File(context.filesDir, JOURNAL_FILENAME)
     private val atomicFile = AtomicFile(journalFile)
 
     private val snapshotAdapter = moshi.adapter(RestoreSnapshot::class.java)
+    private val recoveryMutex = Mutex()
+
+    private fun validateSnapshotManualOverrides(
+        raw: Map<String, String>?
+    ): Map<LocalDate, ManualHolidayOverride>? {
+        if (raw == null) return null
+        if (raw.isEmpty()) return emptyMap()
+
+        val parsed = mutableMapOf<LocalDate, ManualHolidayOverride>()
+        val seenNormalizedKeys = mutableSetOf<String>()
+
+        for ((key, value) in raw) {
+            if (key.isBlank() || value.isBlank()) {
+                throw IllegalStateException("Blank key or value in restore snapshot manualOverrides: '$key'='$value'")
+            }
+            val trimmedKey = key.trim()
+            val date = try {
+                LocalDate.parse(trimmedKey)
+            } catch (e: Exception) {
+                throw IllegalStateException("Invalid ISO-8601 date in restore snapshot manualOverrides: '$key'", e)
+            }
+            if (trimmedKey != date.toString()) {
+                throw IllegalStateException("Non-canonical ISO-8601 date format in restore snapshot manualOverrides: '$key'")
+            }
+            if (!seenNormalizedKeys.add(date.toString())) {
+                throw IllegalStateException("Duplicate normalized date key in restore snapshot manualOverrides: '$key'")
+            }
+            val override = try {
+                ManualHolidayOverride.valueOf(value.trim())
+            } catch (e: Exception) {
+                throw IllegalStateException("Unsupported ManualHolidayOverride enum in restore snapshot: '$value'", e)
+            }
+            parsed[date] = override
+        }
+        return parsed
+    }
 
     suspend fun prepareTransaction(
         settings: AppSettings,
         alarms: List<Alarm>,
-        groups: List<AlarmGroup>
-    ) {
-        val snapshot = RestoreSnapshot(settings = settings, alarms = alarms, groups = groups)
+        groups: List<AlarmGroup>,
+        manualOverrides: Map<String, String>? = null
+    ) = recoveryMutex.withLock {
+        val snapshot = RestoreSnapshot(
+            settings = settings,
+            alarms = alarms,
+            groups = groups,
+            manualOverrides = manualOverrides
+        )
         val snapshotJson = snapshotAdapter.toJson(snapshot)
             ?: throw IllegalStateException("Failed to serialize RestoreSnapshot")
 
@@ -72,7 +125,7 @@ class RestoreJournalCoordinator @Inject constructor(
         writeJournalAtomic(json.toString())
     }
 
-    suspend fun markCommitted() {
+    suspend fun markCommitted() = recoveryMutex.withLock {
         val jsonStr = readJournalString() ?: throw IllegalStateException("No journal found for markCommitted")
         val json = runCatching { JSONObject(jsonStr) }.getOrElse {
             throw SecurityException("Malformed journal JSON in markCommitted. Fails closed.", it)
@@ -120,7 +173,7 @@ class RestoreJournalCoordinator @Inject constructor(
      */
     internal var onPostDurableCommittedHookForTest: (() -> Unit)? = null
 
-    suspend fun checkAndRecover(): RecoveryOutcome {
+    suspend fun checkAndRecover(): RecoveryOutcome = recoveryMutex.withLock {
         if (!journalFile.exists()) return RecoveryOutcome.NONE
 
         val jsonStr = runCatching { readJournalString() }.getOrElse {
@@ -159,6 +212,8 @@ class RestoreJournalCoordinator @Inject constructor(
                 val snapshot = snapshotAdapter.fromJson(snapshotJson)
                     ?: throw IllegalStateException("Failed to decode RestoreSnapshot in PREPARED journal")
 
+                val validatedOverrides = validateSnapshotManualOverrides(snapshot.manualOverrides)
+
                 database.withTransaction {
                     val alarmDao = database.alarmDao()
                     val groupDao = database.alarmGroupDao()
@@ -170,16 +225,86 @@ class RestoreJournalCoordinator @Inject constructor(
 
                 preferencesManager.update { snapshot.settings }
 
+                if (validatedOverrides != null) {
+                    manualHolidayOverrideStore?.restoreOverrides(validatedOverrides, triggerReconcile = false)
+                }
+
                 // Reconcile old truth
-                alarmScheduler.rescheduleAllInBatches()
+                val batchResult = try {
+                    alarmScheduler.rescheduleAllInBatches()
+                } catch (e: Exception) {
+                    android.util.Log.e("RestoreJournalCoordinator", "Failed to reschedule alarms during rollback", e)
+                    return RecoveryOutcome.PENDING_RETRY
+                }
+
+                val requiresHolidayReconcile = validatedOverrides != null || manualHolidayOverrideStore != null
+                val reconcileResult = if (holidayReconcileCoordinator != null) {
+                    try {
+                        holidayReconcileCoordinator.reconcile(
+                            isMaterialChange = true,
+                            previousClassifier = null,
+                            evaluationEpochMs = System.currentTimeMillis(),
+                            evaluationZoneId = java.time.ZoneId.systemDefault()
+                        )
+                    } catch (e: Exception) {
+                        android.util.Log.e("RestoreJournalCoordinator", "Failed to reconcile holidays during rollback", e)
+                        HolidayReconcileResult.PendingRetry(1, e)
+                    }
+                } else {
+                    null
+                }
+
+                if (batchResult.failedCount > 0) {
+                    return RecoveryOutcome.PENDING_RETRY
+                }
+                if (reconcileResult is HolidayReconcileResult.PendingRetry) {
+                    return RecoveryOutcome.PENDING_RETRY
+                }
+                if (holidayReconcileCoordinator == null && requiresHolidayReconcile) {
+                    return RecoveryOutcome.PENDING_RETRY
+                }
 
                 // Cleanup journal after successful old-truth reconcile attempt
                 atomicFile.delete()
                 RecoveryOutcome.RESTORED_OLD
             }
             PHASE_COMMITTED -> {
+                val snapshot = snapshotAdapter.fromJson(snapshotJson)
+                val requiresHolidayReconcile = (snapshot?.manualOverrides != null) || (manualHolidayOverrideStore != null)
+
                 // Reconcile new truth
-                alarmScheduler.rescheduleAllInBatches()
+                val batchResult = try {
+                    alarmScheduler.rescheduleAllInBatches()
+                } catch (e: Exception) {
+                    android.util.Log.e("RestoreJournalCoordinator", "Failed to reschedule alarms during committed recovery", e)
+                    return RecoveryOutcome.PENDING_RETRY
+                }
+
+                val reconcileResult = if (holidayReconcileCoordinator != null) {
+                    try {
+                        holidayReconcileCoordinator.reconcile(
+                            isMaterialChange = true,
+                            previousClassifier = null,
+                            evaluationEpochMs = System.currentTimeMillis(),
+                            evaluationZoneId = java.time.ZoneId.systemDefault()
+                        )
+                    } catch (e: Exception) {
+                        android.util.Log.e("RestoreJournalCoordinator", "Failed to reconcile holidays during committed recovery", e)
+                        HolidayReconcileResult.PendingRetry(1, e)
+                    }
+                } else {
+                    null
+                }
+
+                if (batchResult.failedCount > 0) {
+                    return RecoveryOutcome.PENDING_RETRY
+                }
+                if (reconcileResult is HolidayReconcileResult.PendingRetry) {
+                    return RecoveryOutcome.PENDING_RETRY
+                }
+                if (holidayReconcileCoordinator == null && requiresHolidayReconcile) {
+                    return RecoveryOutcome.PENDING_RETRY
+                }
 
                 // Cleanup journal after reconcile attempt
                 atomicFile.delete()

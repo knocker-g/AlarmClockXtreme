@@ -14,7 +14,11 @@ import com.sysadmindoc.alarmclock.domain.LongPressThreshold
 import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
 import com.sysadmindoc.alarmclock.R
+import com.sysadmindoc.alarmclock.data.holiday.ManualHolidayOverrideStore
+import com.sysadmindoc.alarmclock.data.repository.HolidayReconcileCoordinator
+import com.sysadmindoc.alarmclock.data.repository.ManualHolidayOverride
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.time.LocalDate
 import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -123,11 +127,12 @@ data class AlarmBackup(
 
 @JsonClass(generateAdapter = true)
 data class BackupData(
-    val version: Int = 22,
+    val version: Int = 23,
     val appVersion: String = BuildConfig.VERSION_NAME,
     val exportedAt: Long = System.currentTimeMillis(),
     val alarms: List<AlarmBackup>,
-    val settings: SettingsBackup?
+    val settings: SettingsBackup?,
+    val manualHolidayOverrides: Map<String, String>? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -292,7 +297,9 @@ class BackupManager @Inject constructor(
     private val preferencesManager: PreferencesManager,
     private val scheduler: AlarmScheduler,
     private val restoreJournalCoordinator: RestoreJournalCoordinator,
-    private val database: AlarmDatabase
+    private val database: AlarmDatabase,
+    private val manualHolidayOverrideStore: ManualHolidayOverrideStore? = null,
+    private val holidayReconcileCoordinator: HolidayReconcileCoordinator? = null
 ) {
     private val moshi = Moshi.Builder().build()
 
@@ -300,7 +307,7 @@ class BackupManager @Inject constructor(
 
     companion object {
         /** Highest backup format version we know how to read end-to-end. */
-        const val MAX_SUPPORTED_BACKUP_VERSION = 22
+        const val MAX_SUPPORTED_BACKUP_VERSION = 23
 
         /**
          * Ceiling on an imported file. A full export of the maximum alarm count
@@ -309,6 +316,41 @@ class BackupManager @Inject constructor(
          */
         const val MAX_IMPORT_CHARS = 4 * 1_048_576
         const val MAX_IMPORT_ALARMS = 1_000
+        const val MAX_IMPORT_OVERRIDES = 2_000
+
+        fun validateManualHolidayOverrides(
+            rawOverrides: Map<String, String>?
+        ): Result<Map<LocalDate, ManualHolidayOverride>> {
+            if (rawOverrides == null) return Result.success(emptyMap())
+            if (rawOverrides.size > MAX_IMPORT_OVERRIDES) {
+                return Result.failure(
+                    IllegalArgumentException(
+                        "Manual holiday overrides count (${rawOverrides.size}) exceeds maximum supported ($MAX_IMPORT_OVERRIDES)"
+                    )
+                )
+            }
+            val result = LinkedHashMap<LocalDate, ManualHolidayOverride>()
+            for ((key, value) in rawOverrides) {
+                val date = try {
+                    LocalDate.parse(key)
+                } catch (e: Exception) {
+                    return Result.failure(
+                        IllegalArgumentException("Invalid ISO LocalDate in manual holiday overrides: '$key'", e)
+                    )
+                }
+                val override = try {
+                    ManualHolidayOverride.valueOf(value.trim())
+                } catch (e: Exception) {
+                    return Result.failure(
+                        IllegalArgumentException("Unsupported manual holiday override value: '$value' for date $date", e)
+                    )
+                }
+                if (override != ManualHolidayOverride.AUTO) {
+                    result[date] = override
+                }
+            }
+            return Result.success(result)
+        }
 
         /**
          * Media a backup can still resolve on this device.
@@ -544,7 +586,14 @@ class BackupManager @Inject constructor(
         val alarms = repository.getAll().filter { it.kind == com.sysadmindoc.alarmclock.data.model.Alarm.KIND_NORMAL || it.kind.isBlank() }
         val settings = preferencesManager.getCurrentSettings()
 
+        val manualOverrides = manualHolidayOverrideStore?.getAllOverrides()
+            ?.filterValues { it != ManualHolidayOverride.AUTO }
+            ?.mapKeys { it.key.toString() }
+            ?.mapValues { it.value.name }
+            ?.takeIf { it.isNotEmpty() }
+
         val backup = BackupData(
+            version = MAX_SUPPORTED_BACKUP_VERSION,
             alarms = alarms.map { alarm -> alarm.toAlarmBackup() },
             settings = SettingsBackup(
                 is24HourFormat = settings.is24HourFormat,
@@ -622,7 +671,8 @@ class BackupManager @Inject constructor(
                 quickDefaultRingtoneUri = settings.quickDefaultRingtoneUri,
                 quickDefaultVibrationEnabled = settings.quickDefaultVibrationEnabled,
                 quickDefaultVolume = settings.quickDefaultVolume
-            )
+            ),
+            manualHolidayOverrides = manualOverrides
         )
 
         return adapter.toJson(backup)
@@ -901,6 +951,12 @@ class BackupManager @Inject constructor(
             }
 
             // 1. Full Staging Validation: every row must convert cleanly
+            val overridesValidation = validateManualHolidayOverrides(backup.manualHolidayOverrides)
+            if (overridesValidation.isFailure) {
+                return Result.failure(overridesValidation.exceptionOrNull()!!)
+            }
+            val cleanImportedOverrides = overridesValidation.getOrThrow()
+
             val stagedAlarms = ArrayList<Alarm>(backup.alarms.size)
             for (alarmBackup in backup.alarms) {
                 val alarm = alarmBackup.toAlarmOrNull()
@@ -919,7 +975,17 @@ class BackupManager @Inject constructor(
             // 3. Snapshot OLD Truth & Prepare Journal
             val oldAlarms = repository.getAll()
             val oldGroups = database.alarmGroupDao().getAll()
-            restoreJournalCoordinator.prepareTransaction(currentSettings, oldAlarms, oldGroups)
+            val oldOverrides = manualHolidayOverrideStore?.getAllOverrides()
+                ?.filterValues { it != ManualHolidayOverride.AUTO }
+                ?.mapKeys { it.key.toString() }
+                ?.mapValues { it.value.name }
+
+            restoreJournalCoordinator.prepareTransaction(
+                settings = currentSettings,
+                alarms = oldAlarms,
+                groups = oldGroups,
+                manualOverrides = oldOverrides
+            )
             journalPrepared = true
 
             // 4. Atomic Room Commit
@@ -940,12 +1006,37 @@ class BackupManager @Inject constructor(
                 }
             }
 
+            // 5b. NEW Manual Overrides Write (without premature reconcile)
+            if (backup.manualHolidayOverrides != null && manualHolidayOverrideStore != null) {
+                val targetOverrides = if (options.mode == BackupImportMode.Replace) {
+                    cleanImportedOverrides
+                } else {
+                    val existing = manualHolidayOverrideStore.getAllOverrides()
+                    val merged = existing.toMutableMap()
+                    cleanImportedOverrides.forEach { (date, override) ->
+                        if (!merged.containsKey(date)) {
+                            merged[date] = override
+                        }
+                    }
+                    merged
+                }
+                manualHolidayOverrideStore.restoreOverrides(targetOverrides, triggerReconcile = false)
+            }
+
             // 6. Mark COMMITTED
             restoreJournalCoordinator.markCommitted()
 
             // 7. Post-Commit Reconcile
             runCatching {
                 scheduler.rescheduleAllInBatches()
+            }
+            runCatching {
+                holidayReconcileCoordinator?.reconcile(
+                    isMaterialChange = true,
+                    previousClassifier = null,
+                    evaluationEpochMs = System.currentTimeMillis(),
+                    evaluationZoneId = java.time.ZoneId.systemDefault()
+                )
             }
 
             Result.success(stagedCount)

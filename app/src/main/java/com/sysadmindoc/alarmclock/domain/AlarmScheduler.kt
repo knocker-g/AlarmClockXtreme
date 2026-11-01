@@ -177,10 +177,15 @@ class AlarmScheduler @Inject constructor(
             val schedulingZone = sanitizedAlarm.schedulingZone(ZoneId.systemDefault())
             val notBefore = if (notBeforeMillis > System.currentTimeMillis()) notBeforeMillis else System.currentTimeMillis()
             val notBeforeDate = Instant.ofEpochMilli(notBefore).atZone(schedulingZone).toLocalDate()
-            val authorityWindow = holidayRepository.captureAuthorityWindow(
-                startDate = notBeforeDate,
-                endDateInclusive = notBeforeDate.plusDays(MAX_HOLIDAY_EVALUATION_WINDOW_DAYS - 1L)
-            )
+            val authorityWindow = try {
+                holidayRepository.captureAuthorityWindow(
+                    startDate = notBeforeDate,
+                    endDateInclusive = notBeforeDate.plusDays(MAX_HOLIDAY_EVALUATION_WINDOW_DAYS - 1L)
+                )
+            } catch (e: Exception) {
+                Log.e("AlarmScheduler", "Failed to capture holiday authority window for alarm ${sanitizedAlarm.id}; aborting schedule to fail-closed", e)
+                return ScheduleOutcome.RegistrationFailed(sanitizedAlarm.id, e)
+            }
             val classifier = authorityWindow.asLocalHolidayClassifier()
             val evaluated = occurrenceEvaluator.evaluateWithHolidayClassifier(
                 alarm = sanitizedAlarm,
