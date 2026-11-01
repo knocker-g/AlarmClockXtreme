@@ -63,6 +63,7 @@ import com.sysadmindoc.alarmclock.util.ReliabilityDoctor
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.sysadmindoc.alarmclock.ui.settings.NewsSourceSettingsScreen
 import com.sysadmindoc.alarmclock.ui.settings.SettingsViewModel
+import com.sysadmindoc.alarmclock.ui.holiday.HolidayCalendarScreen
 
 sealed class Screen(val route: String) {
     data object Dashboard : Screen("dashboard")
@@ -81,6 +82,7 @@ sealed class Screen(val route: String) {
     // v1.8.0
     data object News : Screen("news")
     data object NewsSources : Screen("news_sources")
+    data object HolidayCalendar : Screen("holiday_calendar")
 }
 
 data class BottomNavItem(
@@ -610,11 +612,20 @@ private fun AppNavHost(
                 onNavigateToNewsSources = {
                     navController.navigate(Screen.NewsSources.route)
                 },
+                onNavigateToHolidayCalendar = {
+                    navController.navigate(Screen.HolidayCalendar.route)
+                },
                 onOpenOnboardingChecklist = {
                     navController.navigate(Screen.Onboarding.route) {
                         launchSingleTop = true
                     }
                 }
+            )
+        }
+
+        composable(Screen.HolidayCalendar.route) {
+            HolidayCalendarScreen(
+                onNavigateBack = { navController.popBackStack() }
             )
         }
 

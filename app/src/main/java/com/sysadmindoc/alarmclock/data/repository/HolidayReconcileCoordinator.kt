@@ -96,10 +96,15 @@ class HolidayReconcileCoordinator @Inject constructor(
             evaluationZoneId = evaluationZoneId,
             alarms = eligibleAlarms
         )
-        val authorityWindow = holidayRepository.captureAuthorityWindow(
-            startDate = evaluationRange.startDate,
-            endDateInclusive = evaluationRange.endDateInclusive
-        )
+        val authorityWindow = try {
+            holidayRepository.captureAuthorityWindow(
+                startDate = evaluationRange.startDate,
+                endDateInclusive = evaluationRange.endDateInclusive
+            )
+        } catch (e: Exception) {
+            Log.e("HolidayReconcileCoordinator", "Failed to capture authority window; aborting reconcile with PendingRetry", e)
+            return HolidayReconcileResult.PendingRetry(pendingCount = eligibleAlarms.size.coerceAtLeast(1), failureCause = e)
+        }
         val currentClassifier = authorityWindow.asLocalHolidayClassifier()
         val currentSignature = detector.computeSignature(
             classifier = currentClassifier,

@@ -32,10 +32,18 @@ class HolidayRepository internal constructor(
     private val manualOverrideSource: ManualHolidayOverrideSource,
     private val clockMillis: () -> Long = { System.currentTimeMillis() }
 ) {
-    /** Main Hilt injection constructor defaulting to [ManualHolidayOverrideSource.NONE]. */
+    /** Main Hilt injection constructor using production [ManualHolidayOverrideSource]. */
     @Inject
     constructor(
         @ApplicationContext context: Context,
+        holidayApi: HolidayApi,
+        preferencesManager: PreferencesManager,
+        manualOverrideSource: ManualHolidayOverrideSource
+    ) : this(context, holidayApi, preferencesManager, manualOverrideSource, { System.currentTimeMillis() })
+
+    /** Convenience constructor for tests or callers without manual override source. */
+    constructor(
+        context: Context,
         holidayApi: HolidayApi,
         preferencesManager: PreferencesManager
     ) : this(context, holidayApi, preferencesManager, ManualHolidayOverrideSource.NONE)

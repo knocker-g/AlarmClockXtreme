@@ -357,16 +357,20 @@ private fun formatWebhookLogLine(line: String): String {
 }
 
 @Composable
-internal fun HolidaysSection(state: SettingsUiState, viewModel: SettingsViewModel) {
+internal fun HolidaysSection(
+    state: SettingsUiState,
+    viewModel: SettingsViewModel,
+    onNavigateToHolidayCalendar: () -> Unit = {}
+) {
     SettingsGroup(
         title = stringResource(R.string.settings_public_holidays),
         description = stringResource(R.string.settings_public_holidays_description)
     ) {
-        SettingsToggle(
-            label = stringResource(R.string.settings_skip_holidays),
-            checked = state.settings.holidayAutoSkipEnabled,
-            supportingText = stringResource(R.string.settings_skip_holidays_description),
-            onToggle = viewModel::toggleHolidayAutoSkip
+        SettingsActionRow(
+            label = stringResource(R.string.settings_holiday_calendar),
+            value = stringResource(R.string.settings_manage),
+            supportingText = stringResource(R.string.settings_holiday_calendar_desc),
+            onClick = onNavigateToHolidayCalendar
         )
         BufferedSettingsTextField(
             value = state.settings.holidayCountryCode,
@@ -384,15 +388,6 @@ internal fun HolidaysSection(state: SettingsUiState, viewModel: SettingsViewMode
             keyboardOptions = KeyboardOptions(
                 capitalization = KeyboardCapitalization.Characters
             )
-        )
-        Text(
-            text = if (state.settings.holidayAutoSkipEnabled) {
-                stringResource(R.string.settings_holiday_enabled_description)
-            } else {
-                stringResource(R.string.settings_holiday_disabled_description)
-            },
-            color = TextMuted,
-            style = MaterialTheme.typography.bodySmall
         )
     }
 }

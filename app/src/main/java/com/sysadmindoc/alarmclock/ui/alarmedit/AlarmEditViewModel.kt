@@ -63,7 +63,8 @@ data class AlarmEditUiState(
     // F6: Smart alarm (light-sleep detection)
     val smartAlarmEnabled: Boolean = false,
     val smartAlarmWindowMinutes: Int = 30,
-    // F13: Holiday skip
+    // F13: Holiday skip and policy
+    val holidayPolicy: String = Alarm.HOLIDAY_POLICY_FOLLOW_BASE,
     val skipOnHolidays: Boolean = false,
     // F7: NFC tag challenge
     val nfcTagId: String = "",
@@ -209,7 +210,8 @@ class AlarmEditViewModel @Inject constructor(
                         wakeConfirmDelayMinutes = alarm.wakeConfirmDelayMinutes,
                         smartAlarmEnabled = alarm.smartAlarmEnabled,
                         smartAlarmWindowMinutes = alarm.smartAlarmWindowMinutes,
-                        skipOnHolidays = alarm.skipOnHolidays,
+                        holidayPolicy = alarm.canonicalHolidayPolicy().name,
+                        skipOnHolidays = (alarm.canonicalHolidayPolicy() == com.sysadmindoc.alarmclock.domain.evaluator.HolidayPolicy.EXCLUDE),
                         nfcTagId = alarm.nfcTagId,
                         barcodeValue = alarm.barcodeValue,
                         spotifyUri = alarm.spotifyUri,
@@ -417,8 +419,24 @@ class AlarmEditViewModel @Inject constructor(
         )
     }
 
+    fun updateHolidayPolicy(policy: String) {
+        val normalized = when (policy.trim().uppercase()) {
+            Alarm.HOLIDAY_POLICY_EXCLUDE -> Alarm.HOLIDAY_POLICY_EXCLUDE
+            Alarm.HOLIDAY_POLICY_INCLUDE -> Alarm.HOLIDAY_POLICY_INCLUDE
+            else -> Alarm.HOLIDAY_POLICY_FOLLOW_BASE
+        }
+        _uiState.value = _uiState.value.copy(
+            holidayPolicy = normalized,
+            skipOnHolidays = (normalized == Alarm.HOLIDAY_POLICY_EXCLUDE)
+        )
+    }
+
     fun updateSkipOnHolidays(skip: Boolean) {
-        _uiState.value = _uiState.value.copy(skipOnHolidays = skip)
+        val policy = if (skip) Alarm.HOLIDAY_POLICY_EXCLUDE else Alarm.HOLIDAY_POLICY_FOLLOW_BASE
+        _uiState.value = _uiState.value.copy(
+            skipOnHolidays = skip,
+            holidayPolicy = policy
+        )
     }
 
     fun updateNfcTagId(tagId: String) {
@@ -594,6 +612,7 @@ class AlarmEditViewModel @Inject constructor(
                 shiftPatternStartDate = s.shiftPatternStartDate,
                 timezonePolicy = s.timezonePolicy,
                 fixedTimezoneId = s.fixedTimezoneId,
+                holidayPolicy = s.holidayPolicy,
                 skipOnHolidays = s.skipOnHolidays,
                 isEnabled = true
             )
@@ -712,7 +731,8 @@ class AlarmEditViewModel @Inject constructor(
                 wakeConfirmDelayMinutes = s.wakeConfirmDelayMinutes,
                 smartAlarmEnabled = s.smartAlarmEnabled,
                 smartAlarmWindowMinutes = s.smartAlarmWindowMinutes,
-                skipOnHolidays = s.skipOnHolidays,
+                skipOnHolidays = (s.holidayPolicy == Alarm.HOLIDAY_POLICY_EXCLUDE),
+                holidayPolicy = s.holidayPolicy,
                 nfcTagId = s.nfcTagId,
                 barcodeValue = s.barcodeValue,
                 spotifyUri = s.spotifyUri,
@@ -758,20 +778,7 @@ class AlarmEditViewModel @Inject constructor(
                 fixedTimezoneId = s.fixedTimezoneId,
                 generation = initialAlarm?.generation ?: 1,
                 revision = initialAlarm?.revision ?: 1,
-                holidayPolicy = if (s.isEditing && initialAlarm != null && s.skipOnHolidays == loadedDraft?.skipOnHolidays) {
-                    initialAlarm!!.holidayPolicy
-                } else if (s.skipOnHolidays) {
-                    Alarm.HOLIDAY_POLICY_EXCLUDE
-                } else {
-                    Alarm.HOLIDAY_POLICY_FOLLOW_BASE
-                },
-                scheduleKind = if (s.repeatDays.isNotEmpty() || s.shiftPattern.isNotBlank()) {
-                    Alarm.SCHEDULE_KIND_REPEATING
-                } else if (s.isEditing &&
-                    initialAlarm != null &&
-                    s.skipOnHolidays == loadedDraft?.skipOnHolidays &&
-                    initialAlarm!!.canonicalHolidayPolicy() == com.sysadmindoc.alarmclock.domain.evaluator.HolidayPolicy.INCLUDE
-                ) {
+                scheduleKind = if (s.repeatDays.isNotEmpty() || s.shiftPattern.isNotBlank() || s.holidayPolicy == Alarm.HOLIDAY_POLICY_INCLUDE) {
                     Alarm.SCHEDULE_KIND_REPEATING
                 } else if (initialAlarm != null && initialAlarm?.scheduleKind == Alarm.SCHEDULE_KIND_REPEATING) {
                     if (loadedDraft?.repeatDays?.isNotEmpty() == true && s.repeatDays.isEmpty()) {
@@ -811,7 +818,8 @@ class AlarmEditViewModel @Inject constructor(
                     isSaving = false,
                     saveError = context.getString(R.string.alarm_edit_save_error_stale)
                 )
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                e.printStackTrace()
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,
                     saveError = context.getString(R.string.alarm_edit_save_error_generic)

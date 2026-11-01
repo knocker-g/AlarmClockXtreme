@@ -248,6 +248,7 @@ fun SettingsScreen(
     onNavigateToStopwatch: () -> Unit = {},
     onNavigateToBedtime: () -> Unit = {},
     onNavigateToNewsSources: () -> Unit = {},
+    onNavigateToHolidayCalendar: () -> Unit = {},
     onOpenOnboardingChecklist: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
@@ -836,7 +837,7 @@ fun SettingsScreen(
                 IntegrationsSection(state, viewModel)
             }
             settingsItem("integrations-holidays") {
-                HolidaysSection(state, viewModel)
+                HolidaysSection(state, viewModel, onNavigateToHolidayCalendar)
             }
             settingsItem("integrations-hue") {
                 PhilipsHueSection(state, viewModel)
