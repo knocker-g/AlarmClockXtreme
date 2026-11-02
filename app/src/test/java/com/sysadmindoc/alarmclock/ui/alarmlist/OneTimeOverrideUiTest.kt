@@ -212,7 +212,7 @@ class OneTimeOverrideUiTest {
         assertTrue("Repeating normal enabled alarm MUST be eligible", alarm.isEligibleForOneTimeOverride(isActiveSession = false))
 
         viewModel.openOneTimeOverride(alarm)
-        val target = viewModel.uiState.value.overrideTarget
+        val target = viewModel.uiState.first { it.overrideTarget != null }.overrideTarget
         assertNotNull("OneTimeOverrideTarget must be set when opening for eligible alarm", target)
         assertEquals(alarm.id, target!!.alarmId)
         assertEquals(wed0700Ms, target.expectedScheduledAt)
@@ -288,7 +288,7 @@ class OneTimeOverrideUiTest {
 
         val updatedAlarm = alarmRepo.getById(alarm.id)!!
         viewModel.openOneTimeOverride(updatedAlarm)
-        val target = viewModel.uiState.value.overrideTarget
+        val target = viewModel.uiState.first { it.overrideTarget != null }.overrideTarget
         assertNotNull(target)
 
         // Base time is 07:00
