@@ -38,6 +38,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -281,8 +282,13 @@ class OneTimeOverrideUiTest {
             evaluationZoneId = zoneId
         )
 
-        // Allow flow to propagate
-        val currentEx = exceptionRepo.getExceptionsForAlarm(alarm.id).firstOrNull()
+        // Allow flow to propagate to uiState
+        val currentEx = withTimeout(5000L) {
+            viewModel.uiState.first { state ->
+                val ex = state.activeExceptions[alarm.id]
+                ex != null && ex.exceptionType == ScheduleException.TYPE_TIME_OVERRIDE
+            }.activeExceptions[alarm.id]
+        }
         assertNotNull(currentEx)
         assertEquals(ScheduleException.TYPE_TIME_OVERRIDE, currentEx!!.exceptionType)
 
