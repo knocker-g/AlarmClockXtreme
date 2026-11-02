@@ -24,7 +24,10 @@ class AlarmEditDraftTest {
             saveError = "Retry",
             notFound = true,
             forecastDates = listOf(ForecastEntry(123L)),
-            hasUnsavedChanges = true
+            hasUnsavedChanges = true,
+            activeOverrideType = "TIME_OVERRIDE",
+            activeOverrideTriggerTime = 12345L,
+            activeOverrideBaseTriggerTime = 10000L
         )
 
         assertFalse(transient.hasDraftChangesFrom(loaded))

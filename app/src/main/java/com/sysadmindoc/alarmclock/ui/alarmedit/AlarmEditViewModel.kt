@@ -126,7 +126,10 @@ data class AlarmEditUiState(
     val fixedTimezoneId: String = "",
     val forecastDates: List<ForecastEntry> = emptyList(),
     val allGroups: List<String> = emptyList(),
-    val hasUnsavedChanges: Boolean = false
+    val hasUnsavedChanges: Boolean = false,
+    val activeOverrideType: String? = null,
+    val activeOverrideTriggerTime: Long = 0L,
+    val activeOverrideBaseTriggerTime: Long = 0L
 )
 
 internal fun AlarmEditUiState.hasDraftChangesFrom(original: AlarmEditUiState): Boolean {
@@ -135,9 +138,27 @@ internal fun AlarmEditUiState.hasDraftChangesFrom(original: AlarmEditUiState): B
         saveError = null,
         notFound = false,
         forecastDates = emptyList(),
-        hasUnsavedChanges = false
+        hasUnsavedChanges = false,
+        activeOverrideType = null,
+        activeOverrideTriggerTime = 0L,
+        activeOverrideBaseTriggerTime = 0L
     )
     return comparableDraft() != original.comparableDraft()
+}
+
+internal fun AlarmEditUiState.hasScheduleAffectingChangesFrom(original: AlarmEditUiState?): Boolean {
+    if (original == null) return false
+    return hour != original.hour ||
+        minute != original.minute ||
+        repeatDays != original.repeatDays ||
+        specificDate != original.specificDate ||
+        shiftPattern != original.shiftPattern ||
+        shiftPatternStartDate != original.shiftPatternStartDate ||
+        timezonePolicy != original.timezonePolicy ||
+        fixedTimezoneId != original.fixedTimezoneId ||
+        holidayPolicy != original.holidayPolicy ||
+        solarOffsetMinutes != original.solarOffsetMinutes ||
+        solarAnchor != original.solarAnchor
 }
 
 data class ForecastEntry(
@@ -254,7 +275,16 @@ class AlarmEditViewModel @Inject constructor(
                         shiftPattern = alarm.shiftPattern,
                         shiftPatternStartDate = alarm.shiftPatternStartDate,
                         timezonePolicy = alarm.timezonePolicy,
-                        fixedTimezoneId = alarm.fixedTimezoneId
+                        fixedTimezoneId = alarm.fixedTimezoneId,
+                        activeOverrideType = runCatching {
+                            repository.database.scheduleExceptionDao().getExceptionsForAlarmGeneration(alarm.id, alarm.generation).firstOrNull()?.exceptionType
+                        }.getOrNull(),
+                        activeOverrideTriggerTime = runCatching {
+                            repository.database.scheduleExceptionDao().getExceptionsForAlarmGeneration(alarm.id, alarm.generation).firstOrNull()?.overrideTriggerTime ?: 0L
+                        }.getOrDefault(0L),
+                        activeOverrideBaseTriggerTime = runCatching {
+                            repository.database.scheduleExceptionDao().getExceptionsForAlarmGeneration(alarm.id, alarm.generation).firstOrNull()?.baseTriggerTime ?: 0L
+                        }.getOrDefault(0L)
                     )
                     loadedDraft = _uiState.value
                 } else {

@@ -85,6 +85,21 @@ internal fun LazyListScope.alarmEditScheduleSections(
 ) {
     // Schedule forecast
     SettingsSection(editorPage, AlarmEditorSection.UPCOMING) {
+        if (state.activeOverrideType == com.sysadmindoc.alarmclock.data.local.entity.ScheduleException.TYPE_TIME_OVERRIDE && state.activeOverrideTriggerTime > 0L) {
+            val dt = java.time.Instant.ofEpochMilli(state.activeOverrideTriggerTime)
+                .atZone(java.time.ZoneId.systemDefault())
+            val overrideTimeStr = dt.format(AlarmTimeFormatter.formatter(state.is24HourFormat))
+            SettingsHint(
+                stringResource(R.string.one_time_override_current_status_label, overrideTimeStr),
+                tone = HintTone.Neutral
+            )
+        } else if (state.activeOverrideType == com.sysadmindoc.alarmclock.data.local.entity.ScheduleException.TYPE_SKIP) {
+            SettingsHint(
+                stringResource(R.string.one_time_override_badge_skipped),
+                tone = HintTone.Warning
+            )
+        }
+
         if (state.forecastDates.isNotEmpty()) {
             state.forecastDates.forEach { entry ->
                 val instant = java.time.Instant.ofEpochMilli(entry.timeMillis)

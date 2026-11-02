@@ -149,6 +149,21 @@ internal fun LazyListScope.alarmEditOverviewSections(
             modifier = Modifier.align(Alignment.CenterHorizontally)
         )
 
+        if (state.activeOverrideType == com.sysadmindoc.alarmclock.data.local.entity.ScheduleException.TYPE_TIME_OVERRIDE && state.activeOverrideTriggerTime > 0L) {
+            val dt = java.time.Instant.ofEpochMilli(state.activeOverrideTriggerTime)
+                .atZone(java.time.ZoneId.systemDefault())
+            val overrideTimeStr = dt.format(AlarmTimeFormatter.formatter(state.is24HourFormat))
+            AppStatusChip(
+                label = stringResource(R.string.one_time_override_badge_time, overrideTimeStr),
+                color = MaterialTheme.colorScheme.tertiary
+            )
+        } else if (state.activeOverrideType == com.sysadmindoc.alarmclock.data.local.entity.ScheduleException.TYPE_SKIP) {
+            AppStatusChip(
+                label = stringResource(R.string.one_time_override_badge_skipped),
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+
         // Live "rings in …" affordance so the user doesn't have to do the
         // mental math when picking a time. Sourced from the same forecast
         // the "Upcoming fire dates" section computes.

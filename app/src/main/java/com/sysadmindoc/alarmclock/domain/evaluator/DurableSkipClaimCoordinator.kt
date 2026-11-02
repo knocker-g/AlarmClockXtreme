@@ -30,7 +30,8 @@ class DurableSkipClaimCoordinator(
         consumedOccurrenceKeys: Set<String> = emptySet(),
         activeFiringAlarmId: Long? = null,
         evaluationZoneId: ZoneId = ZoneId.systemDefault(),
-        allowHidePersonalRuntimeFeatures: Boolean = false
+        allowHidePersonalRuntimeFeatures: Boolean = false,
+        overridePrecedence: Boolean = false
     ): DurableSkipClaimResult {
         return database.withTransaction {
             val alarmDao = database.alarmDao()
@@ -130,6 +131,10 @@ class DurableSkipClaimCoordinator(
                         nextTargetTriggerTimeEpochMs = decision.evaluatedOccurrence.targetTriggerTimeEpochMs,
                         decision = decision
                     )
+                } else if (existingException.exceptionType == ScheduleException.TYPE_TIME_OVERRIDE && overridePrecedence) {
+                    // KNO-33: Skip takes precedence over Time Override!
+                    // Permanently delete the time override exception. It must never be dormant or resurrect.
+                    exceptionDao.deleteForOccurrence(alarmId, canonicalBaseTime, latestAlarm.generation)
                 } else {
                     return@withTransaction DurableSkipClaimResult(
                         outcome = DurableSkipClaimOutcome.CONFLICT_OVERRIDE_EXISTS,
@@ -180,7 +185,7 @@ class DurableSkipClaimCoordinator(
             val insertedException = skipException.copy(id = rowId)
 
             // 8. Calculate NEXT target trigger time after skip is applied
-            val updatedExceptions = exceptionsUnfiltered + insertedException
+            val updatedExceptions = exceptionsUnfiltered.filterNot { it.baseTriggerTime == canonicalBaseTime } + insertedException
             val nextEvaluated = evaluator.evaluateOccurrence(
                 alarm = latestAlarm,
                 fromEpochMs = nowEpochMs,

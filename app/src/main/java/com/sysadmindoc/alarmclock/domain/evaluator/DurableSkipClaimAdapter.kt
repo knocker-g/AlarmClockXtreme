@@ -57,6 +57,7 @@ class DurableSkipClaimAdapter(
         alarmId: Long,
         expectedScheduledAt: Long,
         nowEpochMs: Long,
+        expectedBaseTriggerTimeEpochMs: Long? = null,
         holidaySnapshotProvider: (LocalDate) -> HolidaySnapshot = { HolidaySnapshot() },
         holidayPolicyOverride: HolidayPolicy? = null,
         consumedOccurrenceKeys: Set<String> = emptySet(),
@@ -86,7 +87,13 @@ class DurableSkipClaimAdapter(
             }
 
             // 2. Pre-check if a TYPE_SKIP ScheduleException is ALREADY committed for this occurrence identity
-            val existingException = exceptionDao.getExceptionForOccurrence(alarmId, expectedScheduledAt, alarm.generation)
+            val baseCandidate = expectedBaseTriggerTimeEpochMs
+                ?: exceptionDao.getExceptionForOccurrence(alarmId, expectedScheduledAt, alarm.generation)?.baseTriggerTime
+                ?: exceptionDao.getExceptionsForAlarmGeneration(alarmId, alarm.generation)
+                    .firstOrNull { it.overrideTriggerTime == expectedScheduledAt }?.baseTriggerTime
+                ?: expectedScheduledAt
+
+            val existingException = exceptionDao.getExceptionForOccurrence(alarmId, baseCandidate, alarm.generation)
             if (existingException != null && existingException.exceptionType == ScheduleException.TYPE_SKIP) {
                 val occurrences = issuedDao.getOccurrencesByAlarmAndScheduledAt(alarmId, alarm.nextTriggerTime)
                 val latestOcc = occurrences.firstOrNull()
@@ -124,7 +131,7 @@ class DurableSkipClaimAdapter(
             val actionSnapshot = CurrentNextActionSnapshot(
                 alarmId = alarmId,
                 expectedScheduledTargetEpochMs = expectedScheduledAt,
-                expectedBaseTriggerTimeEpochMs = expectedScheduledAt,
+                expectedBaseTriggerTimeEpochMs = baseCandidate,
                 expectedGeneration = alarm.generation,
                 authorityFingerprint = fingerprint
             )
@@ -138,7 +145,8 @@ class DurableSkipClaimAdapter(
                 consumedOccurrenceKeys = consumedOccurrenceKeys,
                 activeFiringAlarmId = activeFiringAlarmId,
                 evaluationZoneId = evaluationZoneId,
-                allowHidePersonalRuntimeFeatures = allowHidePersonalRuntimeFeatures
+                allowHidePersonalRuntimeFeatures = allowHidePersonalRuntimeFeatures,
+                overridePrecedence = true
             )
 
             if (claimResult.outcome == DurableSkipClaimOutcome.ALREADY_COMMITTED) {
@@ -178,6 +186,12 @@ class DurableSkipClaimAdapter(
                     durableIntent = null,
                     decisionReason = claimResult.decision.decisionReason
                 )
+            }
+
+            // Abort any prior unresolved intent for this alarm before producing new reconcile
+            val unresolved = durableDao.getUnresolvedIntentsByAlarmId(alarmId)
+            for (pending in unresolved) {
+                durableDao.updateIntentPhase(pending.operationToken, com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent.PHASE_ABORTED)
             }
 
             // 6. Produce Reconcile
