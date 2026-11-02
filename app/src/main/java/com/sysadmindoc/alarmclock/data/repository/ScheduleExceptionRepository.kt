@@ -66,4 +66,8 @@ open class ScheduleExceptionRepository @Inject constructor(
     open suspend fun getAll(): List<ScheduleException> {
         return dao.getAll()
     }
+
+    open fun observeAll(): Flow<List<ScheduleException>> {
+        return dao.observeAll()
+    }
 }

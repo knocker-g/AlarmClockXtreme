@@ -99,8 +99,20 @@ object DatabaseModule {
 
     @Provides
     @Singleton
+    fun provideScheduleExceptionDao(database: AlarmDatabase): com.sysadmindoc.alarmclock.data.local.ScheduleExceptionDao {
+        return database.scheduleExceptionDao()
+    }
+
+    @Provides
+    @Singleton
     fun provideDurableOperationIntentDao(database: AlarmDatabase): DurableOperationIntentDao {
         return database.durableOperationIntentDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideDurableOneTimeOverrideAdapter(database: AlarmDatabase): com.sysadmindoc.alarmclock.domain.evaluator.DurableOneTimeOverrideAdapter {
+        return com.sysadmindoc.alarmclock.domain.evaluator.DurableOneTimeOverrideAdapter(database)
     }
 
     @Provides

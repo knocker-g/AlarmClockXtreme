@@ -62,6 +62,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.time.DayOfWeek
 import java.time.LocalDate
+import java.time.LocalTime
 import java.time.ZoneId
 import java.util.concurrent.atomic.AtomicLong
 
@@ -740,17 +741,25 @@ class P3RuntimeIntegrationTest {
     fun testK_canonicalScheduler_repeatingNormalAlarm_evaluatesHolidayPolicy() = runTest {
         val zone = ZoneId.systemDefault()
         val now = LocalDate.now(zone)
-        val nextMonday = now.with(java.time.temporal.TemporalAdjusters.next(DayOfWeek.MONDAY))
-        val followingMonday = nextMonday.plusWeeks(1)
+        val nowTime = LocalTime.now(zone)
+        val baseMonday = if (now.dayOfWeek == DayOfWeek.MONDAY && nowTime.isBefore(LocalTime.of(8, 0))) {
+            now
+        } else {
+            now.with(java.time.temporal.TemporalAdjusters.next(DayOfWeek.MONDAY))
+        }
+        val followingMonday = baseMonday.plusWeeks(1)
         val nowMs = System.currentTimeMillis()
 
         val snapshot = HolidayProviderSnapshot(
             providerId = NAGER_DATE_PROVIDER_ID,
             countryCode = "JP",
             generation = 1L,
-            years = mapOf(
-                nextMonday.year to HolidayYearCoverage(nextMonday.year, nowMs, setOf(nextMonday))
-            )
+            years = buildMap {
+                put(baseMonday.year, HolidayYearCoverage(baseMonday.year, nowMs, setOf(baseMonday)))
+                if (followingMonday.year != baseMonday.year) {
+                    put(followingMonday.year, HolidayYearCoverage(followingMonday.year, nowMs, emptySet()))
+                }
+            }
         )
         coEvery { holidayRepository.captureAuthorityWindow(any(), any()) } returns CapturedHolidayAuthorityWindow(
             startDate = now,

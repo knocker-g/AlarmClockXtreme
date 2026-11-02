@@ -118,14 +118,14 @@ class NormalScheduleReconcilePlanner(
             )
         }
 
-        // 4. Guard: Presence of active TYPE_SKIP exception for current generation is MANDATORY for Skip Reconcile
-        val activeSkipExceptions = exceptions.filter {
+        // 4. Guard: Presence of active schedule exception (TYPE_SKIP or TYPE_TIME_OVERRIDE) for current generation
+        val activeOverrideExceptions = exceptions.filter {
             it.alarmId == alarm.id &&
                     it.generation == alarm.generation &&
-                    it.exceptionType == ScheduleException.TYPE_SKIP
+                    (it.exceptionType == ScheduleException.TYPE_SKIP || it.exceptionType == ScheduleException.TYPE_TIME_OVERRIDE)
         }
 
-        if (activeSkipExceptions.isEmpty()) {
+        if (activeOverrideExceptions.isEmpty()) {
             return ReconcileDecision(
                 outcome = ReconcileOutcome.NO_ACTIVE_SKIP_EXCEPTION,
                 alarmId = alarm.id,

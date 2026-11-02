@@ -104,6 +104,26 @@ class AlarmRepository @Inject constructor(
                 }
             }
 
+            if (existing != null) {
+                val isScheduleChanged = existing.hour != sanitized.hour ||
+                        existing.minute != sanitized.minute ||
+                        existing.repeatDays != sanitized.repeatDays ||
+                        existing.specificDate != sanitized.specificDate ||
+                        existing.shiftPattern != sanitized.shiftPattern ||
+                        existing.shiftPatternStartDate != sanitized.shiftPatternStartDate ||
+                        existing.timezonePolicy != sanitized.timezonePolicy ||
+                        existing.fixedTimezoneId != sanitized.fixedTimezoneId ||
+                        existing.scheduleKind != sanitized.scheduleKind ||
+                        existing.canonicalHolidayPolicy() != sanitized.canonicalHolidayPolicy() ||
+                        existing.skipOnHolidays != sanitized.skipOnHolidays ||
+                        existing.solarOffsetMinutes != sanitized.solarOffsetMinutes ||
+                        existing.solarAnchor != sanitized.solarAnchor
+
+                if (isScheduleChanged || !sanitized.isEnabled) {
+                    database.scheduleExceptionDao().deleteForAlarm(sanitized.id)
+                }
+            }
+
             savedId
         }
     }
@@ -172,6 +192,9 @@ class AlarmRepository @Inject constructor(
 
                 if (isScheduleChanged) {
                     issuedDao.revokePendingOccurrencesForAlarm(sanitized.id, System.currentTimeMillis())
+                }
+                if (isScheduleChanged || !sanitized.isEnabled) {
+                    database.scheduleExceptionDao().deleteForAlarm(sanitized.id)
                 }
             }
         }
@@ -320,11 +343,23 @@ class AlarmRepository @Inject constructor(
             savedIds
         }
     }
-    suspend fun delete(alarm: Alarm) = dao.delete(alarm)
-    suspend fun deleteById(id: Long) = dao.deleteById(id)
+    suspend fun delete(alarm: Alarm) {
+        database.withTransaction {
+            database.scheduleExceptionDao().deleteForAlarm(alarm.id)
+            dao.delete(alarm)
+        }
+    }
+
+    suspend fun deleteById(id: Long) {
+        database.withTransaction {
+            database.scheduleExceptionDao().deleteForAlarm(id)
+            dao.deleteById(id)
+        }
+    }
 
     suspend fun deleteWithCleanup(alarm: Alarm) {
         database.withTransaction {
+            database.scheduleExceptionDao().deleteForAlarm(alarm.id)
             dao.delete(alarm)
             val groupName = alarm.group
             if (groupName.isNotBlank() && dao.countAlarmsByGroup(groupName, alarm.id) == 0) {
@@ -353,6 +388,9 @@ class AlarmRepository @Inject constructor(
                     throw StaleAlarmException("ScheduleAuthority CAS toggle failed for alarm $id: stale token, revision, or epoch")
                 }
             }
+            if (!enabled) {
+                database.scheduleExceptionDao().deleteForAlarm(id)
+            }
         }
     }
 
@@ -380,6 +418,9 @@ class AlarmRepository @Inject constructor(
                     if (rows == 0) {
                         throw StaleAlarmException("ScheduleAuthority CAS group toggle failed for alarm ${alarm.id}: stale token, revision, or epoch")
                     }
+                }
+                if (!enabled) {
+                    database.scheduleExceptionDao().deleteForAlarm(alarm.id)
                 }
             }
         }
