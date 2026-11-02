@@ -23,6 +23,7 @@ class AlarmRepository @Inject constructor(
     private val dao: AlarmDao,
     private val groupDao: AlarmGroupDao
 ) {
+    var clockMillis: () -> Long = { System.currentTimeMillis() }
     fun observeAll(): Flow<List<Alarm>> = dao.observeAll()
     fun observeEnabled(): Flow<List<Alarm>> = dao.observeEnabled()
     fun observeNextAlarm(
@@ -195,6 +196,11 @@ class AlarmRepository @Inject constructor(
                 }
                 if (isScheduleChanged || !sanitized.isEnabled) {
                     database.scheduleExceptionDao().deleteForAlarm(sanitized.id)
+                } else {
+                    // KNO-33: Non-schedule edit preserves existing exceptions ONLY if the target
+                    // remains the exact same canonical current-next occurrence.
+                    val adapter = com.sysadmindoc.alarmclock.domain.evaluator.DurableOneTimeOverrideAdapter(database)
+                    adapter.invalidateOverridesIfTargetChanged(sanitized.id, nowEpochMs = clockMillis())
                 }
             }
         }
