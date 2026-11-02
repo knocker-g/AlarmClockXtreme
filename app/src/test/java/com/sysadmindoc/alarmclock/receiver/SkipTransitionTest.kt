@@ -56,19 +56,31 @@ class SkipTransitionTest {
     private val webhookService: WebhookService = mockk(relaxed = true)
 
     private val zoneId = ZoneId.systemDefault()
-    private val monday0700Ms = LocalDate.of(2026, 11, 2)
+    private val baseDate = LocalDate.of(2026, 11, 2)
+    private val fixedNowMs = baseDate
+        .atTime(LocalTime.of(6, 0))
+        .atZone(zoneId)
+        .toInstant()
+        .toEpochMilli()
+
+    private val testClock: java.time.Clock = java.time.Clock.fixed(
+        java.time.Instant.ofEpochMilli(fixedNowMs),
+        zoneId
+    )
+
+    private val monday0700Ms = baseDate
         .atTime(LocalTime.of(7, 0))
         .atZone(zoneId)
         .toInstant()
         .toEpochMilli()
 
-    private val tuesday0700Ms = LocalDate.of(2026, 11, 3)
+    private val tuesday0700Ms = baseDate.plusDays(1)
         .atTime(LocalTime.of(7, 0))
         .atZone(zoneId)
         .toInstant()
         .toEpochMilli()
 
-    private val mondayNextWeek0700Ms = LocalDate.of(2026, 11, 9)
+    private val mondayNextWeek0700Ms = baseDate.plusWeeks(1)
         .atTime(LocalTime.of(7, 0))
         .atZone(zoneId)
         .toInstant()
@@ -179,6 +191,7 @@ class SkipTransitionTest {
         val receiver = SkipNextReceiver().apply {
             testScope = CoroutineScope(Dispatchers.Unconfined)
             testEntryPoint = mockEntryPoint
+            clock = testClock
         }
         receiver.onReceive(context, intent)
 
@@ -212,6 +225,7 @@ class SkipTransitionTest {
         val receiver = SkipNextReceiver().apply {
             testScope = CoroutineScope(Dispatchers.Unconfined)
             testEntryPoint = mockEntryPoint
+            clock = testClock
         }
         receiver.onReceive(context, intent)
 
@@ -242,6 +256,7 @@ class SkipTransitionTest {
         val receiver = SkipNextReceiver().apply {
             testScope = CoroutineScope(Dispatchers.Unconfined)
             testEntryPoint = mockEntryPoint
+            clock = testClock
         }
         receiver.onReceive(context, intent)
 
@@ -276,6 +291,7 @@ class SkipTransitionTest {
         val receiver1 = SkipNextReceiver().apply {
             testScope = CoroutineScope(Dispatchers.Unconfined)
             testEntryPoint = mockEntryPoint
+            clock = testClock
         }
         receiver1.onReceive(context, intent)
 
@@ -286,6 +302,7 @@ class SkipTransitionTest {
         val receiver2 = SkipNextReceiver().apply {
             testScope = CoroutineScope(Dispatchers.Unconfined)
             testEntryPoint = mockEntryPoint
+            clock = testClock
         }
         receiver2.onReceive(context, intent)
 

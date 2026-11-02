@@ -35,6 +35,7 @@ class SkipNextReceiver : BroadcastReceiver() {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     internal var testScope: CoroutineScope? = null
     internal var testEntryPoint: AlarmClockApp.AppEntryPoint? = null
+    internal var clock: java.time.Clock = java.time.Clock.systemDefaultZone()
 
     override fun onReceive(context: Context, intent: Intent) {
         val alarmId = intent.getLongExtra(AlarmScheduler.EXTRA_ALARM_ID, -1L)
@@ -79,11 +80,12 @@ class SkipNextReceiver : BroadcastReceiver() {
                             }
                         } else {
                             // Durable Skip Claim Adapter: Single-transaction DB skip claim + V35 occurrence + Durable intent
+                            val nowMs = clock.millis()
                             val adapter = DurableSkipClaimAdapter(database = repo.database)
                             val adapterResult = adapter.executeSkipClaimAndReconcile(
                                 alarmId = alarm.id,
                                 expectedScheduledAt = expectedScheduledAt,
-                                nowEpochMs = System.currentTimeMillis()
+                                nowEpochMs = nowMs
                             )
                             println("DEBUG_RECEIVER: outcome=${adapterResult.outcome}, reason=${adapterResult.decisionReason}")
 
@@ -111,10 +113,10 @@ class SkipNextReceiver : BroadcastReceiver() {
                                             scheduledTime = originalScheduledTime,
                                             firedAt = originalScheduledTime,
                                             action = AlarmEvent.ACTION_SKIPPED,
-                                            actionAt = System.currentTimeMillis(),
+                                            actionAt = nowMs,
                                             challengeType = alarm.challengeType,
                                             dayOfWeek = Instant.ofEpochMilli(
-                                                originalScheduledTime.coerceAtLeast(System.currentTimeMillis())
+                                                originalScheduledTime.coerceAtLeast(nowMs)
                                             ).atZone(ZoneId.systemDefault()).dayOfWeek.value
                                         )
                                     )

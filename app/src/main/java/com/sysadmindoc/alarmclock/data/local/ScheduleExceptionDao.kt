@@ -38,4 +38,7 @@ interface ScheduleExceptionDao {
 
     @Query("SELECT * FROM schedule_exceptions ORDER BY alarmId ASC, baseTriggerTime ASC")
     suspend fun getAll(): List<ScheduleException>
+
+    @Query("SELECT * FROM schedule_exceptions ORDER BY alarmId ASC, baseTriggerTime ASC")
+    fun observeAll(): Flow<List<ScheduleException>>
 }

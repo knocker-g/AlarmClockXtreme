@@ -67,16 +67,21 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DragIndicator
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.EditCalendar
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Warning
+import com.sysadmindoc.alarmclock.data.local.entity.ScheduleException
+import com.sysadmindoc.alarmclock.ui.alarmlist.components.OneTimeOverrideSheet
+import com.sysadmindoc.alarmclock.ui.alarmlist.components.isEligibleForOneTimeOverride
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -252,6 +257,18 @@ fun AlarmListScreen(
             onCreateAbsolute = { hour, minute, ringtoneUri, vibrationEnabled, volume, retryId ->
                 viewModel.createAbsoluteQuickAlarm(hour, minute, ringtoneUri, vibrationEnabled, volume, retryId)
             }
+        )
+    }
+
+    state.overrideTarget?.let { target ->
+        OneTimeOverrideSheet(
+            target = target,
+            is24Hour = state.is24HourFormat,
+            onTimeChange = { h, m -> viewModel.updateOverrideSelectedTime(h, m) },
+            onApplyTime = { h, m -> viewModel.applyChangeTimeOnce(h, m) },
+            onSkipOnce = { viewModel.applySkipOnce() },
+            onCancelOverride = { viewModel.cancelOneTimeOverride() },
+            onDismiss = { viewModel.closeOneTimeOverride() }
         )
     }
 
@@ -776,6 +793,7 @@ fun AlarmListScreen(
                                                     suppressedByVacation = suppressedByVacation,
                                                     pausedUntilMillis = state.pausedUntilMillis,
                                                     isActivePaneSelection = useTwoPane && selectedAlarmId == alarm.id,
+                                                    activeException = state.activeExceptions[alarm.id],
                                                     onToggle = { viewModel.toggleAlarm(alarm) },
                                                     onForceToggle = { viewModel.forceDisableAlarm(alarm) },
                                                     onClick = {
@@ -793,6 +811,8 @@ fun AlarmListScreen(
                                                         statsAlarmLabel = alarm.label.ifBlank { "%d:%02d".format(alarm.hour, alarm.minute) }
                                                         viewModel.loadAlarmStats(alarm.id)
                                                     },
+                                                    onOneTimeOverride = { viewModel.openOneTimeOverride(alarm) },
+                                                    onCancelOverride = { viewModel.cancelOverrideForAlarm(alarm) },
                                                     onLongClick = { viewModel.toggleSelection(alarm.id) }
                                                 )
                                             }
@@ -1444,6 +1464,7 @@ private fun AlarmCard(
     suppressedByVacation: Boolean = false,
     pausedUntilMillis: Long = 0L,
     isActivePaneSelection: Boolean = false,
+    activeException: ScheduleException? = null,
     onToggle: () -> Unit,
     onForceToggle: () -> Unit = {},
     onClick: () -> Unit,
@@ -1452,6 +1473,8 @@ private fun AlarmCard(
     onDuplicate: () -> Unit,
     onShare: () -> Unit,
     onShowHistory: () -> Unit = {},
+    onOneTimeOverride: () -> Unit = {},
+    onCancelOverride: () -> Unit = {},
     onLongClick: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
@@ -1515,11 +1538,34 @@ private fun AlarmCard(
                             )
                         }
                     }
-                    Text(
-                        text = formatAlarmTime(alarm, is24Hour),
-                        color = if (alarm.isEnabled) TextPrimary else TextMuted,
-                        style = ClockTimeSmall
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = formatAlarmTime(alarm, is24Hour),
+                            color = if (alarm.isEnabled) TextPrimary else TextMuted,
+                            style = ClockTimeSmall
+                        )
+                        if (activeException != null) {
+                            val badgeText = when (activeException.exceptionType) {
+                                ScheduleException.TYPE_TIME_OVERRIDE -> {
+                                    val overrideFormatted = AlarmTimeFormatter.format(activeException.overrideTriggerTime, is24Hour)
+                                    stringResource(R.string.one_time_override_badge_time, overrideFormatted)
+                                }
+                                ScheduleException.TYPE_SKIP -> {
+                                    stringResource(R.string.one_time_override_badge_skipped)
+                                }
+                                else -> null
+                            }
+                            if (badgeText != null) {
+                                AppStatusChip(
+                                    label = badgeText,
+                                    color = SnoozeYellow
+                                )
+                            }
+                        }
+                    }
                     Text(
                         text = alarm.label.ifBlank { alarm.repeatLabel(LocalContext.current) },
                         color = if (alarm.isEnabled) TextSecondary else TextMuted,
@@ -1584,6 +1630,22 @@ private fun AlarmCard(
                                 leadingIcon = { Icon(Icons.Default.Share, null, modifier = Modifier.size(18.dp)) },
                                 onClick = { showMenu = false; onShare() }
                             )
+                            if (alarm.isEligibleForOneTimeOverride(isActiveSession)) {
+                                DropdownMenuItem(
+                                    enabled = !isActiveSession,
+                                    text = { Text(stringResource(R.string.one_time_override_entry)) },
+                                    leadingIcon = { Icon(Icons.Default.EditCalendar, null, modifier = Modifier.size(18.dp)) },
+                                    onClick = { showMenu = false; onOneTimeOverride() }
+                                )
+                                if (activeException != null) {
+                                    DropdownMenuItem(
+                                        enabled = !isActiveSession,
+                                        text = { Text(stringResource(R.string.one_time_override_action_cancel), color = AccentRed) },
+                                        leadingIcon = { Icon(Icons.Default.Restore, null, tint = AccentRed, modifier = Modifier.size(18.dp)) },
+                                        onClick = { showMenu = false; onCancelOverride() }
+                                    )
+                                }
+                            }
                             if (alarm.isEnabled && alarm.isRecurringSchedule) {
                                 DropdownMenuItem(
                                     enabled = !isActiveSession,
