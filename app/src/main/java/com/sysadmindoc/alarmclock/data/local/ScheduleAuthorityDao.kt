@@ -6,6 +6,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta
+import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface ScheduleAuthorityDao {
@@ -17,6 +18,9 @@ interface ScheduleAuthorityDao {
 
     @Query("SELECT * FROM schedule_authority")
     suspend fun getAllAuthorities(): List<ScheduleAuthority>
+
+    @Query("SELECT * FROM schedule_authority")
+    fun observeAllAuthorities(): Flow<List<ScheduleAuthority>>
 
     @Query("DELETE FROM schedule_authority WHERE alarmId = :alarmId")
     suspend fun deleteAuthorityByAlarmId(alarmId: Long)

@@ -23,9 +23,15 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class UpcomingScheduleProjector @Inject constructor(
-    private val evaluator: ScheduleOccurrenceEvaluator = ScheduleOccurrenceEvaluator()
-) {
+class UpcomingScheduleProjector @Inject constructor() {
+    private var customEvaluator: ScheduleOccurrenceEvaluator? = null
+
+    internal constructor(evaluator: ScheduleOccurrenceEvaluator) : this() {
+        this.customEvaluator = evaluator
+    }
+
+    private val evaluator: ScheduleOccurrenceEvaluator
+        get() = customEvaluator ?: ScheduleOccurrenceEvaluator()
 
     companion object {
         const val DEFAULT_HORIZON_DAYS = 14
@@ -53,6 +59,8 @@ class UpcomingScheduleProjector @Inject constructor(
         holidaySnapshotProvider: ((LocalDate) -> HolidaySnapshot)? = null,
         activeFiringAlarmIds: Set<Long> = emptySet(),
         consumedOccurrenceKeys: Set<String> = emptySet(),
+        reconcilingAlarmIds: Set<Long> = emptySet(),
+        isGlobalReconciling: Boolean = false,
         allowHidePersonalRuntimeFeatures: Boolean = false
     ): UpcomingScheduleProjection {
         val effectiveSnapshotProvider = holidaySnapshotProvider ?: holidayClassifier.asHolidaySnapshotProvider()
@@ -64,7 +72,7 @@ class UpcomingScheduleProjector @Inject constructor(
         val disabledAlarmIds = mutableListOf<Long>()
         val noCurrentOccurrenceAlarms = mutableListOf<Long>()
         val allOccurrences = mutableListOf<UpcomingOccurrenceOutcome>()
-        var hasReconcilingAlarm = false
+        var hasReconcilingAlarm = isGlobalReconciling
         var hasStaleAlarm = false
         var hasNeedsRepairAlarm = false
 
@@ -78,9 +86,12 @@ class UpcomingScheduleProjector @Inject constructor(
             val schedulingZone = alarm.schedulingZone(evaluationZoneId)
             val matchingAuthority = authorities.firstOrNull { it.alarmId == alarm.id }
 
-            val authorityReconciling = matchingAuthority?.reconcileState == "RECONCILING" ||
-                (matchingAuthority != null && matchingAuthority.definitionRevision != alarm.revision.toLong())
             val authorityQuarantine = matchingAuthority?.reconcileState == "QUARANTINE"
+            val authorityReconciling = !authorityQuarantine && (
+                matchingAuthority?.reconcileState == "RECONCILING" ||
+                alarm.id in reconcilingAlarmIds ||
+                isGlobalReconciling
+            )
 
             if (authorityReconciling) hasReconcilingAlarm = true
             else if (authorityQuarantine) hasStaleAlarm = true
@@ -427,6 +438,8 @@ class UpcomingScheduleProjector @Inject constructor(
         evaluationZoneId: ZoneId = ZoneId.systemDefault(),
         activeFiringAlarmIds: Set<Long> = emptySet(),
         consumedOccurrenceKeys: Set<String> = emptySet(),
+        reconcilingAlarmIds: Set<Long> = emptySet(),
+        isGlobalReconciling: Boolean = false,
         allowHidePersonalRuntimeFeatures: Boolean = false
     ): UpcomingScheduleProjection {
         val alarms = alarmDao.getAllNormalAlarms()
@@ -442,6 +455,8 @@ class UpcomingScheduleProjector @Inject constructor(
             holidayClassifier = holidayClassifier,
             activeFiringAlarmIds = activeFiringAlarmIds,
             consumedOccurrenceKeys = consumedOccurrenceKeys,
+            reconcilingAlarmIds = reconcilingAlarmIds,
+            isGlobalReconciling = isGlobalReconciling,
             allowHidePersonalRuntimeFeatures = allowHidePersonalRuntimeFeatures
         )
     }

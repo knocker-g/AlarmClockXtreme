@@ -6,6 +6,8 @@ import com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent
 import com.sysadmindoc.alarmclock.data.local.entity.IssuedOccurrence
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleException
 import com.sysadmindoc.alarmclock.data.model.Alarm
+import com.sysadmindoc.alarmclock.domain.projection.InvalidationReason
+import com.sysadmindoc.alarmclock.domain.projection.UpcomingScheduleReconcileCoordinator
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
@@ -51,7 +53,8 @@ class DurableOneTimeOverrideAdapter(
     private val skipClaimAdapter: DurableSkipClaimAdapter = DurableSkipClaimAdapter(database),
     private val reconcileProducer: DurableReconcileProducer = DurableReconcileProducer(database),
     private val issuanceProducer: OccurrenceIssuanceProducer = OccurrenceIssuanceProducer(database),
-    private val evaluator: ScheduleOccurrenceEvaluator = ScheduleOccurrenceEvaluator()
+    private val evaluator: ScheduleOccurrenceEvaluator = ScheduleOccurrenceEvaluator(),
+    private val coordinator: UpcomingScheduleReconcileCoordinator? = null
 ) {
     companion object {
         const val REASON_SUCCESS = "ONE_TIME_OVERRIDE_COMMITTED"
@@ -81,7 +84,7 @@ class DurableOneTimeOverrideAdapter(
         evaluationZoneId: ZoneId = ZoneId.systemDefault(),
         allowHidePersonalRuntimeFeatures: Boolean = false
     ): OneTimeOverrideResult {
-        return database.withTransaction {
+        val result = database.withTransaction {
             val alarmDao = database.alarmDao()
             val authorityDao = database.scheduleAuthorityDao()
             val exceptionDao = database.scheduleExceptionDao()
@@ -243,7 +246,7 @@ class DurableOneTimeOverrideAdapter(
                 throw IllegalStateException("Reconcile producer failed inside time override transaction: ${reconcileResult.decisionReason}")
             }
 
-            return@withTransaction OneTimeOverrideResult(
+            OneTimeOverrideResult(
                 outcome = OneTimeOverrideOutcome.SUCCESS_COMMITTED,
                 alarmId = alarmId,
                 originalScheduledAt = expectedScheduledAt,
@@ -253,6 +256,10 @@ class DurableOneTimeOverrideAdapter(
                 decisionReason = REASON_SUCCESS
             )
         }
+        if (result.outcome == OneTimeOverrideOutcome.SUCCESS_COMMITTED || result.outcome == OneTimeOverrideOutcome.ALREADY_COMMITTED) {
+            coordinator?.invalidateAlarm(alarmId, InvalidationReason.OVERRIDE_CHANGED)
+        }
+        return result
     }
 
     /**
@@ -307,7 +314,7 @@ class DurableOneTimeOverrideAdapter(
             DurableSkipClaimAdapterOutcome.RECONCILE_FAILED -> OneTimeOverrideOutcome.RECONCILE_FAILED
         }
 
-        return OneTimeOverrideResult(
+        val result = OneTimeOverrideResult(
             outcome = mappedOutcome,
             alarmId = alarmId,
             originalScheduledAt = expectedScheduledAt,
@@ -316,6 +323,10 @@ class DurableOneTimeOverrideAdapter(
             durableIntent = skipResult.durableIntent,
             decisionReason = skipResult.decisionReason
         )
+        if (result.outcome == OneTimeOverrideOutcome.SUCCESS_COMMITTED || result.outcome == OneTimeOverrideOutcome.ALREADY_COMMITTED) {
+            coordinator?.invalidateAlarm(alarmId, InvalidationReason.OVERRIDE_CHANGED)
+        }
+        return result
     }
 
     /**
@@ -332,7 +343,7 @@ class DurableOneTimeOverrideAdapter(
         evaluationZoneId: ZoneId = ZoneId.systemDefault(),
         allowHidePersonalRuntimeFeatures: Boolean = false
     ): OneTimeOverrideResult {
-        return database.withTransaction {
+        val result = database.withTransaction {
             val alarmDao = database.alarmDao()
             val authorityDao = database.scheduleAuthorityDao()
             val exceptionDao = database.scheduleExceptionDao()
@@ -439,7 +450,7 @@ class DurableOneTimeOverrideAdapter(
             )
             durableDao.insertValidatedIntent(durableIntent)
 
-            return@withTransaction OneTimeOverrideResult(
+            OneTimeOverrideResult(
                 outcome = OneTimeOverrideOutcome.SUCCESS_COMMITTED,
                 alarmId = alarmId,
                 originalScheduledAt = expectedScheduledAt,
@@ -449,6 +460,10 @@ class DurableOneTimeOverrideAdapter(
                 decisionReason = "OVERRIDE_CANCELLED_REVERTED_TO_BASE"
             )
         }
+        if (result.outcome == OneTimeOverrideOutcome.SUCCESS_COMMITTED) {
+            coordinator?.invalidateAlarm(alarmId, InvalidationReason.OVERRIDE_CHANGED)
+        }
+        return result
     }
 
     /**
@@ -459,6 +474,7 @@ class DurableOneTimeOverrideAdapter(
         database.withTransaction {
             database.scheduleExceptionDao().deleteForAlarm(alarmId)
         }
+        coordinator?.invalidateAlarm(alarmId, InvalidationReason.OVERRIDE_CHANGED)
     }
 
     /**
@@ -475,7 +491,7 @@ class DurableOneTimeOverrideAdapter(
         evaluationZoneId: ZoneId = ZoneId.systemDefault(),
         allowHidePersonalRuntimeFeatures: Boolean = false
     ): Boolean {
-        return database.withTransaction {
+        val invalidated = database.withTransaction {
             val alarmDao = database.alarmDao()
             val exceptionDao = database.scheduleExceptionDao()
 
@@ -510,6 +526,10 @@ class DurableOneTimeOverrideAdapter(
             }
             invalidated
         }
+        if (invalidated) {
+            coordinator?.invalidateAlarm(alarmId, InvalidationReason.OVERRIDE_CHANGED)
+        }
+        return invalidated
     }
 
     private fun resolveZoned(date: LocalDate, time: LocalTime, zone: ZoneId): ZonedDateTime {

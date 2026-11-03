@@ -111,8 +111,14 @@ object DatabaseModule {
 
     @Provides
     @Singleton
-    fun provideDurableOneTimeOverrideAdapter(database: AlarmDatabase): com.sysadmindoc.alarmclock.domain.evaluator.DurableOneTimeOverrideAdapter {
-        return com.sysadmindoc.alarmclock.domain.evaluator.DurableOneTimeOverrideAdapter(database)
+    fun provideDurableOneTimeOverrideAdapter(
+        database: AlarmDatabase,
+        coordinator: com.sysadmindoc.alarmclock.domain.projection.UpcomingScheduleReconcileCoordinator
+    ): com.sysadmindoc.alarmclock.domain.evaluator.DurableOneTimeOverrideAdapter {
+        return com.sysadmindoc.alarmclock.domain.evaluator.DurableOneTimeOverrideAdapter(
+            database = database,
+            coordinator = coordinator
+        )
     }
 
     @Provides

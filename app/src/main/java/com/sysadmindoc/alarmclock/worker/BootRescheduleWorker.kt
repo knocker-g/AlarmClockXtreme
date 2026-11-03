@@ -31,7 +31,8 @@ class BootRescheduleWorker @AssistedInject constructor(
     private val scheduleAuthorityReconciler: ScheduleAuthorityReconciler? = null,
     private val routeAuthority: com.sysadmindoc.alarmclock.domain.ProductionSchedulingRouteAuthority = com.sysadmindoc.alarmclock.domain.ProductionSchedulingRouteAuthority(),
     private val quickAlarmScheduler: com.sysadmindoc.alarmclock.domain.QuickAlarmScheduler? = null,
-    private val holidayReconcileCoordinator: com.sysadmindoc.alarmclock.data.repository.HolidayReconcileCoordinator? = null
+    private val holidayReconcileCoordinator: com.sysadmindoc.alarmclock.data.repository.HolidayReconcileCoordinator? = null,
+    private val upcomingCoordinator: com.sysadmindoc.alarmclock.domain.projection.UpcomingScheduleReconcileCoordinator? = null
 ) : CoroutineWorker(context, workerParams) {
 
     override suspend fun doWork(): Result {
@@ -39,6 +40,7 @@ class BootRescheduleWorker @AssistedInject constructor(
         val forceRecalculate = inputData.getBoolean(KEY_FORCE_RECALCULATE, false)
 
         return try {
+            upcomingCoordinator?.invalidateAll(com.sysadmindoc.alarmclock.domain.projection.InvalidationReason.SYSTEM_RECOVERY)
             if (routeAuthority.isOwnerRouteActive()) {
                 scheduleAuthorityReconciler?.reconcileBootAuthorities()
             }
@@ -74,6 +76,7 @@ class BootRescheduleWorker @AssistedInject constructor(
                     Result.failure()
                 }
             } else {
+                upcomingCoordinator?.reconcileAll()
                 Result.success()
             }
         } catch (e: CancellationException) {
