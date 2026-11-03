@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import com.sysadmindoc.alarmclock.domain.projection.InvalidationReason
+import com.sysadmindoc.alarmclock.domain.projection.UpcomingScheduleReconcileCoordinator
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -21,7 +23,8 @@ class StaleAlarmException(message: String) : IllegalStateException(message)
 class AlarmRepository @Inject constructor(
     val database: AlarmDatabase,
     private val dao: AlarmDao,
-    private val groupDao: AlarmGroupDao
+    private val groupDao: AlarmGroupDao,
+    private val coordinator: UpcomingScheduleReconcileCoordinator? = null
 ) {
     var clockMillis: () -> Long = { System.currentTimeMillis() }
     fun observeAll(): Flow<List<Alarm>> = dao.observeAll()
@@ -57,7 +60,7 @@ class AlarmRepository @Inject constructor(
 
     suspend fun save(alarm: Alarm): Long {
         alarm.requireValidHolidayPolicy()
-        return database.withTransaction {
+        val savedId = database.withTransaction {
             val isTrueNewAlarm = (alarm.id == 0L)
             val existing = if (!isTrueNewAlarm) dao.getById(alarm.id) else null
             val versioned = prepareVersionedAlarmForSave(alarm, existing)
@@ -127,6 +130,8 @@ class AlarmRepository @Inject constructor(
 
             savedId
         }
+        coordinator?.invalidateAlarm(savedId, InvalidationReason.ALARM_DEFINITION_CHANGED)
+        return savedId
     }
 
     suspend fun update(alarm: Alarm) {
@@ -204,6 +209,7 @@ class AlarmRepository @Inject constructor(
                 }
             }
         }
+        coordinator?.invalidateAlarm(alarm.id, InvalidationReason.ALARM_DEFINITION_CHANGED)
     }
 
     private fun prepareVersionedAlarmForSave(alarm: Alarm, existing: Alarm?): Alarm {
@@ -269,7 +275,7 @@ class AlarmRepository @Inject constructor(
 
     suspend fun createGroupAndAlarm(groupName: String, alarm: Alarm): Long {
         alarm.requireValidHolidayPolicy()
-        return database.withTransaction {
+        val id = database.withTransaction {
             if (groupName.isNotBlank()) {
                 groupDao.insert(AlarmGroup(groupName))
             }
@@ -281,6 +287,8 @@ class AlarmRepository @Inject constructor(
             }
             dao.insert(ordered)
         }
+        coordinator?.invalidateAlarm(id, InvalidationReason.ALARM_DEFINITION_CHANGED)
+        return id
     }
 
     fun observeGroups(): Flow<List<String>> =
@@ -303,11 +311,12 @@ class AlarmRepository @Inject constructor(
             dao.clearGroupFromAlarms(groupName)
             groupDao.delete(AlarmGroup(groupName))
         }
+        coordinator?.invalidateAll(InvalidationReason.ALARM_DEFINITION_CHANGED)
     }
 
     suspend fun importDisabledAtomically(alarms: List<Alarm>): List<Long> {
         alarms.forEach { it.requireValidHolidayPolicy() }
-        return database.withTransaction {
+        val ids = database.withTransaction {
             val authorityDao = database.scheduleAuthorityDao()
             val issuedDao = database.issuedOccurrenceDao()
 
@@ -348,12 +357,15 @@ class AlarmRepository @Inject constructor(
             }
             savedIds
         }
+        coordinator?.invalidateAll(InvalidationReason.ALARM_DEFINITION_CHANGED)
+        return ids
     }
     suspend fun delete(alarm: Alarm) {
         database.withTransaction {
             database.scheduleExceptionDao().deleteForAlarm(alarm.id)
             dao.delete(alarm)
         }
+        coordinator?.invalidateAlarm(alarm.id, InvalidationReason.ALARM_DEFINITION_CHANGED)
     }
 
     suspend fun deleteById(id: Long) {
@@ -361,6 +373,7 @@ class AlarmRepository @Inject constructor(
             database.scheduleExceptionDao().deleteForAlarm(id)
             dao.deleteById(id)
         }
+        coordinator?.invalidateAlarm(id, InvalidationReason.ALARM_DEFINITION_CHANGED)
     }
 
     suspend fun deleteWithCleanup(alarm: Alarm) {
@@ -372,6 +385,7 @@ class AlarmRepository @Inject constructor(
                 groupDao.delete(AlarmGroup(groupName))
             }
         }
+        coordinator?.invalidateAlarm(alarm.id, InvalidationReason.ALARM_DEFINITION_CHANGED)
     }
 
     suspend fun setEnabled(id: Long, enabled: Boolean, nextTrigger: Long) {
@@ -398,6 +412,7 @@ class AlarmRepository @Inject constructor(
                 database.scheduleExceptionDao().deleteForAlarm(id)
             }
         }
+        coordinator?.invalidateAlarm(id, InvalidationReason.ALARM_TOGGLED)
     }
 
     suspend fun updateAlarmsEnabledTransaction(alarmIds: List<Long>, enabled: Boolean, triggerTimeCalculator: (Alarm) -> Long) {
@@ -430,6 +445,7 @@ class AlarmRepository @Inject constructor(
                 }
             }
         }
+        alarmIds.forEach { coordinator?.invalidateAlarm(it, InvalidationReason.ALARM_TOGGLED) }
     }
 
     suspend fun updateNextTrigger(id: Long, nextTrigger: Long) =

@@ -21,7 +21,9 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
@@ -44,6 +46,7 @@ class ProducerOutcomeAdoptionTest {
     private lateinit var db: AlarmDatabase
     private lateinit var alarmRepo: AlarmRepository
     private lateinit var incidentRepo: AlarmIncidentRepository
+    private lateinit var eventRepo: com.sysadmindoc.alarmclock.data.repository.AlarmEventRepository
     private lateinit var scheduler: AlarmScheduler
 
     private val calculator: NextAlarmCalculator = mockk(relaxed = true)
@@ -69,6 +72,10 @@ class ProducerOutcomeAdoptionTest {
         incidentRepo = AlarmIncidentRepository(
             dao = db.alarmIncidentEventDao(),
             context = context
+        )
+
+        eventRepo = com.sysadmindoc.alarmclock.data.repository.AlarmEventRepository(
+            dao = db.alarmEventDao()
         )
 
         every { preferencesManager.getCachedSettings() } returns AppSettings(activeAlarmId = null)
@@ -126,7 +133,7 @@ class ProducerOutcomeAdoptionTest {
             scheduler = mockScheduler,
             calculator = calculator,
             preferencesManager = preferencesManager,
-            eventRepository = mockk(relaxed = true)
+            eventRepository = eventRepo
         )
 
         viewModel.toggleAlarm(alarm)
@@ -155,7 +162,7 @@ class ProducerOutcomeAdoptionTest {
             scheduler = mockScheduler,
             calculator = calculator,
             preferencesManager = preferencesManager,
-            eventRepository = mockk(relaxed = true)
+            eventRepository = eventRepo
         )
 
         viewModel.toggleAlarm(alarm)
@@ -183,7 +190,7 @@ class ProducerOutcomeAdoptionTest {
             scheduler = mockScheduler,
             calculator = calculator,
             preferencesManager = preferencesManager,
-            eventRepository = mockk(relaxed = true)
+            eventRepository = eventRepo
         )
 
         viewModel.duplicateAlarm(originalAlarm)
@@ -213,7 +220,7 @@ class ProducerOutcomeAdoptionTest {
             scheduler = mockScheduler,
             calculator = calculator,
             preferencesManager = preferencesManager,
-            eventRepository = mockk(relaxed = true)
+            eventRepository = eventRepo
         )
 
         viewModel.selectMany(setOf(id1, id2))
@@ -246,19 +253,24 @@ class ProducerOutcomeAdoptionTest {
             scheduler = mockScheduler,
             calculator = calculator,
             preferencesManager = preferencesManager,
-            eventRepository = mockk(relaxed = true)
+            eventRepository = eventRepo
         )
 
         // Delete alarm first
         viewModel.deleteAlarm(alarm)
-        awaitDbCondition { alarmRepo.getById(initialId) == null }
+        // Await canonical ViewModel state ensuring delete completed and undo state is ready
+        withTimeout(2000L) {
+            viewModel.uiState.first { it.undoAlarm?.id == initialId }
+        }
         assertNull("Alarm MUST be deleted from DB", alarmRepo.getById(initialId))
 
         // Undo delete
         viewModel.undoDelete()
-        awaitDbCondition { alarmRepo.getAll().isNotEmpty() }
+        // Await committed Room truth through Flow
+        val restoredAlarms = withTimeout(2000L) {
+            alarmRepo.observeAll().first { it.isNotEmpty() }
+        }
 
-        val restoredAlarms = alarmRepo.getAll()
         assertEquals("Alarm MUST be restored in DB", 1, restoredAlarms.size)
         assertTrue("Restored alarm MUST be enabled", restoredAlarms[0].isEnabled)
     }

@@ -127,3 +127,25 @@ data class UpcomingScheduleProjection(
     val evaluationZoneId: ZoneId,
     val projectionFreshness: UpcomingProjectionFreshness
 )
+/**
+ * Invalidation source or reason triggering an upcoming schedule projection update (KNO-156 / KNO-34 Slice B).
+ */
+enum class InvalidationReason {
+    /** Alarm definition was edited, created, or deleted. */
+    ALARM_DEFINITION_CHANGED,
+
+    /** Alarm was toggled enabled or disabled. */
+    ALARM_TOGGLED,
+
+    /** One-time override was created, changed, or cleared. */
+    OVERRIDE_CHANGED,
+
+    /** Holiday classification or calendar authority changed. */
+    HOLIDAY_TRUTH_CHANGED,
+
+    /** Clock changed (TIME_SET), timezone changed, or boot/process recovery. */
+    SYSTEM_RECOVERY,
+
+    /** Explicit on-demand or periodic refresh. */
+    ON_DEMAND_REFRESH
+}

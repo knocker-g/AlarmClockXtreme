@@ -38,7 +38,8 @@ class HolidayReconcileCoordinator @Inject constructor(
     @ApplicationContext private val context: Context,
     private val holidayRepository: HolidayRepository,
     private val alarmRepository: AlarmRepository,
-    private val alarmScheduler: AlarmScheduler
+    private val alarmScheduler: AlarmScheduler,
+    private val coordinator: com.sysadmindoc.alarmclock.domain.projection.UpcomingScheduleReconcileCoordinator? = null
 ) {
     var clockMillis: () -> Long = { System.currentTimeMillis() }
     private var testEvaluator: ScheduleOccurrenceEvaluator? = null
@@ -52,8 +53,9 @@ class HolidayReconcileCoordinator @Inject constructor(
         alarmScheduler: AlarmScheduler,
         evaluator: ScheduleOccurrenceEvaluator = ScheduleOccurrenceEvaluator(),
         detector: HolidayMaterialChangeDetector = HolidayMaterialChangeDetector(evaluator),
-        stateStore: HolidayReconcileStateStore = FileHolidayReconcileStateStore(context)
-    ) : this(context, holidayRepository, alarmRepository, alarmScheduler) {
+        stateStore: HolidayReconcileStateStore = FileHolidayReconcileStateStore(context),
+        coordinator: com.sysadmindoc.alarmclock.domain.projection.UpcomingScheduleReconcileCoordinator? = null
+    ) : this(context, holidayRepository, alarmRepository, alarmScheduler, coordinator) {
         this.testEvaluator = evaluator
         this.testDetector = detector
         this.testStateStore = stateStore
@@ -163,6 +165,8 @@ class HolidayReconcileCoordinator @Inject constructor(
             }
             return HolidayReconcileResult.Success(reconciledCount = 0, isNoOp = true)
         }
+
+        coordinator?.invalidateAll(com.sysadmindoc.alarmclock.domain.projection.InvalidationReason.HOLIDAY_TRUTH_CHANGED)
 
         // Invalidate stale pending progress on country / truth signature mismatch
         val isSignatureMismatch = currentState.pendingSignature != null &&
@@ -302,6 +306,10 @@ class HolidayReconcileCoordinator @Inject constructor(
                         completedAlarmIds = emptySet(),
                         completedGenerations = emptyMap()
                     )
+                )
+                coordinator?.reconcileAll(
+                    nowEpochMs = evaluationEpochMs,
+                    evaluationZoneId = evaluationZoneId
                 )
                 HolidayReconcileResult.Success(reconciledCount = reconciledCount)
             } catch (e: Exception) {
