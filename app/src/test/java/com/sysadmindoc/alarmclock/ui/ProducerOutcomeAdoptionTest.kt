@@ -137,6 +137,9 @@ class ProducerOutcomeAdoptionTest {
         )
 
         viewModel.toggleAlarm(alarm)
+        withTimeout(2000L) {
+            viewModel.feedbackEvents.first()
+        }
         awaitDbCondition { alarmRepo.getById(alarmId)?.isEnabled == true }
 
         val updated = alarmRepo.getById(alarmId)
@@ -166,6 +169,9 @@ class ProducerOutcomeAdoptionTest {
         )
 
         viewModel.toggleAlarm(alarm)
+        withTimeout(2000L) {
+            viewModel.feedbackEvents.first()
+        }
         awaitDbCondition { alarmRepo.getById(alarmId)?.isEnabled == true }
 
         val updated = alarmRepo.getById(alarmId)
@@ -194,6 +200,9 @@ class ProducerOutcomeAdoptionTest {
         )
 
         viewModel.duplicateAlarm(originalAlarm)
+        withTimeout(2000L) {
+            viewModel.feedbackEvents.first()
+        }
         awaitDbCondition { alarmRepo.getAll().size == 2 }
 
         val allAlarms = alarmRepo.getAll()
@@ -225,6 +234,9 @@ class ProducerOutcomeAdoptionTest {
 
         viewModel.selectMany(setOf(id1, id2))
         viewModel.enableSelected()
+        withTimeout(2000L) {
+            viewModel.feedbackEvents.first()
+        }
         awaitDbCondition {
             val u1 = alarmRepo.getById(id1)
             val u2 = alarmRepo.getById(id2)

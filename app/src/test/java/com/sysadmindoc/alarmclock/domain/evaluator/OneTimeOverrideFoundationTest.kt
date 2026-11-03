@@ -706,4 +706,82 @@ class OneTimeOverrideFoundationTest {
         assertNotNull(exception)
         assertEquals(ScheduleException.TYPE_SKIP, exception?.exceptionType)
     }
+
+    @Test
+    fun `cancelOverride with mismatched expectedScheduledAt returns STALE_OCCURRENCE and preserves exception`() = runBlocking {
+        insertStandardRepeatingAlarm()
+
+        // Apply Time Override: wed0700Ms -> wed0630Ms
+        val overrideResult = adapter.executeChangeTimeOnce(
+            alarmId = 1L,
+            expectedScheduledAt = wed0700Ms,
+            newTime = LocalTime.of(6, 30),
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
+        assertEquals(OneTimeOverrideOutcome.SUCCESS_COMMITTED, overrideResult.outcome)
+        assertEquals(wed0630Ms, alarmDao.getById(1L)?.nextTriggerTime)
+
+        // Attempt cancel with mismatched/stale expectedScheduledAt
+        val mismatchedTargetMs = wed0700Ms + 86400000L
+        val cancelResult = adapter.cancelOverride(
+            alarmId = 1L,
+            expectedScheduledAt = mismatchedTargetMs,
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
+
+        assertEquals("Cancel override with mismatched target must return STALE_OCCURRENCE", OneTimeOverrideOutcome.STALE_OCCURRENCE, cancelResult.outcome)
+        assertEquals("STALE_OVERRIDE_TARGET_MISMATCH", cancelResult.decisionReason)
+
+        // Verify exception was NOT deleted and alarm nextTriggerTime was NOT altered
+        val remainingExceptions = exceptionDao.getExceptionsForAlarm(1L)
+        assertEquals("Exception must be preserved on target mismatch", 1, remainingExceptions.size)
+        assertEquals(wed0630Ms, alarmDao.getById(1L)?.nextTriggerTime)
+    }
+
+    @Test
+    fun `cancelOverride when no exceptions exist is idempotent and returns SUCCESS_COMMITTED`() = runBlocking {
+        insertStandardRepeatingAlarm()
+        assertTrue(exceptionDao.getExceptionsForAlarm(1L).isEmpty())
+
+        val cancelResult = adapter.cancelOverride(
+            alarmId = 1L,
+            expectedScheduledAt = wed0700Ms,
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
+
+        assertEquals(OneTimeOverrideOutcome.SUCCESS_COMMITTED, cancelResult.outcome)
+        assertEquals(DurableOneTimeOverrideAdapter.REASON_NO_OVERRIDE_TO_CANCEL, cancelResult.decisionReason)
+        assertEquals(wed0700Ms, alarmDao.getById(1L)?.nextTriggerTime)
+    }
+
+    @Test
+    fun `cancelOverride for Skip Once with matching baseTriggerTime reverts to base schedule and deletes exception`() = runBlocking {
+        insertStandardRepeatingAlarm()
+
+        val skipResult = adapter.executeSkipOnce(
+            alarmId = 1L,
+            expectedScheduledAt = wed0700Ms,
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
+        assertEquals(OneTimeOverrideOutcome.SUCCESS_COMMITTED, skipResult.outcome)
+        val friNov060700Ms = LocalDate.of(2026, 11, 6).atTime(LocalTime.of(7, 0)).atZone(zoneId).toInstant().toEpochMilli()
+        assertEquals(friNov060700Ms, alarmDao.getById(1L)?.nextTriggerTime)
+        assertEquals(1, exceptionDao.getExceptionsForAlarm(1L).size)
+
+        // Cancel Skip Once matching base scheduled occurrence
+        val cancelResult = adapter.cancelOverride(
+            alarmId = 1L,
+            expectedScheduledAt = wed0700Ms,
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
+
+        assertEquals(OneTimeOverrideOutcome.SUCCESS_COMMITTED, cancelResult.outcome)
+        assertEquals("Next trigger time must revert to base schedule", wed0700Ms, alarmDao.getById(1L)?.nextTriggerTime)
+        assertTrue("Skip exception must be deleted", exceptionDao.getExceptionsForAlarm(1L).isEmpty())
+    }
 }

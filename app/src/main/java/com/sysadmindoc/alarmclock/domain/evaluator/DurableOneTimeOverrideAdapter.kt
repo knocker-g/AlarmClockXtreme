@@ -389,16 +389,41 @@ class DurableOneTimeOverrideAdapter(
                 )
             }
 
-            // Delete exceptions for this alarm generation
-            for (ex in exceptions) {
-                exceptionDao.deleteForOccurrence(alarmId, ex.baseTriggerTime, alarm.generation)
+            // Target matching against expectedScheduledAt to prevent unintended/stale deletion
+            val matchingException = exceptions.find { ex ->
+                when (ex.exceptionType) {
+                    ScheduleException.TYPE_TIME_OVERRIDE ->
+                        ex.overrideTriggerTime == expectedScheduledAt ||
+                        ex.baseTriggerTime == expectedScheduledAt ||
+                        alarm.nextTriggerTime == expectedScheduledAt
+                    ScheduleException.TYPE_SKIP ->
+                        ex.baseTriggerTime == expectedScheduledAt ||
+                        alarm.nextTriggerTime == expectedScheduledAt
+                    else -> false
+                }
             }
 
+            if (matchingException == null) {
+                return@withTransaction OneTimeOverrideResult(
+                    outcome = OneTimeOverrideOutcome.STALE_OCCURRENCE,
+                    alarmId = alarmId,
+                    originalScheduledAt = expectedScheduledAt,
+                    updatedAlarm = null,
+                    issuedOccurrence = null,
+                    durableIntent = null,
+                    decisionReason = "STALE_OVERRIDE_TARGET_MISMATCH"
+                )
+            }
+
+            // Delete only the matching exception for this alarm generation
+            exceptionDao.deleteForOccurrence(alarmId, matchingException.baseTriggerTime, alarm.generation)
+
             // Restore base schedule projection
+            val remainingExceptions = exceptionDao.getExceptionsForAlarmGeneration(alarmId, alarm.generation)
             val baseEvaluated = evaluator.evaluateOccurrence(
                 alarm = alarm,
                 fromEpochMs = nowEpochMs - 1000L,
-                exceptions = emptyList(),
+                exceptions = remainingExceptions,
                 holidaySnapshotProvider = holidaySnapshotProvider,
                 holidayPolicyOverride = holidayPolicyOverride,
                 consumedOccurrenceKeys = consumedOccurrenceKeys,
