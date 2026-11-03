@@ -337,6 +337,7 @@ class DurableOneTimeOverrideAdapter(
         alarmId: Long,
         expectedScheduledAt: Long,
         nowEpochMs: Long = System.currentTimeMillis(),
+        expectedBaseTriggerTimeEpochMs: Long? = null,
         holidaySnapshotProvider: (LocalDate) -> HolidaySnapshot = { HolidaySnapshot() },
         holidayPolicyOverride: HolidayPolicy? = null,
         consumedOccurrenceKeys: Set<String> = emptySet(),
@@ -389,18 +390,34 @@ class DurableOneTimeOverrideAdapter(
                 )
             }
 
-            // Target matching against expectedScheduledAt to prevent unintended/stale deletion
-            val matchingException = exceptions.find { ex ->
-                when (ex.exceptionType) {
+            // Target matching against expectedScheduledAt / expectedBaseTriggerTimeEpochMs to prevent unintended/stale deletion
+            // 1. Direct match against candidate exception occurrence identity
+            val directMatch = exceptions.find { ex ->
+                if (expectedBaseTriggerTimeEpochMs != null && ex.baseTriggerTime == expectedBaseTriggerTimeEpochMs) {
+                    true
+                } else when (ex.exceptionType) {
                     ScheduleException.TYPE_TIME_OVERRIDE ->
-                        ex.overrideTriggerTime == expectedScheduledAt ||
-                        ex.baseTriggerTime == expectedScheduledAt ||
-                        alarm.nextTriggerTime == expectedScheduledAt
+                        ex.overrideTriggerTime == expectedScheduledAt || ex.baseTriggerTime == expectedScheduledAt
                     ScheduleException.TYPE_SKIP ->
-                        ex.baseTriggerTime == expectedScheduledAt ||
-                        alarm.nextTriggerTime == expectedScheduledAt
+                        ex.baseTriggerTime == expectedScheduledAt
                     else -> false
                 }
+            }
+
+            // 2. Fallback: only if exceptions.size == 1, singleEx is TYPE_SKIP, alarm.nextTriggerTime == expectedScheduledAt,
+            // and singleEx.baseTriggerTime < alarm.nextTriggerTime (proving this single skip advanced nextTriggerTime).
+            val matchingException = directMatch ?: if (exceptions.size == 1) {
+                val singleEx = exceptions.single()
+                if (singleEx.exceptionType == ScheduleException.TYPE_SKIP &&
+                    alarm.nextTriggerTime == expectedScheduledAt &&
+                    singleEx.baseTriggerTime < alarm.nextTriggerTime
+                ) {
+                    singleEx
+                } else {
+                    null
+                }
+            } else {
+                null
             }
 
             if (matchingException == null) {

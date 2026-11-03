@@ -366,6 +366,7 @@ class UpcomingTimelineViewModel @Inject constructor(
     fun cancelOneTimeOverride(occurrence: UpcomingOccurrenceOutcome? = null) {
         val alarmId = occurrence?.alarmId ?: _overrideTarget.value?.alarmId ?: return
         val expectedScheduledAt = occurrence?.targetTriggerTimeEpochMs ?: _overrideTarget.value?.expectedScheduledAt ?: return
+        val expectedBaseTriggerTime = occurrence?.baseTriggerTimeEpochMs ?: _overrideTarget.value?.expectedBaseTriggerTime
         val expectedGeneration = occurrence?.generation ?: _overrideTarget.value?.expectedGeneration
 
         if (!isSubmittingAtomic.compareAndSet(false, true)) {
@@ -396,6 +397,7 @@ class UpcomingTimelineViewModel @Inject constructor(
                     alarmId = alarmId,
                     expectedScheduledAt = expectedScheduledAt,
                     nowEpochMs = nowEpochMsProvider(),
+                    expectedBaseTriggerTimeEpochMs = expectedBaseTriggerTime,
                     holidaySnapshotProvider = classifier.asHolidaySnapshotProvider(),
                     evaluationZoneId = zoneIdProvider()
                 )

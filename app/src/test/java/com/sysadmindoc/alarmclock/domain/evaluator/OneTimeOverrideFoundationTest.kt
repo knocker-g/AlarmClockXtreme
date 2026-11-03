@@ -784,4 +784,177 @@ class OneTimeOverrideFoundationTest {
         assertEquals("Next trigger time must revert to base schedule", wed0700Ms, alarmDao.getById(1L)?.nextTriggerTime)
         assertTrue("Skip exception must be deleted", exceptionDao.getExceptionsForAlarm(1L).isEmpty())
     }
+
+    @Test
+    fun `cancelOverride for Change Time Once with baseTriggerTime matches and reverts to base schedule`() = runBlocking {
+        insertStandardRepeatingAlarm()
+
+        val overrideResult = adapter.executeChangeTimeOnce(
+            alarmId = 1L,
+            expectedScheduledAt = wed0700Ms,
+            newTime = LocalTime.of(6, 30),
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
+        assertEquals(OneTimeOverrideOutcome.SUCCESS_COMMITTED, overrideResult.outcome)
+        assertEquals(wed0630Ms, alarmDao.getById(1L)?.nextTriggerTime)
+
+        // Cancel with expectedBaseTriggerTimeEpochMs matching base 07:00
+        val cancelResult = adapter.cancelOverride(
+            alarmId = 1L,
+            expectedScheduledAt = wed0700Ms,
+            expectedBaseTriggerTimeEpochMs = wed0700Ms,
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
+        assertEquals(OneTimeOverrideOutcome.SUCCESS_COMMITTED, cancelResult.outcome)
+        assertEquals(wed0700Ms, alarmDao.getById(1L)?.nextTriggerTime)
+        assertTrue(exceptionDao.getExceptionsForAlarm(1L).isEmpty())
+    }
+
+    @Test
+    fun `cancelOverride with single skip fallback matches advanced nextTriggerTime when single skip precedes it`() = runBlocking {
+        insertStandardRepeatingAlarm()
+
+        val skipResult = adapter.executeSkipOnce(
+            alarmId = 1L,
+            expectedScheduledAt = wed0700Ms,
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
+        assertEquals(OneTimeOverrideOutcome.SUCCESS_COMMITTED, skipResult.outcome)
+        val friNov060700Ms = LocalDate.of(2026, 11, 6).atTime(LocalTime.of(7, 0)).atZone(zoneId).toInstant().toEpochMilli()
+        assertEquals(friNov060700Ms, alarmDao.getById(1L)?.nextTriggerTime)
+
+        // Legacy/caller passes current advanced nextTriggerTime (friNov060700Ms)
+        val cancelResult = adapter.cancelOverride(
+            alarmId = 1L,
+            expectedScheduledAt = friNov060700Ms,
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
+
+        assertEquals(OneTimeOverrideOutcome.SUCCESS_COMMITTED, cancelResult.outcome)
+        assertEquals("Next trigger time must revert to base schedule", wed0700Ms, alarmDao.getById(1L)?.nextTriggerTime)
+        assertTrue("Skip exception must be deleted", exceptionDao.getExceptionsForAlarm(1L).isEmpty())
+    }
+
+    @Test
+    fun `cancelOverride with multiple exceptions removes only matching exception and respects remaining in reschedule`() = runBlocking {
+        insertStandardRepeatingAlarm()
+
+        val friNov060700Ms = LocalDate.of(2026, 11, 6).atTime(LocalTime.of(7, 0)).atZone(zoneId).toInstant().toEpochMilli()
+        val nextWed110700Ms = LocalDate.of(2026, 11, 11).atTime(LocalTime.of(7, 0)).atZone(zoneId).toInstant().toEpochMilli()
+
+        // 1. Skip Wednesday Nov 4
+        val skipWedResult = adapter.executeSkipOnce(
+            alarmId = 1L,
+            expectedScheduledAt = wed0700Ms,
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
+        assertEquals(OneTimeOverrideOutcome.SUCCESS_COMMITTED, skipWedResult.outcome)
+        assertEquals(friNov060700Ms, alarmDao.getById(1L)?.nextTriggerTime)
+
+        // 2. Skip Friday Nov 6
+        val skipFriResult = adapter.executeSkipOnce(
+            alarmId = 1L,
+            expectedScheduledAt = friNov060700Ms,
+            nowEpochMs = nowEpochMs + 1000L,
+            evaluationZoneId = zoneId
+        )
+        assertEquals(OneTimeOverrideOutcome.SUCCESS_COMMITTED, skipFriResult.outcome)
+        assertEquals(nextWed110700Ms, alarmDao.getById(1L)?.nextTriggerTime)
+        assertEquals(2, exceptionDao.getExceptionsForAlarm(1L).size)
+
+        // 3. Cancel Wednesday skip: pass wed0700Ms
+        val cancelWedResult = adapter.cancelOverride(
+            alarmId = 1L,
+            expectedScheduledAt = wed0700Ms,
+            nowEpochMs = nowEpochMs + 2000L,
+            evaluationZoneId = zoneId
+        )
+        assertEquals(OneTimeOverrideOutcome.SUCCESS_COMMITTED, cancelWedResult.outcome)
+
+        // Wednesday is no longer skipped, but Friday skip is still present in Room!
+        val remaining = exceptionDao.getExceptionsForAlarm(1L)
+        assertEquals(1, remaining.size)
+        assertEquals(friNov060700Ms, remaining.first().baseTriggerTime)
+
+        // Next trigger time reverted to Wednesday Nov 4 because it is before Friday Nov 6
+        assertEquals(wed0700Ms, alarmDao.getById(1L)?.nextTriggerTime)
+
+        // 4. Cancel Friday skip: pass friNov060700Ms
+        val cancelFriResult = adapter.cancelOverride(
+            alarmId = 1L,
+            expectedScheduledAt = friNov060700Ms,
+            nowEpochMs = nowEpochMs + 3000L,
+            evaluationZoneId = zoneId
+        )
+        assertEquals(OneTimeOverrideOutcome.SUCCESS_COMMITTED, cancelFriResult.outcome)
+        assertTrue(exceptionDao.getExceptionsForAlarm(1L).isEmpty())
+        assertEquals(wed0700Ms, alarmDao.getById(1L)?.nextTriggerTime)
+    }
+
+    @Test
+    fun `cancelOverride with multiple exceptions rejects stale current next trigger matching and preserves all exceptions`() = runBlocking {
+        insertStandardRepeatingAlarm()
+
+        val friNov060700Ms = LocalDate.of(2026, 11, 6).atTime(LocalTime.of(7, 0)).atZone(zoneId).toInstant().toEpochMilli()
+        val nextWed110700Ms = LocalDate.of(2026, 11, 11).atTime(LocalTime.of(7, 0)).atZone(zoneId).toInstant().toEpochMilli()
+
+        // Skip Wed Nov 4 and Fri Nov 6
+        adapter.executeSkipOnce(alarmId = 1L, expectedScheduledAt = wed0700Ms, nowEpochMs = nowEpochMs, evaluationZoneId = zoneId)
+        adapter.executeSkipOnce(alarmId = 1L, expectedScheduledAt = friNov060700Ms, nowEpochMs = nowEpochMs + 1000L, evaluationZoneId = zoneId)
+        assertEquals(2, exceptionDao.getExceptionsForAlarm(1L).size)
+        assertEquals(nextWed110700Ms, alarmDao.getById(1L)?.nextTriggerTime)
+
+        // Erroneously pass current nextTriggerTime (nextWed110700Ms) with no baseTrigger
+        val cancelResult = adapter.cancelOverride(
+            alarmId = 1L,
+            expectedScheduledAt = nextWed110700Ms,
+            nowEpochMs = nowEpochMs + 2000L,
+            evaluationZoneId = zoneId
+        )
+
+        assertEquals(OneTimeOverrideOutcome.STALE_OCCURRENCE, cancelResult.outcome)
+        assertEquals("STALE_OVERRIDE_TARGET_MISMATCH", cancelResult.decisionReason)
+        assertEquals("Both exceptions must be preserved on target mismatch", 2, exceptionDao.getExceptionsForAlarm(1L).size)
+        assertEquals(nextWed110700Ms, alarmDao.getById(1L)?.nextTriggerTime)
+    }
+
+    @Test
+    fun `cancelOverride with single future exception cannot be selected by current next trigger`() = runBlocking {
+        insertStandardRepeatingAlarm()
+
+        val friNov060700Ms = LocalDate.of(2026, 11, 6).atTime(LocalTime.of(7, 0)).atZone(zoneId).toInstant().toEpochMilli()
+
+        // Manually insert a single exception for the future Friday occurrence while nextTriggerTime is Wednesday
+        val futureException = ScheduleException(
+            alarmId = 1L,
+            baseTriggerTime = friNov060700Ms,
+            generation = 1,
+            exceptionType = ScheduleException.TYPE_SKIP,
+            overrideTriggerTime = 0L,
+            createdAt = nowEpochMs,
+            revision = 1
+        )
+        exceptionDao.insert(futureException)
+        assertEquals(1, exceptionDao.getExceptionsForAlarm(1L).size)
+        assertEquals(wed0700Ms, alarmDao.getById(1L)?.nextTriggerTime)
+
+        // Pass current nextTriggerTime (wed0700Ms) with no baseTrigger
+        val cancelResult = adapter.cancelOverride(
+            alarmId = 1L,
+            expectedScheduledAt = wed0700Ms,
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
+
+        assertEquals(OneTimeOverrideOutcome.STALE_OCCURRENCE, cancelResult.outcome)
+        assertEquals("STALE_OVERRIDE_TARGET_MISMATCH", cancelResult.decisionReason)
+        assertEquals("Future exception must be preserved and not deleted", 1, exceptionDao.getExceptionsForAlarm(1L).size)
+        assertEquals(wed0700Ms, alarmDao.getById(1L)?.nextTriggerTime)
+    }
 }
+

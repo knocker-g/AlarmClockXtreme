@@ -1317,7 +1317,8 @@ class AlarmListViewModel @Inject constructor(
                 val result = adapter.cancelOverride(
                     alarmId = effectiveTarget.alarmId,
                     expectedScheduledAt = effectiveTarget.expectedScheduledAt,
-                    nowEpochMs = nowMs
+                    nowEpochMs = nowMs,
+                    expectedBaseTriggerTimeEpochMs = effectiveTarget.expectedBaseTriggerTime
                 )
 
                 handleOverrideResult(result, isCancel = true)
