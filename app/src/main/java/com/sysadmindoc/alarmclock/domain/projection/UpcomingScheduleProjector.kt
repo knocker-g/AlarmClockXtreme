@@ -244,6 +244,7 @@ class UpcomingScheduleProjector @Inject constructor() {
                     if (matchingException != null) {
                         when (matchingException.exceptionType) {
                             ScheduleException.TYPE_SKIP -> {
+                                val isFuture = baseEpochMs > nowEpochMs
                                 alarmOccurrences.add(
                                     UpcomingOccurrenceOutcome(
                                         occurrenceId = occurrenceId,
@@ -260,6 +261,7 @@ class UpcomingScheduleProjector @Inject constructor() {
                                         willFire = false,
                                         isNextForAlarm = false,
                                         isOneTimeOverrideEligible = false,
+                                        isCancelOverrideEligible = isFuture,
                                         projectionFreshness = if (authorityReconciling) UpcomingProjectionFreshness.RECONCILING else if (authorityQuarantine) UpcomingProjectionFreshness.STALE else UpcomingProjectionFreshness.CURRENT,
                                         holidayPolicy = policy,
                                         holidayState = holidaySnapshot.state
@@ -288,6 +290,7 @@ class UpcomingScheduleProjector @Inject constructor() {
                                         willFire = isFuture,
                                         isNextForAlarm = false,
                                         isOneTimeOverrideEligible = false,
+                                        isCancelOverrideEligible = isFuture,
                                         projectionFreshness = if (authorityReconciling) UpcomingProjectionFreshness.RECONCILING else if (authorityQuarantine) UpcomingProjectionFreshness.STALE else UpcomingProjectionFreshness.CURRENT,
                                         holidayPolicy = policy,
                                         holidayState = holidaySnapshot.state
@@ -379,7 +382,7 @@ class UpcomingScheduleProjector @Inject constructor() {
                         if (occ.occurrenceId == nextFiring.occurrenceId && occ.targetTriggerTimeEpochMs == nextFiring.targetTriggerTimeEpochMs) {
                             occ.copy(
                                 isNextForAlarm = true,
-                                isOneTimeOverrideEligible = true,
+                                isOneTimeOverrideEligible = !occ.isCancelOverrideEligible,
                                 projectionFreshness = if (isCachedStale) UpcomingProjectionFreshness.STALE else occ.projectionFreshness
                             )
                         } else {

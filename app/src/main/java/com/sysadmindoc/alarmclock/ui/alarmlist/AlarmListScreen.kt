@@ -58,6 +58,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AlarmAdd
 import androidx.compose.material.icons.filled.BeachAccess
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Clear
@@ -177,6 +178,7 @@ fun AlarmListScreen(
     onAddAlarm: () -> Unit,
     onEditAlarm: (Long) -> Unit,
     onOpenSettings: () -> Unit = {},
+    onOpenUpcomingTimeline: () -> Unit = {},
     viewModel: AlarmListViewModel = hiltViewModel(LocalContext.current as ViewModelStoreOwner)
 ) {
     val context = LocalContext.current
@@ -532,6 +534,7 @@ fun AlarmListScreen(
                                     AlarmSortOrder.ENABLED_FIRST -> stringResource(R.string.alarmlist_active_first)
                                 },
                                 onCycleSort = viewModel::cycleSortOrder,
+                                onOpenUpcomingTimeline = onOpenUpcomingTimeline
                             )
                         }
 
@@ -1145,6 +1148,7 @@ private fun AlarmHeader(
     onResumeAlarms: () -> Unit,
     sortLabel: String,
     onCycleSort: () -> Unit,
+    onOpenUpcomingTimeline: () -> Unit = {},
 ) {
     val pausedUntilLabel = pausedUntilMillis
         .takeIf { it > 0L }
@@ -1162,6 +1166,13 @@ private fun AlarmHeader(
             else -> stringResource(R.string.alarmlist_no_alarms_scheduled)
         },
         actions = {
+            IconButton(onClick = onOpenUpcomingTimeline) {
+                Icon(
+                    Icons.Default.CalendarMonth,
+                    contentDescription = stringResource(R.string.upcoming_timeline_title),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
             IconButton(onClick = onCycleSort) {
                 Icon(
                     Icons.AutoMirrored.Filled.Sort,
