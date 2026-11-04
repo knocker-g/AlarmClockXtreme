@@ -64,6 +64,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.sysadmindoc.alarmclock.ui.settings.NewsSourceSettingsScreen
 import com.sysadmindoc.alarmclock.ui.settings.SettingsViewModel
 import com.sysadmindoc.alarmclock.ui.holiday.HolidayCalendarScreen
+import com.sysadmindoc.alarmclock.ui.upcoming.UpcomingTimelineScreen
 
 sealed class Screen(val route: String) {
     data object Dashboard : Screen("dashboard")
@@ -83,6 +84,7 @@ sealed class Screen(val route: String) {
     data object News : Screen("news")
     data object NewsSources : Screen("news_sources")
     data object HolidayCalendar : Screen("holiday_calendar")
+    data object UpcomingTimeline : Screen("upcoming_timeline")
 }
 
 data class BottomNavItem(
@@ -517,6 +519,7 @@ private fun AppNavHost(
                 onAddAlarm = { navController.navigate(Screen.AlarmEdit.createRoute(-1)) },
                 onEditAlarm = { id -> navController.navigate(Screen.AlarmEdit.createRoute(id)) },
                 onOpenSettings = { navController.navigate(Screen.Settings.route) },
+                onOpenUpcomingTimeline = { navController.navigate(Screen.UpcomingTimeline.route) },
                 viewModel = viewModel
             )
         }
@@ -626,6 +629,13 @@ private fun AppNavHost(
         composable(Screen.HolidayCalendar.route) {
             HolidayCalendarScreen(
                 onNavigateBack = { navController.popBackStack() }
+            )
+        }
+
+        composable(Screen.UpcomingTimeline.route) {
+            UpcomingTimelineScreen(
+                onNavigateBack = { navController.popBackStack() },
+                onEditAlarm = { id -> navController.navigate(Screen.AlarmEdit.createRoute(id)) }
             )
         }
 

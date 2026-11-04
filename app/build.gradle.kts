@@ -329,6 +329,8 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.10.1")
 
     // Testing
+    testImplementation(composeBom)
+    testImplementation("androidx.compose.ui:ui-test-junit4")
     testImplementation("junit:junit:4.13.2")
     testImplementation("androidx.test:core:1.6.1")
     testImplementation("io.mockk:mockk:1.13.17")

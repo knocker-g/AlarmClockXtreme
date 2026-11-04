@@ -80,6 +80,7 @@ data class UpcomingOccurrenceOutcome(
     val willFire: Boolean,
     val isNextForAlarm: Boolean,
     val isOneTimeOverrideEligible: Boolean,
+    val isCancelOverrideEligible: Boolean = false,
     val projectionFreshness: UpcomingProjectionFreshness,
     val holidayPolicy: HolidayPolicy = HolidayPolicy.FOLLOW_BASE,
     val holidayState: HolidayState = HolidayState.NOT_HOLIDAY

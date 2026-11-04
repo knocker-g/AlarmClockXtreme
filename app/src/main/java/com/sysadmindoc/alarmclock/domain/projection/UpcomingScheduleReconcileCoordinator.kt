@@ -279,7 +279,7 @@ class UpcomingScheduleReconcileCoordinator @Inject constructor(
         nowEpochMsProvider: () -> Long = { System.currentTimeMillis() },
         horizonDays: Int = UpcomingScheduleProjector.DEFAULT_HORIZON_DAYS,
         evaluationZoneIdProvider: () -> ZoneId = { ZoneId.systemDefault() },
-        holidayClassifierProvider: () -> LocalHolidayClassifier = { LocalHolidayClassifier.ALL_UNKNOWN },
+        holidayClassifierProvider: suspend () -> LocalHolidayClassifier = { LocalHolidayClassifier.ALL_UNKNOWN },
         holidaySnapshotProvider: ((LocalDate) -> HolidaySnapshot)? = null,
         activeFiringAlarmIdsProvider: () -> Set<Long> = { emptySet() },
         consumedOccurrenceKeysProvider: () -> Set<String> = { emptySet() },

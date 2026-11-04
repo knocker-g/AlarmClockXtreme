@@ -2580,4 +2580,29 @@
     <plurals name="alarmlist_group_disabled">
         <item quantity="other">グループ %2$s の%1$d件のアラームをOFFにしました</item>
     </plurals>
+
+    <!-- Upcoming Timeline UI (KNO-157 / KNO-34) -->
+    <string name="upcoming_timeline_title">今後の予定</string>
+    <string name="upcoming_timeline_back">戻る</string>
+    <string name="upcoming_timeline_empty_title">今後のアラームはありません</string>
+    <string name="upcoming_timeline_empty_description">今後14日間に鳴動予定のアラームはありません。</string>
+    <string name="upcoming_timeline_reconciling">予定を更新中…</string>
+    <string name="upcoming_timeline_stale">システム状態と同期中…</string>
+    <string name="upcoming_timeline_needs_repair">確認が必要なアラームがあります</string>
+    <string name="upcoming_timeline_no_current_alarms">鳴動予定のないアラーム (%1$d)</string>
+    <string name="upcoming_timeline_disabled_alarms">無効なアラーム (%1$d)</string>
+    <string name="upcoming_timeline_badge_holiday_skip">祝日スキップ</string>
+    <string name="upcoming_timeline_badge_holiday_include">祝日アラーム</string>
+    <string name="upcoming_timeline_badge_skip_once">次回スキップ</string>
+    <string name="upcoming_timeline_badge_change_time">次回時間変更</string>
+    <string name="upcoming_timeline_badge_normal">通常</string>
+    <string name="upcoming_timeline_badge_next_ring">次回</string>
+    <string name="upcoming_timeline_badge_future">以降の予定</string>
+    <string name="upcoming_timeline_action_skip_once">次回をスキップ</string>
+    <string name="upcoming_timeline_action_change_time">時間を変更</string>
+    <string name="upcoming_timeline_action_cancel_override">変更を取り消す</string>
+    <string name="upcoming_timeline_action_edit">アラームを編集</string>
+    <string name="upcoming_timeline_base_time_format">基本: %1$s</string>
+    <string name="upcoming_timeline_stale_occurrence_error">アラームの予定が変更されたため更新しました</string>
+    <string name="upcoming_timeline_future_readonly">以降の予定（閲覧のみ）</string>
 </resources>

@@ -337,6 +337,7 @@ class DurableOneTimeOverrideAdapter(
         alarmId: Long,
         expectedScheduledAt: Long,
         nowEpochMs: Long = System.currentTimeMillis(),
+        expectedBaseTriggerTimeEpochMs: Long? = null,
         holidaySnapshotProvider: (LocalDate) -> HolidaySnapshot = { HolidaySnapshot() },
         holidayPolicyOverride: HolidayPolicy? = null,
         consumedOccurrenceKeys: Set<String> = emptySet(),
@@ -389,16 +390,57 @@ class DurableOneTimeOverrideAdapter(
                 )
             }
 
-            // Delete exceptions for this alarm generation
-            for (ex in exceptions) {
-                exceptionDao.deleteForOccurrence(alarmId, ex.baseTriggerTime, alarm.generation)
+            // Target matching against expectedScheduledAt / expectedBaseTriggerTimeEpochMs to prevent unintended/stale deletion
+            // 1. Direct match against candidate exception occurrence identity
+            val directMatch = exceptions.find { ex ->
+                if (expectedBaseTriggerTimeEpochMs != null && ex.baseTriggerTime == expectedBaseTriggerTimeEpochMs) {
+                    true
+                } else when (ex.exceptionType) {
+                    ScheduleException.TYPE_TIME_OVERRIDE ->
+                        ex.overrideTriggerTime == expectedScheduledAt || ex.baseTriggerTime == expectedScheduledAt
+                    ScheduleException.TYPE_SKIP ->
+                        ex.baseTriggerTime == expectedScheduledAt
+                    else -> false
+                }
             }
 
+            // 2. Fallback: only if exceptions.size == 1, singleEx is TYPE_SKIP, alarm.nextTriggerTime == expectedScheduledAt,
+            // and singleEx.baseTriggerTime < alarm.nextTriggerTime (proving this single skip advanced nextTriggerTime).
+            val matchingException = directMatch ?: if (exceptions.size == 1) {
+                val singleEx = exceptions.single()
+                if (singleEx.exceptionType == ScheduleException.TYPE_SKIP &&
+                    alarm.nextTriggerTime == expectedScheduledAt &&
+                    singleEx.baseTriggerTime < alarm.nextTriggerTime
+                ) {
+                    singleEx
+                } else {
+                    null
+                }
+            } else {
+                null
+            }
+
+            if (matchingException == null) {
+                return@withTransaction OneTimeOverrideResult(
+                    outcome = OneTimeOverrideOutcome.STALE_OCCURRENCE,
+                    alarmId = alarmId,
+                    originalScheduledAt = expectedScheduledAt,
+                    updatedAlarm = null,
+                    issuedOccurrence = null,
+                    durableIntent = null,
+                    decisionReason = "STALE_OVERRIDE_TARGET_MISMATCH"
+                )
+            }
+
+            // Delete only the matching exception for this alarm generation
+            exceptionDao.deleteForOccurrence(alarmId, matchingException.baseTriggerTime, alarm.generation)
+
             // Restore base schedule projection
+            val remainingExceptions = exceptionDao.getExceptionsForAlarmGeneration(alarmId, alarm.generation)
             val baseEvaluated = evaluator.evaluateOccurrence(
                 alarm = alarm,
                 fromEpochMs = nowEpochMs - 1000L,
-                exceptions = emptyList(),
+                exceptions = remainingExceptions,
                 holidaySnapshotProvider = holidaySnapshotProvider,
                 holidayPolicyOverride = holidayPolicyOverride,
                 consumedOccurrenceKeys = consumedOccurrenceKeys,

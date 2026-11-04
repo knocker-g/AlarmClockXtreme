@@ -2671,5 +2671,30 @@
         <item quantity="one">Disabled %1$d alarm in group %2$s</item>
         <item quantity="other">Disabled %1$d alarms in group %2$s</item>
     </plurals>
+
+    <!-- Upcoming Timeline UI (KNO-157 / KNO-34) -->
+    <string name="upcoming_timeline_title">Upcoming Schedule</string>
+    <string name="upcoming_timeline_back">Back</string>
+    <string name="upcoming_timeline_empty_title">No Upcoming Alarms</string>
+    <string name="upcoming_timeline_empty_description">No alarms are scheduled to ring in the next 14 days.</string>
+    <string name="upcoming_timeline_reconciling">Updating upcoming schedule…</string>
+    <string name="upcoming_timeline_stale">Reconciling with system state…</string>
+    <string name="upcoming_timeline_needs_repair">One or more alarms need attention</string>
+    <string name="upcoming_timeline_no_current_alarms">Alarms without future rings (%1$d)</string>
+    <string name="upcoming_timeline_disabled_alarms">Disabled alarms (%1$d)</string>
+    <string name="upcoming_timeline_badge_holiday_skip">Holiday: Skipped</string>
+    <string name="upcoming_timeline_badge_holiday_include">Holiday Ring</string>
+    <string name="upcoming_timeline_badge_skip_once">Skipped Once</string>
+    <string name="upcoming_timeline_badge_change_time">Changed Once</string>
+    <string name="upcoming_timeline_badge_normal">Normal</string>
+    <string name="upcoming_timeline_badge_next_ring">Next Ring</string>
+    <string name="upcoming_timeline_badge_future">Future Ring</string>
+    <string name="upcoming_timeline_action_skip_once">Skip once</string>
+    <string name="upcoming_timeline_action_change_time">Change time</string>
+    <string name="upcoming_timeline_action_cancel_override">Cancel override</string>
+    <string name="upcoming_timeline_action_edit">Edit alarm</string>
+    <string name="upcoming_timeline_base_time_format">Base: %1$s</string>
+    <string name="upcoming_timeline_stale_occurrence_error">Alarm schedule was modified; refreshed</string>
+    <string name="upcoming_timeline_future_readonly">Future occurrence (read-only)</string>
 </resources>
 
