@@ -81,7 +81,9 @@ import java.util.Locale
 internal fun LazyListScope.alarmEditScheduleSections(
     editorPage: AlarmEditorPage,
     state: AlarmEditUiState,
-    viewModel: AlarmEditViewModel
+    viewModel: AlarmEditViewModel,
+    onOpenUpcomingTimeline: () -> Unit,
+    onOpenHolidayCalendar: () -> Unit
 ) {
     // Schedule forecast
     SettingsSection(editorPage, AlarmEditorSection.UPCOMING) {
@@ -100,69 +102,17 @@ internal fun LazyListScope.alarmEditScheduleSections(
             )
         }
 
-        if (state.forecastDates.isNotEmpty()) {
-            state.forecastDates.forEach { entry ->
-                val instant = java.time.Instant.ofEpochMilli(entry.timeMillis)
-                val dt = instant.atZone(java.time.ZoneId.systemDefault())
-                val dateStr = dt.format(
-                    java.time.format.DateTimeFormatter.ofLocalizedDate(java.time.format.FormatStyle.MEDIUM)
-                )
-                val timeStr = dt.format(AlarmTimeFormatter.formatter(state.is24HourFormat))
-                val label = if (entry.skippedByVacation) {
-                    stringResource(R.string.alarm_edit_vacation_skip_date, dateStr, timeStr)
-                } else {
-                    stringResource(R.string.alarm_edit_fire_date, dateStr, timeStr)
-                }
-                val tone = if (entry.skippedByVacation) HintTone.Warning else HintTone.Neutral
-                SettingsHint(label, tone = tone)
-            }
-        } else {
-            SettingsHint(stringResource(R.string.alarm_edit_will_not_ring), tone = HintTone.Warning)
-        }
-    }
-
-    // Smart Alarm
-    SettingsSection(editorPage, AlarmEditorSection.SMART_ALARM) {
-        SettingsRow(
-            label = stringResource(R.string.alarm_edit_light_sleep),
-            trailing = {
-                Switch(
-                    checked = state.smartAlarmEnabled,
-                    onCheckedChange = { viewModel.updateSmartAlarm(it) },
-                    colors = appSwitchColors()
-                )
-            }
-        )
-        if (state.smartAlarmEnabled) {
-            var showWindowMenu by remember { mutableStateOf(false) }
-            SettingsRow(label = stringResource(R.string.alarm_edit_detection_window)) {
-                Box {
-                    SettingsValueButton(
-                        label = stringResource(R.string.alarm_edit_minutes_before_short, state.smartAlarmWindowMinutes),
-                        onClick = { showWindowMenu = true }
-                    )
-                    DropdownMenu(
-                        expanded = showWindowMenu,
-                        onDismissRequest = { showWindowMenu = false }
-                    ) {
-                        listOf(15, 20, 30, 45, 60).forEach { mins ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        pluralStringResource(R.plurals.alarm_edit_minutes_before_alarm, mins, mins),
-                                        color = if (mins == state.smartAlarmWindowMinutes) MaterialTheme.colorScheme.primary else TextPrimary
-                                    )
-                                },
-                                onClick = { viewModel.updateSmartAlarm(true, mins); showWindowMenu = false }
-                            )
-                        }
-                    }
-                }
-            }
-            SettingsHint(
-                stringResource(R.string.alarm_edit_smart_alarm_hint),
-                tone = HintTone.Neutral
+        OutlinedButton(
+            onClick = onOpenUpcomingTimeline,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(
+                imageVector = Icons.Default.CalendarMonth,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp)
             )
+            Spacer(Modifier.width(8.dp))
+            Text(stringResource(R.string.alarm_edit_view_upcoming_timeline))
         }
     }
 
@@ -211,5 +161,19 @@ internal fun LazyListScope.alarmEditScheduleSections(
             stringResource(R.string.alarm_edit_holidays_hint),
             tone = HintTone.Neutral
         )
+
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
+            onClick = onOpenHolidayCalendar,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(
+                imageVector = Icons.Default.Event,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(stringResource(R.string.alarm_edit_view_holiday_calendar))
+        }
     }
 }

@@ -529,7 +529,9 @@ private fun AppNavHost(
             arguments = listOf(navArgument("alarmId") { type = NavType.LongType })
         ) {
             AlarmEditScreen(
-                onNavigateBack = { navController.popBackStack() }
+                onNavigateBack = { navController.popBackStack() },
+                onOpenUpcomingTimeline = { navController.navigate(Screen.UpcomingTimeline.route) },
+                onOpenHolidayCalendar = { navController.navigate(Screen.HolidayCalendar.route) }
             )
         }
 

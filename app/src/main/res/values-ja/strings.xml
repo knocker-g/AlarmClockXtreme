@@ -256,8 +256,8 @@
     <string name="alarm_edit_page_sound_subtitle">着信音・音量・フェード・バイブレーション。</string>
     <string name="alarm_edit_page_dismiss">スヌーズと停止</string>
     <string name="alarm_edit_page_dismiss_subtitle">スヌーズ間隔・チャレンジ・停止保護。</string>
-    <string name="alarm_edit_page_schedule">スケジュールとスマートウェイク</string>
-    <string name="alarm_edit_page_schedule_subtitle">今後の鳴動・祝日・スマートウェイク。</string>
+    <string name="alarm_edit_page_schedule">スケジュール</string>
+    <string name="alarm_edit_page_schedule_subtitle">今後の鳴動・祝日設定。</string>
     <string name="alarm_edit_page_wake">起床体験</string>
     <string name="alarm_edit_page_wake_subtitle">起床エフェクト・アナウンス・確認・ルーティン。</string>
     <string name="alarm_edit_page_integrations">連携と安全性</string>
@@ -2605,4 +2605,6 @@
     <string name="upcoming_timeline_base_time_format">基本: %1$s</string>
     <string name="upcoming_timeline_stale_occurrence_error">アラームの予定が変更されたため更新しました</string>
     <string name="upcoming_timeline_future_readonly">以降の予定（閲覧のみ）</string>
+    <string name="alarm_edit_view_upcoming_timeline">今後の鳴動予定タイムラインを表示</string>
+    <string name="alarm_edit_view_holiday_calendar">祝日カレンダーを表示</string>
 </resources>

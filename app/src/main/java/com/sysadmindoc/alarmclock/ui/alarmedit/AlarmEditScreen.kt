@@ -118,7 +118,6 @@ internal enum class AlarmEditorSection(
     WAKE_EFFECTS(AlarmEditorPage.WAKE, R.string.alarm_edit_wake_effects, R.string.alarm_edit_section_wake_effects_description),
     ANNOUNCEMENT(AlarmEditorPage.WAKE, R.string.alarm_edit_announcement, R.string.alarm_edit_section_announcement_description),
     WAKE_CONFIRM(AlarmEditorPage.WAKE, R.string.alarm_edit_wake_confirmation, R.string.alarm_edit_section_wake_confirmation_description),
-    SMART_ALARM(AlarmEditorPage.SCHEDULE, R.string.alarm_edit_smart_alarm, R.string.alarm_edit_section_smart_alarm_description),
     HOLIDAYS(AlarmEditorPage.SCHEDULE, R.string.alarm_edit_holidays, R.string.alarm_edit_section_holidays_description),
     SPOTIFY(AlarmEditorPage.INTEGRATIONS, R.string.alarm_edit_spotify, R.string.alarm_edit_section_spotify_description),
     DISMISS_ACTION(AlarmEditorPage.INTEGRATIONS, R.string.alarm_edit_dismiss_action, R.string.alarm_edit_dismiss_action_hint),
@@ -183,11 +182,29 @@ internal fun alarmEditorExitDecision(
     else -> AlarmEditorExitDecision.NAVIGATE
 }
 
+internal fun alarmEditorNavigationDecision(
+    hasUnsavedChanges: Boolean,
+    isSaving: Boolean
+): AlarmEditorExitDecision = when {
+    isSaving -> AlarmEditorExitDecision.STAY
+    hasUnsavedChanges -> AlarmEditorExitDecision.CONFIRM_DISCARD
+    else -> AlarmEditorExitDecision.NAVIGATE
+}
+
+internal enum class AlarmEditPendingNavigation {
+    BACK,
+    UPCOMING_TIMELINE,
+    HOLIDAY_CALENDAR
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AlarmEditScreen(
+internal fun AlarmEditScreen(
     onNavigateBack: () -> Unit,
-    viewModel: AlarmEditViewModel = hiltViewModel()
+    onOpenUpcomingTimeline: () -> Unit,
+    onOpenHolidayCalendar: () -> Unit,
+    viewModel: AlarmEditViewModel = hiltViewModel(),
+    initialPage: AlarmEditorPage = AlarmEditorPage.OVERVIEW
 ) {
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -200,8 +217,8 @@ fun AlarmEditScreen(
     var photoReferenceStatus by remember { mutableStateOf("") }
     var firingBackgroundStatus by remember { mutableStateOf("") }
     var locationDismissStatus by remember { mutableStateOf("") }
-    var showDiscardConfirmation by rememberSaveable { mutableStateOf(false) }
-    var editorPageName by rememberSaveable { mutableStateOf(AlarmEditorPage.OVERVIEW.name) }
+    var pendingNavigation by rememberSaveable { mutableStateOf<AlarmEditPendingNavigation?>(null) }
+    var editorPageName by rememberSaveable { mutableStateOf(initialPage.name) }
     val editorPage = AlarmEditorPage.entries.firstOrNull { it.name == editorPageName }
         ?: AlarmEditorPage.OVERVIEW
     // One saved position per page. A single shared state meant returning from
@@ -243,7 +260,25 @@ fun AlarmEditScreen(
         when (alarmEditorExitDecision(state.hasUnsavedChanges, state.isSaving, editorPage)) {
             AlarmEditorExitDecision.SHOW_OVERVIEW -> editorPageName = AlarmEditorPage.OVERVIEW.name
             AlarmEditorExitDecision.NAVIGATE -> onNavigateBack()
-            AlarmEditorExitDecision.CONFIRM_DISCARD -> showDiscardConfirmation = true
+            AlarmEditorExitDecision.CONFIRM_DISCARD -> pendingNavigation = AlarmEditPendingNavigation.BACK
+            AlarmEditorExitDecision.STAY -> Unit
+        }
+    }
+
+    val handleOpenUpcomingTimeline = {
+        when (alarmEditorNavigationDecision(state.hasUnsavedChanges, state.isSaving)) {
+            AlarmEditorExitDecision.NAVIGATE -> onOpenUpcomingTimeline()
+            AlarmEditorExitDecision.CONFIRM_DISCARD -> pendingNavigation = AlarmEditPendingNavigation.UPCOMING_TIMELINE
+            AlarmEditorExitDecision.SHOW_OVERVIEW,
+            AlarmEditorExitDecision.STAY -> Unit
+        }
+    }
+
+    val handleOpenHolidayCalendar = {
+        when (alarmEditorNavigationDecision(state.hasUnsavedChanges, state.isSaving)) {
+            AlarmEditorExitDecision.NAVIGATE -> onOpenHolidayCalendar()
+            AlarmEditorExitDecision.CONFIRM_DISCARD -> pendingNavigation = AlarmEditPendingNavigation.HOLIDAY_CALENDAR
+            AlarmEditorExitDecision.SHOW_OVERVIEW,
             AlarmEditorExitDecision.STAY -> Unit
         }
     }
@@ -257,7 +292,7 @@ fun AlarmEditScreen(
     }
 
     LaunchedEffect(state.hasUnsavedChanges) {
-        if (!state.hasUnsavedChanges) showDiscardConfirmation = false
+        if (!state.hasUnsavedChanges) pendingNavigation = null
     }
 
     LaunchedEffect(state.saveError) {
@@ -391,23 +426,29 @@ fun AlarmEditScreen(
         )
     }
 
-    if (showDiscardConfirmation) {
+    if (pendingNavigation != null) {
         AlertDialog(
-            onDismissRequest = { showDiscardConfirmation = false },
+            onDismissRequest = { pendingNavigation = null },
             title = { Text(stringResource(R.string.alarm_edit_discard_title)) },
             text = { Text(stringResource(R.string.alarm_edit_discard_message)) },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        showDiscardConfirmation = false
-                        onNavigateBack()
+                        val target = pendingNavigation
+                        pendingNavigation = null
+                        when (target) {
+                            AlarmEditPendingNavigation.BACK -> onNavigateBack()
+                            AlarmEditPendingNavigation.UPCOMING_TIMELINE -> onOpenUpcomingTimeline()
+                            AlarmEditPendingNavigation.HOLIDAY_CALENDAR -> onOpenHolidayCalendar()
+                            null -> Unit
+                        }
                     }
                 ) {
                     Text(stringResource(R.string.alarm_edit_discard_action))
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showDiscardConfirmation = false }) {
+                TextButton(onClick = { pendingNavigation = null }) {
                     Text(stringResource(R.string.alarm_edit_keep_editing))
                 }
             }
@@ -595,7 +636,9 @@ fun AlarmEditScreen(
                         AlarmEditorPage.SCHEDULE -> alarmEditScheduleSections(
                             editorPage = targetPage,
                             state = state,
-                            viewModel = viewModel
+                            viewModel = viewModel,
+                            onOpenUpcomingTimeline = handleOpenUpcomingTimeline,
+                            onOpenHolidayCalendar = handleOpenHolidayCalendar
                         )
 
                         AlarmEditorPage.WAKE -> alarmEditWakeSections(

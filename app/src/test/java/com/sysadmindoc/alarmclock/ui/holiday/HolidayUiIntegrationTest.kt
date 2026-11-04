@@ -109,6 +109,7 @@ class HolidayUiIntegrationTest {
 
     @After
     fun tearDown() {
+        try { org.robolectric.shadows.ShadowLooper.idleMainLooper() } catch (_: Exception) {}
         Dispatchers.resetMain()
         db.close()
     }
