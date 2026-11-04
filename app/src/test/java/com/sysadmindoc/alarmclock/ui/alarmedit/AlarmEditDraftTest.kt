@@ -58,6 +58,22 @@ class AlarmEditDraftTest {
     }
 
     @Test
+    fun `external route navigation confirms only dirty drafts and stays during save`() {
+        assertEquals(
+            AlarmEditorExitDecision.NAVIGATE,
+            alarmEditorNavigationDecision(hasUnsavedChanges = false, isSaving = false)
+        )
+        assertEquals(
+            AlarmEditorExitDecision.CONFIRM_DISCARD,
+            alarmEditorNavigationDecision(hasUnsavedChanges = true, isSaving = false)
+        )
+        assertEquals(
+            AlarmEditorExitDecision.STAY,
+            alarmEditorNavigationDecision(hasUnsavedChanges = true, isSaving = true)
+        )
+    }
+
+    @Test
     fun `editor categories adapt to compact and wide layouts`() {
         assertEquals(1, alarmEditorCategoryColumns(360))
         assertEquals(1, alarmEditorCategoryColumns(719))
@@ -99,7 +115,6 @@ class AlarmEditDraftTest {
             AlarmEditorSection.WAKE_EFFECTS to AlarmEditorPage.WAKE,
             AlarmEditorSection.ANNOUNCEMENT to AlarmEditorPage.WAKE,
             AlarmEditorSection.WAKE_CONFIRM to AlarmEditorPage.WAKE,
-            AlarmEditorSection.SMART_ALARM to AlarmEditorPage.SCHEDULE,
             AlarmEditorSection.HOLIDAYS to AlarmEditorPage.SCHEDULE,
             AlarmEditorSection.SPOTIFY to AlarmEditorPage.INTEGRATIONS,
             AlarmEditorSection.DISMISS_ACTION to AlarmEditorPage.INTEGRATIONS,

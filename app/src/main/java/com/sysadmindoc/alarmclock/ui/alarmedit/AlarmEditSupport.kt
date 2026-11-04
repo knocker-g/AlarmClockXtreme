@@ -252,14 +252,10 @@ internal fun AlarmEditorCategoryOverview(
     onSelect: (AlarmEditorPage) -> Unit
 ) {
     val repeatSummary = state.repeatDays.toAlarmRepeatSummary()
-    val baseScheduleSummary = when {
-        state.specificDate.isNotBlank() -> stringResource(R.string.alarm_edit_schedule_specific, repeatSummary)
-        state.smartAlarmEnabled -> stringResource(
-            R.string.alarm_edit_schedule_smart,
-            repeatSummary,
-            state.smartAlarmWindowMinutes
-        )
-        else -> stringResource(R.string.alarm_edit_schedule_fixed, repeatSummary)
+    val baseScheduleSummary = if (state.specificDate.isNotBlank()) {
+        stringResource(R.string.alarm_edit_schedule_specific, repeatSummary)
+    } else {
+        stringResource(R.string.alarm_edit_schedule_fixed, repeatSummary)
     }
     val scheduleSummary = if (state.timezonePolicy == Alarm.TIMEZONE_POLICY_FIXED) {
         stringResource(

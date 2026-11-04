@@ -294,8 +294,8 @@
     <string name="alarm_edit_page_sound_subtitle">Ringtone, volume, fade-in, and vibration behavior.</string>
     <string name="alarm_edit_page_dismiss">Snooze &amp; dismiss</string>
     <string name="alarm_edit_page_dismiss_subtitle">Snooze timing, challenges, and dismissal safeguards.</string>
-    <string name="alarm_edit_page_schedule">Schedule &amp; smart wake</string>
-    <string name="alarm_edit_page_schedule_subtitle">Upcoming rings, holiday policy, and smart wake timing.</string>
+    <string name="alarm_edit_page_schedule">Schedule</string>
+    <string name="alarm_edit_page_schedule_subtitle">Upcoming rings and holiday policy.</string>
     <string name="alarm_edit_page_wake">Wake experience</string>
     <string name="alarm_edit_page_wake_subtitle">Wake effects, announcements, confirmation, and morning routine.</string>
     <string name="alarm_edit_page_integrations">Integrations &amp; safety</string>
@@ -2696,5 +2696,7 @@
     <string name="upcoming_timeline_base_time_format">Base: %1$s</string>
     <string name="upcoming_timeline_stale_occurrence_error">Alarm schedule was modified; refreshed</string>
     <string name="upcoming_timeline_future_readonly">Future occurrence (read-only)</string>
+    <string name="alarm_edit_view_upcoming_timeline">View upcoming timeline</string>
+    <string name="alarm_edit_view_holiday_calendar">View holiday calendar</string>
 </resources>
 
