@@ -551,6 +551,41 @@ class AlarmSchedulerTest {
     }
 
     @Test
+    fun `scheduleAt rejects stale same-generation newer revision in DB`() = runTest {
+        val alarmId = 708L
+        val now = System.currentTimeMillis()
+        val triggerTimeA = now + 20000L
+
+        // DB current alarm has same generation 1 but advanced revision 2
+        val currentDbAlarm = enabledAlarm(id = alarmId).copy(generation = 1, revision = 2)
+        coEvery { repository.getById(alarmId) } returns currentDbAlarm
+
+        // Stale request A presents same generation 1 but older revision 1
+        val staleAlarmA = enabledAlarm(id = alarmId).copy(generation = 1, revision = 1)
+        val resultA = scheduler.scheduleAt(staleAlarmA, triggerTimeA)
+
+        assertFalse("scheduleAt MUST be rejected when DB revision (2) > requested revision (1)", resultA.isArmed)
+        assertTrue("Outcome MUST be RegistrationFailed", resultA is ScheduleOutcome.RegistrationFailed)
+    }
+
+    @Test
+    fun `scheduleAt rejects disabled or deleted alarm in DB`() = runTest {
+        val alarmId = 709L
+        val now = System.currentTimeMillis()
+        val triggerTimeA = now + 20000L
+
+        // DB current alarm is disabled
+        val disabledDbAlarm = enabledAlarm(id = alarmId).copy(isEnabled = false)
+        coEvery { repository.getById(alarmId) } returns disabledDbAlarm
+
+        val staleAlarmA = enabledAlarm(id = alarmId)
+        val resultA = scheduler.scheduleAt(staleAlarmA, triggerTimeA)
+
+        assertFalse("scheduleAt MUST be rejected when DB alarm is disabled", resultA.isArmed)
+        assertTrue("Outcome MUST be NoArm(DISABLED)", resultA is ScheduleOutcome.NoArm && resultA.reason == "DISABLED")
+    }
+
+    @Test
     fun `Required Real Test - stale operation A with expectedRevision 1L is rejected when B becomes current at revision 2L`() = runTest {
         val alarmId = 710L
         val now = System.currentTimeMillis()

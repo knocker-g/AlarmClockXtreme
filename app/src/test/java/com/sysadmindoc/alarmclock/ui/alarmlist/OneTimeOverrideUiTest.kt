@@ -130,13 +130,30 @@ class OneTimeOverrideUiTest {
         coEvery { preferencesManager.settings } returns flowOf(AppSettings())
 
         scheduler = mockk(relaxed = true)
+        coEvery { scheduler.scheduleAt(any(), any(), any(), any(), any(), any(), any(), any()) } answers {
+            val alarm = firstArg<Alarm>()
+            val trigger = secondArg<Long>()
+            ScheduleOutcome.Armed(alarm.id, trigger)
+        }
         coEvery { scheduler.scheduleAt(any(), any()) } answers {
             val alarm = firstArg<Alarm>()
             val trigger = secondArg<Long>()
             ScheduleOutcome.Armed(alarm.id, trigger)
         }
+        coEvery { scheduler.schedule(any(), any<Boolean>(), any<Long>()) } answers {
+            val alarm = firstArg<Alarm>()
+            ScheduleOutcome.Armed(alarm.id, alarm.nextTriggerTime)
+        }
+        coEvery { scheduler.schedule(any(), any<Boolean>()) } answers {
+            val alarm = firstArg<Alarm>()
+            ScheduleOutcome.Armed(alarm.id, alarm.nextTriggerTime)
+        }
+        coEvery { scheduler.schedule(any()) } answers {
+            val alarm = firstArg<Alarm>()
+            ScheduleOutcome.Armed(alarm.id, alarm.nextTriggerTime)
+        }
 
-        adapter = DurableOneTimeOverrideAdapter(database = db)
+        adapter = DurableOneTimeOverrideAdapter(database = db, alarmScheduler = scheduler)
 
         viewModel = AlarmListViewModel(
             context = context,
@@ -149,6 +166,8 @@ class OneTimeOverrideUiTest {
             scheduleExceptionRepository = exceptionRepo,
             oneTimeOverrideAdapter = adapter
         )
+        viewModel.nowEpochMsProvider = { wed0700Ms - 3600_000L }
+        alarmRepo.clockMillis = { wed0700Ms - 3600_000L }
     }
 
     @After
@@ -433,11 +452,16 @@ class OneTimeOverrideUiTest {
         val alarm = insertRepeatingAlarm()
         // Mock scheduler to fail registration (re-arm registration failed)
         coEvery { scheduler.scheduleAt(any(), any()) } returns ScheduleOutcome.RegistrationFailed(alarm.id, Exception("TEST_FAILURE"))
+        coEvery { scheduler.schedule(any(), any<Boolean>(), any<Long>()) } returns ScheduleOutcome.RegistrationFailed(alarm.id, Exception("TEST_FAILURE"))
+        coEvery { scheduler.schedule(any(), any(), any()) } returns ScheduleOutcome.RegistrationFailed(alarm.id, Exception("TEST_FAILURE"))
+        coEvery { scheduler.schedule(any(), any()) } returns ScheduleOutcome.RegistrationFailed(alarm.id, Exception("TEST_FAILURE"))
+        coEvery { scheduler.schedule(any()) } returns ScheduleOutcome.RegistrationFailed(alarm.id, Exception("TEST_FAILURE"))
+        coEvery { scheduler.schedule(alarm = any(), requestWidgetUpdate = any(), notBeforeMillis = any()) } returns ScheduleOutcome.RegistrationFailed(alarm.id, Exception("TEST_FAILURE"))
 
         val feedback = captureFeedback {
             viewModel.applyChangeTimeOnce(alarm, LocalTime.of(8, 30)).join()
         }
-
+        println("DEBUG_TEST_J feedback: '$feedback', events: ${viewModel.feedbackEvents.replayCache}")
         assertEquals("When scheduler fails registration, pending reconcile message must be truthful",
             context.getString(R.string.one_time_override_pending_reconcile), feedback)
     }
@@ -492,10 +516,11 @@ class OneTimeOverrideUiTest {
 
         // 2. Re-enable alarm, apply override, then delete - must purge pending exceptions atomically
         alarmRepo.setEnabled(alarm.id, enabled = true, nextTrigger = wed0700Ms)
-        viewModel.applyChangeTimeOnce(alarm, LocalTime.of(8, 30)).join()
+        val reenabled = alarmRepo.getById(alarm.id)!!
+        viewModel.applyChangeTimeOnce(reenabled, LocalTime.of(8, 30)).join()
         assertEquals(1, exceptionRepo.getExceptionsForAlarm(alarm.id).size)
 
-        alarmRepo.delete(alarm)
+        alarmRepo.deleteById(alarm.id)
         assertEquals("Deleting alarm must purge pending exceptions", 0, exceptionRepo.getExceptionsForAlarm(alarm.id).size)
     }
 

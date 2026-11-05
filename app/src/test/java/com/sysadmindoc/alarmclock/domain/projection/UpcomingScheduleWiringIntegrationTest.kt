@@ -82,6 +82,7 @@ class UpcomingScheduleWiringIntegrationTest {
 
     private lateinit var projector: UpcomingScheduleProjector
     private lateinit var coordinator: UpcomingScheduleReconcileCoordinator
+    private lateinit var alarmScheduler: AlarmScheduler
     private lateinit var alarmRepo: AlarmRepository
     private lateinit var overrideAdapter: DurableOneTimeOverrideAdapter
 
@@ -131,9 +132,12 @@ class UpcomingScheduleWiringIntegrationTest {
             coordinator = coordinator
         )
 
+        alarmScheduler = mockk(relaxed = true)
+
         overrideAdapter = DurableOneTimeOverrideAdapter(
             database = db,
-            coordinator = coordinator
+            coordinator = coordinator,
+            alarmScheduler = alarmScheduler
         )
     }
 
@@ -716,7 +720,8 @@ class UpcomingScheduleWiringIntegrationTest {
 
     @Test
     fun testW17_databaseModuleProvidesAdapterWithCoordinator() = runBlocking {
-        val adapter = DatabaseModule.provideDurableOneTimeOverrideAdapter(db, coordinator)
+        val scheduler = mockk<AlarmScheduler>(relaxed = true)
+        val adapter = DatabaseModule.provideDurableOneTimeOverrideAdapter(db, coordinator, scheduler)
         assertNotNull(adapter)
 
         val alarm = Alarm(

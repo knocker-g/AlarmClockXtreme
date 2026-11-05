@@ -176,7 +176,7 @@ class DurableReconcileProducer(
 
             // 7. Create DurableOperationIntent with authentic incarnationId = storedAuthority.instanceToken
             val durableIntent = DurableOperationIntent(
-                operationToken = "reconcile_alarm_${alarmId}_gen_${alarm.generation}_rev_${alarm.revision}_${nowEpochMs}",
+                operationToken = "reconcile_alarm_${alarmId}_gen_${alarm.generation}_rev_${alarm.revision}_${nowEpochMs}_${java.util.UUID.randomUUID().toString().take(8)}",
                 alarmId = alarmId,
                 operationEpoch = nowEpochMs,
                 incarnationId = storedAuthority.instanceToken, // Bound to storedAuthority.instanceToken per RecoveryAdjudicator.kt:96,114

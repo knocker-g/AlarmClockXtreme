@@ -1,11 +1,14 @@
 package com.sysadmindoc.alarmclock.domain.evaluator
 
+import android.util.Log
 import androidx.room.withTransaction
 import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 import com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent
 import com.sysadmindoc.alarmclock.data.local.entity.IssuedOccurrence
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleException
 import com.sysadmindoc.alarmclock.data.model.Alarm
+import com.sysadmindoc.alarmclock.domain.AlarmScheduler
+import com.sysadmindoc.alarmclock.domain.ScheduleOutcome
 import com.sysadmindoc.alarmclock.domain.projection.InvalidationReason
 import com.sysadmindoc.alarmclock.domain.projection.UpcomingScheduleReconcileCoordinator
 import java.time.LocalDate
@@ -32,6 +35,7 @@ data class OneTimeOverrideResult(
     val updatedAlarm: Alarm?,
     val issuedOccurrence: IssuedOccurrence?,
     val durableIntent: DurableOperationIntent?,
+    val scheduleOutcome: ScheduleOutcome? = null,
     val decisionReason: String = ""
 )
 
@@ -54,7 +58,8 @@ class DurableOneTimeOverrideAdapter(
     private val reconcileProducer: DurableReconcileProducer = DurableReconcileProducer(database),
     private val issuanceProducer: OccurrenceIssuanceProducer = OccurrenceIssuanceProducer(database),
     private val evaluator: ScheduleOccurrenceEvaluator = ScheduleOccurrenceEvaluator(),
-    private val coordinator: UpcomingScheduleReconcileCoordinator? = null
+    private val coordinator: UpcomingScheduleReconcileCoordinator? = null,
+    private val alarmScheduler: AlarmScheduler? = null
 ) {
     companion object {
         const val REASON_SUCCESS = "ONE_TIME_OVERRIDE_COMMITTED"
@@ -66,6 +71,15 @@ class DurableOneTimeOverrideAdapter(
         const val REASON_ACTIVE_SESSION = "ACTIVE_FIRING_SESSION_BLOCKED"
         const val REASON_RECONCILE_FAILED = "RECONCILE_PRODUCER_FAILED"
         const val REASON_NO_OVERRIDE_TO_CANCEL = "NO_OVERRIDE_FOUND_TO_CANCEL"
+
+        private val LEGITIMATE_UNARMED_NO_ARM_REASONS = setOf(
+            "DISABLED",
+            "PAUSED",
+            "NO_NEXT_OCCURRENCE",
+            "ONE_SHOT_CONSUMED",
+            "HOLIDAY_SKIPPED",
+            "NO_FUTURE_OCCURRENCE"
+        )
     }
 
     /**
@@ -204,6 +218,7 @@ class DurableOneTimeOverrideAdapter(
                 )
             }
 
+            println("DEBUG_CLAIM_RESULT: outcome=${claimResult.outcome}, reason=${claimResult.decisionReason}")
             if (claimResult.outcome != DurableTimeOverrideClaimOutcome.COMMITTED_PENDING_RECONCILE || claimResult.committedTimeOverrideException == null) {
                 val mappedOutcome = when (claimResult.outcome) {
                     DurableTimeOverrideClaimOutcome.ACTIVE_SESSION -> OneTimeOverrideOutcome.ACTIVE_SESSION
@@ -257,7 +272,9 @@ class DurableOneTimeOverrideAdapter(
             )
         }
         if (result.outcome == OneTimeOverrideOutcome.SUCCESS_COMMITTED || result.outcome == OneTimeOverrideOutcome.ALREADY_COMMITTED) {
+            val syncedResult = syncOsScheduleAndSettleIntent(result)
             coordinator?.invalidateAlarm(alarmId, InvalidationReason.OVERRIDE_CHANGED)
+            return syncedResult
         }
         return result
     }
@@ -324,7 +341,9 @@ class DurableOneTimeOverrideAdapter(
             decisionReason = skipResult.decisionReason
         )
         if (result.outcome == OneTimeOverrideOutcome.SUCCESS_COMMITTED || result.outcome == OneTimeOverrideOutcome.ALREADY_COMMITTED) {
+            val syncedResult = syncOsScheduleAndSettleIntent(result)
             coordinator?.invalidateAlarm(alarmId, InvalidationReason.OVERRIDE_CHANGED)
+            return syncedResult
         }
         return result
     }
@@ -502,10 +521,75 @@ class DurableOneTimeOverrideAdapter(
                 decisionReason = "OVERRIDE_CANCELLED_REVERTED_TO_BASE"
             )
         }
-        if (result.outcome == OneTimeOverrideOutcome.SUCCESS_COMMITTED) {
+        if (result.outcome == OneTimeOverrideOutcome.SUCCESS_COMMITTED || result.outcome == OneTimeOverrideOutcome.ALREADY_COMMITTED) {
+            val syncedResult = syncOsScheduleAndSettleIntent(result)
             coordinator?.invalidateAlarm(alarmId, InvalidationReason.OVERRIDE_CHANGED)
+            return syncedResult
         }
         return result
+    }
+
+    @androidx.annotation.VisibleForTesting
+    internal suspend fun syncOsScheduleAndSettleIntent(result: OneTimeOverrideResult): OneTimeOverrideResult {
+        val resultAlarm = result.updatedAlarm ?: return result
+
+        // 1. Re-read CURRENT Alarm definition from Room DB to prevent TOCTOU window
+        val currentAlarm = database.alarmDao().getById(resultAlarm.id)
+        if (currentAlarm == null || !currentAlarm.isEnabled) {
+            Log.i("DurableOneTimeOverrideAdapter", "Alarm ${resultAlarm.id} is disabled or missing; skipping OS scheduling")
+            return result
+        }
+
+        // 2. CAS & Generation/Revision Fence: Ensure no successor operation/edit intervened
+        if (currentAlarm.generation != resultAlarm.generation || currentAlarm.revision != resultAlarm.revision) {
+            Log.i("DurableOneTimeOverrideAdapter", "Alarm ${resultAlarm.id} revision/generation advanced (current rev ${currentAlarm.revision} vs result rev ${resultAlarm.revision}); skipping stale OS scheduling")
+            return result
+        }
+
+        // 3. Invoke authorized AlarmScheduler.schedule() with latest DB definition
+        val scheduler = alarmScheduler ?: run {
+            Log.w("DurableOneTimeOverrideAdapter", "AlarmScheduler unavailable for alarm ${currentAlarm.id}; leaving durable intent pending")
+            val pendingOutcome = ScheduleOutcome.RegistrationFailed(currentAlarm.id, IllegalStateException("AlarmScheduler unavailable"))
+            return result.copy(scheduleOutcome = pendingOutcome)
+        }
+
+        val outcome = try {
+            scheduler.schedule(currentAlarm, requestWidgetUpdate = true, notBeforeMillis = 0L)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e // Preserve coroutine cancellation semantics!
+        } catch (e: Exception) {
+            Log.e("DurableOneTimeOverrideAdapter", "Failed OS schedule for alarm ${currentAlarm.id}", e)
+            ScheduleOutcome.RegistrationFailed(currentAlarm.id, e)
+        }
+
+        // 4. Truthfully classify outcome (Armed or legitimate unarmed state)
+        val isConfirmedOutcome = outcome is ScheduleOutcome.Armed ||
+            (outcome is ScheduleOutcome.NoArm && outcome.reason in LEGITIMATE_UNARMED_NO_ARM_REASONS)
+
+        if (isConfirmedOutcome) {
+            result.durableIntent?.let { intent ->
+                settleDurableIntent(intent, currentAlarm)
+            }
+        }
+
+        return result.copy(scheduleOutcome = outcome)
+    }
+
+    private suspend fun settleDurableIntent(intent: DurableOperationIntent, currentAlarm: Alarm) {
+        try {
+            val durableDao = database.durableOperationIntentDao()
+            val latestIntent = durableDao.getIntentByToken(intent.operationToken)
+            if (latestIntent != null && DurableOperationIntent.isUnresolvedPhase(latestIntent.phase) && latestIntent.alarmId == currentAlarm.id) {
+                durableDao.updateIntentPhase(
+                    intent.operationToken,
+                    DurableOperationIntent.PHASE_COMPLETED
+                )
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("DurableOneTimeOverrideAdapter", "Failed to mark intent ${intent.operationToken} completed", e)
+        }
     }
 
     /**

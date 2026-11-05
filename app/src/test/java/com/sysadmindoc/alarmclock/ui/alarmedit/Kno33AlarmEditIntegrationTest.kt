@@ -161,7 +161,8 @@ class Kno33AlarmEditIntegrationTest {
         adapter = DurableOneTimeOverrideAdapter(
             database = db,
             timeOverrideCoordinator = coordinator,
-            evaluator = evaluator
+            evaluator = evaluator,
+            alarmScheduler = scheduler
         )
     }
 

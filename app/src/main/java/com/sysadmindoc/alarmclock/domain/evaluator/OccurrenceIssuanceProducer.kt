@@ -1,5 +1,6 @@
 package com.sysadmindoc.alarmclock.domain.evaluator
 
+import android.util.Log
 import androidx.room.withTransaction
 import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 import com.sysadmindoc.alarmclock.data.local.entity.IssueSlot
@@ -264,7 +265,18 @@ class OccurrenceIssuanceProducer(
                 definitionRevision = currentFingerprint.definitionRevision
             )
 
-            issuedDao.insertOccurrence(newOccurrence)
+            try {
+                issuedDao.insertOccurrence(newOccurrence)
+            } catch (e: Exception) {
+                Log.e("OccurrenceIssuanceProducer", "Failed to insert occurrence $newIssueToken", e)
+                return@withTransaction IssuanceProducerResult(
+                    outcome = IssuanceProducerOutcome.UNSUPPORTED_SCHEDULE,
+                    alarmId = alarmId,
+                    issuedOccurrence = null,
+                    issueSlot = updatedSlot,
+                    decisionReason = "INSERT_FAILED_${e.javaClass.simpleName}: ${e.message}"
+                )
+            }
 
             return@withTransaction IssuanceProducerResult(
                 outcome = IssuanceProducerOutcome.ISSUED_COMMITTED,
