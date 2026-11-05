@@ -23,6 +23,9 @@ import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -1231,6 +1234,89 @@ class OneTimeOverrideFoundationTest {
         assertNotNull(intentToken)
         val settledIntent = durableDao.getIntentByToken(intentToken!!)
         assertEquals(DurableOperationIntent.PHASE_COMPLETED, settledIntent?.phase)
+    }
+
+    @Test
+    fun `completeDurableIntentAtomic rejects mismatched alarmId or already completed phase`() = runBlocking {
+        insertStandardRepeatingAlarm()
+        val token = "reconcile_alarm_1_gen_1_rev_1_test"
+        val intent = DurableOperationIntent(
+            operationToken = token,
+            alarmId = 1L,
+            operationEpoch = nowEpochMs,
+            incarnationId = "auth_1",
+            operationKind = "RECONCILE_RESCHEDULE",
+            expectedOwnerToken = "auth_1",
+            expectedScheduleRevision = 1L,
+            expectedRestoreEpoch = 1700000000L,
+            phase = DurableOperationIntent.PHASE_PENDING,
+            intentRevision = 1L,
+            originalScheduledAt = wed0700Ms
+        )
+        durableDao.insertValidatedIntent(intent)
+
+        // 1. Mismatched alarmId -> 0 rows updated
+        val rowsMismatch = durableDao.completeDurableIntentAtomic(token, alarmId = 999L)
+        assertEquals(0, rowsMismatch)
+        assertEquals(DurableOperationIntent.PHASE_PENDING, durableDao.getIntentByToken(token)?.phase)
+
+        // 2. Matching alarmId -> 1 row updated to COMPLETED
+        val rowsMatch = durableDao.completeDurableIntentAtomic(token, alarmId = 1L)
+        assertEquals(1, rowsMatch)
+        assertEquals(DurableOperationIntent.PHASE_COMPLETED, durableDao.getIntentByToken(token)?.phase)
+
+        // 3. Already completed -> 0 rows updated
+        val rowsCompleted = durableDao.completeDurableIntentAtomic(token, alarmId = 1L)
+        assertEquals(0, rowsCompleted)
+    }
+
+    @Test
+    fun `issuanceProducer failure forces room transaction rollback`() = runBlocking {
+        insertStandardRepeatingAlarm()
+        val mockIssuanceProducer: OccurrenceIssuanceProducer = mockk()
+        coEvery {
+            mockIssuanceProducer.issueOccurrence(
+                alarmId = any(),
+                baseTriggerTimeEpochMs = any(),
+                scheduledTargetEpochMs = any(),
+                nowEpochMs = any(),
+                expectedAuthorityFingerprint = any(),
+                evaluatedOccurrence = any(),
+                fireId = any(),
+                holidaySnapshotProvider = any(),
+                holidayPolicyOverride = any(),
+                consumedOccurrenceKeys = any(),
+                evaluationZoneId = any(),
+                allowHidePersonalRuntimeFeatures = any()
+            )
+        } throws RuntimeException("SIMULATED_ISSUANCE_DB_CONSTRAINT_FAILURE")
+
+        val reconcileProducerWithMock = DurableReconcileProducer(
+            database = db,
+            issuanceProducer = mockIssuanceProducer
+        )
+        val adapterWithFailingIssuance = DurableOneTimeOverrideAdapter(
+            database = db,
+            reconcileProducer = reconcileProducerWithMock,
+            alarmScheduler = mockk(relaxed = true)
+        )
+
+        try {
+            adapterWithFailingIssuance.executeChangeTimeOnce(
+                alarmId = 1L,
+                expectedScheduledAt = wed0700Ms,
+                newTime = LocalTime.of(8, 30),
+                nowEpochMs = nowEpochMs,
+                evaluationZoneId = zoneId
+            )
+            fail("Expected exception during executeChangeTimeOnce")
+        } catch (e: Exception) {
+            assertTrue(e.message?.contains("SIMULATED_ISSUANCE_DB_CONSTRAINT_FAILURE") == true)
+        }
+
+        // Verify Room transaction rolled back: schedule_exceptions table is empty!
+        val exceptions = exceptionDao.getExceptionsForAlarm(1L)
+        assertEquals(0, exceptions.size)
     }
 }
 

@@ -411,7 +411,7 @@ class OneTimeOverrideUiTest {
             viewModel.applyChangeTimeOnce(8, 30).join()
         }
 
-        assertNull("Stale target rejection must close sheet", viewModel.uiState.value.overrideTarget)
+        assertNull("Stale target rejection must close sheet", viewModel.overrideTarget.value)
         assertEquals(context.getString(R.string.one_time_override_stale_target), feedback)
     }
 
@@ -461,7 +461,6 @@ class OneTimeOverrideUiTest {
         val feedback = captureFeedback {
             viewModel.applyChangeTimeOnce(alarm, LocalTime.of(8, 30)).join()
         }
-        println("DEBUG_TEST_J feedback: '$feedback', events: ${viewModel.feedbackEvents.replayCache}")
         assertEquals("When scheduler fails registration, pending reconcile message must be truthful",
             context.getString(R.string.one_time_override_pending_reconcile), feedback)
     }
@@ -654,5 +653,20 @@ class OneTimeOverrideUiTest {
             assertTrue("Key $key must exist in JA strings", jaStrings.containsKey(key))
             assertTrue("Key $key in JA strings must not be empty", jaStrings[key]!!.isNotBlank())
         }
+    }
+
+    @Test
+    fun testQ_disabledNoArmOnEnabledAlarmClassifiedAsPending() = runBlocking {
+        val alarm = insertRepeatingAlarm()
+        // Mock scheduler to return NoArm("DISABLED") for an ENABLED alarm
+        coEvery { scheduler.schedule(any(), any<Boolean>(), any<Long>()) } returns ScheduleOutcome.NoArm(alarm.id, "DISABLED")
+
+        val feedback = captureFeedback {
+            viewModel.applyChangeTimeOnce(alarm, LocalTime.of(8, 30)).join()
+        }
+
+        // Disabled NoArm on an enabled alarm must NOT be treated as success, must emit pending reconcile
+        assertEquals("Unverified DISABLED NoArm on enabled alarm must emit pending reconcile",
+            context.getString(R.string.one_time_override_pending_reconcile), feedback)
     }
 }

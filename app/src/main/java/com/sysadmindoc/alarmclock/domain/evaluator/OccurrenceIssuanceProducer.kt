@@ -267,15 +267,11 @@ class OccurrenceIssuanceProducer(
 
             try {
                 issuedDao.insertOccurrence(newOccurrence)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e("OccurrenceIssuanceProducer", "Failed to insert occurrence $newIssueToken", e)
-                return@withTransaction IssuanceProducerResult(
-                    outcome = IssuanceProducerOutcome.UNSUPPORTED_SCHEDULE,
-                    alarmId = alarmId,
-                    issuedOccurrence = null,
-                    issueSlot = updatedSlot,
-                    decisionReason = "INSERT_FAILED_${e.javaClass.simpleName}: ${e.message}"
-                )
+                throw e // Re-throw to force Room transaction rollback!
             }
 
             return@withTransaction IssuanceProducerResult(

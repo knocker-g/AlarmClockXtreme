@@ -218,7 +218,6 @@ class DurableOneTimeOverrideAdapter(
                 )
             }
 
-            println("DEBUG_CLAIM_RESULT: outcome=${claimResult.outcome}, reason=${claimResult.decisionReason}")
             if (claimResult.outcome != DurableTimeOverrideClaimOutcome.COMMITTED_PENDING_RECONCILE || claimResult.committedTimeOverrideException == null) {
                 val mappedOutcome = when (claimResult.outcome) {
                     DurableTimeOverrideClaimOutcome.ACTIVE_SESSION -> OneTimeOverrideOutcome.ACTIVE_SESSION
@@ -577,13 +576,12 @@ class DurableOneTimeOverrideAdapter(
 
     private suspend fun settleDurableIntent(intent: DurableOperationIntent, currentAlarm: Alarm) {
         try {
-            val durableDao = database.durableOperationIntentDao()
-            val latestIntent = durableDao.getIntentByToken(intent.operationToken)
-            if (latestIntent != null && DurableOperationIntent.isUnresolvedPhase(latestIntent.phase) && latestIntent.alarmId == currentAlarm.id) {
-                durableDao.updateIntentPhase(
-                    intent.operationToken,
-                    DurableOperationIntent.PHASE_COMPLETED
-                )
+            val rowsUpdated = database.durableOperationIntentDao().completeDurableIntentAtomic(
+                operationToken = intent.operationToken,
+                alarmId = currentAlarm.id
+            )
+            if (rowsUpdated == 0) {
+                Log.w("DurableOneTimeOverrideAdapter", "Atomic intent completion returned 0 updated rows for token ${intent.operationToken} (alarm ${currentAlarm.id})")
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
