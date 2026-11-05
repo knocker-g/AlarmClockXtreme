@@ -1,5 +1,6 @@
 package com.sysadmindoc.alarmclock.domain.evaluator
 
+import android.util.Log
 import androidx.room.withTransaction
 import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 import com.sysadmindoc.alarmclock.data.local.entity.IssueSlot
@@ -264,7 +265,14 @@ class OccurrenceIssuanceProducer(
                 definitionRevision = currentFingerprint.definitionRevision
             )
 
-            issuedDao.insertOccurrence(newOccurrence)
+            try {
+                issuedDao.insertOccurrence(newOccurrence)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("OccurrenceIssuanceProducer", "Failed to insert occurrence $newIssueToken", e)
+                throw e // Re-throw to force Room transaction rollback!
+            }
 
             return@withTransaction IssuanceProducerResult(
                 outcome = IssuanceProducerOutcome.ISSUED_COMMITTED,

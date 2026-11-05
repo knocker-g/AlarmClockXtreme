@@ -208,9 +208,10 @@ class AlarmListViewModel @Inject constructor(
     private val _selectedIds = MutableStateFlow<Set<Long>>(emptySet())
     private val _isSelectionMode = MutableStateFlow(false)
     private var lastSortCycleMillis = 0L
+    internal var nowEpochMsProvider: () -> Long = { System.currentTimeMillis() }
 
     private val effectiveOneTimeOverrideAdapter by lazy {
-        oneTimeOverrideAdapter ?: database?.let { DurableOneTimeOverrideAdapter(it) }
+        oneTimeOverrideAdapter ?: database?.let { DurableOneTimeOverrideAdapter(it, alarmScheduler = scheduler) }
     }
 
     private val _overrideTarget = MutableStateFlow<OneTimeOverrideTarget?>(null)
@@ -1157,7 +1158,7 @@ class AlarmListViewModel @Inject constructor(
                 val newTime = LocalTime.of(target.selectedHour, target.selectedMinute)
                 val newZdt = ZonedDateTime.of(target.targetDate, newTime, zone)
                 val newEpochMs = newZdt.toInstant().toEpochMilli()
-                val nowMs = System.currentTimeMillis()
+                val nowMs = nowEpochMsProvider()
 
                 // Reject past local datetime (Cover H)
                 if (newEpochMs <= nowMs) {
@@ -1213,12 +1214,15 @@ class AlarmListViewModel @Inject constructor(
             val baseTrigger = currentEx?.baseTriggerTime ?: alarm.nextTriggerTime
             val targetDate = Instant.ofEpochMilli(alarm.nextTriggerTime).atZone(zone).toLocalDate()
 
+            val currentAuth = database?.scheduleAuthorityDao()?.getAuthorityByAlarmId(alarm.id)
+            val expectedRev = currentEx?.revision ?: currentAuth?.scheduleRevision ?: alarm.revision.toLong()
+
             val target = OneTimeOverrideTarget(
                 alarmId = alarm.id,
                 expectedScheduledAt = alarm.nextTriggerTime,
                 expectedBaseTriggerTime = baseTrigger,
                 expectedGeneration = alarm.generation,
-                expectedRevision = currentEx?.revision ?: 1,
+                expectedRevision = expectedRev.toInt(),
                 alarmLabel = alarm.label,
                 baseHour = alarm.hour,
                 baseMinute = alarm.minute,
@@ -1254,7 +1258,7 @@ class AlarmListViewModel @Inject constructor(
                     return@launch
                 }
 
-                val nowMs = System.currentTimeMillis()
+                val nowMs = nowEpochMsProvider()
                 val result = adapter.executeSkipOnce(
                     alarmId = effectiveTarget.alarmId,
                     expectedScheduledAt = effectiveTarget.expectedScheduledAt,
@@ -1281,12 +1285,15 @@ class AlarmListViewModel @Inject constructor(
             val baseTrigger = currentEx?.baseTriggerTime ?: alarm.nextTriggerTime
             val targetDate = Instant.ofEpochMilli(alarm.nextTriggerTime).atZone(zone).toLocalDate()
 
+            val currentAuth = database?.scheduleAuthorityDao()?.getAuthorityByAlarmId(alarm.id)
+            val expectedRev = currentEx?.revision ?: currentAuth?.scheduleRevision ?: alarm.revision.toLong()
+
             val target = OneTimeOverrideTarget(
                 alarmId = alarm.id,
                 expectedScheduledAt = alarm.nextTriggerTime,
                 expectedBaseTriggerTime = baseTrigger,
                 expectedGeneration = alarm.generation,
-                expectedRevision = currentEx?.revision ?: 1,
+                expectedRevision = expectedRev.toInt(),
                 alarmLabel = alarm.label,
                 baseHour = alarm.hour,
                 baseMinute = alarm.minute,
@@ -1313,7 +1320,7 @@ class AlarmListViewModel @Inject constructor(
                     return@launch
                 }
 
-                val nowMs = System.currentTimeMillis()
+                val nowMs = nowEpochMsProvider()
                 val result = adapter.cancelOverride(
                     alarmId = effectiveTarget.alarmId,
                     expectedScheduledAt = effectiveTarget.expectedScheduledAt,
@@ -1358,6 +1365,21 @@ class AlarmListViewModel @Inject constructor(
         }
     }
 
+    private fun isConfirmedScheduleOutcome(schedOutcome: ScheduleOutcome?, isAlarmEnabled: Boolean): Boolean {
+        return when (schedOutcome) {
+            is ScheduleOutcome.Armed -> true
+            is ScheduleOutcome.NoArm -> {
+                val validReasons = if (isAlarmEnabled) {
+                    setOf("PAUSED", "NO_NEXT_OCCURRENCE", "ONE_SHOT_CONSUMED", "HOLIDAY_SKIPPED", "NO_FUTURE_OCCURRENCE")
+                } else {
+                    setOf("DISABLED", "PAUSED", "NO_NEXT_OCCURRENCE", "ONE_SHOT_CONSUMED", "HOLIDAY_SKIPPED", "NO_FUTURE_OCCURRENCE")
+                }
+                schedOutcome.reason in validReasons
+            }
+            else -> false
+        }
+    }
+
     private suspend fun handleOverrideResult(
         result: OneTimeOverrideResult,
         isChangeTime: Boolean = false,
@@ -1368,45 +1390,39 @@ class AlarmListViewModel @Inject constructor(
         when (result.outcome) {
             OneTimeOverrideOutcome.SUCCESS_COMMITTED -> {
                 val updatedAlarm = result.updatedAlarm ?: return
-                val scheduleOutcome = scheduler.scheduleAt(updatedAlarm, updatedAlarm.nextTriggerTime)
-
-                when (scheduleOutcome) {
-                    is ScheduleOutcome.RegistrationFailed -> {
-                        android.util.Log.w("AlarmListViewModel", "Registration failed for alarm ${updatedAlarm.id}; enqueuing recovery")
-                        try {
-                            com.sysadmindoc.alarmclock.worker.BootRescheduleWorker.enqueue(
-                                context = context,
-                                sourceAction = "ONE_TIME_OVERRIDE_REGISTRATION_FAILED",
-                                forceRecalculate = false
-                            )
-                        } catch (e: Exception) {
-                            android.util.Log.e("AlarmListViewModel", "Failed to enqueue BootRescheduleWorker", e)
-                        }
-                        emitFeedback(context.getString(R.string.one_time_override_pending_reconcile))
+                if (isConfirmedScheduleOutcome(result.scheduleOutcome, updatedAlarm.isEnabled)) {
+                    if (isChangeTime && newTime != null) {
+                        val is24h = preferencesManager.getCachedSettings().is24HourFormat
+                        val formattedTime = AlarmTimeFormatter.format(updatedAlarm.nextTriggerTime, is24h)
+                        emitFeedback(context.getString(R.string.one_time_override_success_time, formattedTime))
+                    } else if (isSkip) {
+                        val locale = context.resources.configuration.locales[0]
+                        val is24h = preferencesManager.getCachedSettings().is24HourFormat
+                        val datePattern = context.getString(R.string.alarmlist_date_pattern)
+                        val format = context.getString(R.string.alarmlist_next_occurrence_format)
+                        val dateFormatted = Instant.ofEpochMilli(updatedAlarm.nextTriggerTime)
+                            .atZone(ZoneId.systemDefault())
+                            .format(DateTimeFormatter.ofPattern(datePattern, locale))
+                        val timeFormatted = AlarmTimeFormatter.format(updatedAlarm.nextTriggerTime, is24h, locale = locale)
+                        val skippedDate = format.format(dateFormatted, timeFormatted)
+                        emitFeedback(context.getString(R.string.alarmlist_skip_next_feedback, skippedDate))
+                    } else if (isCancel) {
+                        emitFeedback(context.getString(R.string.one_time_override_success_cancel))
                     }
-                    is ScheduleOutcome.PermissionBlocked -> {
-                        emitFeedback(context.getString(R.string.feedback_alarm_enabled_permission_blocked))
+                } else if (result.scheduleOutcome is ScheduleOutcome.PermissionBlocked) {
+                    emitFeedback(context.getString(R.string.feedback_alarm_enabled_permission_blocked))
+                } else {
+                    android.util.Log.w("AlarmListViewModel", "Registration or schedule outcome unconfirmed (${result.scheduleOutcome}) for alarm ${updatedAlarm.id}; enqueuing recovery")
+                    try {
+                        com.sysadmindoc.alarmclock.worker.BootRescheduleWorker.enqueue(
+                            context = context,
+                            sourceAction = "ONE_TIME_OVERRIDE_REGISTRATION_FAILED",
+                            forceRecalculate = false
+                        )
+                    } catch (e: Exception) {
+                        android.util.Log.e("AlarmListViewModel", "Failed to enqueue BootRescheduleWorker", e)
                     }
-                    else -> {
-                        if (isChangeTime && newTime != null) {
-                            val is24h = preferencesManager.getCachedSettings().is24HourFormat
-                            val formattedTime = AlarmTimeFormatter.format(updatedAlarm.nextTriggerTime, is24h)
-                            emitFeedback(context.getString(R.string.one_time_override_success_time, formattedTime))
-                        } else if (isSkip) {
-                            val locale = context.resources.configuration.locales[0]
-                            val is24h = preferencesManager.getCachedSettings().is24HourFormat
-                            val datePattern = context.getString(R.string.alarmlist_date_pattern)
-                            val format = context.getString(R.string.alarmlist_next_occurrence_format)
-                            val dateFormatted = Instant.ofEpochMilli(updatedAlarm.nextTriggerTime)
-                                .atZone(ZoneId.systemDefault())
-                                .format(DateTimeFormatter.ofPattern(datePattern, locale))
-                            val timeFormatted = AlarmTimeFormatter.format(updatedAlarm.nextTriggerTime, is24h, locale = locale)
-                            val skippedDate = format.format(dateFormatted, timeFormatted)
-                            emitFeedback(context.getString(R.string.alarmlist_skip_next_feedback, skippedDate))
-                        } else if (isCancel) {
-                            emitFeedback(context.getString(R.string.one_time_override_success_cancel))
-                        }
-                    }
+                    emitFeedback(context.getString(R.string.one_time_override_pending_reconcile))
                 }
 
                 val eventAction = when {

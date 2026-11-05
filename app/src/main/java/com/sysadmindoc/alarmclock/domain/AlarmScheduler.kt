@@ -393,9 +393,19 @@ class AlarmScheduler @Inject constructor(
         val slotMutex = mainSlotMutexMap.computeIfAbsent(sanitizedAlarm.id) { Mutex() }
         return slotMutex.withLock {
             val currentDbAlarm = repository.getById(sanitizedAlarm.id)
-            if (currentDbAlarm != null && !sanitizedAlarm.isQuickAlarm && currentDbAlarm.generation > sanitizedAlarm.generation) {
-                Log.i("AlarmScheduler", "Aborting stale scheduleAt for alarm ${sanitizedAlarm.id}: current DB generation ${currentDbAlarm.generation} > requested generation ${sanitizedAlarm.generation}")
-                return@withLock ScheduleOutcome.RegistrationFailed(sanitizedAlarm.id, IllegalStateException("Stale scheduleAt: generation mismatch"))
+            if (currentDbAlarm != null && !sanitizedAlarm.isQuickAlarm) {
+                if (!currentDbAlarm.isEnabled) {
+                    Log.i("AlarmScheduler", "Aborting stale scheduleAt for alarm ${sanitizedAlarm.id}: alarm is disabled or deleted in DB")
+                    return@withLock ScheduleOutcome.NoArm(sanitizedAlarm.id, "DISABLED")
+                }
+                if (currentDbAlarm.generation > sanitizedAlarm.generation) {
+                    Log.i("AlarmScheduler", "Aborting stale scheduleAt for alarm ${sanitizedAlarm.id}: current DB generation ${currentDbAlarm.generation} > requested generation ${sanitizedAlarm.generation}")
+                    return@withLock ScheduleOutcome.RegistrationFailed(sanitizedAlarm.id, IllegalStateException("Stale scheduleAt: generation mismatch"))
+                }
+                if (currentDbAlarm.generation == sanitizedAlarm.generation && currentDbAlarm.revision > sanitizedAlarm.revision) {
+                    Log.i("AlarmScheduler", "Aborting stale scheduleAt for alarm ${sanitizedAlarm.id}: current DB revision ${currentDbAlarm.revision} > requested revision ${sanitizedAlarm.revision}")
+                    return@withLock ScheduleOutcome.RegistrationFailed(sanitizedAlarm.id, IllegalStateException("Stale scheduleAt: revision mismatch"))
+                }
             }
 
             val previousTrigger = currentDbAlarm?.nextTriggerTime ?: 0L

@@ -17,9 +17,15 @@ import com.sysadmindoc.alarmclock.data.local.entity.ScheduleException
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.domain.ScheduleOutcome
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -48,6 +54,7 @@ class OneTimeOverrideFoundationTest {
     private lateinit var durableDao: DurableOperationIntentDao
 
     private lateinit var coordinator: DurableTimeOverrideClaimCoordinator
+    private lateinit var mockScheduler: AlarmScheduler
     private lateinit var adapter: DurableOneTimeOverrideAdapter
 
     private val zoneId = ZoneId.of("America/New_York")
@@ -109,9 +116,11 @@ class OneTimeOverrideFoundationTest {
         durableDao = db.durableOperationIntentDao()
 
         coordinator = DurableTimeOverrideClaimCoordinator(database = db)
+        mockScheduler = mockk(relaxed = true)
         adapter = DurableOneTimeOverrideAdapter(
             database = db,
-            timeOverrideCoordinator = coordinator
+            timeOverrideCoordinator = coordinator,
+            alarmScheduler = mockScheduler
         )
     }
 
@@ -955,6 +964,359 @@ class OneTimeOverrideFoundationTest {
         assertEquals("STALE_OVERRIDE_TARGET_MISMATCH", cancelResult.decisionReason)
         assertEquals("Future exception must be preserved and not deleted", 1, exceptionDao.getExceptionsForAlarm(1L).size)
         assertEquals(wed0700Ms, alarmDao.getById(1L)?.nextTriggerTime)
+    }
+
+    @Test
+    fun `executeSkipOnce invokes alarmScheduler schedule and marks durableIntent completed`() = runBlocking {
+        insertStandardRepeatingAlarm()
+        val mockScheduler: AlarmScheduler = mockk(relaxed = true)
+        val adapterWithScheduler = DurableOneTimeOverrideAdapter(
+            database = db,
+            timeOverrideCoordinator = coordinator,
+            alarmScheduler = mockScheduler
+        )
+
+        val nextWed0700Ms = LocalDate.of(2026, 11, 11).atTime(LocalTime.of(7, 0)).atZone(zoneId).toInstant().toEpochMilli()
+        coEvery { mockScheduler.schedule(any(), any(), any()) } returns ScheduleOutcome.Armed(1L, nextWed0700Ms)
+
+        val result = adapterWithScheduler.executeSkipOnce(
+            alarmId = 1L,
+            expectedScheduledAt = wed0700Ms,
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
+
+        assertEquals(OneTimeOverrideOutcome.SUCCESS_COMMITTED, result.outcome)
+        coVerify { mockScheduler.schedule(any(), any(), any()) }
+
+        val intentToken = result.durableIntent?.operationToken
+        assertNotNull(intentToken)
+        val settledIntent = durableDao.getIntentByToken(intentToken!!)
+        assertEquals(DurableOperationIntent.PHASE_COMPLETED, settledIntent?.phase)
+    }
+
+    @Test
+    fun `executeChangeTimeOnce invokes alarmScheduler schedule and marks durableIntent completed`() = runBlocking {
+        insertStandardRepeatingAlarm()
+        val mockScheduler: AlarmScheduler = mockk(relaxed = true)
+        val adapterWithScheduler = DurableOneTimeOverrideAdapter(
+            database = db,
+            timeOverrideCoordinator = coordinator,
+            alarmScheduler = mockScheduler
+        )
+
+        val newTime = LocalTime.of(8, 30)
+        val wed0830Ms = LocalDate.of(2026, 11, 4).atTime(newTime).atZone(zoneId).toInstant().toEpochMilli()
+
+        coEvery { mockScheduler.schedule(any(), any(), any()) } returns ScheduleOutcome.Armed(1L, wed0830Ms)
+
+        val result = adapterWithScheduler.executeChangeTimeOnce(
+            alarmId = 1L,
+            expectedScheduledAt = wed0700Ms,
+            newTime = newTime,
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
+
+        assertEquals(OneTimeOverrideOutcome.SUCCESS_COMMITTED, result.outcome)
+        coVerify { mockScheduler.schedule(any(), any(), any()) }
+
+        val intentToken = result.durableIntent?.operationToken
+        assertNotNull(intentToken)
+        val settledIntent = durableDao.getIntentByToken(intentToken!!)
+        assertEquals(DurableOperationIntent.PHASE_COMPLETED, settledIntent?.phase)
+    }
+
+    @Test
+    fun `cancelOverride invokes alarmScheduler schedule and marks durableIntent completed`() = runBlocking {
+        insertStandardRepeatingAlarm()
+        val mockScheduler: AlarmScheduler = mockk(relaxed = true)
+        val adapterWithScheduler = DurableOneTimeOverrideAdapter(
+            database = db,
+            timeOverrideCoordinator = coordinator,
+            alarmScheduler = mockScheduler
+        )
+
+        val newTime = LocalTime.of(8, 30)
+        coEvery { mockScheduler.schedule(any(), any(), any()) } returns ScheduleOutcome.Armed(1L, wed0700Ms)
+
+        adapterWithScheduler.executeChangeTimeOnce(
+            alarmId = 1L,
+            expectedScheduledAt = wed0700Ms,
+            newTime = newTime,
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
+
+        val wed0830Ms = LocalDate.of(2026, 11, 4).atTime(newTime).atZone(zoneId).toInstant().toEpochMilli()
+
+        val cancelResult = adapterWithScheduler.cancelOverride(
+            alarmId = 1L,
+            expectedScheduledAt = wed0830Ms,
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
+
+        assertEquals(OneTimeOverrideOutcome.SUCCESS_COMMITTED, cancelResult.outcome)
+        coVerify(atLeast = 1) { mockScheduler.schedule(any(), any(), any()) }
+
+        val intentToken = cancelResult.durableIntent?.operationToken
+        assertNotNull(intentToken)
+        val settledIntent = durableDao.getIntentByToken(intentToken!!)
+        assertEquals(DurableOperationIntent.PHASE_COMPLETED, settledIntent?.phase)
+    }
+
+    @Test
+    fun `executeSkipOnce handles AlarmScheduler PermissionBlocked and leaves durableIntent pending`() = runBlocking {
+        insertStandardRepeatingAlarm()
+        val mockScheduler: AlarmScheduler = mockk(relaxed = true)
+        val adapterWithScheduler = DurableOneTimeOverrideAdapter(
+            database = db,
+            timeOverrideCoordinator = coordinator,
+            alarmScheduler = mockScheduler
+        )
+
+        coEvery { mockScheduler.schedule(any(), any(), any()) } returns ScheduleOutcome.PermissionBlocked(1L, "EXACT_ALARM_PERMISSION_REVOKED")
+
+        val result = adapterWithScheduler.executeSkipOnce(
+            alarmId = 1L,
+            expectedScheduledAt = wed0700Ms,
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
+
+        assertEquals(OneTimeOverrideOutcome.SUCCESS_COMMITTED, result.outcome)
+        val intentToken = result.durableIntent?.operationToken
+        assertNotNull(intentToken)
+        val pendingIntent = durableDao.getIntentByToken(intentToken!!)
+        assertEquals(DurableOperationIntent.PHASE_PENDING, pendingIntent?.phase)
+    }
+
+    @Test
+    fun `executeSkipOnce handles AlarmScheduler RegistrationFailed and leaves durableIntent pending`() = runBlocking {
+        insertStandardRepeatingAlarm()
+        val mockScheduler: AlarmScheduler = mockk(relaxed = true)
+        val adapterWithScheduler = DurableOneTimeOverrideAdapter(
+            database = db,
+            timeOverrideCoordinator = coordinator,
+            alarmScheduler = mockScheduler
+        )
+
+        coEvery { mockScheduler.schedule(any(), any(), any()) } returns ScheduleOutcome.RegistrationFailed(1L, RuntimeException("OS AlarmManager registration unfulfilled"))
+
+        val result = adapterWithScheduler.executeSkipOnce(
+            alarmId = 1L,
+            expectedScheduledAt = wed0700Ms,
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
+
+        assertEquals(OneTimeOverrideOutcome.SUCCESS_COMMITTED, result.outcome)
+        val intentToken = result.durableIntent?.operationToken
+        assertNotNull(intentToken)
+        val pendingIntent = durableDao.getIntentByToken(intentToken!!)
+        assertEquals(DurableOperationIntent.PHASE_PENDING, pendingIntent?.phase)
+    }
+
+    @Test
+    fun `completeDurableIntentAtomic updates phase to COMPLETED only when PENDING or IN_FLIGHT`() = runBlocking {
+        val intent = DurableOperationIntent(
+            operationToken = "token_atomic_1",
+            alarmId = 1L,
+            operationEpoch = nowEpochMs,
+            incarnationId = "inc_1",
+            operationKind = "RECONCILE_RESCHEDULE",
+            expectedOwnerToken = null,
+            expectedScheduleRevision = null,
+            expectedRestoreEpoch = null,
+            phase = DurableOperationIntent.PHASE_PENDING,
+            intentRevision = 1L,
+            originalScheduledAt = wed0700Ms
+        )
+        durableDao.insertValidatedIntent(intent)
+
+        val updatedRows = durableDao.completeDurableIntentAtomic("token_atomic_1", 1L)
+        assertEquals(1, updatedRows)
+
+        val settled = durableDao.getIntentByToken("token_atomic_1")
+        assertEquals(DurableOperationIntent.PHASE_COMPLETED, settled?.phase)
+
+        // Idempotent retry on completed intent updates 0 rows
+        val secondTry = durableDao.completeDurableIntentAtomic("token_atomic_1", 1L)
+        assertEquals(0, secondTry)
+    }
+
+    @Test
+    fun `executeSkipOnce aborts OS schedule if current alarm revision advanced in DB`() = runBlocking {
+        val alarm = insertStandardRepeatingAlarm()
+        val mockScheduler: AlarmScheduler = mockk()
+        val adapterWithScheduler = DurableOneTimeOverrideAdapter(
+            database = db,
+            timeOverrideCoordinator = coordinator,
+            alarmScheduler = mockScheduler
+        )
+
+        val nextWed0700Ms = LocalDate.of(2026, 11, 11).atTime(LocalTime.of(7, 0)).atZone(zoneId).toInstant().toEpochMilli()
+        coEvery { mockScheduler.schedule(any(), any(), any()) } returns ScheduleOutcome.Armed(1L, nextWed0700Ms)
+
+        // Execute skip once
+        val result = adapterWithScheduler.executeSkipOnce(
+            alarmId = 1L,
+            expectedScheduledAt = wed0700Ms,
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
+
+        assertEquals(OneTimeOverrideOutcome.SUCCESS_COMMITTED, result.outcome)
+
+        // Now test syncOsScheduleAndSettleIntent directly when revision has advanced in DB
+        alarmDao.update(alarm.copy(revision = 2)) // Advance DB revision to 2
+
+        // Passing result with stale revision = 1 to syncOsScheduleAndSettleIntent
+        val staleResult = result.copy(updatedAlarm = result.updatedAlarm?.copy(revision = 1))
+
+        // Clear previous mock interactions
+        io.mockk.clearMocks(mockScheduler)
+
+        // Calling syncOsScheduleAndSettleIntent with staleResult must abort OS scheduling
+        adapterWithScheduler.syncOsScheduleAndSettleIntent(staleResult)
+
+        // Verify AlarmScheduler.schedule was NOT called due to revision fence
+        coVerify(exactly = 0) { mockScheduler.schedule(any(), any(), any()) }
+    }
+
+    @Test
+    fun `executeSkipOnce returns UNSUPPORTED_SCHEDULE if alarm disabled in DB`() = runBlocking {
+        val alarm = insertStandardRepeatingAlarm()
+        val mockScheduler: AlarmScheduler = mockk()
+        val adapterWithScheduler = DurableOneTimeOverrideAdapter(
+            database = db,
+            timeOverrideCoordinator = coordinator,
+            alarmScheduler = mockScheduler
+        )
+
+        // Simulate alarm being disabled in DB immediately after adapter transaction
+        alarmDao.update(alarm.copy(isEnabled = false))
+
+        val result = adapterWithScheduler.executeSkipOnce(
+            alarmId = 1L,
+            expectedScheduledAt = wed0700Ms,
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
+
+        assertEquals(OneTimeOverrideOutcome.UNSUPPORTED_SCHEDULE, result.outcome)
+        // Verify AlarmScheduler.schedule was NOT called due to disabled check
+        io.mockk.coVerify(exactly = 0) { mockScheduler.schedule(any(), any(), any()) }
+    }
+
+    @Test
+    fun `executeSkipOnce settles durable intent for legitimate NoArm reason`() = runBlocking {
+        insertStandardRepeatingAlarm()
+        val mockScheduler: AlarmScheduler = mockk()
+        val adapterWithScheduler = DurableOneTimeOverrideAdapter(
+            database = db,
+            timeOverrideCoordinator = coordinator,
+            alarmScheduler = mockScheduler
+        )
+
+        coEvery { mockScheduler.schedule(any(), any<Boolean>(), any<Long>()) } returns ScheduleOutcome.NoArm(1L, "NO_NEXT_OCCURRENCE")
+
+        val result = adapterWithScheduler.executeSkipOnce(
+            alarmId = 1L,
+            expectedScheduledAt = wed0700Ms,
+            nowEpochMs = nowEpochMs,
+            evaluationZoneId = zoneId
+        )
+
+        assertEquals(OneTimeOverrideOutcome.SUCCESS_COMMITTED, result.outcome)
+        val intentToken = result.durableIntent?.operationToken
+        assertNotNull(intentToken)
+        val settledIntent = durableDao.getIntentByToken(intentToken!!)
+        assertEquals(DurableOperationIntent.PHASE_COMPLETED, settledIntent?.phase)
+    }
+
+    @Test
+    fun `completeDurableIntentAtomic rejects mismatched alarmId or already completed phase`() = runBlocking {
+        insertStandardRepeatingAlarm()
+        val token = "reconcile_alarm_1_gen_1_rev_1_test"
+        val intent = DurableOperationIntent(
+            operationToken = token,
+            alarmId = 1L,
+            operationEpoch = nowEpochMs,
+            incarnationId = "auth_1",
+            operationKind = "RECONCILE_RESCHEDULE",
+            expectedOwnerToken = "auth_1",
+            expectedScheduleRevision = 1L,
+            expectedRestoreEpoch = 1700000000L,
+            phase = DurableOperationIntent.PHASE_PENDING,
+            intentRevision = 1L,
+            originalScheduledAt = wed0700Ms
+        )
+        durableDao.insertValidatedIntent(intent)
+
+        // 1. Mismatched alarmId -> 0 rows updated
+        val rowsMismatch = durableDao.completeDurableIntentAtomic(token, alarmId = 999L)
+        assertEquals(0, rowsMismatch)
+        assertEquals(DurableOperationIntent.PHASE_PENDING, durableDao.getIntentByToken(token)?.phase)
+
+        // 2. Matching alarmId -> 1 row updated to COMPLETED
+        val rowsMatch = durableDao.completeDurableIntentAtomic(token, alarmId = 1L)
+        assertEquals(1, rowsMatch)
+        assertEquals(DurableOperationIntent.PHASE_COMPLETED, durableDao.getIntentByToken(token)?.phase)
+
+        // 3. Already completed -> 0 rows updated
+        val rowsCompleted = durableDao.completeDurableIntentAtomic(token, alarmId = 1L)
+        assertEquals(0, rowsCompleted)
+    }
+
+    @Test
+    fun `issuanceProducer failure forces room transaction rollback`() = runBlocking {
+        insertStandardRepeatingAlarm()
+        val mockIssuanceProducer: OccurrenceIssuanceProducer = mockk()
+        coEvery {
+            mockIssuanceProducer.issueOccurrence(
+                alarmId = any(),
+                baseTriggerTimeEpochMs = any(),
+                scheduledTargetEpochMs = any(),
+                nowEpochMs = any(),
+                expectedAuthorityFingerprint = any(),
+                evaluatedOccurrence = any(),
+                fireId = any(),
+                holidaySnapshotProvider = any(),
+                holidayPolicyOverride = any(),
+                consumedOccurrenceKeys = any(),
+                evaluationZoneId = any(),
+                allowHidePersonalRuntimeFeatures = any()
+            )
+        } throws RuntimeException("SIMULATED_ISSUANCE_DB_CONSTRAINT_FAILURE")
+
+        val reconcileProducerWithMock = DurableReconcileProducer(
+            database = db,
+            issuanceProducer = mockIssuanceProducer
+        )
+        val adapterWithFailingIssuance = DurableOneTimeOverrideAdapter(
+            database = db,
+            reconcileProducer = reconcileProducerWithMock,
+            alarmScheduler = mockk(relaxed = true)
+        )
+
+        try {
+            adapterWithFailingIssuance.executeChangeTimeOnce(
+                alarmId = 1L,
+                expectedScheduledAt = wed0700Ms,
+                newTime = LocalTime.of(8, 30),
+                nowEpochMs = nowEpochMs,
+                evaluationZoneId = zoneId
+            )
+            fail("Expected exception during executeChangeTimeOnce")
+        } catch (e: Exception) {
+            assertTrue(e.message?.contains("SIMULATED_ISSUANCE_DB_CONSTRAINT_FAILURE") == true)
+        }
+
+        // Verify Room transaction rolled back: schedule_exceptions table is empty!
+        val exceptions = exceptionDao.getExceptionsForAlarm(1L)
+        assertEquals(0, exceptions.size)
     }
 }
 

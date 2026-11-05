@@ -18,6 +18,7 @@ import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.data.repository.CapturedHolidayAuthorityWindow
 import com.sysadmindoc.alarmclock.data.repository.HolidayRepository
+import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.domain.evaluator.DurableOneTimeOverrideAdapter
 import com.sysadmindoc.alarmclock.domain.evaluator.HolidayPolicy
 import com.sysadmindoc.alarmclock.domain.evaluator.HolidaySnapshot
@@ -77,6 +78,7 @@ class UpcomingTimelineUiTest {
     private lateinit var preferencesManager: PreferencesManager
     private lateinit var projector: UpcomingScheduleProjector
     private lateinit var coordinator: UpcomingScheduleReconcileCoordinator
+    private lateinit var scheduler: AlarmScheduler
     private lateinit var adapter: DurableOneTimeOverrideAdapter
     private lateinit var holidayRepo: HolidayRepository
     private lateinit var viewModel: UpcomingTimelineViewModel
@@ -134,9 +136,11 @@ class UpcomingTimelineUiTest {
             scheduleAuthorityDao = authorityDao
         )
 
+        scheduler = mockk(relaxed = true)
         adapter = DurableOneTimeOverrideAdapter(
             database = db,
-            coordinator = coordinator
+            coordinator = coordinator,
+            alarmScheduler = scheduler
         )
 
         viewModel = UpcomingTimelineViewModel(
@@ -155,8 +159,8 @@ class UpcomingTimelineUiTest {
 
     @After
     fun tearDown() {
+        try { Dispatchers.resetMain() } catch (_: Exception) {}
         originalTimeZone?.let { java.util.TimeZone.setDefault(it) }
-        Dispatchers.resetMain()
         db.close()
     }
 

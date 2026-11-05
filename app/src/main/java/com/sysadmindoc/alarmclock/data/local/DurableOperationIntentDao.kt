@@ -41,6 +41,9 @@ interface DurableOperationIntentDao {
     @Query("UPDATE durable_operation_intent SET phase = :newPhase WHERE operationToken = :operationToken")
     suspend fun updateIntentPhase(operationToken: String, newPhase: String): Int
 
+    @Query("UPDATE durable_operation_intent SET phase = 'COMPLETED' WHERE operationToken = :operationToken AND phase IN ('PENDING', 'IN_FLIGHT') AND alarmId = :alarmId")
+    suspend fun completeDurableIntentAtomic(operationToken: String, alarmId: Long): Int
+
     @Query("SELECT * FROM durable_operation_intent ORDER BY operationEpoch ASC")
     suspend fun getAllIntents(): List<DurableOperationIntent>
 }
