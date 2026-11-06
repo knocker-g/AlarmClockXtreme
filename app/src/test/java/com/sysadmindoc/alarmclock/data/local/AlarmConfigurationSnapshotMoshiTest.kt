@@ -35,6 +35,7 @@ class AlarmConfigurationSnapshotMoshiTest {
             snoozeDurationMinutes = 5,
             maxSnoozeCount = 2,
             progressiveSnoozeEnabled = true,
+            progressiveSnoozeDecreaseMinutes = 1,
             progressiveSnoozeMinMinutes = 1,
             wakeConfirmEnabled = true,
             wakeConfirmDelayMinutes = 10,
@@ -66,6 +67,7 @@ class AlarmConfigurationSnapshotMoshiTest {
             label = "Test Alarm",
             snoozeDurationMinutes = 8,
             maxSnoozeCount = 5,
+            progressiveSnooze = true,
             wakeConfirmEnabled = true,
             wakeConfirmDelayMinutes = 15,
             challengeType = "SHAKE"
@@ -78,6 +80,9 @@ class AlarmConfigurationSnapshotMoshiTest {
         assertEquals("Test Alarm", snapshot.label)
         assertEquals(8, snapshot.snoozeDurationMinutes)
         assertEquals(5, snapshot.maxSnoozeCount)
+        assertTrue(snapshot.progressiveSnoozeEnabled)
+        assertEquals(1, snapshot.progressiveSnoozeDecreaseMinutes)
+        assertEquals(1, snapshot.progressiveSnoozeMinMinutes)
         assertEquals(20, snapshot.autoSilenceMinutes)
         assertTrue(snapshot.wakeConfirmEnabled)
         assertEquals(15, snapshot.wakeConfirmDelayMinutes)

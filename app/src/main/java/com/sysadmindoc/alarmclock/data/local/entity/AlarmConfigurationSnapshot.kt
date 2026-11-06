@@ -28,7 +28,8 @@ data class AlarmConfigurationSnapshot(
     val snoozeDurationMinutes: Int = 10,
     val maxSnoozeCount: Int = 3,                       // 0 = unlimited, -1 = disabled
     val progressiveSnoozeEnabled: Boolean = false,
-    val progressiveSnoozeMinMinutes: Int = 1,          // Minimum snooze duration cap
+    val progressiveSnoozeDecreaseMinutes: Int = 1,     // Each snooze shortens by 1 minute
+    val progressiveSnoozeMinMinutes: Int = 1,          // Minimum snooze duration floor
     val wakeConfirmEnabled: Boolean = false,
     val wakeConfirmDelayMinutes: Int = 10,
     val autoSilenceMinutes: Int = 10,                  // Effective per-alarm auto-silence
@@ -69,6 +70,7 @@ data class AlarmConfigurationSnapshot(
                 snoozeDurationMinutes = if (isQuick) 0 else effectiveSnoozeMinutes,
                 maxSnoozeCount = if (isQuick) -1 else alarm.maxSnoozeCount,
                 progressiveSnoozeEnabled = if (isQuick) false else alarm.progressiveSnooze,
+                progressiveSnoozeDecreaseMinutes = 1,
                 progressiveSnoozeMinMinutes = 1,
                 wakeConfirmEnabled = if (isQuick) false else alarm.wakeConfirmEnabled,
                 wakeConfirmDelayMinutes = if (isQuick) 0 else alarm.wakeConfirmDelayMinutes,
