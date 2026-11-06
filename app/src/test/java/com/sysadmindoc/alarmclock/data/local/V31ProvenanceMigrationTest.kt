@@ -38,6 +38,7 @@ class V31ProvenanceMigrationTest {
         dbFile = context.getDatabasePath("v31_provenance_migration_test.db")
         if (dbFile.exists()) dbFile.delete()
         dbFile.parentFile?.mkdirs()
+        context.getDatabasePath("v31_genuine_migration_1.db").parentFile?.mkdirs()
     }
 
     @After
@@ -94,6 +95,7 @@ class V31ProvenanceMigrationTest {
     fun `fresh v31 database creates canonical tables, new provenance columns, and triggers`() = runBlocking {
         val database = Room.inMemoryDatabaseBuilder(context, AlarmDatabase::class.java)
             .allowMainThreadQueries()
+            .setJournalMode(RoomDatabase.JournalMode.TRUNCATE)
             .addCallback(AlarmDatabase.DATABASE_CALLBACK)
             .build()
 
@@ -132,6 +134,7 @@ class V31ProvenanceMigrationTest {
     fun `populated v31 database migrates to v32 schema, preserving existing alarms and creating issued_occurrences and issue_slots`() = runBlocking {
         val database = Room.inMemoryDatabaseBuilder(context, AlarmDatabase::class.java)
             .allowMainThreadQueries()
+            .setJournalMode(RoomDatabase.JournalMode.TRUNCATE)
             .addCallback(AlarmDatabase.DATABASE_CALLBACK)
             .build()
 
@@ -184,6 +187,7 @@ class V31ProvenanceMigrationTest {
 
     @Test
     fun `v30 database migrates to v31, preserving existing row with NULL provenance`() = runBlocking {
+        dbFile.parentFile?.mkdirs()
         val sqliteDb = SQLiteDatabase.openOrCreateDatabase(dbFile, null)
         populateFull28Schema(sqliteDb)
 
@@ -220,7 +224,7 @@ class V31ProvenanceMigrationTest {
         sqliteDb.version = 30
         sqliteDb.close()
 
-        // Migrate v30 -> v31 via Room
+        // Migrate v30 -> latest schema via Room
         val database = Room.databaseBuilder(context, AlarmDatabase::class.java, "v31_provenance_migration_test.db")
             .allowMainThreadQueries()
             .setJournalMode(RoomDatabase.JournalMode.TRUNCATE)
