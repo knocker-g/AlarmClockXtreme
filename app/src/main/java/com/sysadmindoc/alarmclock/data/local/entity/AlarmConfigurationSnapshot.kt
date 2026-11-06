@@ -29,7 +29,7 @@ data class AlarmConfigurationSnapshot(
     val maxSnoozeCount: Int = 3,                       // 0 = unlimited, -1 = disabled
     val progressiveSnoozeEnabled: Boolean = false,
     val progressiveSnoozeDecreaseMinutes: Int = 1,     // Each snooze shortens by 1 minute
-    val progressiveSnoozeMinMinutes: Int = 1,          // Minimum snooze duration floor
+    val progressiveSnoozeMinMinutes: Int = 1,          // Minimum snooze duration floor (UNRESOLVED policy boundary)
     val wakeConfirmEnabled: Boolean = false,
     val wakeConfirmDelayMinutes: Int = 10,
     val autoSilenceMinutes: Int = 10,                  // Effective per-alarm auto-silence
@@ -43,8 +43,28 @@ data class AlarmConfigurationSnapshot(
     val dismissAtRingtoneEnd: Boolean = false
 ) {
     companion object {
-        fun from(alarm: Alarm, settings: AppSettings): AlarmConfigurationSnapshot {
+        fun from(
+            alarm: Alarm,
+            settings: AppSettings,
+            effectiveNormalAutoSilenceMinutes: Int? = null
+        ): AlarmConfigurationSnapshot {
             val isQuick = alarm.kind.equals("QUICK", ignoreCase = true)
+
+            val resolvedNormalAutoSilence = if (!isQuick) {
+                if (effectiveNormalAutoSilenceMinutes == null || effectiveNormalAutoSilenceMinutes <= 0) {
+                    throw IllegalArgumentException("Normal Alarm requires an explicit valid effective auto-silence duration (> 0 minutes)")
+                }
+                effectiveNormalAutoSilenceMinutes
+            } else {
+                0
+            }
+
+            val resolvedQuickAutoSilence = if (isQuick) {
+                settings.autoSilenceMinutes
+            } else {
+                0
+            }
+
             val effectiveSnoozeMinutes = if (alarm.snoozeDurationMinutes > 0) {
                 alarm.snoozeDurationMinutes
             } else {
@@ -74,8 +94,8 @@ data class AlarmConfigurationSnapshot(
                 progressiveSnoozeMinMinutes = 1,
                 wakeConfirmEnabled = if (isQuick) false else alarm.wakeConfirmEnabled,
                 wakeConfirmDelayMinutes = if (isQuick) 0 else alarm.wakeConfirmDelayMinutes,
-                autoSilenceMinutes = settings.autoSilenceMinutes,
-                quickAutoSilenceMinutes = settings.autoSilenceMinutes,
+                autoSilenceMinutes = resolvedNormalAutoSilence,
+                quickAutoSilenceMinutes = resolvedQuickAutoSilence,
                 challengeType = if (isQuick) "NONE" else alarm.challengeType,
                 challengeChain = if (isQuick) "" else alarm.challengeChain,
                 walkStepsRequired = if (isQuick) 0 else alarm.walkStepsRequired,
