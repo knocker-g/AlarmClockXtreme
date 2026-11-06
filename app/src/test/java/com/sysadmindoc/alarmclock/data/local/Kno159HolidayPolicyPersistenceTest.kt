@@ -375,8 +375,7 @@ class Kno159HolidayPolicyPersistenceTest {
 
         try {
             val writable = migratedRoomDb.openHelper.writableDatabase
-            assertEquals(36, AlarmDatabase.VERSION)
-            assertEquals(36, writable.version)
+            assertEquals(AlarmDatabase.VERSION, writable.version)
 
             val alarm10 = migratedRoomDb.alarmDao().getById(10L)!!
             assertEquals(Alarm.HOLIDAY_POLICY_FOLLOW_BASE, alarm10.holidayPolicy)
