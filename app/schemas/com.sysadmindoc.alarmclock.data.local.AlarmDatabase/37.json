@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 37,
-    "identityHash": "887b28ec17ac5164ecb64d894095207a",
+    "identityHash": "95c4303c7b97c45e0ba43df09eb70940",
     "entities": [
       {
         "tableName": "alarms",
