@@ -1,7 +1,6 @@
 package com.sysadmindoc.alarmclock.data.local
 
 import com.squareup.moshi.Moshi
-import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmConfigurationSnapshot
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.preferences.AppSettings
@@ -13,10 +12,7 @@ import org.junit.Test
 
 class AlarmConfigurationSnapshotMoshiTest {
 
-    private val moshi = Moshi.Builder()
-        .add(KotlinJsonAdapterFactory())
-        .build()
-
+    private val moshi = Moshi.Builder().build()
     private val adapter = moshi.adapter(AlarmConfigurationSnapshot::class.java)
 
     @Test
