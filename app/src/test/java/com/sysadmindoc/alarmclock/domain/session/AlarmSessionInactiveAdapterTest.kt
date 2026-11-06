@@ -55,7 +55,7 @@ class AlarmSessionInactiveAdapterTest {
         if (dbFile.exists()) dbFile.delete()
     }
 
-    // B01: Blank fireId rejected fail-closed (PURE)
+    // B01 / R1_identity: Blank fireId rejected fail-closed (PURE)
     @Test
     fun B01_adapterRejectsBlankFireId() {
         val alarm = Alarm(id = 100L, kind = "NORMAL")
@@ -80,7 +80,7 @@ class AlarmSessionInactiveAdapterTest {
         }
     }
 
-    // B02: Blank occurrenceKey rejected fail-closed (PURE)
+    // B02 / R1_identity: Blank occurrenceKey rejected fail-closed (PURE)
     @Test
     fun B02_adapterRejectsBlankOccurrenceKey() {
         val alarm = Alarm(id = 100L, kind = "NORMAL")
@@ -105,7 +105,7 @@ class AlarmSessionInactiveAdapterTest {
         }
     }
 
-    // B03: Authoritative identity preserved exactly (PURE)
+    // B03 / R1_identity: Authoritative identity preserved exactly without mutation or synthesis (PURE)
     @Test
     fun B03_adapterPreservesAuthoritativeIdentityExactly() {
         val alarm = Alarm(id = 100L, kind = "NORMAL")
@@ -129,7 +129,7 @@ class AlarmSessionInactiveAdapterTest {
         assertEquals(100L, event.alarm.id)
     }
 
-    // B04: Invalid alarmId <= 0 rejected (PURE)
+    // B04 / R1_identity: Invalid alarmId <= 0 rejected (PURE)
     @Test
     fun B04_adapterRejectsInvalidAlarmId() {
         val invalidAlarm = Alarm(id = 0L, kind = "NORMAL")
@@ -154,7 +154,7 @@ class AlarmSessionInactiveAdapterTest {
         }
     }
 
-    // B05: Valid generation/revision domain >= 0 accepted (PURE)
+    // B05 / R1_domain: Valid generation/revision domain >= 0 accepted (PURE)
     @Test
     fun B05_adapterAcceptsValidZeroGenerationAndRevisionDomain() {
         val req = AlarmSessionInactiveAdapter.createTransitionRequest(
@@ -174,7 +174,7 @@ class AlarmSessionInactiveAdapterTest {
         assertEquals(0, req.expectedRevision)
     }
 
-    // B06: Extended invalid request envelope parameters validation (PURE)
+    // B06 / R1_validation: Extended invalid request envelope parameters validation (PURE)
     @Test
     fun B06_adapterRejectsInvalidRequestEnvelopeParameters() {
         // 1. expectedVersion <= 0
@@ -292,7 +292,7 @@ class AlarmSessionInactiveAdapterTest {
         }
     }
 
-    // B07: Pure adapter event creation is pure and isolated (STATIC SCOPE)
+    // B07 / R1_isolation: Pure adapter event creation is pure and isolated (STATIC SCOPE)
     @Test
     fun B07_adapterEventCreationIsPureAndIsolated() {
         val alarm = Alarm(id = 100L, kind = "NORMAL")
@@ -316,7 +316,7 @@ class AlarmSessionInactiveAdapterTest {
         // Static scope audit: 0 AlarmService / 0 Receiver / 0 Scheduler / 0 DataStore calls executed
     }
 
-    // B08: Adapter-generated AdmitEvent accepted by KNO-161 Room engine (ISOLATED_ROOM)
+    // B08 / R1_admission: Adapter-generated AdmitEvent accepted by KNO-161 Room engine (ISOLATED_ROOM)
     @Test
     fun B08_adapterGeneratedAdmitEventAcceptedByKno161Engine() = runBlocking {
         val alarm = Alarm(id = 100L, kind = "NORMAL", scheduleKind = Alarm.SCHEDULE_KIND_REPEATING)
@@ -343,7 +343,7 @@ class AlarmSessionInactiveAdapterTest {
         assertEquals(AlarmSessionState.FIRING.name, session.sessionState)
     }
 
-    // B09: Adapter-generated TransitionRequest mapped to KNO-161 transitionSession (ISOLATED_ROOM)
+    // B09 / R1_dismiss: Adapter-generated TransitionRequest for Dismiss mapped to KNO-161 transitionSession (ISOLATED_ROOM)
     @Test
     fun B09_adapterGeneratedTransitionRequestMappedToKno161Engine() = runBlocking {
         val alarm = Alarm(id = 100L, kind = "NORMAL", scheduleKind = Alarm.SCHEDULE_KIND_REPEATING)
@@ -396,7 +396,7 @@ class AlarmSessionInactiveAdapterTest {
         assertEquals("DISMISSED", completed.terminalReason)
     }
 
-    // B10a: CAS rejects stale generation in isolated Room DB (ISOLATED_ROOM)
+    // B10a / R1_stale: CAS rejects stale generation in isolated Room DB (ISOLATED_ROOM)
     @Test
     fun B10a_casRejectsStaleGenerationInIsolatedRoomDb() = runBlocking {
         val alarm = Alarm(id = 100L, kind = "NORMAL", scheduleKind = Alarm.SCHEDULE_KIND_REPEATING)
@@ -451,7 +451,7 @@ class AlarmSessionInactiveAdapterTest {
         assertEquals(1L, freshSession.sessionVersion)
     }
 
-    // B10b: CAS rejects stale revision in isolated Room DB (ISOLATED_ROOM)
+    // B10b / R1_stale: CAS rejects stale revision in isolated Room DB (ISOLATED_ROOM)
     @Test
     fun B10b_casRejectsStaleRevisionInIsolatedRoomDb() = runBlocking {
         val alarm = Alarm(id = 100L, kind = "NORMAL", scheduleKind = Alarm.SCHEDULE_KIND_REPEATING)
@@ -504,5 +504,116 @@ class AlarmSessionInactiveAdapterTest {
         val freshSession = repository.getSessionById(session.sessionId)!!
         assertEquals(AlarmSessionState.FIRING.name, freshSession.sessionState)
         assertEquals(1L, freshSession.sessionVersion)
+    }
+
+    // R1_snooze: Adapter-generated Snooze TransitionRequest mapped to KNO-161 transitionSession (ISOLATED_ROOM)
+    @Test
+    fun R1_snoozeMappingPreservesSixFenceEnvelopeAndTimestamp() = runBlocking {
+        val alarm = Alarm(id = 100L, kind = "NORMAL", scheduleKind = Alarm.SCHEDULE_KIND_REPEATING, snoozeDurationMinutes = 10)
+        val settings = AppSettings()
+
+        val admitEvent = AlarmSessionInactiveAdapter.createAdmitEvent(
+            alarm = alarm,
+            settings = settings,
+            effectiveNormalAutoSilenceMinutes = 15,
+            fireId = "fire_100",
+            occurrenceKey = "occ_100",
+            canonicalBaseTriggerMs = nowMs,
+            scheduledTargetEpochMs = nowMs,
+            nowEpochMs = nowMs,
+            elapsedRealtimeMs = elapsedMs,
+            bootCount = bootCount
+        )
+        val admitOutcome = engine.admitSession(admitEvent)
+        val session = (admitOutcome as SessionTransitionOutcome.Success).session
+
+        val req = AlarmSessionInactiveAdapter.createTransitionRequest(
+            sessionId = session.sessionId,
+            expectedVersion = session.sessionVersion,
+            expectedState = session.sessionState,
+            expectedAdmissionKey = session.admissionKey,
+            expectedGeneration = session.generation,
+            expectedRevision = session.revision,
+            currentWallClockMs = nowMs + 1000L,
+            currentElapsedRealtimeMs = elapsedMs + 1000L,
+            currentBootCount = bootCount,
+            event = AlarmSessionEvent.Snooze(nowMs + 1000L, customMinutes = 10)
+        )
+
+        val outcome = engine.transitionSession(
+            sessionId = req.sessionId,
+            event = req.event,
+            expectedVersion = req.expectedVersion,
+            expectedState = req.expectedState,
+            expectedAdmissionKey = req.expectedAdmissionKey,
+            expectedGeneration = req.expectedGeneration,
+            expectedRevision = req.expectedRevision,
+            currentWallClockMs = req.currentWallClockMs,
+            currentElapsedRealtimeMs = req.currentElapsedRealtimeMs,
+            currentBootCount = req.currentBootCount
+        )
+
+        assertTrue(outcome is SessionTransitionOutcome.Success)
+        val snoozed = (outcome as SessionTransitionOutcome.Success).session
+        assertEquals(AlarmSessionState.SNOOZED.name, snoozed.sessionState)
+        assertEquals(1, snoozed.snoozeCount)
+        assertEquals(nowMs + 1000L + (10 * 60_000L), snoozed.refireEpochMs)
+    }
+
+    // R1_duplicate: Duplicate Snooze event rejected by KNO-161 Room engine (ISOLATED_ROOM)
+    @Test
+    fun R1_duplicateEventRejectedByEngineWithZeroSecondMutations() = runBlocking {
+        val alarm = Alarm(id = 100L, kind = "NORMAL", scheduleKind = Alarm.SCHEDULE_KIND_REPEATING)
+        val settings = AppSettings()
+
+        val admitEvent = AlarmSessionInactiveAdapter.createAdmitEvent(
+            alarm = alarm,
+            settings = settings,
+            effectiveNormalAutoSilenceMinutes = 15,
+            fireId = "fire_100",
+            occurrenceKey = "occ_100",
+            canonicalBaseTriggerMs = nowMs,
+            scheduledTargetEpochMs = nowMs,
+            nowEpochMs = nowMs,
+            elapsedRealtimeMs = elapsedMs,
+            bootCount = bootCount
+        )
+        val admitOutcome = engine.admitSession(admitEvent)
+        val session = (admitOutcome as SessionTransitionOutcome.Success).session
+
+        // First Snooze succeeds
+        engine.transitionSession(
+            sessionId = session.sessionId,
+            event = AlarmSessionEvent.Snooze(nowMs + 1000L),
+            expectedVersion = session.sessionVersion,
+            expectedState = session.sessionState,
+            expectedAdmissionKey = session.admissionKey,
+            expectedGeneration = session.generation,
+            expectedRevision = session.revision,
+            currentWallClockMs = nowMs + 1000L,
+            currentElapsedRealtimeMs = elapsedMs + 1000L,
+            currentBootCount = bootCount
+        )
+
+        // Duplicate Snooze with stale expectedVersion = 1L
+        val duplicateOutcome = engine.transitionSession(
+            sessionId = session.sessionId,
+            event = AlarmSessionEvent.Snooze(nowMs + 2000L),
+            expectedVersion = 1L,
+            expectedState = AlarmSessionState.FIRING.name,
+            expectedAdmissionKey = session.admissionKey,
+            expectedGeneration = session.generation,
+            expectedRevision = session.revision,
+            currentWallClockMs = nowMs + 2000L,
+            currentElapsedRealtimeMs = elapsedMs + 2000L,
+            currentBootCount = bootCount
+        )
+
+        assertTrue(duplicateOutcome is SessionTransitionOutcome.StaleEventRejected)
+
+        val freshSession = repository.getSessionById(session.sessionId)!!
+        assertEquals(AlarmSessionState.SNOOZED.name, freshSession.sessionState)
+        assertEquals(2L, freshSession.sessionVersion)
+        assertEquals(1, freshSession.snoozeCount)
     }
 }
