@@ -17,7 +17,10 @@ import com.sysadmindoc.alarmclock.data.local.entity.IssuedOccurrence
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta
 import com.sysadmindoc.alarmclock.data.local.entity.SnoreEvent
+import com.sysadmindoc.alarmclock.data.local.entity.AlarmAdmissionTombstoneEntity
+import com.sysadmindoc.alarmclock.data.local.entity.AlarmSessionEntity
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleException
+import com.sysadmindoc.alarmclock.data.local.entity.SessionSequenceGeneratorEntity
 import com.sysadmindoc.alarmclock.data.model.Alarm
 
 @Database(
@@ -35,7 +38,10 @@ import com.sysadmindoc.alarmclock.data.model.Alarm
         DurableOperationIntent::class,
         IssuedOccurrence::class,
         IssueSlot::class,
-        ScheduleException::class
+        ScheduleException::class,
+        AlarmSessionEntity::class,
+        AlarmAdmissionTombstoneEntity::class,
+        SessionSequenceGeneratorEntity::class
     ],
     version = AlarmDatabase.VERSION,
     exportSchema = true
@@ -54,9 +60,10 @@ abstract class AlarmDatabase : RoomDatabase() {
     abstract fun durableOperationIntentDao(): DurableOperationIntentDao
     abstract fun issuedOccurrenceDao(): IssuedOccurrenceDao
     abstract fun scheduleExceptionDao(): ScheduleExceptionDao
+    abstract fun alarmSessionDao(): AlarmSessionDao
 
     companion object {
-        const val VERSION = 36
+        const val VERSION = 37
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -715,6 +722,73 @@ abstract class AlarmDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v37: KNO-160 Session persistence foundation & Room Schema 37.
+         * Adds `alarm_admission_tombstones`, `session_sequence_generator`, and `alarm_sessions` tables.
+         */
+        val MIGRATION_36_37 = object : Migration(36, 37) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `alarm_admission_tombstones` (
+                        `admissionKey` TEXT NOT NULL,
+                        `alarmId` INTEGER NOT NULL,
+                        `sessionId` TEXT NOT NULL,
+                        `occurrenceKey` TEXT NOT NULL,
+                        `createdAtEpochMs` INTEGER NOT NULL,
+                        `horizonEpochMs` INTEGER NOT NULL,
+                        PRIMARY KEY(`admissionKey`)
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_alarm_admission_tombstones_admissionKey` ON `alarm_admission_tombstones` (`admissionKey`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_alarm_admission_tombstones_alarmId_occurrenceKey` ON `alarm_admission_tombstones` (`alarmId`, `occurrenceKey`)")
+
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `session_sequence_generator` (
+                        `id` INTEGER NOT NULL DEFAULT 1,
+                        `lastAllocatedSequence` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                """.trimIndent())
+
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `alarm_sessions` (
+                        `sessionId` TEXT NOT NULL,
+                        `admissionKey` TEXT NOT NULL,
+                        `alarmId` INTEGER NOT NULL,
+                        `originKind` TEXT NOT NULL,
+                        `originScheduleKind` TEXT NOT NULL,
+                        `generation` INTEGER NOT NULL,
+                        `revision` INTEGER NOT NULL,
+                        `fireId` TEXT NOT NULL,
+                        `occurrenceKey` TEXT NOT NULL,
+                        `canonicalBaseTriggerMs` INTEGER NOT NULL,
+                        `scheduledTargetEpochMs` INTEGER NOT NULL,
+                        `sessionState` TEXT NOT NULL,
+                        `sessionVersion` INTEGER NOT NULL DEFAULT 1,
+                        `creationSequence` INTEGER NOT NULL DEFAULT 0,
+                        `snoozeCount` INTEGER NOT NULL DEFAULT 0,
+                        `refireEpochMs` INTEGER NOT NULL DEFAULT 0,
+                        `challengeUnlocked` INTEGER NOT NULL DEFAULT 0,
+                        `createdAtEpochMs` INTEGER NOT NULL,
+                        `createdElapsedRealtimeMs` INTEGER NOT NULL,
+                        `bootCount` INTEGER NOT NULL DEFAULT -1,
+                        `updatedAtEpochMs` INTEGER NOT NULL,
+                        `absoluteDeadlineEpochMs` INTEGER NOT NULL,
+                        `configurationSnapshotJson` TEXT NOT NULL,
+                        `snapshotVersion` INTEGER NOT NULL DEFAULT 1,
+                        `terminalReason` TEXT DEFAULT NULL,
+                        `completedAtEpochMs` INTEGER DEFAULT NULL,
+                        PRIMARY KEY(`sessionId`)
+                    )
+                """.trimIndent())
+
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_alarm_sessions_alarmId_generation_scheduledTargetEpochMs` ON `alarm_sessions` (`alarmId`, `generation`, `scheduledTargetEpochMs`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_alarm_sessions_sessionState` ON `alarm_sessions` (`sessionState`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_alarm_sessions_alarmId_sessionState` ON `alarm_sessions` (`alarmId`, `sessionState`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_alarm_sessions_fireId` ON `alarm_sessions` (`fireId`)")
+            }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -750,7 +824,8 @@ abstract class AlarmDatabase : RoomDatabase() {
             MIGRATION_32_33,
             MIGRATION_33_34,
             MIGRATION_34_35,
-            MIGRATION_35_36
+            MIGRATION_35_36,
+            MIGRATION_36_37
         )
     }
 }

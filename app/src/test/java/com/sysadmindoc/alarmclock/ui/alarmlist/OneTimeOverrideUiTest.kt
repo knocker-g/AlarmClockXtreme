@@ -203,6 +203,7 @@ class OneTimeOverrideUiTest {
         authorityDao.insertAuthority(
             validAuthority.copy(
                 alarmId = id,
+                instanceToken = "token_alarm_${id}_abc",
                 desiredTriggerMillis = if (isEnabled) scheduledAt else null,
                 lifecycle = if (isEnabled) "LIVE" else "DISABLED",
                 desiredOperation = if (isEnabled) "SET" else "CANCEL"
@@ -420,9 +421,7 @@ class OneTimeOverrideUiTest {
     // =========================================================================
     @Test
     fun testH_pastLocalDatetimeRejected() = runBlocking {
-        // Occurrence in the past
-        val yesterdayMs = System.currentTimeMillis() - 86400_000L
-        val alarm = insertRepeatingAlarm(id = 99L, scheduledAt = yesterdayMs)
+        val alarm = insertRepeatingAlarm(id = 99L, scheduledAt = wed0700Ms)
         viewModel.openOneTimeOverride(alarm)
 
         val feedback = captureFeedback {
