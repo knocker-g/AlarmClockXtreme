@@ -88,7 +88,11 @@ class AtomicOccurrenceSuppressionCoordinatorTest {
         slotCurrentToken: String? = token,
         slotGen: Long = generationId,
         alarmGeneration: Int = alarmGen,
-        authorityFingerprintToUse: ScheduleAuthority = authority
+        authorityFingerprintToUse: ScheduleAuthority = authority,
+        occurrenceAuthorityInstanceToken: String? = authorityFingerprintToUse.instanceToken,
+        occurrenceRestoreEpoch: Long = authorityFingerprintToUse.restoreEpoch,
+        occurrenceScheduleRevision: Long = authorityFingerprintToUse.scheduleRevision,
+        occurrenceDefinitionRevision: Long = authorityFingerprintToUse.definitionRevision
     ) {
         val alarm = Alarm(
             id = alarmId,
@@ -118,10 +122,10 @@ class AtomicOccurrenceSuppressionCoordinatorTest {
             status = occurrenceStatus,
             baseTriggerTime = baseTriggerTime,
             alarmGeneration = alarmGeneration,
-            authorityInstanceToken = authorityFingerprintToUse.instanceToken,
-            restoreEpoch = authorityFingerprintToUse.restoreEpoch,
-            scheduleRevision = authorityFingerprintToUse.scheduleRevision,
-            definitionRevision = authorityFingerprintToUse.definitionRevision,
+            authorityInstanceToken = occurrenceAuthorityInstanceToken,
+            restoreEpoch = occurrenceRestoreEpoch,
+            scheduleRevision = occurrenceScheduleRevision,
+            definitionRevision = occurrenceDefinitionRevision,
             createdAt = nowMs,
             updatedAt = nowMs
         )
@@ -504,5 +508,98 @@ class AtomicOccurrenceSuppressionCoordinatorTest {
         )
 
         assertFalse("SUPPRESSED occurrence must NOT be admitted by evaluateActiveOccurrenceAdmission", isAdmitted)
+    }
+
+    // --- PERSISTED PROVENANCE FENCE TESTS (TASK 2: P01 - P06) ---
+
+    // P01: Persisted occurrence.restoreEpoch different from current Authority must return STALE_AUTHORITY
+    @Test
+    fun P01_persistedOccurrenceRestoreEpochMismatch_returnsStaleAuthority() = runBlocking {
+        seedBaseFixtures(occurrenceRestoreEpoch = 9999L)
+        db.alarmSessionDao().insertSession(createSessionEntity(state = "FIRING"))
+
+        val result = coordinator.suppressOccurrence(createValidRequest())
+
+        assertEquals(AtomicSuppressionOutcome.STALE_AUTHORITY, result.outcome)
+        assertEquals(0, result.rowsUpdated)
+    }
+
+    // P02: Persisted occurrence.scheduleRevision different from current Authority must return STALE_AUTHORITY
+    @Test
+    fun P02_persistedOccurrenceScheduleRevisionMismatch_returnsStaleAuthority() = runBlocking {
+        seedBaseFixtures(occurrenceScheduleRevision = 99L)
+        db.alarmSessionDao().insertSession(createSessionEntity(state = "FIRING"))
+
+        val result = coordinator.suppressOccurrence(createValidRequest())
+
+        assertEquals(AtomicSuppressionOutcome.STALE_AUTHORITY, result.outcome)
+        assertEquals(0, result.rowsUpdated)
+    }
+
+    // P03: Persisted occurrence.definitionRevision different from current Authority must return STALE_AUTHORITY
+    @Test
+    fun P03_persistedOccurrenceDefinitionRevisionMismatch_returnsStaleAuthority() = runBlocking {
+        seedBaseFixtures(occurrenceDefinitionRevision = 99L)
+        db.alarmSessionDao().insertSession(createSessionEntity(state = "FIRING"))
+
+        val result = coordinator.suppressOccurrence(createValidRequest())
+
+        assertEquals(AtomicSuppressionOutcome.STALE_AUTHORITY, result.outcome)
+        assertEquals(0, result.rowsUpdated)
+    }
+
+    // P04: Persisted occurrence.authorityInstanceToken null or blank must fail closed for this tokenized suppression contract
+    @Test
+    fun P04_persistedOccurrenceInstanceTokenNullOrBlank_returnsStaleAuthority() = runBlocking {
+        // Test null instanceToken
+        seedBaseFixtures(occurrenceAuthorityInstanceToken = null)
+        db.alarmSessionDao().insertSession(createSessionEntity(state = "FIRING"))
+
+        val resultNull = coordinator.suppressOccurrence(createValidRequest())
+        assertEquals(AtomicSuppressionOutcome.STALE_AUTHORITY, resultNull.outcome)
+        assertEquals(0, resultNull.rowsUpdated)
+
+        // Tear down and recreate DB to test blank instanceToken
+        tearDown()
+        setUp()
+        seedBaseFixtures(occurrenceAuthorityInstanceToken = "   ")
+        db.alarmSessionDao().insertSession(createSessionEntity(state = "FIRING"))
+
+        val resultBlank = coordinator.suppressOccurrence(createValidRequest())
+        assertEquals(AtomicSuppressionOutcome.STALE_AUTHORITY, resultBlank.outcome)
+        assertEquals(0, resultBlank.rowsUpdated)
+    }
+
+    // P05: Matching all provenance fields still allows valid ISSUED -> SUPPRESSED
+    @Test
+    fun P05_matchingAllProvenanceFields_allowsSuppression() = runBlocking {
+        seedBaseFixtures()
+        db.alarmSessionDao().insertSession(createSessionEntity(state = "FIRING"))
+
+        val result = coordinator.suppressOccurrence(createValidRequest())
+
+        assertEquals(AtomicSuppressionOutcome.SUPPRESSED, result.outcome)
+        assertEquals(1, result.rowsUpdated)
+
+        val updated = db.issuedOccurrenceDao().getOccurrence(token)
+        assertEquals(IssuedOccurrence.STATUS_SUPPRESSED, updated?.status)
+    }
+
+    // P06: Rejected stale provenance leaves occurrence ISSUED and IssueSlot unchanged
+    @Test
+    fun P06_rejectedStaleProvenance_leavesOccurrenceIssuedAndSlotUnchanged() = runBlocking {
+        seedBaseFixtures(occurrenceRestoreEpoch = 8888L)
+        db.alarmSessionDao().insertSession(createSessionEntity(state = "FIRING"))
+
+        val result = coordinator.suppressOccurrence(createValidRequest())
+
+        assertEquals(AtomicSuppressionOutcome.STALE_AUTHORITY, result.outcome)
+        assertEquals(0, result.rowsUpdated)
+
+        val occurrence = db.issuedOccurrenceDao().getOccurrence(token)
+        assertEquals(IssuedOccurrence.STATUS_ISSUED, occurrence?.status)
+
+        val slot = db.issuedOccurrenceDao().getSlot(alarmId)
+        assertEquals(token, slot?.currentIssueToken)
     }
 }

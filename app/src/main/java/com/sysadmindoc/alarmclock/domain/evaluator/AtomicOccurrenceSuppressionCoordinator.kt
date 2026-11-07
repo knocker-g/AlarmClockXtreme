@@ -165,12 +165,34 @@ class AtomicOccurrenceSuppressionCoordinator(
             )
         }
 
-        if (occurrence.authorityInstanceToken != null &&
-            occurrence.authorityInstanceToken != request.expectedAuthorityFingerprint.instanceToken
+        // Validate persisted IssuedOccurrence provenance against actual current ScheduleAuthority
+        if (occurrence.authorityInstanceToken.isNullOrBlank() ||
+            occurrence.authorityInstanceToken != currentFingerprint.instanceToken
         ) {
             return AtomicSuppressionResult(
                 outcome = AtomicSuppressionOutcome.STALE_AUTHORITY,
-                diagnosticDetail = "Occurrence authorityInstanceToken mismatch"
+                diagnosticDetail = "Occurrence authorityInstanceToken mismatch or blank: occurrence=${occurrence.authorityInstanceToken}, current=${currentFingerprint.instanceToken}"
+            )
+        }
+
+        if (occurrence.restoreEpoch != currentFingerprint.restoreEpoch) {
+            return AtomicSuppressionResult(
+                outcome = AtomicSuppressionOutcome.STALE_AUTHORITY,
+                diagnosticDetail = "Occurrence restoreEpoch mismatch: occurrence=${occurrence.restoreEpoch}, current=${currentFingerprint.restoreEpoch}"
+            )
+        }
+
+        if (occurrence.scheduleRevision != currentFingerprint.scheduleRevision) {
+            return AtomicSuppressionResult(
+                outcome = AtomicSuppressionOutcome.STALE_AUTHORITY,
+                diagnosticDetail = "Occurrence scheduleRevision mismatch: occurrence=${occurrence.scheduleRevision}, current=${currentFingerprint.scheduleRevision}"
+            )
+        }
+
+        if (occurrence.definitionRevision != currentFingerprint.definitionRevision) {
+            return AtomicSuppressionResult(
+                outcome = AtomicSuppressionOutcome.STALE_AUTHORITY,
+                diagnosticDetail = "Occurrence definitionRevision mismatch: occurrence=${occurrence.definitionRevision}, current=${currentFingerprint.definitionRevision}"
             )
         }
 
