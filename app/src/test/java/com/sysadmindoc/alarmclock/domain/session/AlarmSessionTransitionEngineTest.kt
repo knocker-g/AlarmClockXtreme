@@ -201,6 +201,7 @@ class AlarmSessionTransitionEngineTest {
     // Original T05 (eligible AutoEnd race) is DEFERRED until authoritative active-time accounting exists.
     @Test
     fun T05_concurrentStopVsUnverifiedAutoEnd_StopWinsAndAutoEndFailsClosed() = runBlocking {
+        // --- 1. Concurrent execution: either Stop or AutoEnd evaluates first ---
         val session = admitNormalSession()
 
         val stopDeferred = async(Dispatchers.IO) {
@@ -234,11 +235,112 @@ class AlarmSessionTransitionEngineTest {
         }
 
         val results = listOf(stopDeferred, autoEndDeferred).awaitAll()
-        val stopResult = results.first { it is SessionTransitionOutcome.Success }
-        val autoEndResult = results.first { it is SessionTransitionOutcome.StaleEventRejected }
+        val stopResult = results.firstOrNull { it is SessionTransitionOutcome.Success }
+        assertNotNull("Stop must succeed once in concurrent execution", stopResult)
+        val successSession = (stopResult as SessionTransitionOutcome.Success).session
+        assertEquals("COMPLETED", successSession.sessionState)
+        assertEquals("DISMISSED", successSession.terminalReason)
 
-        assertTrue("Stop must succeed once", stopResult is SessionTransitionOutcome.Success)
-        assertTrue("Unverified AutoEnd must fail closed", autoEndResult is SessionTransitionOutcome.StaleEventRejected)
+        val autoEndResult = results.single { it !== stopResult }
+        // Depending on race order:
+        // Order A (AutoEnd precedes Stop): AutoEnd fails closed with StaleEventRejected("AUTO_END_UNVERIFIED_PERSISTENCE_BOUNDARY")
+        // Order B (Stop commits first): AutoEnd observes completed session and returns TerminalImmutable("DISMISSED")
+        when (autoEndResult) {
+            is SessionTransitionOutcome.StaleEventRejected -> {
+                assertEquals("AUTO_END_UNVERIFIED_PERSISTENCE_BOUNDARY", autoEndResult.reason)
+            }
+            is SessionTransitionOutcome.TerminalImmutable -> {
+                assertEquals("DISMISSED", autoEndResult.terminalReason)
+            }
+            else -> {
+                org.junit.Assert.fail("Unexpected outcome for unverified AutoEnd: $autoEndResult")
+            }
+        }
+
+        val persisted = repository.getSessionById(session.sessionId)
+        assertNotNull("Persisted session must exist", persisted)
+        assertEquals("COMPLETED", persisted!!.sessionState)
+        assertEquals("DISMISSED", persisted.terminalReason)
+        assertEquals(session.sessionVersion + 1L, persisted.sessionVersion)
+
+        // --- 2. Deterministic Interleaving 1: AutoEnd strictly precedes Stop ---
+        val session1 = admitNormalSession(alarmId = 101L)
+        val autoEndFirst = engine.transitionSession(
+            sessionId = session1.sessionId,
+            event = AlarmSessionEvent.AutoEndTimeout(nowMs + (15 * 60_000L)),
+            expectedVersion = session1.sessionVersion,
+            expectedState = session1.sessionState,
+            expectedAdmissionKey = session1.admissionKey,
+            expectedGeneration = session1.generation,
+            expectedRevision = session1.revision,
+            currentWallClockMs = nowMs + (15 * 60_000L),
+            currentElapsedRealtimeMs = elapsedMs + (15 * 60_000L),
+            currentBootCount = bootCount
+        )
+        assertTrue("AutoEnd must fail closed when evaluated before Stop", autoEndFirst is SessionTransitionOutcome.StaleEventRejected)
+        assertEquals("AUTO_END_UNVERIFIED_PERSISTENCE_BOUNDARY", (autoEndFirst as SessionTransitionOutcome.StaleEventRejected).reason)
+
+        // Ensure AutoEnd did not independently terminate or mutate session
+        val sessionAfterAutoEnd = repository.getSessionById(session1.sessionId)
+        assertNotNull(sessionAfterAutoEnd)
+        assertEquals("FIRING", sessionAfterAutoEnd!!.sessionState)
+        assertEquals(session1.sessionVersion, sessionAfterAutoEnd.sessionVersion)
+
+        val stopAfterAutoEnd = engine.transitionSession(
+            sessionId = session1.sessionId,
+            event = AlarmSessionEvent.Stop(nowMs + 1000L),
+            expectedVersion = session1.sessionVersion,
+            expectedState = session1.sessionState,
+            expectedAdmissionKey = session1.admissionKey,
+            expectedGeneration = session1.generation,
+            expectedRevision = session1.revision,
+            currentWallClockMs = nowMs + 1000L,
+            currentElapsedRealtimeMs = elapsedMs + 1000L,
+            currentBootCount = bootCount
+        )
+        assertTrue("Stop must succeed after unverified AutoEnd rejection", stopAfterAutoEnd is SessionTransitionOutcome.Success)
+        val persisted1 = repository.getSessionById(session1.sessionId)
+        assertNotNull(persisted1)
+        assertEquals("COMPLETED", persisted1!!.sessionState)
+        assertEquals("DISMISSED", persisted1.terminalReason)
+        assertEquals(session1.sessionVersion + 1L, persisted1.sessionVersion)
+
+        // --- 3. Deterministic Interleaving 2: Stop strictly precedes AutoEnd ---
+        val session2 = admitNormalSession(alarmId = 102L)
+        val stopFirst = engine.transitionSession(
+            sessionId = session2.sessionId,
+            event = AlarmSessionEvent.Stop(nowMs + 1000L),
+            expectedVersion = session2.sessionVersion,
+            expectedState = session2.sessionState,
+            expectedAdmissionKey = session2.admissionKey,
+            expectedGeneration = session2.generation,
+            expectedRevision = session2.revision,
+            currentWallClockMs = nowMs + 1000L,
+            currentElapsedRealtimeMs = elapsedMs + 1000L,
+            currentBootCount = bootCount
+        )
+        assertTrue("Stop must succeed first", stopFirst is SessionTransitionOutcome.Success)
+
+        val autoEndAfterStop = engine.transitionSession(
+            sessionId = session2.sessionId,
+            event = AlarmSessionEvent.AutoEndTimeout(nowMs + (15 * 60_000L)),
+            expectedVersion = session2.sessionVersion,
+            expectedState = session2.sessionState,
+            expectedAdmissionKey = session2.admissionKey,
+            expectedGeneration = session2.generation,
+            expectedRevision = session2.revision,
+            currentWallClockMs = nowMs + (15 * 60_000L),
+            currentElapsedRealtimeMs = elapsedMs + (15 * 60_000L),
+            currentBootCount = bootCount
+        )
+        assertTrue("AutoEnd after completed Stop must return TerminalImmutable", autoEndAfterStop is SessionTransitionOutcome.TerminalImmutable)
+        assertEquals("DISMISSED", (autoEndAfterStop as SessionTransitionOutcome.TerminalImmutable).terminalReason)
+
+        val persisted2 = repository.getSessionById(session2.sessionId)
+        assertNotNull(persisted2)
+        assertEquals("COMPLETED", persisted2!!.sessionState)
+        assertEquals("DISMISSED", persisted2.terminalReason)
+        assertEquals(session2.sessionVersion + 1L, persisted2.sessionVersion)
     }
 
     // T06: COMPLETED absorbing and immutable
