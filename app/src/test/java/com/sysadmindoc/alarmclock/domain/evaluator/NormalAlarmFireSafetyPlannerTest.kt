@@ -1,5 +1,6 @@
 package com.sysadmindoc.alarmclock.domain.evaluator
 
+import com.sysadmindoc.alarmclock.data.local.entity.IssuedOccurrence
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleException
 import com.sysadmindoc.alarmclock.data.model.Alarm
@@ -52,6 +53,7 @@ class NormalAlarmFireSafetyPlannerTest {
         scheduledAt = wed0700Ms,
         fireId = "fire-1",
         alarmGeneration = 1,
+        status = IssuedOccurrence.STATUS_ISSUED,
         authorityFingerprint = ScheduleAuthorityFingerprint.fromAuthority(validAuthority)
     )
 
@@ -63,7 +65,7 @@ class NormalAlarmFireSafetyPlannerTest {
             firedBaseTriggerTimeEpochMs = wed0700Ms,
             firedGeneration = 1,
             exceptions = emptyList(),
-            issuanceProof = null // Missing issuance proof
+            issuanceProof = null
         )
 
         assertEquals("Missing issuance proof MUST fail-closed as UNVERIFIED_INTENT_DATA", FireSafetyOutcome.UNVERIFIED_INTENT_DATA, decision.outcome)
@@ -84,7 +86,7 @@ class NormalAlarmFireSafetyPlannerTest {
         val decision = planner.planFireSafety(
             alarm = alarm,
             firedTargetEpochMs = overrideTargetMs,
-            firedBaseTriggerTimeEpochMs = wed0700Ms, // Matches on baseTriggerTime
+            firedBaseTriggerTimeEpochMs = wed0700Ms,
             firedGeneration = 1,
             exceptions = listOf(skipException)
         )
@@ -96,7 +98,7 @@ class NormalAlarmFireSafetyPlannerTest {
 
     @Test
     fun `10 Authority token／restoreEpoch不一致のFire`() {
-        val mismatchedProof = validProof.copy(alarmGeneration = 2) // Mismatched generation proof
+        val mismatchedProof = validProof.copy(alarmGeneration = 2)
 
         val decision = planner.planFireSafety(
             alarm = alarm,
@@ -176,12 +178,132 @@ class NormalAlarmFireSafetyPlannerTest {
             alarm = alarmGen2,
             firedTargetEpochMs = wed0700Ms,
             firedBaseTriggerTimeEpochMs = wed0700Ms,
-            firedGeneration = 1, // Stale fired generation
+            firedGeneration = 1,
             exceptions = emptyList()
         )
 
         assertEquals(FireSafetyOutcome.REJECT_STALE_GENERATION, decision.outcome)
         assertTrue(decision.isFireSuppressionRequired)
         assertFalse(decision.isFireAdmissionConfirmed)
+    }
+
+    // --- H2-A1 CORRECTED SUPPRESSED STATUS REGRESSION TESTS ---
+
+    // T01: SUPPRESSED proof must return UNVERIFIED_INTENT_DATA with REASON_SUPPRESSED_ISSUANCE
+    @Test
+    fun T01_suppressedProofReturnsUnverifiedIntentDataWithDistinctReason() {
+        val suppressedProof = validProof.copy(status = "SUPPRESSED")
+        val decision = planner.planFireSafety(
+            alarm = alarm,
+            firedTargetEpochMs = wed0700Ms,
+            firedBaseTriggerTimeEpochMs = wed0700Ms,
+            firedGeneration = 1,
+            exceptions = emptyList(),
+            issuanceProof = suppressedProof
+        )
+
+        assertEquals(FireSafetyOutcome.UNVERIFIED_INTENT_DATA, decision.outcome)
+        assertEquals(NormalAlarmFireSafetyPlanner.REASON_SUPPRESSED_ISSUANCE, decision.decisionReason)
+    }
+
+    // T02: SUPPRESSED proof must NOT confirm fire admission
+    @Test
+    fun T02_suppressedProofMustNotConfirmFireAdmission() {
+        val suppressedProof = validProof.copy(status = "SUPPRESSED")
+        val decision = planner.planFireSafety(
+            alarm = alarm,
+            firedTargetEpochMs = wed0700Ms,
+            firedBaseTriggerTimeEpochMs = wed0700Ms,
+            firedGeneration = 1,
+            exceptions = emptyList(),
+            issuanceProof = suppressedProof
+        )
+
+        assertFalse("SUPPRESSED proof must NOT confirm fire admission", decision.isFireAdmissionConfirmed)
+    }
+
+    // T03: SUPPRESSED proof must set isFireSuppressionRequired = true
+    @Test
+    fun T03_suppressedProofRequiresFireSuppression() {
+        val suppressedProof = validProof.copy(status = "SUPPRESSED")
+        val decision = planner.planFireSafety(
+            alarm = alarm,
+            firedTargetEpochMs = wed0700Ms,
+            firedBaseTriggerTimeEpochMs = wed0700Ms,
+            firedGeneration = 1,
+            exceptions = emptyList(),
+            issuanceProof = suppressedProof
+        )
+
+        assertTrue("SUPPRESSED proof MUST set isFireSuppressionRequired = true", decision.isFireSuppressionRequired)
+    }
+
+    // T04: Existing ISSUED valid proof preserves ALLOW_FIRE_VERIFIED
+    @Test
+    fun T04_issuedValidProofPreservesAcceptedBehavior() {
+        val issuedProof = validProof.copy(status = IssuedOccurrence.STATUS_ISSUED)
+        val decision = planner.planFireSafety(
+            alarm = alarm,
+            firedTargetEpochMs = wed0700Ms,
+            firedBaseTriggerTimeEpochMs = wed0700Ms,
+            firedGeneration = 1,
+            exceptions = emptyList(),
+            issuanceProof = issuedProof
+        )
+
+        assertEquals(FireSafetyOutcome.ALLOW_FIRE_VERIFIED, decision.outcome)
+        assertTrue(decision.isFireAdmissionConfirmed)
+    }
+
+    // T05: Existing ADMITTED valid proof preserves ALLOW_FIRE_VERIFIED
+    @Test
+    fun T05_admittedValidProofPreservesDefinedBehavior() {
+        val admittedProof = validProof.copy(status = IssuedOccurrence.STATUS_ADMITTED)
+        val decision = planner.planFireSafety(
+            alarm = alarm,
+            firedTargetEpochMs = wed0700Ms,
+            firedBaseTriggerTimeEpochMs = wed0700Ms,
+            firedGeneration = 1,
+            exceptions = emptyList(),
+            issuanceProof = admittedProof
+        )
+
+        assertEquals(FireSafetyOutcome.ALLOW_FIRE_VERIFIED, decision.outcome)
+        assertTrue(decision.isFireAdmissionConfirmed)
+    }
+
+    // T06: Existing PREPARED status returns ALLOW_FIRE_VERIFIED when proof valid
+    @Test
+    fun T06_preparedStatusPreservesDefaultBehavior() {
+        val preparedProof = validProof.copy(status = IssuedOccurrence.STATUS_PREPARED)
+        val decision = planner.planFireSafety(
+            alarm = alarm,
+            firedTargetEpochMs = wed0700Ms,
+            firedBaseTriggerTimeEpochMs = wed0700Ms,
+            firedGeneration = 1,
+            exceptions = emptyList(),
+            issuanceProof = preparedProof
+        )
+
+        assertEquals(FireSafetyOutcome.ALLOW_FIRE_VERIFIED, decision.outcome)
+        assertTrue(decision.isFireAdmissionConfirmed)
+    }
+
+    // T07: REVOKED and SET_FAILED continue to return REASON_REVOKED_ISSUANCE
+    @Test
+    fun T07_revokedAndSetFailedContinueToReturnRevokedReason() {
+        val revokedProof = validProof.copy(status = IssuedOccurrence.STATUS_REVOKED)
+        val setFailedProof = validProof.copy(status = IssuedOccurrence.STATUS_SET_FAILED)
+
+        val decisionRevoked = planner.planFireSafety(alarm, wed0700Ms, wed0700Ms, 1, emptyList(), revokedProof)
+        val decisionSetFailed = planner.planFireSafety(alarm, wed0700Ms, wed0700Ms, 1, emptyList(), setFailedProof)
+
+        assertEquals(FireSafetyOutcome.UNVERIFIED_INTENT_DATA, decisionRevoked.outcome)
+        assertEquals(NormalAlarmFireSafetyPlanner.REASON_REVOKED_ISSUANCE, decisionRevoked.decisionReason)
+        assertFalse(decisionRevoked.isFireAdmissionConfirmed)
+
+        assertEquals(FireSafetyOutcome.UNVERIFIED_INTENT_DATA, decisionSetFailed.outcome)
+        assertEquals(NormalAlarmFireSafetyPlanner.REASON_REVOKED_ISSUANCE, decisionSetFailed.decisionReason)
+        assertFalse(decisionSetFailed.isFireAdmissionConfirmed)
     }
 }

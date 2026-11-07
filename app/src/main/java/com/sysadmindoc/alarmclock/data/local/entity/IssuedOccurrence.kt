@@ -39,6 +39,7 @@ data class IssuedOccurrence(
         const val STATUS_ADMITTED = "ADMITTED"
         const val STATUS_REVOKED = "REVOKED"
         const val STATUS_SET_FAILED = "SET_FAILED"
+        const val STATUS_SUPPRESSED = "SUPPRESSED"
 
         const val OUTCOME_PENDING = "PENDING"
         const val OUTCOME_POSTED = "POSTED"
