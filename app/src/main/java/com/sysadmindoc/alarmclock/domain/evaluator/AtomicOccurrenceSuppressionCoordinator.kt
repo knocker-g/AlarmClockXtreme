@@ -42,7 +42,7 @@ enum class AtomicSuppressionOutcome {
  */
 data class AtomicSuppressionResult(
     val outcome: AtomicSuppressionOutcome,
-    val message: String? = null,
+    val diagnosticDetail: String? = null,
     val rowsUpdated: Int = 0
 )
 
@@ -76,7 +76,7 @@ class AtomicOccurrenceSuppressionCoordinator(
             if (e is CancellationException) throw e
             AtomicSuppressionResult(
                 outcome = AtomicSuppressionOutcome.REPOSITORY_FAILURE,
-                message = "Database transaction failed: ${e.message}",
+                diagnosticDetail = "Database transaction failed: ${e.message}",
                 rowsUpdated = 0
             )
         }
@@ -95,28 +95,28 @@ class AtomicOccurrenceSuppressionCoordinator(
         val occurrence = issuedDao.getOccurrence(request.issueToken)
             ?: return AtomicSuppressionResult(
                 outcome = AtomicSuppressionOutcome.STALE_IDENTITY,
-                message = "Occurrence not found: ${request.issueToken}"
+                diagnosticDetail = "Occurrence not found: ${request.issueToken}"
             )
 
         // 2. Re-read current IssueSlot
         val slot = issuedDao.getSlot(request.expectedAlarmId)
             ?: return AtomicSuppressionResult(
                 outcome = AtomicSuppressionOutcome.NOT_CURRENT_SLOT,
-                message = "IssueSlot not found for alarm ${request.expectedAlarmId}"
+                diagnosticDetail = "IssueSlot not found for alarm ${request.expectedAlarmId}"
             )
 
         // 3. Re-read Alarm
         val alarm = alarmDao.getById(request.expectedAlarmId)
             ?: return AtomicSuppressionResult(
                 outcome = AtomicSuppressionOutcome.STALE_IDENTITY,
-                message = "Alarm not found: ${request.expectedAlarmId}"
+                diagnosticDetail = "Alarm not found: ${request.expectedAlarmId}"
             )
 
         // 4. Re-read ScheduleAuthority
         val authority = authorityDao.getAuthorityByAlarmId(request.expectedAlarmId)
             ?: return AtomicSuppressionResult(
                 outcome = AtomicSuppressionOutcome.STALE_AUTHORITY,
-                message = "ScheduleAuthority not found for alarm ${request.expectedAlarmId}"
+                diagnosticDetail = "ScheduleAuthority not found for alarm ${request.expectedAlarmId}"
             )
 
         // 5. Validate full provenance and generation
@@ -128,7 +128,7 @@ class AtomicOccurrenceSuppressionCoordinator(
         ) {
             return AtomicSuppressionResult(
                 outcome = AtomicSuppressionOutcome.STALE_IDENTITY,
-                message = "Provenance mismatch between request and persisted occurrence/alarm"
+                diagnosticDetail = "Provenance mismatch between request and persisted occurrence/alarm"
             )
         }
 
@@ -137,7 +137,7 @@ class AtomicOccurrenceSuppressionCoordinator(
         ) {
             return AtomicSuppressionResult(
                 outcome = AtomicSuppressionOutcome.STALE_GENERATION,
-                message = "Generation mismatch: expected ${request.expectedAlarmGeneration}, alarm=${alarm.generation}, occurrence=${occurrence.alarmGeneration}"
+                diagnosticDetail = "Generation mismatch: expected ${request.expectedAlarmGeneration}, alarm=${alarm.generation}, occurrence=${occurrence.alarmGeneration}"
             )
         }
 
@@ -146,14 +146,14 @@ class AtomicOccurrenceSuppressionCoordinator(
         ) {
             return AtomicSuppressionResult(
                 outcome = AtomicSuppressionOutcome.NOT_CURRENT_SLOT,
-                message = "Slot generation mismatch: expected ${request.expectedSlotGenerationId}, slot=${slot.generationId}, occurrence=${occurrence.generationId}"
+                diagnosticDetail = "Slot generation mismatch: expected ${request.expectedSlotGenerationId}, slot=${slot.generationId}, occurrence=${occurrence.generationId}"
             )
         }
 
         if (authority.alarmId != request.expectedAlarmId) {
             return AtomicSuppressionResult(
                 outcome = AtomicSuppressionOutcome.STALE_AUTHORITY,
-                message = "ScheduleAuthority alarmId mismatch: authority=${authority.alarmId}, expected=${request.expectedAlarmId}"
+                diagnosticDetail = "ScheduleAuthority alarmId mismatch: authority=${authority.alarmId}, expected=${request.expectedAlarmId}"
             )
         }
 
@@ -161,7 +161,7 @@ class AtomicOccurrenceSuppressionCoordinator(
         if (currentFingerprint != request.expectedAuthorityFingerprint) {
             return AtomicSuppressionResult(
                 outcome = AtomicSuppressionOutcome.STALE_AUTHORITY,
-                message = "Authority fingerprint mismatch: expected ${request.expectedAuthorityFingerprint}, current $currentFingerprint"
+                diagnosticDetail = "Authority fingerprint mismatch: expected ${request.expectedAuthorityFingerprint}, current $currentFingerprint"
             )
         }
 
@@ -170,7 +170,7 @@ class AtomicOccurrenceSuppressionCoordinator(
         ) {
             return AtomicSuppressionResult(
                 outcome = AtomicSuppressionOutcome.STALE_AUTHORITY,
-                message = "Occurrence authorityInstanceToken mismatch"
+                diagnosticDetail = "Occurrence authorityInstanceToken mismatch"
             )
         }
 
@@ -178,7 +178,7 @@ class AtomicOccurrenceSuppressionCoordinator(
         if (slot.currentIssueToken != request.issueToken) {
             return AtomicSuppressionResult(
                 outcome = AtomicSuppressionOutcome.NOT_CURRENT_SLOT,
-                message = "Slot currentIssueToken (${slot.currentIssueToken}) does not match request (${request.issueToken})"
+                diagnosticDetail = "Slot currentIssueToken (${slot.currentIssueToken}) does not match request (${request.issueToken})"
             )
         }
 
@@ -186,7 +186,7 @@ class AtomicOccurrenceSuppressionCoordinator(
         if (occurrence.status == IssuedOccurrence.STATUS_SUPPRESSED) {
             return AtomicSuppressionResult(
                 outcome = AtomicSuppressionOutcome.ALREADY_SUPPRESSED,
-                message = "Occurrence ${request.issueToken} is already SUPPRESSED",
+                diagnosticDetail = "Occurrence ${request.issueToken} is already SUPPRESSED",
                 rowsUpdated = 0
             )
         }
@@ -195,7 +195,7 @@ class AtomicOccurrenceSuppressionCoordinator(
         if (occurrence.status != IssuedOccurrence.STATUS_ISSUED) {
             return AtomicSuppressionResult(
                 outcome = AtomicSuppressionOutcome.INVALID_STATUS,
-                message = "Occurrence status is ${occurrence.status}, expected ISSUED"
+                diagnosticDetail = "Occurrence status is ${occurrence.status}, expected ISSUED"
             )
         }
 
@@ -207,7 +207,7 @@ class AtomicOccurrenceSuppressionCoordinator(
         if (!hasActiveSession) {
             return AtomicSuppressionResult(
                 outcome = AtomicSuppressionOutcome.NO_ACTIVE_SESSION,
-                message = "No active session in states $ALLOWED_ACTIVE_SESSION_STATES found for alarm ${request.expectedAlarmId}"
+                diagnosticDetail = "No active session in states $ALLOWED_ACTIVE_SESSION_STATES found for alarm ${request.expectedAlarmId}"
             )
         }
 
@@ -223,14 +223,14 @@ class AtomicOccurrenceSuppressionCoordinator(
         if (updatedCount != 1) {
             return AtomicSuppressionResult(
                 outcome = AtomicSuppressionOutcome.CAS_CONFLICT,
-                message = "Guarded status CAS failed: expected 1 row updated, got $updatedCount",
+                diagnosticDetail = "Guarded status CAS failed: expected 1 row updated, got $updatedCount",
                 rowsUpdated = updatedCount
             )
         }
 
         return AtomicSuppressionResult(
             outcome = AtomicSuppressionOutcome.SUPPRESSED,
-            message = "Occurrence ${request.issueToken} successfully suppressed",
+            diagnosticDetail = "Occurrence ${request.issueToken} successfully suppressed",
             rowsUpdated = 1
         )
     }
