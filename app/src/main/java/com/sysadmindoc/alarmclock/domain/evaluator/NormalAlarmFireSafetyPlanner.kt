@@ -19,6 +19,7 @@ class NormalAlarmFireSafetyPlanner {
         const val REASON_MISSING_ISSUANCE_PROOF = "MISSING_VERIFIED_ISSUANCE_PROOF"
         const val REASON_AUTHORITY_FINGERPRINT_MISMATCH = "AUTHORITY_FINGERPRINT_MISMATCH"
         const val REASON_REVOKED_ISSUANCE = "ISSUANCE_PROOF_REVOKED"
+        const val REASON_SUPPRESSED_ISSUANCE = "ISSUANCE_PROOF_SUPPRESSED"
         const val REASON_UNSUPPORTED_SCHEDULE = "UNSUPPORTED_SCHEDULE_OR_DISABLED"
     }
 
@@ -151,6 +152,19 @@ class NormalAlarmFireSafetyPlanner {
                 isFireSuppressionRequired = false,
                 isFireAdmissionConfirmed = false,
                 decisionReason = REASON_MISSING_ISSUANCE_PROOF
+            )
+        }
+
+        if (issuanceProof.status == IssuedOccurrence.STATUS_SUPPRESSED) {
+            return FireSafetyDecision(
+                outcome = FireSafetyOutcome.UNVERIFIED_INTENT_DATA,
+                alarmId = alarm.id,
+                firedTargetEpochMs = firedTargetEpochMs,
+                firedBaseTriggerTimeEpochMs = firedBaseTriggerTimeEpochMs,
+                firedGeneration = firedGeneration,
+                isFireSuppressionRequired = true,
+                isFireAdmissionConfirmed = false,
+                decisionReason = REASON_SUPPRESSED_ISSUANCE
             )
         }
 
