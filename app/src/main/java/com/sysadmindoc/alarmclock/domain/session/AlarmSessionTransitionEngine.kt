@@ -1,13 +1,9 @@
 package com.sysadmindoc.alarmclock.domain.session
 
-import com.squareup.moshi.Moshi
-import com.sysadmindoc.alarmclock.data.local.entity.AlarmAdmissionTombstoneEntity
-import com.sysadmindoc.alarmclock.data.local.entity.AlarmConfigurationSnapshot
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmSessionEntity
 import com.sysadmindoc.alarmclock.data.repository.AlarmSessionRepository
 import com.sysadmindoc.alarmclock.domain.DeadlineEvaluationResult
 import com.sysadmindoc.alarmclock.domain.SessionDeadlineEvaluator
-import java.util.UUID
 
 /**
  * Production-quality, inactive canonical Serialized Session Transition Core (KNO-161).
@@ -15,63 +11,16 @@ import java.util.UUID
  */
 class AlarmSessionTransitionEngine(
     private val repository: AlarmSessionRepository,
-    private val deadlineEvaluator: SessionDeadlineEvaluator = SessionDeadlineEvaluator
+    private val deadlineEvaluator: SessionDeadlineEvaluator = SessionDeadlineEvaluator,
+    private val admissionFactory: NormalAlarmAdmissionFactory = NormalAlarmAdmissionFactory()
 ) {
 
-    private val moshi = Moshi.Builder().build()
-    private val snapshotAdapter = moshi.adapter(AlarmConfigurationSnapshot::class.java)
-
     suspend fun admitSession(event: AlarmSessionEvent.AdmitSession): SessionTransitionOutcome {
-        val snapshot = AlarmConfigurationSnapshot.from(
-            alarm = event.alarm,
-            settings = event.settings,
-            effectiveNormalAutoSilenceMinutes = event.effectiveNormalAutoSilenceMinutes
-        )
-        val snapshotJson = snapshotAdapter.toJson(snapshot)
-
-        val admissionKey = "admission_${event.alarm.id}_${event.occurrenceKey}"
-        val sessionId = "session_${event.alarm.id}_${event.occurrenceKey}_${UUID.randomUUID()}"
-
-        // Absolute Timeout is exactly 5 hours (18,000,000 ms) from Session initial start (createdAtEpochMs)
-        val absoluteDeadlineMs = Math.addExact(event.nowEpochMs, 18_000_000L)
-
-        val sessionEntity = AlarmSessionEntity(
-            sessionId = sessionId,
-            admissionKey = admissionKey,
-            alarmId = event.alarm.id,
-            originKind = snapshot.kind,
-            originScheduleKind = event.alarm.scheduleKind,
-            generation = event.alarm.generation,
-            revision = event.alarm.revision,
-            fireId = event.fireId,
-            occurrenceKey = event.occurrenceKey,
-            canonicalBaseTriggerMs = event.canonicalBaseTriggerMs,
-            scheduledTargetEpochMs = event.scheduledTargetEpochMs,
-            sessionState = AlarmSessionState.FIRING.name,
-            sessionVersion = 1L,
-            creationSequence = 0L,
-            snoozeCount = 0,
-            refireEpochMs = 0L,
-            challengeUnlocked = false,
-            createdAtEpochMs = event.nowEpochMs,
-            createdElapsedRealtimeMs = event.elapsedRealtimeMs,
-            bootCount = event.bootCount,
-            updatedAtEpochMs = event.nowEpochMs,
-            absoluteDeadlineEpochMs = absoluteDeadlineMs,
-            configurationSnapshotJson = snapshotJson,
-            snapshotVersion = 1,
-            terminalReason = null,
-            completedAtEpochMs = null
-        )
-
-        val tombstoneEntity = AlarmAdmissionTombstoneEntity(
-            admissionKey = admissionKey,
-            alarmId = event.alarm.id,
-            sessionId = sessionId,
-            occurrenceKey = event.occurrenceKey,
-            createdAtEpochMs = event.nowEpochMs,
-            horizonEpochMs = absoluteDeadlineMs
-        )
+        val prepared = admissionFactory.prepareAdmission(event)
+        val sessionEntity = prepared.session
+        val tombstoneEntity = prepared.tombstone
+        val sessionId = sessionEntity.sessionId
+        val admissionKey = tombstoneEntity.admissionKey
 
         return try {
             repository.admitSession(sessionEntity, tombstoneEntity)
