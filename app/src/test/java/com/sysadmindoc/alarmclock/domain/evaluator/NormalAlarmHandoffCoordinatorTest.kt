@@ -54,7 +54,7 @@ class NormalAlarmHandoffCoordinatorTest {
         lifecycle = "ACTIVE",
         desiredOperation = "FIRE",
         desiredTriggerMillis = scheduledAt,
-        reconcileState = "RECONCILED",
+        reconcileState = "SETTLED",
         restoreEpoch = 1000L,
         actionKey = "action-100"
     )
@@ -880,6 +880,7 @@ class NormalAlarmHandoffCoordinatorTest {
         assertEquals(NormalAlarmHandoffOutcome.ADMITTED, res1.outcome)
 
         // 2. Next occurrence issued for same alarm (next day occurrence, slot advanced)
+        val latestAuthority = db.scheduleAuthorityDao().getAuthorityByAlarmId(alarmId) ?: authority
         val token2 = "issue_token_100_b"
         val fireId2 = "fire-100-b"
         val scheduledAt2 = scheduledAt + 86_400_000L
@@ -894,10 +895,10 @@ class NormalAlarmHandoffCoordinatorTest {
             status = IssuedOccurrence.STATUS_ISSUED,
             baseTriggerTime = baseTrigger2,
             alarmGeneration = alarmGen,
-            authorityInstanceToken = authority.instanceToken,
-            restoreEpoch = authority.restoreEpoch,
-            scheduleRevision = authority.scheduleRevision,
-            definitionRevision = authority.definitionRevision,
+            authorityInstanceToken = latestAuthority.instanceToken,
+            restoreEpoch = latestAuthority.restoreEpoch,
+            scheduleRevision = latestAuthority.scheduleRevision,
+            definitionRevision = latestAuthority.definitionRevision,
             createdAt = nowMs,
             updatedAt = nowMs
         )
@@ -910,7 +911,8 @@ class NormalAlarmHandoffCoordinatorTest {
             expectedFireId = fireId2,
             expectedScheduledAt = scheduledAt2,
             expectedBaseTriggerTime = baseTrigger2,
-            expectedSlotGenerationId = slotGen2
+            expectedSlotGenerationId = slotGen2,
+            expectedAuthorityFingerprint = ScheduleAuthorityFingerprint.fromAuthority(latestAuthority)
         )
 
         // Second caller attempts admission for same alarm: MUST see active session and be SUPPRESSED

@@ -7,9 +7,14 @@ import com.sysadmindoc.alarmclock.data.local.entity.AlarmSessionEntity
 import com.sysadmindoc.alarmclock.data.local.entity.IssuedOccurrence
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.data.model.AlarmOccurrenceId
+import com.sysadmindoc.alarmclock.data.local.entity.ScheduleException
 import com.sysadmindoc.alarmclock.data.preferences.AppSettings
+import com.sysadmindoc.alarmclock.data.repository.HolidayRepository
+import com.sysadmindoc.alarmclock.domain.NextAlarmCalculator
 import com.sysadmindoc.alarmclock.domain.session.AlarmSessionEvent
 import com.sysadmindoc.alarmclock.domain.session.NormalAlarmAdmissionFactory
+import java.time.Instant
+import java.time.ZoneId
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -53,6 +58,20 @@ data class NormalAlarmHandoffRequest(
 )
 
 /**
+ * Immutable typed record of committed post-fire schedule recovery intent (KNO-37 Phase H2-C4-P3).
+ * Represents durable facts committed atomically in Room within the same transaction as Occurrence and Session.
+ */
+data class CommittedAuthorityRecoveryIntent(
+    val alarmId: Long,
+    val claimedRevision: Long,
+    val lifecycle: String,
+    val desiredOperation: String,
+    val desiredTriggerMillis: Long?,
+    val actionKey: String,
+    val reconcileState: String = "RECONCILING"
+)
+
+/**
  * Result of an atomic normal alarm handoff operation.
  */
 data class NormalAlarmHandoffResult(
@@ -61,22 +80,27 @@ data class NormalAlarmHandoffResult(
     val sessionId: String? = null,
     val admissionKey: String? = null,
     val actionTaken: NormalAlarmHandoffAction? = null,
-    val decisionReason: String? = null
+    val decisionReason: String? = null,
+    val committedAuthorityIntent: CommittedAuthorityRecoveryIntent? = null
 )
 
 /**
  * Inactive, fail-closed coordinator executing atomic Normal Alarm handoff decisions
- * and database mutations inside a single Room transaction boundary (KNO-37 Phase H2-C2-B / H2-C2-B1).
+ * and database mutations inside a single Room transaction boundary (KNO-37 Phase H2-C2-B / H2-C4-P3).
  */
 class NormalAlarmHandoffCoordinator(
     private val database: AlarmDatabase,
     private val admissionFactory: NormalAlarmAdmissionFactory = NormalAlarmAdmissionFactory(),
     private val planner: NormalAlarmHandoffPlanner = NormalAlarmHandoffPlanner(),
-    private val suppressionCoordinator: AtomicOccurrenceSuppressionCoordinator = AtomicOccurrenceSuppressionCoordinator(database)
+    private val suppressionCoordinator: AtomicOccurrenceSuppressionCoordinator = AtomicOccurrenceSuppressionCoordinator(database),
+    private val postFirePlanner: NormalAlarmPostFirePlanner = NormalAlarmPostFirePlanner(),
+    private val nextAlarmCalculator: NextAlarmCalculator = NextAlarmCalculator(),
+    private val occurrenceEvaluator: ScheduleOccurrenceEvaluator = ScheduleOccurrenceEvaluator(),
+    private val holidayRepository: HolidayRepository? = null
 ) {
 
     /**
-     * Testing cutpoints for crash and rollback verification (KNO-37 Phase H2-C2-C).
+     * Testing cutpoints for crash and rollback verification (KNO-37 Phase H2-C2-C / H2-C4-P3).
      */
     internal var cutpointInterceptor: ((Cutpoint) -> Unit)? = null
 
@@ -85,35 +109,238 @@ class NormalAlarmHandoffCoordinator(
         AFTER_OCCURRENCE_CAS,
         AFTER_TOMBSTONE_INSERT,
         AFTER_SEQUENCE_ALLOCATION,
-        BEFORE_TRANSACTION_COMMIT
+        BEFORE_ALARM_DEFINITION_CAS,
+        AFTER_ALARM_DEFINITION_CAS,
+        BEFORE_AUTHORITY_CAS,
+        AFTER_AUTHORITY_CAS,
+        BEFORE_TRANSACTION_COMMIT,
+        AFTER_TRANSACTION_COMMIT
+    }
+
+    /**
+     * Immutable prepared post-fire recovery plan payload evaluated outside the Room transaction.
+     */
+    data class PreparedPostFireRecovery(
+        val isRecurringSchedule: Boolean,
+        val nextTriggerTime: Long,
+        val actionKey: String,
+        val expectedRevision: Long,
+        val expectedDefinitionRevision: Long,
+        val expectedAlarmGeneration: Int,
+        val preparedExceptions: List<ScheduleException> = emptyList()
+    )
+
+    /**
+     * Typed result of post-fire recovery preparation evaluated outside Room transaction (KNO-37 Phase H2-C4-P3B).
+     */
+    sealed interface RecoveryPreparationResult {
+        data class Ready(val recovery: PreparedPostFireRecovery) : RecoveryPreparationResult
+        object NotApplicable : RecoveryPreparationResult
+        data class Failed(
+            val outcome: NormalAlarmHandoffOutcome,
+            val diagnosticDetail: String,
+            val decisionReason: String
+        ) : RecoveryPreparationResult
+    }
+
+    /**
+     * Evaluates authoritative schedule inputs and computes next occurrence trigger outside Room transaction.
+     * Never performs network I/O and never touches OS services.
+     */
+    internal suspend fun prepareRecoveryInputs(request: NormalAlarmHandoffRequest): RecoveryPreparationResult {
+        if (request.expectedScheduledAt <= 0L || request.expectedScheduledAt > Long.MAX_VALUE - 60_000L) {
+            return RecoveryPreparationResult.Failed(
+                outcome = NormalAlarmHandoffOutcome.REJECTED_STALE_IDENTITY,
+                diagnosticDetail = "Invalid or overflowing scheduledAt: ${request.expectedScheduledAt}",
+                decisionReason = NormalAlarmHandoffPlanner.REASON_REJECT_INVALID_IDENTITY
+            )
+        }
+
+        val alarm = database.alarmDao().getById(request.expectedAlarmId)
+            ?: return RecoveryPreparationResult.NotApplicable
+
+        if (alarm.isQuickAlarm || alarm.kind != Alarm.KIND_NORMAL || !alarm.isEnabled) {
+            return RecoveryPreparationResult.NotApplicable
+        }
+
+        val authority = database.scheduleAuthorityDao().getAuthorityByAlarmId(request.expectedAlarmId)
+            ?: return RecoveryPreparationResult.Failed(
+                outcome = NormalAlarmHandoffOutcome.REJECTED_STALE_PROVENANCE,
+                diagnosticDetail = "Missing required schedule authority for alarm ${request.expectedAlarmId}",
+                decisionReason = "REJECT_MISSING_AUTHORITY"
+            )
+
+        return if (alarm.isRecurringSchedule) {
+            val notBeforeMillis = request.expectedScheduledAt + 60_000L
+            val schedulingZone = alarm.schedulingZone(ZoneId.systemDefault())
+            val exceptions = try {
+                database.scheduleExceptionDao().getExceptionsForAlarmGeneration(alarm.id, alarm.generation)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                return RecoveryPreparationResult.Failed(
+                    outcome = NormalAlarmHandoffOutcome.REPOSITORY_FAILURE,
+                    diagnosticDetail = "Exception DAO read failed: ${e.message}",
+                    decisionReason = "EXCEPTION_DAO_FAILURE"
+                )
+            }
+            val requiresHolidayOrException = (alarm.canonicalHolidayPolicy() != HolidayPolicy.FOLLOW_BASE || exceptions.isNotEmpty())
+            val nextTrigger = if (requiresHolidayOrException) {
+                if (alarm.canonicalHolidayPolicy() != HolidayPolicy.FOLLOW_BASE) {
+                    val repo = holidayRepository ?: return RecoveryPreparationResult.Failed(
+                        outcome = NormalAlarmHandoffOutcome.REPOSITORY_FAILURE,
+                        diagnosticDetail = "Holiday authority acquisition failed: HolidayRepository is null for non-FOLLOW_BASE alarm",
+                        decisionReason = "HOLIDAY_AUTHORITY_FAILURE"
+                    )
+                    val notBeforeDate = Instant.ofEpochMilli(notBeforeMillis).atZone(schedulingZone).toLocalDate()
+                    val authorityWindow = try {
+                        repo.captureAuthorityWindow(
+                            startDate = notBeforeDate,
+                            endDateInclusive = notBeforeDate.plusDays(ScheduleOccurrenceEvaluator.MAX_CANDIDATE_SEARCH_STEPS.toLong() - 1L)
+                        )
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        return RecoveryPreparationResult.Failed(
+                            outcome = NormalAlarmHandoffOutcome.REPOSITORY_FAILURE,
+                            diagnosticDetail = "Holiday authority acquisition failed: ${e.message}",
+                            decisionReason = "HOLIDAY_AUTHORITY_FAILURE"
+                        )
+                    } ?: return RecoveryPreparationResult.Failed(
+                        outcome = NormalAlarmHandoffOutcome.REPOSITORY_FAILURE,
+                        diagnosticDetail = "Holiday authority window capture returned null",
+                        decisionReason = "HOLIDAY_AUTHORITY_FAILURE"
+                    )
+                    val classifier = authorityWindow.asLocalHolidayClassifier()
+                    val evaluated = occurrenceEvaluator.evaluateWithHolidayClassifier(
+                        alarm = alarm,
+                        fromEpochMs = notBeforeMillis,
+                        holidayClassifier = classifier,
+                        exceptions = exceptions,
+                        evaluationZoneId = schedulingZone,
+                        allowHidePersonalRuntimeFeatures = true
+                    )
+                    if (evaluated != null && (evaluated.decision == OccurrenceDecision.NORMAL_TRIGGER || evaluated.decision == OccurrenceDecision.TIME_OVERRIDDEN)) {
+                        evaluated.targetTriggerTimeEpochMs
+                    } else {
+                        0L
+                    }
+                } else {
+                    // FOLLOW_BASE with exceptions
+                    val classifier = LocalHolidayClassifier.ALL_UNKNOWN
+                    val evaluated = occurrenceEvaluator.evaluateWithHolidayClassifier(
+                        alarm = alarm,
+                        fromEpochMs = notBeforeMillis,
+                        holidayClassifier = classifier,
+                        exceptions = exceptions,
+                        evaluationZoneId = schedulingZone,
+                        allowHidePersonalRuntimeFeatures = true
+                    )
+                    if (evaluated != null && (evaluated.decision == OccurrenceDecision.NORMAL_TRIGGER || evaluated.decision == OccurrenceDecision.TIME_OVERRIDDEN)) {
+                        evaluated.targetTriggerTimeEpochMs
+                    } else {
+                        0L
+                    }
+                }
+            } else {
+                nextAlarmCalculator.calculate(
+                    alarm,
+                    Instant.ofEpochMilli(notBeforeMillis).atZone(schedulingZone)
+                )
+            }
+
+            if (nextTrigger <= 0L) {
+                return RecoveryPreparationResult.Failed(
+                    outcome = NormalAlarmHandoffOutcome.REJECTED_UNSUPPORTED_SCHEDULE,
+                    diagnosticDetail = "Evaluated next trigger is non-positive: $nextTrigger",
+                    decisionReason = "INVALID_NEXT_TRIGGER"
+                )
+            }
+
+            RecoveryPreparationResult.Ready(
+                PreparedPostFireRecovery(
+                    isRecurringSchedule = true,
+                    nextTriggerTime = nextTrigger,
+                    actionKey = "postfire_${request.issueToken}",
+                    expectedRevision = authority.scheduleRevision,
+                    expectedDefinitionRevision = authority.definitionRevision,
+                    expectedAlarmGeneration = alarm.generation,
+                    preparedExceptions = exceptions
+                )
+            )
+        } else {
+            RecoveryPreparationResult.Ready(
+                PreparedPostFireRecovery(
+                    isRecurringSchedule = false,
+                    nextTriggerTime = 0L,
+                    actionKey = "postfire_disable_${request.issueToken}",
+                    expectedRevision = authority.scheduleRevision,
+                    expectedDefinitionRevision = authority.definitionRevision,
+                    expectedAlarmGeneration = alarm.generation
+                )
+            )
+        }
     }
 
     /**
      * Executes atomic normal alarm handoff inside a single Room database transaction.
      */
     suspend fun coordinateHandoff(request: NormalAlarmHandoffRequest): NormalAlarmHandoffResult {
-        return try {
+        // 0. Pre-validate timestamp preconditions
+        if (request.expectedScheduledAt <= 0L || request.expectedScheduledAt > Long.MAX_VALUE - 60_000L) {
+            return NormalAlarmHandoffResult(
+                outcome = NormalAlarmHandoffOutcome.REJECTED_STALE_IDENTITY,
+                diagnosticDetail = "Invalid or overflowing scheduledAt: ${request.expectedScheduledAt}",
+                actionTaken = NormalAlarmHandoffAction.REJECT,
+                decisionReason = NormalAlarmHandoffPlanner.REASON_REJECT_INVALID_IDENTITY
+            )
+        }
+
+        // 1. Prepare post-fire recovery inputs outside Room transaction
+        val preparation = prepareRecoveryInputs(request)
+        if (preparation is RecoveryPreparationResult.Failed) {
+            return NormalAlarmHandoffResult(
+                outcome = preparation.outcome,
+                diagnosticDetail = preparation.diagnosticDetail,
+                actionTaken = NormalAlarmHandoffAction.REJECT,
+                decisionReason = preparation.decisionReason
+            )
+        }
+        val preparedRecovery = (preparation as? RecoveryPreparationResult.Ready)?.recovery
+
+        // 2. Execute within Room transaction
+        val result = try {
             database.withTransaction {
-                executeHandoff(request)
+                executeHandoff(request, preparedRecovery)
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             val isConstraint = e is android.database.sqlite.SQLiteConstraintException
             val isCasConflict = isConstraint || (e is IllegalStateException && e.message?.contains("CAS") == true)
-            NormalAlarmHandoffResult(
+            return NormalAlarmHandoffResult(
                 outcome = if (isCasConflict) NormalAlarmHandoffOutcome.CAS_CONFLICT else NormalAlarmHandoffOutcome.REPOSITORY_FAILURE,
                 diagnosticDetail = "Transaction failed: ${e.message}",
                 actionTaken = NormalAlarmHandoffAction.REJECT,
                 decisionReason = "TRANSACTION_FAILURE"
             )
         }
+
+        // 3. Post-commit observation cutpoint (failures here do not roll back committed transaction)
+        try {
+            cutpointInterceptor?.invoke(Cutpoint.AFTER_TRANSACTION_COMMIT)
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            android.util.Log.w("NormalAlarmHandoffCoordinator", "Postcommit cutpoint observer threw exception", e)
+        }
+        return result
     }
 
     /**
      * Executes authoritative fact gathering, structural consistency verification,
      * pure decision planning, and safe mutation within the active transaction boundary.
      */
-    internal suspend fun executeHandoff(request: NormalAlarmHandoffRequest): NormalAlarmHandoffResult {
+    internal suspend fun executeHandoff(
+        request: NormalAlarmHandoffRequest,
+        preparedRecovery: PreparedPostFireRecovery? = null
+    ): NormalAlarmHandoffResult {
         // 0. Validate explicit runtime and identity preconditions (Fail Closed)
         if (request.nowEpochMs <= 0L || request.expectedScheduledAt <= 0L || request.expectedBaseTriggerTime <= 0L) {
             return NormalAlarmHandoffResult(
@@ -183,7 +410,7 @@ class NormalAlarmHandoffCoordinator(
                     decisionReason = NormalAlarmHandoffPlanner.REASON_REJECT_UNSUPPORTED_STATUS
                 )
             }
-            if (!alarm.isEnabled) {
+            if (!alarm.isEnabled && occurrence?.status != IssuedOccurrence.STATUS_ADMITTED && activeSessions.isEmpty()) {
                 return NormalAlarmHandoffResult(
                     outcome = NormalAlarmHandoffOutcome.REJECTED_UNSUPPORTED_SCHEDULE,
                     diagnosticDetail = "Alarm is disabled",
@@ -221,16 +448,6 @@ class NormalAlarmHandoffCoordinator(
                 request.elapsedRealtimeMs > 0L &&
                 request.bootCount > 0L
 
-        val isProvenanceValid = authority != null &&
-                isIdentityValid &&
-                authority.alarmId == request.expectedAlarmId &&
-                ScheduleAuthorityFingerprint.fromAuthority(authority) == request.expectedAuthorityFingerprint &&
-                !occurrence.authorityInstanceToken.isNullOrBlank() &&
-                occurrence.authorityInstanceToken == authority.instanceToken &&
-                occurrence.restoreEpoch == authority.restoreEpoch &&
-                occurrence.scheduleRevision == authority.scheduleRevision &&
-                occurrence.definitionRevision == authority.definitionRevision
-
         val isGenerationValid = isIdentityValid &&
                 alarm.generation == request.expectedAlarmGeneration &&
                 occurrence.alarmGeneration == request.expectedAlarmGeneration
@@ -265,6 +482,30 @@ class NormalAlarmHandoffCoordinator(
         }
 
         val isAlreadyAdmitted = structuralState is StructuralAdmissionState.ValidDuplicate
+
+        val isProvenanceValid = if (isAlreadyAdmitted) {
+            authority != null &&
+                    isIdentityValid &&
+                    authority.alarmId == request.expectedAlarmId &&
+                    !occurrence.authorityInstanceToken.isNullOrBlank() &&
+                    occurrence.authorityInstanceToken == authority.instanceToken &&
+                    occurrence.restoreEpoch == authority.restoreEpoch &&
+                    request.expectedAuthorityFingerprint.alarmId == occurrence.alarmId &&
+                    request.expectedAuthorityFingerprint.instanceToken == occurrence.authorityInstanceToken &&
+                    request.expectedAuthorityFingerprint.restoreEpoch == occurrence.restoreEpoch &&
+                    request.expectedAuthorityFingerprint.scheduleRevision == occurrence.scheduleRevision &&
+                    request.expectedAuthorityFingerprint.definitionRevision == occurrence.definitionRevision
+        } else {
+            authority != null &&
+                    isIdentityValid &&
+                    authority.alarmId == request.expectedAlarmId &&
+                    ScheduleAuthorityFingerprint.fromAuthority(authority) == request.expectedAuthorityFingerprint &&
+                    !occurrence.authorityInstanceToken.isNullOrBlank() &&
+                    occurrence.authorityInstanceToken == authority.instanceToken &&
+                    occurrence.restoreEpoch == authority.restoreEpoch &&
+                    occurrence.scheduleRevision == authority.scheduleRevision &&
+                    occurrence.definitionRevision == authority.definitionRevision
+        }
 
         val allowedActiveStates = AtomicOccurrenceSuppressionCoordinator.ALLOWED_ACTIVE_SESSION_STATES
         val hasActiveSession = activeSessions.any {
@@ -346,12 +587,94 @@ class NormalAlarmHandoffCoordinator(
                 val suppressionResult = suppressionCoordinator.executeSuppression(suppressionRequest)
                 when (suppressionResult.outcome) {
                     AtomicSuppressionOutcome.SUPPRESSED -> {
+                        val effectiveRecovery = preparedRecovery
+                        val committedIntent = if (effectiveRecovery != null && effectiveRecovery.isRecurringSchedule) {
+                            val resolvedAlarm = alarm ?: throw IllegalStateException("Alarm cannot be null on SUPPRESSED")
+                            val resolvedAuthority = authority ?: throw IllegalStateException("Authority cannot be null on SUPPRESSED")
+
+                            // Revalidate preparation dependencies inside Room transaction
+                            if (resolvedAlarm.generation != effectiveRecovery.expectedAlarmGeneration ||
+                                resolvedAuthority.scheduleRevision != effectiveRecovery.expectedRevision ||
+                                resolvedAuthority.definitionRevision != effectiveRecovery.expectedDefinitionRevision
+                            ) {
+                                throw IllegalStateException("Authority or alarm generation modified concurrently between PREPARE and Room transaction on SUPPRESSED (expected rev=${effectiveRecovery.expectedRevision}, current rev=${resolvedAuthority.scheduleRevision})")
+                            }
+
+                            // 1. Update Alarm definition nextTrigger using pre-claim revision fence
+                            cutpointInterceptor?.invoke(Cutpoint.BEFORE_ALARM_DEFINITION_CAS)
+                            val alarmUpdated = if (resolvedAlarm.nextTriggerTime == 0L) {
+                                val initialStrict = alarmDao.casUpdateNextTriggerWithStrictAuthority(
+                                    id = resolvedAlarm.id,
+                                    expectedTrigger = 0L,
+                                    newTrigger = effectiveRecovery.nextTriggerTime,
+                                    expectedRevision = resolvedAuthority.scheduleRevision,
+                                    instanceToken = resolvedAuthority.instanceToken,
+                                    restoreEpoch = resolvedAuthority.restoreEpoch,
+                                    definitionRevision = resolvedAuthority.definitionRevision
+                                )
+                                if (initialStrict == 0) {
+                                    alarmDao.casUpdateNextTriggerInitialWithAuthority(
+                                        id = resolvedAlarm.id,
+                                        newTrigger = effectiveRecovery.nextTriggerTime,
+                                        expectedRevision = resolvedAuthority.scheduleRevision,
+                                        instanceToken = resolvedAuthority.instanceToken,
+                                        restoreEpoch = resolvedAuthority.restoreEpoch,
+                                        definitionRevision = resolvedAuthority.definitionRevision
+                                    )
+                                } else {
+                                    initialStrict
+                                }
+                            } else {
+                                alarmDao.casUpdateNextTriggerWithStrictAuthority(
+                                    id = resolvedAlarm.id,
+                                    expectedTrigger = resolvedAlarm.nextTriggerTime,
+                                    newTrigger = effectiveRecovery.nextTriggerTime,
+                                    expectedRevision = resolvedAuthority.scheduleRevision,
+                                    instanceToken = resolvedAuthority.instanceToken,
+                                    restoreEpoch = resolvedAuthority.restoreEpoch,
+                                    definitionRevision = resolvedAuthority.definitionRevision
+                                )
+                            }
+                            if (alarmUpdated != 1) {
+                                throw IllegalStateException("Alarm nextTrigger CAS update failed on SUPPRESSED (expected 1 row, got $alarmUpdated; expectedTrigger=${resolvedAlarm.nextTriggerTime})")
+                            }
+                            cutpointInterceptor?.invoke(Cutpoint.AFTER_ALARM_DEFINITION_CAS)
+
+                            // 2. Claim ScheduleAuthority intent
+                            cutpointInterceptor?.invoke(Cutpoint.BEFORE_AUTHORITY_CAS)
+                            val claimed = authorityDao.casClaimAuthority(
+                                alarmId = resolvedAlarm.id,
+                                instanceToken = resolvedAuthority.instanceToken,
+                                restoreEpoch = resolvedAuthority.restoreEpoch,
+                                expectedRevision = resolvedAuthority.scheduleRevision,
+                                expectedLifecycle = resolvedAuthority.lifecycle,
+                                desiredOperation = "SET",
+                                desiredTriggerMillis = effectiveRecovery.nextTriggerTime,
+                                actionKey = effectiveRecovery.actionKey
+                            )
+                            if (claimed != 1) {
+                                throw IllegalStateException("ScheduleAuthority CAS claim failed on SUPPRESSED")
+                            }
+                            cutpointInterceptor?.invoke(Cutpoint.AFTER_AUTHORITY_CAS)
+
+                            CommittedAuthorityRecoveryIntent(
+                                alarmId = resolvedAlarm.id,
+                                claimedRevision = resolvedAuthority.scheduleRevision + 1L,
+                                lifecycle = resolvedAuthority.lifecycle,
+                                desiredOperation = "SET",
+                                desiredTriggerMillis = effectiveRecovery.nextTriggerTime,
+                                actionKey = effectiveRecovery.actionKey,
+                                reconcileState = "RECONCILING"
+                            )
+                        } else null
+
                         NormalAlarmHandoffResult(
                             outcome = NormalAlarmHandoffOutcome.SUPPRESSED,
                             diagnosticDetail = suppressionResult.diagnosticDetail,
                             admissionKey = canonicalAdmissionKey,
                             actionTaken = plan.action,
-                            decisionReason = plan.decisionReason
+                            decisionReason = plan.decisionReason,
+                            committedAuthorityIntent = committedIntent
                         )
                     }
                     AtomicSuppressionOutcome.ALREADY_SUPPRESSED -> {
@@ -427,6 +750,7 @@ class NormalAlarmHandoffCoordinator(
             NormalAlarmHandoffAction.ADMIT -> {
                 val resolvedAlarm = alarm ?: throw IllegalStateException("Alarm cannot be null on ADMIT")
                 val resolvedOccurrence = occurrence ?: throw IllegalStateException("Occurrence cannot be null on ADMIT")
+                val resolvedAuthority = authority ?: throw IllegalStateException("Authority cannot be null on ADMIT")
 
                 val resolvedAutoSilence = request.effectiveNormalAutoSilenceMinutes
                     ?: throw IllegalStateException("effectiveNormalAutoSilenceMinutes cannot be null on ADMIT")
@@ -494,6 +818,137 @@ class NormalAlarmHandoffCoordinator(
                         tombstone = prepared.tombstone
                     )
                 }
+
+                // Inactive Post-Fire Atomic Recovery Intent Persistence (KNO-37 Phase H2-C4-P3B)
+                val effectiveRecovery = if (resolvedAlarm.isEnabled) {
+                    preparedRecovery ?: throw IllegalStateException("Missing required prepared recovery inputs for state-changing handoff")
+                } else null
+
+                val committedIntent = if (effectiveRecovery != null) {
+                    // Revalidate preparation dependencies inside Room transaction
+                    if (resolvedAlarm.generation != effectiveRecovery.expectedAlarmGeneration ||
+                        resolvedAuthority.scheduleRevision != effectiveRecovery.expectedRevision ||
+                        resolvedAuthority.definitionRevision != effectiveRecovery.expectedDefinitionRevision
+                    ) {
+                        throw IllegalStateException("Authority or alarm generation modified concurrently between PREPARE and Room transaction (expected rev=${effectiveRecovery.expectedRevision}, current rev=${resolvedAuthority.scheduleRevision})")
+                    }
+
+                    if (effectiveRecovery.isRecurringSchedule) {
+                        // Repeating Alarm:
+                        // 1. Update Alarm definition nextTrigger using pre-claim revision fence
+                        cutpointInterceptor?.invoke(Cutpoint.BEFORE_ALARM_DEFINITION_CAS)
+                        val alarmUpdated = if (resolvedAlarm.nextTriggerTime == 0L) {
+                            val initialStrict = alarmDao.casUpdateNextTriggerWithStrictAuthority(
+                                id = resolvedAlarm.id,
+                                expectedTrigger = 0L,
+                                newTrigger = effectiveRecovery.nextTriggerTime,
+                                expectedRevision = resolvedAuthority.scheduleRevision,
+                                instanceToken = resolvedAuthority.instanceToken,
+                                restoreEpoch = resolvedAuthority.restoreEpoch,
+                                definitionRevision = resolvedAuthority.definitionRevision
+                            )
+                            if (initialStrict == 0) {
+                                alarmDao.casUpdateNextTriggerInitialWithAuthority(
+                                    id = resolvedAlarm.id,
+                                    newTrigger = effectiveRecovery.nextTriggerTime,
+                                    expectedRevision = resolvedAuthority.scheduleRevision,
+                                    instanceToken = resolvedAuthority.instanceToken,
+                                    restoreEpoch = resolvedAuthority.restoreEpoch,
+                                    definitionRevision = resolvedAuthority.definitionRevision
+                                )
+                            } else {
+                                initialStrict
+                            }
+                        } else {
+                            alarmDao.casUpdateNextTriggerWithStrictAuthority(
+                                id = resolvedAlarm.id,
+                                expectedTrigger = resolvedAlarm.nextTriggerTime,
+                                newTrigger = effectiveRecovery.nextTriggerTime,
+                                expectedRevision = resolvedAuthority.scheduleRevision,
+                                instanceToken = resolvedAuthority.instanceToken,
+                                restoreEpoch = resolvedAuthority.restoreEpoch,
+                                definitionRevision = resolvedAuthority.definitionRevision
+                            )
+                        }
+                        if (alarmUpdated != 1) {
+                            throw IllegalStateException("Alarm nextTrigger CAS update failed (expected 1 row, got $alarmUpdated; expectedTrigger=${resolvedAlarm.nextTriggerTime})")
+                        }
+                        cutpointInterceptor?.invoke(Cutpoint.AFTER_ALARM_DEFINITION_CAS)
+
+                        // 2. Claim ScheduleAuthority intent
+                        cutpointInterceptor?.invoke(Cutpoint.BEFORE_AUTHORITY_CAS)
+                        val claimed = authorityDao.casClaimAuthority(
+                            alarmId = resolvedAlarm.id,
+                            instanceToken = resolvedAuthority.instanceToken,
+                            restoreEpoch = resolvedAuthority.restoreEpoch,
+                            expectedRevision = resolvedAuthority.scheduleRevision,
+                            expectedLifecycle = resolvedAuthority.lifecycle,
+                            desiredOperation = "SET",
+                            desiredTriggerMillis = effectiveRecovery.nextTriggerTime,
+                            actionKey = effectiveRecovery.actionKey
+                        )
+                        if (claimed != 1) {
+                            throw IllegalStateException("ScheduleAuthority CAS claim failed (expected 1 row, got $claimed)")
+                        }
+                        cutpointInterceptor?.invoke(Cutpoint.AFTER_AUTHORITY_CAS)
+
+                        CommittedAuthorityRecoveryIntent(
+                            alarmId = resolvedAlarm.id,
+                            claimedRevision = resolvedAuthority.scheduleRevision + 1L,
+                            lifecycle = resolvedAuthority.lifecycle,
+                            desiredOperation = "SET",
+                            desiredTriggerMillis = effectiveRecovery.nextTriggerTime,
+                            actionKey = effectiveRecovery.actionKey,
+                            reconcileState = "RECONCILING"
+                        )
+                    } else {
+                        // One-Time Alarm:
+                        // 1. Disable Alarm definition using pre-claim revision fence
+                        cutpointInterceptor?.invoke(Cutpoint.BEFORE_ALARM_DEFINITION_CAS)
+                        val alarmDisabled = alarmDao.casSetEnabledWithStrictAuthority(
+                            id = resolvedAlarm.id,
+                            enabled = false,
+                            nextTrigger = 0L,
+                            expectedRevision = resolvedAuthority.scheduleRevision,
+                            instanceToken = resolvedAuthority.instanceToken,
+                            restoreEpoch = resolvedAuthority.restoreEpoch,
+                            definitionRevision = resolvedAuthority.definitionRevision
+                        )
+                        if (alarmDisabled != 1) {
+                            throw IllegalStateException("Alarm definition disable CAS failed (expected 1, got $alarmDisabled)")
+                        }
+                        cutpointInterceptor?.invoke(Cutpoint.AFTER_ALARM_DEFINITION_CAS)
+
+                        // 2. Update ScheduleAuthority lifecycle to DISABLED / CANCEL
+                        cutpointInterceptor?.invoke(Cutpoint.BEFORE_AUTHORITY_CAS)
+                        val claimed = authorityDao.casUpdateLifecycle(
+                            alarmId = resolvedAlarm.id,
+                            instanceToken = resolvedAuthority.instanceToken,
+                            restoreEpoch = resolvedAuthority.restoreEpoch,
+                            expectedRevision = resolvedAuthority.scheduleRevision,
+                            expectedLifecycle = resolvedAuthority.lifecycle,
+                            newLifecycle = "DISABLED",
+                            desiredOperation = "CANCEL",
+                            desiredTriggerMillis = null,
+                            actionKey = effectiveRecovery.actionKey
+                        )
+                        if (claimed != 1) {
+                            throw IllegalStateException("ScheduleAuthority lifecycle CAS failed (expected 1 row, got $claimed)")
+                        }
+                        cutpointInterceptor?.invoke(Cutpoint.AFTER_AUTHORITY_CAS)
+
+                        CommittedAuthorityRecoveryIntent(
+                            alarmId = resolvedAlarm.id,
+                            claimedRevision = resolvedAuthority.scheduleRevision + 1L,
+                            lifecycle = "DISABLED",
+                            desiredOperation = "CANCEL",
+                            desiredTriggerMillis = null,
+                            actionKey = effectiveRecovery.actionKey,
+                            reconcileState = "RECONCILING"
+                        )
+                    }
+                } else null
+
                 cutpointInterceptor?.invoke(Cutpoint.BEFORE_TRANSACTION_COMMIT)
 
                 NormalAlarmHandoffResult(
@@ -502,7 +957,8 @@ class NormalAlarmHandoffCoordinator(
                     sessionId = prepared.session.sessionId,
                     admissionKey = canonicalAdmissionKey,
                     actionTaken = plan.action,
-                    decisionReason = plan.decisionReason
+                    decisionReason = plan.decisionReason,
+                    committedAuthorityIntent = committedIntent
                 )
             }
         }
