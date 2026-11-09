@@ -229,7 +229,7 @@ class NormalAlarmPostFireAtomicRecoveryTest {
         assertEquals(intent.desiredTriggerMillis, updatedAuth.desiredTriggerMillis)
     }
 
-    // REQUIREMENT A (One-Time): Admission + Tombstone + Session + One-Time Definition Disable and Authority commit atomically
+    // REQUIREMENT A (One-Time): Admission + Tombstone + Session + Definition Retention and Consumed Cancellation intent commit atomically
     @Test
     fun requirementA_oneTimeAlarm_commitsAdmissionTombstoneSessionAndDisableIntentAtomically() = runBlocking {
         seedAlarmFixtures(isRepeating = false)
@@ -243,7 +243,7 @@ class NormalAlarmPostFireAtomicRecoveryTest {
 
         val intent = result.committedAuthorityIntent!!
         assertEquals(alarmId, intent.alarmId)
-        assertEquals("DISABLED", intent.lifecycle)
+        assertEquals("ACTIVE", intent.lifecycle)
         assertEquals("CANCEL", intent.desiredOperation)
         assertNull(intent.desiredTriggerMillis)
         assertEquals("RECONCILING", intent.reconcileState)
@@ -258,12 +258,12 @@ class NormalAlarmPostFireAtomicRecoveryTest {
 
         val updatedAlarm = db.alarmDao().getById(alarmId)
         assertNotNull(updatedAlarm)
-        assertFalse("One-time alarm must be disabled after fire handoff", updatedAlarm!!.isEnabled)
+        assertTrue("One-time alarm definition must remain enabled during active session", updatedAlarm!!.isEnabled)
         assertEquals(0L, updatedAlarm.nextTriggerTime)
 
         val updatedAuth = db.scheduleAuthorityDao().getAuthorityByAlarmId(alarmId)
         assertNotNull(updatedAuth)
-        assertEquals("DISABLED", updatedAuth!!.lifecycle)
+        assertEquals("ACTIVE", updatedAuth!!.lifecycle)
         assertEquals("CANCEL", updatedAuth.desiredOperation)
         assertNull(updatedAuth.desiredTriggerMillis)
         assertEquals("RECONCILING", updatedAuth.reconcileState)
@@ -418,7 +418,7 @@ class NormalAlarmPostFireAtomicRecoveryTest {
         assertEquals(5L, auth?.scheduleRevision)
     }
 
-    // REQUIREMENT H: One-Time definition disable and authority lifecycle remain consistent
+    // REQUIREMENT H: One-Time definition retention and authority lifecycle remain consistent
     @Test
     fun requirementH_oneTimeAlarm_definitionAndAuthorityLifecycleConsistency() = runBlocking {
         seedAlarmFixtures(isRepeating = false)
@@ -431,9 +431,9 @@ class NormalAlarmPostFireAtomicRecoveryTest {
 
         assertNotNull(alarm)
         assertNotNull(auth)
-        assertFalse("Alarm must be disabled", alarm!!.isEnabled)
+        assertTrue("Alarm definition must remain enabled during active session", alarm!!.isEnabled)
         assertEquals(0L, alarm.nextTriggerTime)
-        assertEquals("DISABLED", auth!!.lifecycle)
+        assertEquals("ACTIVE", auth!!.lifecycle)
         assertEquals("CANCEL", auth.desiredOperation)
         assertNull(auth.desiredTriggerMillis)
     }
@@ -1283,5 +1283,281 @@ class NormalAlarmPostFireAtomicRecoveryTest {
         val rearmedAuth = db.scheduleAuthorityDao().getAuthorityByAlarmId(alarmId)
         assertEquals("SETTLED", rearmedAuth?.reconcileState)
         assertEquals(pendingAuth.scheduleRevision, rearmedAuth?.scheduleRevision)
+    }
+
+    // TASK 3 TEST SUITE (KNO-37 H2-C4-P7 ONE-TIME LIFECYCLE)
+
+    // 1. ACTIVE SESSION STATES RETAIN DEFINITION UNTIL KNO-40 COMPLETION
+    @Test
+    fun oneTimeAlarm_activeSessionStates_retainDefinitionUntilKno40Completion() = runBlocking {
+        seedAlarmFixtures(isRepeating = false)
+
+        val result = coordinator.coordinateHandoff(createHandoffRequest())
+        assertEquals(NormalAlarmHandoffOutcome.ADMITTED, result.outcome)
+        val sessionId = result.sessionId!!
+
+        // State 1: FIRING
+        val session1 = db.alarmSessionDao().getSessionById(sessionId)
+        assertNotNull(session1)
+        assertEquals("FIRING", session1!!.sessionState)
+        var alarm = db.alarmDao().getById(alarmId)
+        assertNotNull(alarm)
+        assertTrue("Definition must remain enabled in FIRING", alarm!!.isEnabled)
+        assertEquals("Consumed occurrence nextTrigger must be 0L", 0L, alarm.nextTriggerTime)
+
+        // State 2: SNOOZED
+        val casSnooze = db.alarmSessionDao().casUpdateSessionState(
+            sessionId = sessionId,
+            expectedVersion = session1.sessionVersion,
+            expectedState = "FIRING",
+            expectedAdmissionKey = session1.admissionKey,
+            expectedGeneration = session1.generation,
+            expectedRevision = session1.revision,
+            newState = "SNOOZED",
+            snoozeCount = 1,
+            refireEpochMs = nowMs + 600_000L,
+            challengeUnlocked = false,
+            updatedAtEpochMs = nowMs,
+            completedAtEpochMs = 0L,
+            terminalReason = null
+        )
+        assertEquals(1, casSnooze)
+        alarm = db.alarmDao().getById(alarmId)
+        assertTrue("Definition must remain enabled in SNOOZED", alarm!!.isEnabled)
+        assertEquals(0L, alarm.nextTriggerTime)
+
+        // State 3: WAKE_CHECK_WAITING
+        val casWakeWait = db.alarmSessionDao().casUpdateSessionState(
+            sessionId = sessionId,
+            expectedVersion = session1.sessionVersion + 1,
+            expectedState = "SNOOZED",
+            expectedAdmissionKey = session1.admissionKey,
+            expectedGeneration = session1.generation,
+            expectedRevision = session1.revision,
+            newState = "WAKE_CHECK_WAITING",
+            snoozeCount = 1,
+            refireEpochMs = 0L,
+            challengeUnlocked = false,
+            updatedAtEpochMs = nowMs,
+            completedAtEpochMs = 0L,
+            terminalReason = null
+        )
+        assertEquals(1, casWakeWait)
+        alarm = db.alarmDao().getById(alarmId)
+        assertTrue("Definition must remain enabled in WAKE_CHECK_WAITING", alarm!!.isEnabled)
+        assertEquals(0L, alarm.nextTriggerTime)
+
+        // State 4: WAKE_CHECK_ACTIVE
+        val casWakeActive = db.alarmSessionDao().casUpdateSessionState(
+            sessionId = sessionId,
+            expectedVersion = session1.sessionVersion + 2,
+            expectedState = "WAKE_CHECK_WAITING",
+            expectedAdmissionKey = session1.admissionKey,
+            expectedGeneration = session1.generation,
+            expectedRevision = session1.revision,
+            newState = "WAKE_CHECK_ACTIVE",
+            snoozeCount = 1,
+            refireEpochMs = 0L,
+            challengeUnlocked = false,
+            updatedAtEpochMs = nowMs,
+            completedAtEpochMs = 0L,
+            terminalReason = null
+        )
+        assertEquals(1, casWakeActive)
+        alarm = db.alarmDao().getById(alarmId)
+        assertTrue("Definition must remain enabled in WAKE_CHECK_ACTIVE", alarm!!.isEnabled)
+        assertEquals(0L, alarm.nextTriggerTime)
+
+        // State 5: Terminal COMPLETED
+        val casComplete = db.alarmSessionDao().casUpdateSessionState(
+            sessionId = sessionId,
+            expectedVersion = session1.sessionVersion + 3,
+            expectedState = "WAKE_CHECK_ACTIVE",
+            expectedAdmissionKey = session1.admissionKey,
+            expectedGeneration = session1.generation,
+            expectedRevision = session1.revision,
+            newState = "COMPLETED",
+            snoozeCount = 1,
+            refireEpochMs = 0L,
+            challengeUnlocked = true,
+            updatedAtEpochMs = nowMs,
+            completedAtEpochMs = nowMs,
+            terminalReason = "WAKE_CHECK_PASSED"
+        )
+        assertEquals(1, casComplete)
+
+        // Authoritative verification before KNO-40 completion execution:
+        // Session is COMPLETED, but alarm definition disable is strictly owned by KNO-40 completion contract
+        val sessionCompleted = db.alarmSessionDao().getSessionById(sessionId)
+        assertEquals("COMPLETED", sessionCompleted?.sessionState)
+        val activeSessions = db.alarmSessionDao().getActiveSessionsForAlarm(alarmId)
+        assertTrue("Active sessions must be empty after terminal COMPLETED", activeSessions.isEmpty())
+
+        // KNO-40 OWNERSHIP CONTRACT:
+        // Terminal session completion executes atomic definition disable and authority lifecycle DISABLED
+        val currentAuth = db.scheduleAuthorityDao().getAuthorityByAlarmId(alarmId)!!
+        val disableCount = db.alarmDao().casSetEnabledWithStrictAuthority(
+            id = alarmId,
+            enabled = false,
+            nextTrigger = 0L,
+            expectedRevision = currentAuth.scheduleRevision,
+            instanceToken = currentAuth.instanceToken,
+            restoreEpoch = currentAuth.restoreEpoch,
+            definitionRevision = currentAuth.definitionRevision
+        )
+        assertEquals("KNO-40 completion contract must disable alarm definition via CAS", 1, disableCount)
+
+        val authUpdated = db.scheduleAuthorityDao().casUpdateLifecycle(
+            alarmId = alarmId,
+            instanceToken = currentAuth.instanceToken,
+            restoreEpoch = currentAuth.restoreEpoch,
+            expectedRevision = currentAuth.scheduleRevision,
+            expectedLifecycle = currentAuth.lifecycle,
+            newLifecycle = "DISABLED",
+            desiredOperation = "CANCEL",
+            desiredTriggerMillis = null,
+            actionKey = "kno40_completed_${sessionCompleted!!.sessionId}"
+        )
+        assertEquals("KNO-40 completion contract must update authority lifecycle to DISABLED", 1, authUpdated)
+
+        val finalAlarm = db.alarmDao().getById(alarmId)
+        assertFalse("Alarm definition must be disabled only after KNO-40 completion", finalAlarm!!.isEnabled)
+        assertEquals(0L, finalAlarm.nextTriggerTime)
+
+        val finalAuth = db.scheduleAuthorityDao().getAuthorityByAlarmId(alarmId)
+        assertEquals("DISABLED", finalAuth!!.lifecycle)
+        assertEquals("CANCEL", finalAuth.desiredOperation)
+    }
+
+    // 2. CONSUMED OCCURRENCE CANNOT REFIRE AND NO DUPLICATE SESSION
+    @Test
+    fun oneTimeAlarm_consumedOccurrenceCannotRefire_andNoDuplicateSession() = runBlocking {
+        seedAlarmFixtures(isRepeating = false)
+
+        val request = createHandoffRequest()
+        val firstResult = coordinator.coordinateHandoff(request)
+        assertEquals(NormalAlarmHandoffOutcome.ADMITTED, firstResult.outcome)
+
+        // Occurrence status is ADMITTED
+        val occ = db.issuedOccurrenceDao().getOccurrence(token)
+        assertEquals(IssuedOccurrence.STATUS_ADMITTED, occ?.status)
+
+        // Definition has nextTrigger == 0L (consumed; cannot schedule new trigger)
+        val alarm = db.alarmDao().getById(alarmId)!!
+        assertTrue(alarm.isEnabled)
+        assertEquals(0L, alarm.nextTriggerTime)
+
+        // ScheduleAuthority has desiredOperation == CANCEL
+        val auth = db.scheduleAuthorityDao().getAuthorityByAlarmId(alarmId)!!
+        assertEquals("CANCEL", auth.desiredOperation)
+        assertNull(auth.desiredTriggerMillis)
+
+        // Attempt second delivery of exact same occurrence token (duplicate fire intent)
+        val duplicateResult = coordinator.coordinateHandoff(request)
+        assertEquals(NormalAlarmHandoffOutcome.DUPLICATE, duplicateResult.outcome)
+        assertEquals(firstResult.sessionId, duplicateResult.sessionId)
+
+        // Verify no duplicate session was inserted
+        val sessions = db.alarmSessionDao().getActiveSessionsForAlarm(alarmId)
+        assertEquals("Must remain exactly 1 session", 1, sessions.size)
+        assertEquals(firstResult.sessionId, sessions.first().sessionId)
+
+        // Verify alarm nextTrigger was not rearmed
+        val alarmAfterDuplicate = db.alarmDao().getById(alarmId)!!
+        assertEquals(0L, alarmAfterDuplicate.nextTriggerTime)
+        assertTrue(alarmAfterDuplicate.isEnabled)
+    }
+
+    // 3. PROCESS DEATH PRESERVES STATE AND REPLAY IS IDEMPOTENT
+    @Test
+    fun oneTimeAlarm_processDeathPreservesState_andReplayIsIdempotent() = runBlocking {
+        seedAlarmFixtures(isRepeating = false)
+
+        val result = coordinator.coordinateHandoff(createHandoffRequest())
+        assertEquals(NormalAlarmHandoffOutcome.ADMITTED, result.outcome)
+
+        // Verify Room disk persistence state prior to replay:
+        val alarmBeforeReplay = db.alarmDao().getById(alarmId)!!
+        assertTrue("Definition retained before replay", alarmBeforeReplay.isEnabled)
+        assertEquals(0L, alarmBeforeReplay.nextTriggerTime)
+
+        val authBeforeReplay = db.scheduleAuthorityDao().getAuthorityByAlarmId(alarmId)!!
+        assertEquals("RECONCILING", authBeforeReplay.reconcileState)
+        assertEquals("CANCEL", authBeforeReplay.desiredOperation)
+        assertEquals("ACTIVE", authBeforeReplay.lifecycle)
+
+        // Simulate crash / process restart by constructing owner pointing to the same DB
+        val appliedOps = mutableListOf<ScheduleAuthority>()
+        val owner = ScheduleAuthorityOwner(
+            authorityDao = db.scheduleAuthorityDao(),
+            mainSlotApplier = { op ->
+                appliedOps.add(op)
+                true
+            },
+            exactPermissionChecker = { true }
+        )
+
+        // Initial Reconciler replay converges CANCEL to SETTLED
+        val firstReplay = owner.replayPersistedOperation(alarmId)
+        assertTrue("Reconciler replay must succeed", firstReplay is OwnerResult.OsAccepted)
+        assertEquals(1, appliedOps.size)
+        assertEquals("CANCEL", appliedOps.first().desiredOperation)
+
+        val authAfterReplay = db.scheduleAuthorityDao().getAuthorityByAlarmId(alarmId)!!
+        assertEquals("SETTLED", authAfterReplay.reconcileState)
+        assertEquals("CANCEL", authAfterReplay.desiredOperation)
+        assertEquals("ACTIVE", authAfterReplay.lifecycle)
+
+        // Idempotent secondary replay must produce no new OS side-effects
+        val secondReplay = owner.replayPersistedOperation(alarmId)
+        assertEquals("Second replay of SETTLED authority must be ignored", OwnerResult.DuplicateIgnored, secondReplay)
+        assertEquals("No second OS action applied", 1, appliedOps.size)
+
+        // Boot replay of non-LIVE authority safely ignores
+        val nonLiveBootReplay = owner.replayBootOsOperation(alarmId)
+        assertEquals("Boot replay of non-LIVE authority must be ignored", OwnerResult.DuplicateIgnored, nonLiveBootReplay)
+
+        // Boot replay of settled LIVE authority with CANCEL applies CANCEL
+        db.scheduleAuthorityDao().insertAuthority(authAfterReplay.copy(lifecycle = "LIVE"))
+        val liveBootReplay = owner.replayBootOsOperation(alarmId)
+        assertTrue("Boot replay of LIVE authority must succeed", liveBootReplay is OwnerResult.OsAccepted)
+        assertEquals("Boot replay applied CANCEL to OS", 2, appliedOps.size)
+        assertEquals("CANCEL", appliedOps.last().desiredOperation)
+
+        // Verify alarm definition is STILL enabled throughout all replaying
+        val alarmAfterAllReplays = db.alarmDao().getById(alarmId)!!
+        assertTrue("Definition must remain enabled throughout replays", alarmAfterAllReplays.isEnabled)
+        assertEquals(0L, alarmAfterAllReplays.nextTriggerTime)
+    }
+
+    // 4. STALE REVISION CONCURRENT CONFLICT REJECTS ONE-TIME HANDOFF
+    @Test
+    fun oneTimeAlarm_staleRevisionConflict_rejectsHandoffFailClosed() = runBlocking {
+        seedAlarmFixtures(isRepeating = false)
+
+        // Intercept right before authority claim and simulate concurrent revision conflict
+        coordinator.cutpointInterceptor = { cutpoint ->
+            if (cutpoint == NormalAlarmHandoffCoordinator.Cutpoint.BEFORE_AUTHORITY_CAS) {
+                // Advance revision in DB behind coordinator's back
+                runBlocking {
+                    val currentAuth = db.scheduleAuthorityDao().getAuthorityByAlarmId(alarmId)!!
+                    db.scheduleAuthorityDao().insertAuthority(currentAuth.copy(scheduleRevision = currentAuth.scheduleRevision + 5L))
+                }
+            }
+        }
+
+        val result = coordinator.coordinateHandoff(createHandoffRequest())
+        assertEquals("Concurrent revision conflict must fail closed with CAS_CONFLICT", NormalAlarmHandoffOutcome.CAS_CONFLICT, result.outcome)
+
+        // Authoritative rollback verification:
+        val occ = db.issuedOccurrenceDao().getOccurrence(token)
+        assertEquals(IssuedOccurrence.STATUS_ISSUED, occ?.status)
+
+        val sessions = db.alarmSessionDao().getActiveSessionsForAlarm(alarmId)
+        assertTrue("No session may be admitted on rollback", sessions.isEmpty())
+
+        val alarm = db.alarmDao().getById(alarmId)!!
+        assertTrue(alarm.isEnabled)
+        assertEquals("Trigger must remain unchanged on rollback", scheduledAt, alarm.nextTriggerTime)
     }
 }

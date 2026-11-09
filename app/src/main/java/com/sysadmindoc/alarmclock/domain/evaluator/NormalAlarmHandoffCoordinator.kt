@@ -902,45 +902,44 @@ class NormalAlarmHandoffCoordinator(
                             reconcileState = "RECONCILING"
                         )
                     } else {
-                        // One-Time Alarm:
-                        // 1. Disable Alarm definition using pre-claim revision fence
+                        // One-Time Alarm (KNO-37 H2-C4-P7):
+                        // 1. Consume nextTrigger (0L) while retaining Alarm definition isEnabled = true during active session
                         cutpointInterceptor?.invoke(Cutpoint.BEFORE_ALARM_DEFINITION_CAS)
-                        val alarmDisabled = alarmDao.casSetEnabledWithStrictAuthority(
+                        val triggerUpdated = alarmDao.casUpdateNextTriggerWithStrictAuthority(
                             id = resolvedAlarm.id,
-                            enabled = false,
-                            nextTrigger = 0L,
+                            expectedTrigger = resolvedAlarm.nextTriggerTime,
+                            newTrigger = 0L,
                             expectedRevision = resolvedAuthority.scheduleRevision,
                             instanceToken = resolvedAuthority.instanceToken,
                             restoreEpoch = resolvedAuthority.restoreEpoch,
                             definitionRevision = resolvedAuthority.definitionRevision
                         )
-                        if (alarmDisabled != 1) {
-                            throw IllegalStateException("Alarm definition disable CAS failed (expected 1, got $alarmDisabled)")
+                        if (triggerUpdated != 1) {
+                            throw IllegalStateException("Alarm definition nextTrigger update CAS failed (expected 1, got $triggerUpdated)")
                         }
                         cutpointInterceptor?.invoke(Cutpoint.AFTER_ALARM_DEFINITION_CAS)
 
-                        // 2. Update ScheduleAuthority lifecycle to DISABLED / CANCEL
+                        // 2. Claim ScheduleAuthority with desiredOperation = CANCEL to cancel OS slot while preserving active lifecycle
                         cutpointInterceptor?.invoke(Cutpoint.BEFORE_AUTHORITY_CAS)
-                        val claimed = authorityDao.casUpdateLifecycle(
+                        val claimed = authorityDao.casClaimAuthority(
                             alarmId = resolvedAlarm.id,
                             instanceToken = resolvedAuthority.instanceToken,
                             restoreEpoch = resolvedAuthority.restoreEpoch,
                             expectedRevision = resolvedAuthority.scheduleRevision,
                             expectedLifecycle = resolvedAuthority.lifecycle,
-                            newLifecycle = "DISABLED",
                             desiredOperation = "CANCEL",
                             desiredTriggerMillis = null,
                             actionKey = effectiveRecovery.actionKey
                         )
                         if (claimed != 1) {
-                            throw IllegalStateException("ScheduleAuthority lifecycle CAS failed (expected 1 row, got $claimed)")
+                            throw IllegalStateException("ScheduleAuthority claim CAS failed (expected 1 row, got $claimed)")
                         }
                         cutpointInterceptor?.invoke(Cutpoint.AFTER_AUTHORITY_CAS)
 
                         CommittedAuthorityRecoveryIntent(
                             alarmId = resolvedAlarm.id,
                             claimedRevision = resolvedAuthority.scheduleRevision + 1L,
-                            lifecycle = "DISABLED",
+                            lifecycle = resolvedAuthority.lifecycle,
                             desiredOperation = "CANCEL",
                             desiredTriggerMillis = null,
                             actionKey = effectiveRecovery.actionKey,
