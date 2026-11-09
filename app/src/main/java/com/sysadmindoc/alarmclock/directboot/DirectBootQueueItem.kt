@@ -165,10 +165,10 @@ data class DirectBootQueueItem(
             val timezonePolicy = json.optString("timezonePolicy", Alarm.TIMEZONE_POLICY_LOCAL)
             val fixedTimezoneId = json.optString("fixedTimezoneId", "")
             return DirectBootQueueItem(
-                kind = json.optString("kind", KIND_NORMAL),
+                kind = json.optString("kind", ""),
                 alarmId = json.optLong("alarmId", -1L),
                 triggerTime = triggerTime,
-                generation = json.optInt("generation", 1),
+                generation = json.optInt("generation", -1),
                 scheduleKind = json.optString("scheduleKind", Alarm.SCHEDULE_KIND_ONE_TIME),
                 instanceToken = json.optString("instanceToken", ""),
                 timeLabel = generateSafeTimeLabel(triggerTime, timezonePolicy, fixedTimezoneId),
@@ -177,7 +177,7 @@ data class DirectBootQueueItem(
                 updatedAt = json.optLong("updatedAt", 0L),
                 timezonePolicy = timezonePolicy,
                 fixedTimezoneId = fixedTimezoneId,
-                schemaVersion = json.optInt("schemaVersion", CURRENT_SCHEMA_VERSION)
+                schemaVersion = json.optInt("schemaVersion", -1)
             )
         }
 
@@ -223,5 +223,7 @@ sealed class QueueEnqueueResult {
     data class DroppedByCapacity(val queueSize: Int) : QueueEnqueueResult()
     data class RejectedStaleGeneration(val currentGeneration: Int) : QueueEnqueueResult()
     data class RejectedIneligible(val status: QueueCandidateStatus) : QueueEnqueueResult()
+    data class StorageCorrupt(val reason: String) : QueueEnqueueResult()
+    data class UnsupportedSchema(val foundVersion: Int, val expectedVersion: Int) : QueueEnqueueResult()
     data class PersistenceFailed(val reason: String) : QueueEnqueueResult()
 }
