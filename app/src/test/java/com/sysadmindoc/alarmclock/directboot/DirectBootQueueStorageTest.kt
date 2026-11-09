@@ -654,9 +654,259 @@ class DirectBootQueueStorageTest {
             .getSharedPreferences("direct_boot_next_alarm", Context.MODE_PRIVATE)
         prefs.edit().putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, rawJson).commit()
 
+        // Hardened B1A: malformed item invalidates entire storage; no silent partial salvage
+        assertEquals(QueueStorageClassification.CORRUPT, DirectBootAlarmCache.classifyQueueStorage(context))
+        val state = DirectBootAlarmCache.readQueueStorage(context)
+        assertTrue(state is QueueStorageState.Corrupt)
+
         val queue = DirectBootAlarmCache.readQueue(context, baseTime)
-        assertEquals("Malformed item must be discarded; only valid item returned", 1, queue.size)
-        assertEquals(10L, queue[0].alarmId)
+        assertTrue("Malformed item must cause entire payload to be classified corrupt; no silent partial salvage", queue.isEmpty())
+
+        // With V1 present, safely falls back to V1 without treating corrupt V2 as valid
+        DirectBootAlarmCache.saveIfEarlier(context, Alarm(id = 99L), baseTime + 50_000L, baseTime)
+        val queueWithV1 = DirectBootAlarmCache.readQueue(context, baseTime)
+        assertEquals(1, queueWithV1.size)
+        assertEquals(99L, queueWithV1[0].alarmId)
+    }
+
+    @Test
+    fun typedClassificationDistinguishesAllFiveStates() {
+        val prefs = context.applicationContext.createDeviceProtectedStorageContext()
+            .getSharedPreferences("direct_boot_next_alarm", Context.MODE_PRIVATE)
+
+        // 1. ABSENT
+        prefs.edit().clear().commit()
+        assertEquals(QueueStorageClassification.ABSENT, DirectBootAlarmCache.classifyQueueStorage(context))
+        assertTrue(DirectBootAlarmCache.readQueueStorage(context) is QueueStorageState.Absent)
+
+        // 2. VALID_EMPTY
+        val emptyJson = JSONObject().apply {
+            put("schemaVersion", 2)
+            put("items", org.json.JSONArray())
+        }
+        prefs.edit().putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, emptyJson.toString()).commit()
+        assertEquals(QueueStorageClassification.VALID_EMPTY, DirectBootAlarmCache.classifyQueueStorage(context))
+        assertTrue(DirectBootAlarmCache.readQueueStorage(context) is QueueStorageState.ValidEmpty)
+
+        // 3. VALID_WITH_ITEMS
+        val item1 = normalCandidate(id = 1L, triggerTime = baseTime + 10_000L)
+        val item2 = quickCandidate(id = 2L, triggerTime = baseTime + 20_000L)
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(item1, item2), baseTime))
+        assertEquals(QueueStorageClassification.VALID_WITH_ITEMS, DirectBootAlarmCache.classifyQueueStorage(context))
+        val validState = DirectBootAlarmCache.readQueueStorage(context)
+        assertTrue(validState is QueueStorageState.ValidWithItems)
+        assertEquals(2, (validState as QueueStorageState.ValidWithItems).items.size)
+
+        // 4. CORRUPT
+        prefs.edit().putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, "{not valid json").commit()
+        assertEquals(QueueStorageClassification.CORRUPT, DirectBootAlarmCache.classifyQueueStorage(context))
+        assertTrue(DirectBootAlarmCache.readQueueStorage(context) is QueueStorageState.Corrupt)
+
+        // 5. UNSUPPORTED_SCHEMA
+        val futureJson = JSONObject().apply {
+            put("schemaVersion", 999)
+            put("items", org.json.JSONArray())
+        }
+        prefs.edit().putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, futureJson.toString()).commit()
+        assertEquals(QueueStorageClassification.UNSUPPORTED_SCHEMA, DirectBootAlarmCache.classifyQueueStorage(context))
+        val schemaState = DirectBootAlarmCache.readQueueStorage(context)
+        assertTrue(schemaState is QueueStorageState.UnsupportedSchema)
+        assertEquals(999, (schemaState as QueueStorageState.UnsupportedSchema).foundVersion)
+        assertEquals(2, schemaState.expectedVersion)
+    }
+
+    @Test
+    fun corruptStorageFailsClosedOnEnqueueAndPreservesRawBytes() {
+        val prefs = context.applicationContext.createDeviceProtectedStorageContext()
+            .getSharedPreferences("direct_boot_next_alarm", Context.MODE_PRIVATE)
+        val corruptRaw = "{invalid_json_payload: true"
+        prefs.edit().putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, corruptRaw).commit()
+
+        val candidate = normalCandidate(id = 5L, triggerTime = baseTime + 50_000L)
+        val result = DirectBootAlarmCache.enqueueCandidate(context, candidate, baseTime)
+
+        assertTrue("enqueueCandidate must fail closed on corrupt storage", result is QueueEnqueueResult.StorageCorrupt)
+        assertEquals("Raw payload must remain exactly untouched", corruptRaw, DirectBootAlarmCache.getRawQueuePayload(context))
+    }
+
+    @Test
+    fun unsupportedSchemaFailsClosedOnEnqueueAndPreservesRawBytes() {
+        val prefs = context.applicationContext.createDeviceProtectedStorageContext()
+            .getSharedPreferences("direct_boot_next_alarm", Context.MODE_PRIVATE)
+        val futureJson = JSONObject().apply {
+            put("schemaVersion", 3)
+            put("items", org.json.JSONArray())
+        }.toString()
+        prefs.edit().putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, futureJson).commit()
+
+        val candidate = normalCandidate(id = 5L, triggerTime = baseTime + 50_000L)
+        val result = DirectBootAlarmCache.enqueueCandidate(context, candidate, baseTime)
+
+        assertTrue("enqueueCandidate must fail closed on unsupported schema", result is QueueEnqueueResult.UnsupportedSchema)
+        val schemaResult = result as QueueEnqueueResult.UnsupportedSchema
+        assertEquals(3, schemaResult.foundVersion)
+        assertEquals(2, schemaResult.expectedVersion)
+        assertEquals("Raw payload must remain exactly untouched", futureJson, DirectBootAlarmCache.getRawQueuePayload(context))
+    }
+
+    @Test
+    fun corruptStorageFailsClosedOnWriteQueueAndPreservesRawBytes() {
+        val prefs = context.applicationContext.createDeviceProtectedStorageContext()
+            .getSharedPreferences("direct_boot_next_alarm", Context.MODE_PRIVATE)
+        val corruptRaw = "{corrupt_raw: 123"
+        prefs.edit().putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, corruptRaw).commit()
+
+        val candidate = normalCandidate(id = 1L, triggerTime = baseTime + 10_000L)
+        val writeSuccess = DirectBootAlarmCache.writeQueue(context, listOf(candidate), baseTime)
+
+        assertFalse("writeQueue must reject when storage is corrupt", writeSuccess)
+        assertEquals("Raw payload must remain untouched", corruptRaw, DirectBootAlarmCache.getRawQueuePayload(context))
+    }
+
+    @Test
+    fun unsupportedSchemaFailsClosedOnWriteQueueAndPreservesRawBytes() {
+        val prefs = context.applicationContext.createDeviceProtectedStorageContext()
+            .getSharedPreferences("direct_boot_next_alarm", Context.MODE_PRIVATE)
+        val futureRaw = JSONObject().apply {
+            put("schemaVersion", 4)
+            put("items", org.json.JSONArray())
+        }.toString()
+        prefs.edit().putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, futureRaw).commit()
+
+        val candidate = normalCandidate(id = 1L, triggerTime = baseTime + 10_000L)
+        val writeSuccess = DirectBootAlarmCache.writeQueue(context, listOf(candidate), baseTime)
+
+        assertFalse("writeQueue must reject when storage has unsupported schema", writeSuccess)
+        assertEquals("Raw payload must remain untouched", futureRaw, DirectBootAlarmCache.getRawQueuePayload(context))
+    }
+
+    @Test
+    fun corruptStorageFailsClosedOnRemoveCandidateAndPreservesRawBytes() {
+        val prefs = context.applicationContext.createDeviceProtectedStorageContext()
+            .getSharedPreferences("direct_boot_next_alarm", Context.MODE_PRIVATE)
+        val corruptRaw = "{corrupt_raw_remove: true"
+        prefs.edit().putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, corruptRaw).commit()
+
+        val removeSuccess = DirectBootAlarmCache.removeCandidate(context, DirectBootQueueItem.KIND_NORMAL, 1L)
+
+        assertFalse("removeCandidate must reject when storage is corrupt", removeSuccess)
+        assertEquals("Raw payload must remain untouched", corruptRaw, DirectBootAlarmCache.getRawQueuePayload(context))
+    }
+
+    @Test
+    fun storedPayloadExceedingCapacityClassifiedAsCorruptWithoutSilentSalvage() {
+        val itemsArray = org.json.JSONArray()
+        for (i in 1L..6L) {
+            itemsArray.put(normalCandidate(id = i, triggerTime = baseTime + i * 10_000L).toJson())
+        }
+        val rawJson = JSONObject().apply {
+            put("schemaVersion", 2)
+            put("items", itemsArray)
+        }.toString()
+
+        val prefs = context.applicationContext.createDeviceProtectedStorageContext()
+            .getSharedPreferences("direct_boot_next_alarm", Context.MODE_PRIVATE)
+        prefs.edit().putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, rawJson).commit()
+
+        assertEquals(QueueStorageClassification.CORRUPT, DirectBootAlarmCache.classifyQueueStorage(context))
+        val state = DirectBootAlarmCache.readQueueStorage(context)
+        assertTrue(state is QueueStorageState.Corrupt)
+        assertTrue((state as QueueStorageState.Corrupt).reason.contains("exceeds QUEUE_MAX_CAPACITY"))
+
+        // readQueue must NOT silently truncate to 5; it must treat corrupt V2 as corrupt
+        val queue = DirectBootAlarmCache.readQueue(context, baseTime)
+        assertTrue("Exceeding capacity must fail closed as corrupt without silent salvage", queue.isEmpty())
+    }
+
+    @Test
+    fun storedPayloadWithDuplicateLogicalIdsClassifiedAsCorrupt() {
+        val item1 = normalCandidate(id = 10L, triggerTime = baseTime + 10_000L).toJson()
+        val item2 = normalCandidate(id = 10L, triggerTime = baseTime + 20_000L, instanceToken = "token_different").toJson()
+        val rawJson = JSONObject().apply {
+            put("schemaVersion", 2)
+            put("items", org.json.JSONArray().apply {
+                put(item1)
+                put(item2)
+            })
+        }.toString()
+
+        val prefs = context.applicationContext.createDeviceProtectedStorageContext()
+            .getSharedPreferences("direct_boot_next_alarm", Context.MODE_PRIVATE)
+        prefs.edit().putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, rawJson).commit()
+
+        assertEquals(QueueStorageClassification.CORRUPT, DirectBootAlarmCache.classifyQueueStorage(context))
+        val state = DirectBootAlarmCache.readQueueStorage(context)
+        assertTrue(state is QueueStorageState.Corrupt)
+        assertTrue((state as QueueStorageState.Corrupt).reason.contains("Duplicate logicalId"))
+    }
+
+    @Test
+    fun storedPayloadWithDuplicateNormalInstanceTokensClassifiedAsCorrupt() {
+        val item1 = normalCandidate(id = 10L, triggerTime = baseTime + 10_000L, instanceToken = "same_token").toJson()
+        val item2 = normalCandidate(id = 20L, triggerTime = baseTime + 20_000L, instanceToken = "same_token").toJson()
+        val rawJson = JSONObject().apply {
+            put("schemaVersion", 2)
+            put("items", org.json.JSONArray().apply {
+                put(item1)
+                put(item2)
+            })
+        }.toString()
+
+        val prefs = context.applicationContext.createDeviceProtectedStorageContext()
+            .getSharedPreferences("direct_boot_next_alarm", Context.MODE_PRIVATE)
+        prefs.edit().putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, rawJson).commit()
+
+        assertEquals(QueueStorageClassification.CORRUPT, DirectBootAlarmCache.classifyQueueStorage(context))
+        val state = DirectBootAlarmCache.readQueueStorage(context)
+        assertTrue(state is QueueStorageState.Corrupt)
+        assertTrue((state as QueueStorageState.Corrupt).reason.contains("Duplicate instanceToken"))
+    }
+
+    @Test
+    fun expiredCandidatesAreDistinguishableFromStructuralCorruption() {
+        val expiredItem = normalCandidate(id = 10L, triggerTime = baseTime - 50_000L)
+        val rawJson = JSONObject().apply {
+            put("schemaVersion", 2)
+            put("items", org.json.JSONArray().apply {
+                put(expiredItem.toJson())
+            })
+        }.toString()
+
+        val prefs = context.applicationContext.createDeviceProtectedStorageContext()
+            .getSharedPreferences("direct_boot_next_alarm", Context.MODE_PRIVATE)
+        prefs.edit().putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, rawJson).commit()
+
+        // Structurally valid: classified as VALID_WITH_ITEMS, NOT Corrupt
+        assertEquals(QueueStorageClassification.VALID_WITH_ITEMS, DirectBootAlarmCache.classifyQueueStorage(context))
+        val state = DirectBootAlarmCache.readQueueStorage(context)
+        assertTrue(state is QueueStorageState.ValidWithItems)
+        assertEquals(1, (state as QueueStorageState.ValidWithItems).items.size)
+
+        // Filtered by current wall clock in readQueue(context, baseTime)
+        val queueFiltered = DirectBootAlarmCache.readQueue(context, baseTime)
+        assertTrue("Expired candidate is filtered by active readQueue", queueFiltered.isEmpty())
+
+        // Read with now = 0L returns all items without expiration filter
+        val queueUnfiltered = DirectBootAlarmCache.readQueue(context, 0L)
+        assertEquals(1, queueUnfiltered.size)
+    }
+
+    @Test
+    fun clearQueueAllowsFreshWriteAfterCorruption() {
+        val prefs = context.applicationContext.createDeviceProtectedStorageContext()
+            .getSharedPreferences("direct_boot_next_alarm", Context.MODE_PRIVATE)
+        prefs.edit().putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, "{corrupt").commit()
+
+        assertEquals(QueueStorageClassification.CORRUPT, DirectBootAlarmCache.classifyQueueStorage(context))
+        assertFalse(DirectBootAlarmCache.writeQueue(context, listOf(normalCandidate(1L, baseTime + 10_000L)), baseTime))
+
+        // clearQueue explicitly clears corrupt state
+        assertTrue(DirectBootAlarmCache.clearQueue(context))
+        assertEquals(QueueStorageClassification.ABSENT, DirectBootAlarmCache.classifyQueueStorage(context))
+
+        // Fresh write now succeeds cleanly
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(normalCandidate(1L, baseTime + 10_000L)), baseTime))
+        assertEquals(QueueStorageClassification.VALID_WITH_ITEMS, DirectBootAlarmCache.classifyQueueStorage(context))
     }
 
     @Test
