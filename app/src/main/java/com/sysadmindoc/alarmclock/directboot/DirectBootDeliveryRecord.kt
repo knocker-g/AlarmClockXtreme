@@ -13,7 +13,7 @@ import org.json.JSONObject
  * - Actual delivery receipt wall-clock instant [deliveredAt].
  * - Normal generation / lineage: strictly requires caller-supplied authoritative [generation] (>= 1)
  *   and non-blank [instanceToken]. Fabricated or synthesized defaults are prohibited.
- *   Derived Normal recordId: "delivery_NORMAL_${alarmId}_gen${generation}_${instanceToken}_trig${triggerTime}"
+ *   - Normal record identity combines alarmId, generation, instanceToken, and triggerTime.
  * - Quick persisted trigger identity: derived recordId: "delivery_QUICK_${alarmId}_trig${triggerTime}".
  *   PRODUCER QUALIFICATION REQUIREMENT: Quick alarm lifecycle does not maintain authority generation or instanceToken.
  *   While (alarmId, triggerTime) uniquely identifies a Quick alarm in a single active schedule session,
