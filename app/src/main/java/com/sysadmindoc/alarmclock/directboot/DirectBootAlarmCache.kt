@@ -190,7 +190,7 @@ object DirectBootAlarmCache {
     // KNO-75 Phase 4 Inactive Versioned DE Queue Storage APIs
     // =========================================================================
 
-    private val queueLock = Any()
+    internal val queueLock: Any get() = DirectBootStorageLock.lock
 
     /**
      * Inspects the current storage state of the V2 queue.

@@ -43,7 +43,7 @@ object DirectBootDeliveryLedger {
     const val MAX_CAPACITY = 16
     const val CURRENT_SCHEMA_VERSION = 1
 
-    private val storageLock = Any()
+    internal val storageLock: Any get() = DirectBootStorageLock.lock
 
     /**
      * Inspects the current storage state of the Delivery Ledger.
