@@ -540,4 +540,49 @@ class DirectBootV2NormalIntentIdentityTest {
         val noDataIntent = Intent(DirectBootV2NormalIntentIdentity.ACTION_FIRE_V2_NORMAL_ALARM)
         assertFalse(DirectBootV2NormalIntentIdentity.isV2NormalIntent(noDataIntent))
     }
+
+    // -------------------------------------------------------------------------
+    // 21. Golden representation equivalence verification
+    // -------------------------------------------------------------------------
+    @Test
+    fun test21_goldenRepresentationEquivalence() {
+        val testCases = listOf(
+            // 1. Ordinary ASCII
+            createBaseIdentity(alarmId = 1L, generation = 1, instanceToken = "tok_ascii_1", triggerTime = 1_000_000L),
+            // 2. Unicode token
+            createBaseIdentity(alarmId = 2L, generation = 2, instanceToken = "tok_日本語_🎉", triggerTime = 2_000_000L),
+            // 3. Delimiters and newlines
+            createBaseIdentity(alarmId = 3L, generation = 3, instanceToken = "tok\nDOMAIN:FAKE\nTRIGGER_TIME:0", triggerTime = 3_000_000L),
+            // 4. Large 64-bit alarmId
+            createBaseIdentity(alarmId = 9_876_543_210_123L, generation = 5, instanceToken = "tok_large_id", triggerTime = 4_000_000L),
+            // 5. Distinct generation / triggerTime
+            createBaseIdentity(alarmId = 100L, generation = 999, instanceToken = "tok_gen_999", triggerTime = 9_999_999_999L)
+        )
+
+        testCases.forEach { identity ->
+            val tokenLen = identity.instanceToken.toByteArray(StandardCharsets.UTF_8).size
+            val expectedManualCanonical = "DOMAIN:ACX_DIRECT_BOOT_V2_NORMAL_PI_V1\n" +
+                "KIND:${identity.kind.length}:${identity.kind}\n" +
+                "ALARM_ID:${identity.alarmId}\n" +
+                "GENERATION:${identity.generation}\n" +
+                "INSTANCE_TOKEN:$tokenLen:${identity.instanceToken}\n" +
+                "TRIGGER_TIME:${identity.triggerTime}\n"
+
+            // Exact canonical string equivalence
+            assertEquals(expectedManualCanonical, identity.canonicalString())
+
+            // Valid URI formation
+            val expectedDigest = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(expectedManualCanonical.toByteArray(StandardCharsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+            assertEquals(expectedDigest, identity.computeDigest())
+
+            val expectedUri = "acx-directboot://normal/alarm/${identity.alarmId}/v2/$expectedDigest"
+            assertEquals(expectedUri, identity.toUriString())
+            assertEquals(Uri.parse(expectedUri), identity.toUri())
+
+            // Canonical validation passes
+            assertTrue(DirectBootV2NormalIntentIdentity.validateUri(identity.toUri(), identity).isValid)
+        }
+    }
 }

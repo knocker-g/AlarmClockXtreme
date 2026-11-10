@@ -47,14 +47,14 @@ data class DirectBootV2NormalIntentIdentity(
      * Canonical text representation with explicit field length framing.
      * Prevents delimiter collision or injection attacks across all fields.
      */
-    fun canonicalString(): String {
+    fun canonicalString(): String = buildString {
         val tokenUtf8Len = instanceToken.toByteArray(StandardCharsets.UTF_8).size
-        return "DOMAIN:$DOMAIN_TAG\n" +
-            "KIND:${kind.length}:$kind\n" +
-            "ALARM_ID:$alarmId\n" +
-            "GENERATION:$generation\n" +
-            "INSTANCE_TOKEN:$tokenUtf8Len:$instanceToken\n" +
-            "TRIGGER_TIME:$triggerTime\n"
+        append("DOMAIN:$DOMAIN_TAG\n")
+        append("KIND:${kind.length}:$kind\n")
+        append("ALARM_ID:$alarmId\n")
+        append("GENERATION:$generation\n")
+        append("INSTANCE_TOKEN:$tokenUtf8Len:$instanceToken\n")
+        append("TRIGGER_TIME:$triggerTime\n")
     }
 
     /**
