@@ -333,6 +333,13 @@ class DirectBootNormalSnapshotReaderTest {
             assertEquals(1, snapshot.authorities.size)
             assertEquals(1, snapshot.metaRows.size)
 
+            // Verify fingerprint constructed within the same atomic transaction
+            assertNotNull(snapshot.fingerprint)
+            assertEquals(1, snapshot.fingerprint.normalAlarmCount)
+            assertEquals(1, snapshot.fingerprint.normalAuthorities.size)
+            assertEquals(1, snapshot.fingerprint.metaRows.size)
+            assertEquals(0, snapshot.fingerprint.orphanAuthorityCount)
+
             // Verify transaction state after successful execution: transaction closed
             assertFalse("Database must not be in active transaction after read", inMemoryDb.inTransaction())
         } finally {

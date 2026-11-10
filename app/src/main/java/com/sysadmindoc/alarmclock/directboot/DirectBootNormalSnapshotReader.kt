@@ -23,7 +23,8 @@ import javax.inject.Singleton
 data class DirectBootNormalCeSnapshot(
     val alarms: List<Alarm>,
     val authorities: List<ScheduleAuthority>,
-    val metaRows: List<ScheduleAuthorityMeta>
+    val metaRows: List<ScheduleAuthorityMeta>,
+    val fingerprint: CeSnapshotFingerprint = CeSnapshotFingerprint.create(alarms, authorities, metaRows)
 )
 
 /**
@@ -111,20 +112,19 @@ class DirectBootNormalSnapshotReader(
         }
 
         return try {
-            val (alarms, authorities, metaRows) = database.withTransaction {
-                Triple(
-                    database.alarmDao().getAll(),
-                    database.scheduleAuthorityDao().getAllAuthorities(),
-                    database.scheduleAuthorityDao().getAllMeta()
-                )
-            }
-            DirectBootNormalSnapshotResult.Success(
+            val snapshot = database.withTransaction {
+                val alarms = database.alarmDao().getAll()
+                val authorities = database.scheduleAuthorityDao().getAllAuthorities()
+                val metaRows = database.scheduleAuthorityDao().getAllMeta()
+                val fingerprint = CeSnapshotFingerprint.create(alarms, authorities, metaRows)
                 DirectBootNormalCeSnapshot(
                     alarms = alarms,
                     authorities = authorities,
-                    metaRows = metaRows
+                    metaRows = metaRows,
+                    fingerprint = fingerprint
                 )
-            )
+            }
+            DirectBootNormalSnapshotResult.Success(snapshot)
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {

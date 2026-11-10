@@ -150,7 +150,8 @@ class DirectBootNormalProjectionCoordinatorTest {
 
         val result = coordinator.coordinate(now = 1000L)
 
-        assertEquals(DirectBootNormalCoordinationResult.ReadyEmpty, result)
+        assertTrue("Expected ReadyEmpty, got: $result", result is DirectBootNormalCoordinationResult.ReadyEmpty)
+        assertNotNull((result as DirectBootNormalCoordinationResult.ReadyEmpty).fingerprint)
     }
 
     @Test
@@ -355,7 +356,8 @@ class DirectBootNormalProjectionCoordinatorTest {
         val result = coordinator.coordinate(now = 1000L)
 
         // Only Quick alarm exists, so zero Normal alarms -> ReadyEmpty
-        assertEquals(DirectBootNormalCoordinationResult.ReadyEmpty, result)
+        assertTrue("Expected ReadyEmpty, got: $result", result is DirectBootNormalCoordinationResult.ReadyEmpty)
+        assertNotNull((result as DirectBootNormalCoordinationResult.ReadyEmpty).fingerprint)
 
         // Now add a Normal alarm
         val normalAlarm = Alarm(
@@ -427,7 +429,8 @@ class DirectBootNormalProjectionCoordinatorTest {
 
         // When now is at or after trigger: expired -> ReadyEmpty
         val resultAfter = coordinator.coordinate(now = 5000L)
-        assertEquals(DirectBootNormalCoordinationResult.ReadyEmpty, resultAfter)
+        assertTrue("Expected ReadyEmpty, got: $resultAfter", resultAfter is DirectBootNormalCoordinationResult.ReadyEmpty)
+        assertNotNull((resultAfter as DirectBootNormalCoordinationResult.ReadyEmpty).fingerprint)
     }
 
     @Test
