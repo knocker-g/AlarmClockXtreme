@@ -947,4 +947,83 @@ class DirectBootQueueStorageTest {
         DirectBootAlarmCache.removeIfMatches(context, 42L)
         assertNull(DirectBootAlarmCache.read(context))
     }
+
+    @Test
+    fun updateNormalQueue_rejectsNonNormalCandidates() {
+        val quick = quickCandidate(1L, baseTime + 10_000L)
+        val result = DirectBootAlarmCache.updateNormalQueue(context, listOf(quick), baseTime)
+        assertTrue(result is NormalQueueUpdateResult.RejectedIneligible)
+    }
+
+    @Test
+    fun updateNormalQueue_rejectsIneligibleCandidates() {
+        val invalid = normalCandidate(id = 1L, triggerTime = baseTime + 10_000L, instanceToken = "")
+        val result = DirectBootAlarmCache.updateNormalQueue(context, listOf(invalid), baseTime)
+        assertTrue(result is NormalQueueUpdateResult.RejectedIneligible)
+    }
+
+    @Test
+    fun updateNormalQueue_rejectsDuplicateLogicalIds() {
+        val c1 = normalCandidate(id = 1L, triggerTime = baseTime + 10_000L, instanceToken = "tok_1")
+        val c2 = normalCandidate(id = 1L, triggerTime = baseTime + 20_000L, instanceToken = "tok_2")
+        val result = DirectBootAlarmCache.updateNormalQueue(context, listOf(c1, c2), baseTime)
+        assertTrue(result is NormalQueueUpdateResult.RejectedIneligible)
+    }
+
+    @Test
+    fun updateNormalQueue_rejectsDuplicateInstanceTokens() {
+        val c1 = normalCandidate(id = 1L, triggerTime = baseTime + 10_000L, instanceToken = "same_token")
+        val c2 = normalCandidate(id = 2L, triggerTime = baseTime + 20_000L, instanceToken = "same_token")
+        val result = DirectBootAlarmCache.updateNormalQueue(context, listOf(c1, c2), baseTime)
+        assertTrue(result is NormalQueueUpdateResult.RejectedIneligible)
+    }
+
+    @Test
+    fun updateNormalQueue_failsClosedOnCorruptStorage() {
+        val prefs = context.applicationContext.createDeviceProtectedStorageContext()
+            .getSharedPreferences("direct_boot_next_alarm", Context.MODE_PRIVATE)
+        val corruptRaw = "{bad_json: 123"
+        prefs.edit().putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, corruptRaw).commit()
+
+        val candidate = normalCandidate(id = 1L, triggerTime = baseTime + 10_000L)
+        val result = DirectBootAlarmCache.updateNormalQueue(context, listOf(candidate), baseTime)
+        assertTrue(result is NormalQueueUpdateResult.StorageCorrupt)
+        assertEquals(corruptRaw, DirectBootAlarmCache.getRawQueuePayload(context))
+    }
+
+    @Test
+    fun updateNormalQueue_failsClosedOnUnsupportedSchema() {
+        val prefs = context.applicationContext.createDeviceProtectedStorageContext()
+            .getSharedPreferences("direct_boot_next_alarm", Context.MODE_PRIVATE)
+        val unsupportedRaw = "{\"schemaVersion\": 99, \"items\": []}"
+        prefs.edit().putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, unsupportedRaw).commit()
+
+        val candidate = normalCandidate(id = 1L, triggerTime = baseTime + 10_000L)
+        val result = DirectBootAlarmCache.updateNormalQueue(context, listOf(candidate), baseTime)
+        assertTrue(result is NormalQueueUpdateResult.UnsupportedSchema)
+        assertEquals(unsupportedRaw, DirectBootAlarmCache.getRawQueuePayload(context))
+    }
+
+    @Test
+    fun updateNormalQueue_preservesQuickCandidatesAndTruncates() {
+        val q1 = quickCandidate(10L, baseTime + 20_000L)
+        val q2 = quickCandidate(20L, baseTime + 40_000L)
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(q1, q2), baseTime))
+
+        val n1 = normalCandidate(1L, baseTime + 10_000L)
+        val n2 = normalCandidate(2L, baseTime + 30_000L)
+        val n3 = normalCandidate(3L, baseTime + 50_000L)
+        val n4 = normalCandidate(4L, baseTime + 60_000L)
+
+        // Merged 6 candidates: [n1(10k), q1(20k), n2(30k), q2(40k), n3(50k), n4(60k)]
+        // Retained 5: n1, q1, n2, q2, n3 (n4 dropped)
+        val result = DirectBootAlarmCache.updateNormalQueue(context, listOf(n1, n2, n3, n4), baseTime)
+        assertTrue(result is NormalQueueUpdateResult.Success)
+        val success = result as NormalQueueUpdateResult.Success
+
+        assertEquals(5, success.completeQueue.size)
+        assertEquals(listOf(1L, 10L, 2L, 20L, 3L), success.completeQueue.map { it.alarmId })
+        assertEquals(listOf(1L, 2L, 3L), success.retainedNormalCandidates.map { it.alarmId })
+        assertFalse(success.retainedNormalCandidates.any { it.alarmId == 4L })
+    }
 }
