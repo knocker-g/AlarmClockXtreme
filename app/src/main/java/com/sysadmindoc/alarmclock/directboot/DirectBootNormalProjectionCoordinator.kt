@@ -15,7 +15,8 @@ sealed interface DirectBootNormalCoordinationResult {
      * Successfully produced 1 to 5 authoritative Normal Direct Boot candidates.
      */
     data class ReadyWithCandidates(
-        val candidates: List<DirectBootQueueItem>
+        val candidates: List<DirectBootQueueItem>,
+        val fingerprint: CeSnapshotFingerprint
     ) : DirectBootNormalCoordinationResult
 
     /**
@@ -23,7 +24,9 @@ sealed interface DirectBootNormalCoordinationResult {
      * Indicates all Normal alarms are disabled or in the past.
      * Does NOT authorize clearing mixed-kind DE queues.
      */
-    data object ReadyEmpty : DirectBootNormalCoordinationResult
+    data class ReadyEmpty(
+        val fingerprint: CeSnapshotFingerprint
+    ) : DirectBootNormalCoordinationResult
 
     /**
      * CE storage is locked (Direct Boot state) or unlock check failed closed.
@@ -133,10 +136,15 @@ class DirectBootNormalProjectionCoordinator @Inject constructor(
                     now = now
                 )) {
                     is NormalCandidatePlanResult.ValidWithCandidates -> {
-                        DirectBootNormalCoordinationResult.ReadyWithCandidates(planResult.candidates)
+                        DirectBootNormalCoordinationResult.ReadyWithCandidates(
+                            candidates = planResult.candidates,
+                            fingerprint = readerResult.snapshot.fingerprint
+                        )
                     }
                     is NormalCandidatePlanResult.ValidEmpty -> {
-                        DirectBootNormalCoordinationResult.ReadyEmpty
+                        DirectBootNormalCoordinationResult.ReadyEmpty(
+                            fingerprint = readerResult.snapshot.fingerprint
+                        )
                     }
                     is NormalCandidatePlanResult.UnresolvedAuthority -> {
                         DirectBootNormalCoordinationResult.BlockedUnresolvedAuthority(
