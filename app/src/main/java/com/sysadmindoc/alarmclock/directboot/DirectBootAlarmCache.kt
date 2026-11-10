@@ -556,6 +556,105 @@ object DirectBootAlarmCache {
         }
     }
 
+    /**
+     * Atomically reconciles the Normal projection in the versioned DE Queue while preserving
+     * existing non-Normal (e.g. Quick) queue entries.
+     *
+     * Invariants:
+     * - Only modifies Normal entries; existing non-Normal entries retain their state and positions.
+     * - Replaces all existing Normal entries with the authoritative [normalCandidates] (or clears them if empty).
+     * - Sorts the merged queue using [DirectBootQueueItem.QUEUE_COMPARATOR] and truncates to [QUEUE_MAX_CAPACITY] (5).
+     * - Fail-closed: rejects write if existing storage is CORRUPT or UNSUPPORTED_SCHEMA, preserving raw bytes.
+     * - Non-destructive: leaves V1 scalar keys untouched.
+     * - Synchronized via in-process [queueLock] with synchronous commit.
+     */
+    fun updateNormalQueue(
+        context: Context,
+        normalCandidates: List<DirectBootQueueItem>,
+        now: Long = 0L
+    ): NormalQueueUpdateResult {
+        for (item in normalCandidates) {
+            if (item.kind != DirectBootQueueItem.KIND_NORMAL) {
+                return NormalQueueUpdateResult.RejectedIneligible(
+                    "Candidate ${item.logicalId} has non-normal kind '${item.kind}'"
+                )
+            }
+            val eligibility = item.evaluateEligibility(now = now, allowLegacyV1 = false)
+            if (eligibility != QueueCandidateStatus.ELIGIBLE) {
+                return NormalQueueUpdateResult.RejectedIneligible(
+                    "Candidate ${item.logicalId} is ineligible: $eligibility"
+                )
+            }
+        }
+
+        val distinctLogicalIds = normalCandidates.map { it.logicalId }.toSet()
+        if (distinctLogicalIds.size != normalCandidates.size) {
+            return NormalQueueUpdateResult.RejectedIneligible(
+                "Duplicate logical identities in normal candidate list"
+            )
+        }
+
+        val normalTokens = normalCandidates
+            .filter { it.instanceToken.isNotBlank() }
+            .map { it.instanceToken }
+        if (normalTokens.toSet().size != normalTokens.size) {
+            return NormalQueueUpdateResult.RejectedIneligible(
+                "Duplicate instanceTokens in normal candidate list"
+            )
+        }
+
+        synchronized(queueLock) {
+            val state = inspectQueueStorageState(context)
+            val preservedNonNormal: List<DirectBootQueueItem> = when (state) {
+                is QueueStorageState.Absent, is QueueStorageState.ValidEmpty -> emptyList()
+                is QueueStorageState.ValidWithItems -> {
+                    state.items.filter { it.kind != DirectBootQueueItem.KIND_NORMAL }
+                }
+                is QueueStorageState.Corrupt -> {
+                    Log.w(TAG, "updateNormalQueue rejected: storage is corrupt (${state.reason}); fail-closed")
+                    return NormalQueueUpdateResult.StorageCorrupt(state.reason)
+                }
+                is QueueStorageState.UnsupportedSchema -> {
+                    Log.w(TAG, "updateNormalQueue rejected: storage has unsupported schema ${state.foundVersion}; fail-closed")
+                    return NormalQueueUpdateResult.UnsupportedSchema(
+                        foundVersion = state.foundVersion,
+                        expectedVersion = state.expectedVersion
+                    )
+                }
+            }
+
+            val merged = ArrayList<DirectBootQueueItem>(preservedNonNormal.size + normalCandidates.size)
+            merged.addAll(preservedNonNormal)
+            merged.addAll(normalCandidates)
+
+            merged.sortWith(DirectBootQueueItem.QUEUE_COMPARATOR)
+
+            val retained = merged.take(QUEUE_MAX_CAPACITY)
+            val retainedNormal = normalCandidates.filter { candidate ->
+                retained.any { it.logicalId == candidate.logicalId && it.triggerTime == candidate.triggerTime }
+            }
+
+            val persisted = try {
+                writeQueueInternal(context, retained)
+            } catch (e: Exception) {
+                Log.e(TAG, "Exception during writeQueueInternal in updateNormalQueue", e)
+                return NormalQueueUpdateResult.PersistenceFailed(
+                    details = "Exception during queue persistence: ${e.message}",
+                    cause = e
+                )
+            }
+
+            return if (persisted) {
+                NormalQueueUpdateResult.Success(
+                    completeQueue = retained,
+                    retainedNormalCandidates = retainedNormal
+                )
+            } else {
+                NormalQueueUpdateResult.PersistenceFailed("SharedPreferences commit returned false")
+            }
+        }
+    }
+
     // =========================================================================
     // Legacy internal helpers
     // =========================================================================
@@ -660,4 +759,16 @@ sealed class QueueStorageState {
     data class UnsupportedSchema(val foundVersion: Int, val expectedVersion: Int) : QueueStorageState() {
         override val classification = QueueStorageClassification.UNSUPPORTED_SCHEMA
     }
+}
+
+sealed class NormalQueueUpdateResult {
+    data class Success(
+        val completeQueue: List<DirectBootQueueItem>,
+        val retainedNormalCandidates: List<DirectBootQueueItem>
+    ) : NormalQueueUpdateResult()
+
+    data class StorageCorrupt(val reason: String) : NormalQueueUpdateResult()
+    data class UnsupportedSchema(val foundVersion: Int, val expectedVersion: Int) : NormalQueueUpdateResult()
+    data class RejectedIneligible(val reason: String) : NormalQueueUpdateResult()
+    data class PersistenceFailed(val details: String, val cause: Throwable? = null) : NormalQueueUpdateResult()
 }
