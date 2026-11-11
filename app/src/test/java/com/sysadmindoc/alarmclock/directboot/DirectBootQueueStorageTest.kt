@@ -1,9 +1,11 @@
 package com.sysadmindoc.alarmclock.directboot
 
 import android.content.Context
+import android.content.SharedPreferences
 import androidx.test.core.app.ApplicationProvider
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import org.json.JSONObject
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -86,11 +88,18 @@ class DirectBootQueueStorageTest {
         schemaVersion = schemaVersion
     )
 
+    private fun getDePrefs(): SharedPreferences = context.createDeviceProtectedStorageContext()
+        .getSharedPreferences(DirectBootDeliveryLedger.PREFS_NAME, Context.MODE_PRIVATE)
+
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
-        DirectBootAlarmCache.clear(context)
-        DirectBootAlarmCache.clearQueue(context)
+        getDePrefs().edit().clear().commit()
+    }
+
+    @After
+    fun tearDown() {
+        getDePrefs().edit().clear().commit()
     }
 
     @Test
