@@ -45,9 +45,7 @@ class DirectBootDeliveryTransitionEngineTest {
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
-        DirectBootAlarmCache.clear(context)
-        DirectBootAlarmCache.clearQueue(context)
-        resetLedgerForTesting()
+        getDePrefs().edit().clear().commit()
 
         database = Room.inMemoryDatabaseBuilder(context, AlarmDatabase::class.java)
             .allowMainThreadQueries()
@@ -70,9 +68,7 @@ class DirectBootDeliveryTransitionEngineTest {
 
     @After
     fun tearDown() {
-        DirectBootAlarmCache.clear(context)
-        DirectBootAlarmCache.clearQueue(context)
-        resetLedgerForTesting()
+        getDePrefs().edit().clear().commit()
         database.close()
     }
 
