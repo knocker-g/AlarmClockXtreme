@@ -110,6 +110,9 @@ class AlarmDatabaseMigrationTest {
                     startVersion,
                 )
                 insertSyntheticAlarm(db)
+                if (startVersion >= 29) {
+                    com.sysadmindoc.alarmclock.data.local.DurableIntentTriggers.installTriggers(db)
+                }
                 db.close()
 
                 db = helper.runMigrationsAndValidate(
@@ -393,7 +396,10 @@ class AlarmDatabaseMigrationTest {
         assertEquals(1, db.queryLong("SELECT isEnabled FROM alarms LIMIT 1"))
         assertEquals(1_700_000_000_000L, db.queryLong("SELECT nextTriggerTime FROM alarms LIMIT 1"))
         assertEquals(0, db.queryLong("SELECT COUNT(*) FROM schedule_authority"))
-        assertEquals(0, db.queryLong("SELECT COUNT(*) FROM schedule_authority_meta"))
+        assertEquals(1, db.queryLong("SELECT COUNT(*) FROM schedule_authority_meta"))
+        assertEquals(1, db.queryLong("SELECT id FROM schedule_authority_meta LIMIT 1"))
+        assertEquals("INITIALIZED", db.queryString("SELECT bootstrapState FROM schedule_authority_meta LIMIT 1"))
+        assertTrue(db.queryLong("SELECT restoreEpoch FROM schedule_authority_meta LIMIT 1") > 0)
 
         val authorityColumns = tableColumns(db, "schedule_authority").associateBy { it.name }
         assertTrue(authorityColumns.containsKey("alarmId"))
@@ -469,7 +475,10 @@ class AlarmDatabaseMigrationTest {
         assertEquals(1_700_000_000_000L, db.queryLong("SELECT nextTriggerTime FROM alarms LIMIT 1"))
         assertEquals(0, db.queryLong("SELECT COUNT(*) FROM news_sources"))
         assertEquals(0, db.queryLong("SELECT COUNT(*) FROM schedule_authority"))
-        assertEquals(0, db.queryLong("SELECT COUNT(*) FROM schedule_authority_meta"))
+        assertEquals(1, db.queryLong("SELECT COUNT(*) FROM schedule_authority_meta"))
+        assertEquals(1, db.queryLong("SELECT id FROM schedule_authority_meta LIMIT 1"))
+        assertEquals("INITIALIZED", db.queryString("SELECT bootstrapState FROM schedule_authority_meta LIMIT 1"))
+        assertTrue(db.queryLong("SELECT restoreEpoch FROM schedule_authority_meta LIMIT 1") > 0)
         db.close()
     }
 
@@ -483,10 +492,35 @@ class AlarmDatabaseMigrationTest {
 
         val writableDb = database.openHelper.writableDatabase
         assertEquals(exportedLatest, writableDb.version)
-        assertEquals(28, writableDb.version)
+        assertEquals(AlarmDatabase.VERSION, writableDb.version)
         assertEquals(0, writableDb.queryLong("SELECT COUNT(*) FROM schedule_authority"))
         assertEquals(0, writableDb.queryLong("SELECT COUNT(*) FROM schedule_authority_meta"))
         database.close()
+    }
+
+    @Test
+    fun migratesV37ToV38AndPreservesExistingData() {
+        val testDbName = "migration-37-to-38-genuine.db"
+        var db = helper.createDatabase(testDbName, 37)
+        insertSyntheticAlarm(db)
+        insertSyntheticAlarmEvent(db)
+        assertEquals(1, db.queryLong("SELECT COUNT(*) FROM alarms"))
+        assertEquals(1, db.queryLong("SELECT COUNT(*) FROM alarm_events"))
+        db.close()
+
+        db = helper.runMigrationsAndValidate(
+            testDbName,
+            38,
+            true,
+            AlarmDatabase.MIGRATION_37_38
+        )
+
+        assertEquals(1, db.queryLong("SELECT COUNT(*) FROM alarms"))
+        assertEquals("Migration alarm", db.queryString("SELECT label FROM alarms LIMIT 1"))
+        assertEquals(1, db.queryLong("SELECT COUNT(*) FROM alarm_events"))
+        assertEquals("Migration event", db.queryString("SELECT alarmLabel FROM alarm_events LIMIT 1"))
+        assertEquals(0, db.queryLong("SELECT COUNT(*) FROM direct_boot_occurrence_receipts"))
+        db.close()
     }
 
     @Test
@@ -518,33 +552,27 @@ class AlarmDatabaseMigrationTest {
     }
 
     private fun insertSyntheticAlarmEvent(db: SupportSQLiteDatabase) {
+        val columns = tableColumns(db, "alarm_events")
+            .filterNot { it.primaryKeyPosition > 0 && it.name == "id" }
+        val columnSql = columns.joinToString(", ") { "`${it.name}`" }
+        val placeholders = columns.joinToString(", ") { "?" }
+        val values = columns.map { column ->
+            when (column.name) {
+                "alarmId" -> 1L
+                "alarmLabel" -> "Migration event"
+                "scheduledTime", "firedAt", "actionAt" -> 1_700_000_000_000L
+                "action" -> "DISMISSED"
+                "challengeType" -> "MATH_EASY"
+                "challengeSolveTimeMs" -> 60_000L
+                "snoozeCount" -> 1
+                "dayOfWeek" -> 1
+                else -> syntheticValueFor(column, 6, 30, "Migration event")
+            }
+        }.toTypedArray()
+
         db.execSQL(
-            """
-                INSERT INTO alarm_events (
-                    alarmId,
-                    alarmLabel,
-                    scheduledTime,
-                    firedAt,
-                    action,
-                    actionAt,
-                    challengeType,
-                    challengeSolveTimeMs,
-                    snoozeCount,
-                    dayOfWeek
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """.trimIndent(),
-            arrayOf<Any>(
-                1L,
-                "Migration event",
-                1_700_000_000_000L,
-                1_700_000_000_000L,
-                "DISMISSED",
-                1_700_000_060_000L,
-                "MATH_EASY",
-                60_000L,
-                1,
-                1,
-            ),
+            "INSERT INTO alarm_events ($columnSql) VALUES ($placeholders)",
+            values,
         )
     }
 

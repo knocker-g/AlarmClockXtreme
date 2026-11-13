@@ -10,7 +10,7 @@ import kotlinx.coroutines.CancellationException
  * All platform delivery side effects (AlarmManager, notification, audio, vibration,
  * wake locks, reconciler) remain strictly prohibited in this phase.
  */
-internal class DirectBootServiceDeliveryAdapter(
+internal open class DirectBootServiceDeliveryAdapter(
     private val context: Context,
     private val authorizer: DirectBootDeliveryAuthorizer,
     private val transitionFunction: (Context, FiredOccurrenceIdentity, Long) -> DeliveryTransitionResult = { ctx, firingId, deliveredAt ->
@@ -18,7 +18,7 @@ internal class DirectBootServiceDeliveryAdapter(
     },
     private val clock: () -> Long = { System.currentTimeMillis() }
 ) {
-    fun adaptDelivery(
+    open fun adaptDelivery(
         ticketId: String,
         identity: DirectBootV2NormalIntentIdentity,
         deliveredAt: Long = clock()
@@ -42,6 +42,7 @@ internal class DirectBootServiceDeliveryAdapter(
             triggerTime = identity.triggerTime,
             generation = identity.generation,
             instanceToken = identity.instanceToken,
+            restoreEpoch = identity.restoreEpoch,
             provenance = "V2_INTENT_DELIVERY"
         )
 

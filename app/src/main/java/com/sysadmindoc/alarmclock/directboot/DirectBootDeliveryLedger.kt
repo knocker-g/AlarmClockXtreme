@@ -41,15 +41,35 @@ object DirectBootDeliveryLedger {
     const val PREFS_NAME = "direct_boot_next_alarm"
     const val KEY_DELIVERY_LEDGER_PAYLOAD = "direct_boot_delivery_ledger_payload"
     const val MAX_CAPACITY = 16
-    const val CURRENT_SCHEMA_VERSION = 1
+    const val CURRENT_SCHEMA_VERSION = 2
 
     internal val storageLock: Any get() = DirectBootStorageLock.lock
+
+    @androidx.annotation.VisibleForTesting
+    internal var commitSeam: (SharedPreferences, String) -> Boolean = { prefs, payload ->
+        prefs.edit().putString(KEY_DELIVERY_LEDGER_PAYLOAD, payload).commit()
+    }
+
+    @androidx.annotation.VisibleForTesting
+    internal var readbackSeam: (SharedPreferences) -> String? = { prefs ->
+        prefs.getString(KEY_DELIVERY_LEDGER_PAYLOAD, null)
+    }
+
+    @androidx.annotation.VisibleForTesting
+    internal fun resetSeamsForTesting() {
+        commitSeam = { prefs, payload ->
+            prefs.edit().putString(KEY_DELIVERY_LEDGER_PAYLOAD, payload).commit()
+        }
+        readbackSeam = { prefs ->
+            prefs.getString(KEY_DELIVERY_LEDGER_PAYLOAD, null)
+        }
+    }
 
     /**
      * Inspects the current storage state of the Delivery Ledger.
      */
     fun inspectStorageState(context: Context): LedgerStorageState {
-        val rawPayload = prefs(context).getString(KEY_DELIVERY_LEDGER_PAYLOAD, null)
+        val rawPayload = readbackSeam(prefs(context))
         return parseStorageState(rawPayload)
     }
 
@@ -101,10 +121,18 @@ object DirectBootDeliveryLedger {
                 }
             }
 
-            // Idempotency: duplicate recordId is ignored without modifying storage
+            // Idempotency: duplicate recordId with same payload is ignored without modifying storage
             val existing = currentRecords.find { it.recordId == record.recordId }
             if (existing != null) {
-                return DeliveryAppendResult.DuplicateIgnored(existing, currentRecords.size)
+                if (existing.restoreEpoch == record.restoreEpoch &&
+                    existing.deliveredAt == record.deliveredAt &&
+                    existing.provenance == record.provenance
+                ) {
+                    return DeliveryAppendResult.DuplicateIgnored(existing, currentRecords.size)
+                } else {
+                    Log.w(TAG, "Append rejected: record ${record.recordId} exists with conflicting payload")
+                    return DeliveryAppendResult.ContentConflict(existing, record)
+                }
             }
 
             // Capacity safety: at capacity, fail closed without evicting prior unacknowledged records
@@ -114,17 +142,10 @@ object DirectBootDeliveryLedger {
 
             currentRecords.add(record)
 
-            val root = JSONObject().apply {
-                put("schemaVersion", CURRENT_SCHEMA_VERSION)
-                val array = JSONArray()
-                currentRecords.forEach { array.put(it.toJson()) }
-                put("records", array)
-            }
+            val serializedNewPayload = serializeRecordsToJson(currentRecords)
 
             return try {
-                val success = prefs(context).edit()
-                    .putString(KEY_DELIVERY_LEDGER_PAYLOAD, root.toString())
-                    .commit()
+                val success = commitSeam(prefs(context), serializedNewPayload)
 
                 if (success) {
                     DeliveryAppendResult.Appended(record, currentRecords.size)
@@ -138,15 +159,56 @@ object DirectBootDeliveryLedger {
     }
 
     /**
-     * Acknowledges and removes an exact delivery record by [recordId].
+     * Pure helper to construct JSON payload object for delivery records.
+     */
+    fun serializeRecordsToPayload(records: List<DirectBootDeliveryRecord>): JSONObject {
+        return JSONObject().apply {
+            put("schemaVersion", CURRENT_SCHEMA_VERSION)
+            val array = JSONArray()
+            records.forEach { array.put(it.toJson()) }
+            put("records", array)
+        }
+    }
+
+    /**
+     * Pure helper to serialize delivery records to JSON string.
+     */
+    fun serializeRecordsToJson(records: List<DirectBootDeliveryRecord>): String {
+        return serializeRecordsToPayload(records).toString()
+    }
+
+    /**
+     * Evaluates readback observation after a failed or uncertain commit.
+     */
+    internal fun evaluateReadback(
+        context: Context,
+        priorRawPayload: String?,
+        intendedRawPayload: String
+    ): CommitReadbackObservation {
+        return try {
+            val rawAfter = getRawPayload(context)
+            when {
+                rawAfter == intendedRawPayload -> CommitReadbackObservation.INTENDED_PAYLOAD_OBSERVED
+                rawAfter == priorRawPayload -> CommitReadbackObservation.PRIOR_PAYLOAD_OBSERVED
+                rawAfter != null && parseStorageState(rawAfter) is LedgerStorageState.Corrupt ->
+                    CommitReadbackObservation.CORRUPT_PAYLOAD_OBSERVED
+                else -> CommitReadbackObservation.UNAVAILABLE_OR_UNKNOWN
+            }
+        } catch (t: Throwable) {
+            CommitReadbackObservation.UNAVAILABLE_OR_UNKNOWN
+        }
+    }
+
+    /**
+     * Non-destructive evaluation for raw Direct Boot Delivery Records (P3-D-P2B Safety Correction).
      *
      * Invariants:
-     * - Removes ONLY the targeted record.
-     * - Preserves all unrelated records.
+     * - Raw recordId-only destructive deletion without live CE takeover verification is strictly prohibited.
+     * - Preserves ALL existing unacknowledged delivery records without mutation.
      * - Rejects ACK if storage is [LedgerStorageClassification.CORRUPT] or [LedgerStorageClassification.UNSUPPORTED_SCHEMA],
      *   leaving raw payload completely untouched.
-     * - Returns [DeliveryAckResult.NotFound] if recordId is not present.
-     * - Serialized via in-process [storageLock] and persists synchronously via [SharedPreferences.Editor.commit].
+     * - Returns explicit [DeliveryAckResult.AckNotQualified] for absent, empty, or valid storage states.
+     * - Qualified single-record retirement requires live in-lock CE verification via [DirectBootCeHandoffCoordinator].
      */
     fun acknowledgeRecord(context: Context, recordId: String): DeliveryAckResult {
         if (recordId.isBlank()) {
@@ -154,45 +216,27 @@ object DirectBootDeliveryLedger {
         }
 
         synchronized(storageLock) {
-            val state = inspectStorageState(context)
-            val currentRecords: MutableList<DirectBootDeliveryRecord> = when (state) {
-                is LedgerStorageState.Absent -> return DeliveryAckResult.NotFound(recordId, 0)
-                is LedgerStorageState.ValidEmpty -> return DeliveryAckResult.NotFound(recordId, 0)
-                is LedgerStorageState.ValidWithRecords -> state.records.toMutableList()
+            return when (val state = inspectStorageState(context)) {
+                is LedgerStorageState.Absent -> DeliveryAckResult.AckNotQualified(
+                    reason = "Raw Delivery ACK without live CE takeover proof is prohibited (storage absent)",
+                    currentCount = 0
+                )
+                is LedgerStorageState.ValidEmpty -> DeliveryAckResult.AckNotQualified(
+                    reason = "Raw Delivery ACK without live CE takeover proof is prohibited (storage empty)",
+                    currentCount = 0
+                )
+                is LedgerStorageState.ValidWithRecords -> DeliveryAckResult.AckNotQualified(
+                    reason = "Raw Delivery ACK without live CE takeover proof is prohibited; use DirectBootCeHandoffCoordinator qualified ACK",
+                    currentCount = state.records.size
+                )
                 is LedgerStorageState.Corrupt -> {
                     Log.w(TAG, "Acknowledge rejected: storage is corrupt (${state.reason})")
-                    return DeliveryAckResult.StorageCorrupt(state.reason)
+                    DeliveryAckResult.StorageCorrupt(state.reason)
                 }
                 is LedgerStorageState.UnsupportedSchema -> {
                     Log.w(TAG, "Acknowledge rejected: unsupported schema version ${state.foundVersion} (expected ${state.expectedVersion})")
-                    return DeliveryAckResult.UnsupportedSchema(state.foundVersion, state.expectedVersion)
+                    DeliveryAckResult.UnsupportedSchema(state.foundVersion, state.expectedVersion)
                 }
-            }
-
-            val removed = currentRecords.removeAll { it.recordId == recordId }
-            if (!removed) {
-                return DeliveryAckResult.NotFound(recordId, currentRecords.size)
-            }
-
-            val root = JSONObject().apply {
-                put("schemaVersion", CURRENT_SCHEMA_VERSION)
-                val array = JSONArray()
-                currentRecords.forEach { array.put(it.toJson()) }
-                put("records", array)
-            }
-
-            return try {
-                val success = prefs(context).edit()
-                    .putString(KEY_DELIVERY_LEDGER_PAYLOAD, root.toString())
-                    .commit()
-
-                if (success) {
-                    DeliveryAckResult.Acknowledged(recordId, currentRecords.size)
-                } else {
-                    DeliveryAckResult.PersistenceFailed("SharedPreferences commit returned false")
-                }
-            } catch (e: Exception) {
-                DeliveryAckResult.PersistenceFailed("SharedPreferences commit threw exception: ${e.message}")
             }
         }
     }
@@ -201,8 +245,10 @@ object DirectBootDeliveryLedger {
      * Diagnostic helper: returns the raw serialized ledger payload string.
      */
     fun getRawPayload(context: Context): String? {
-        return prefs(context).getString(KEY_DELIVERY_LEDGER_PAYLOAD, null)
+        return readbackSeam(prefs(context))
     }
+
+    internal fun getDePrefs(context: Context): SharedPreferences = prefs(context)
 
     /**
      * Parses the raw string payload and classifies the storage state.
@@ -225,7 +271,7 @@ object DirectBootDeliveryLedger {
                 return LedgerStorageState.Corrupt("Missing schemaVersion field")
             }
             val schemaVersion = root.optInt("schemaVersion", -1)
-            if (schemaVersion != CURRENT_SCHEMA_VERSION) {
+            if (schemaVersion != CURRENT_SCHEMA_VERSION && schemaVersion != 1) {
                 return LedgerStorageState.UnsupportedSchema(schemaVersion, CURRENT_SCHEMA_VERSION)
             }
             if (!root.has("records")) {
@@ -275,8 +321,8 @@ object DirectBootDeliveryLedger {
     }
 
     private fun prefs(context: Context): SharedPreferences {
-        return context.applicationContext.createDeviceProtectedStorageContext()
-            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val deCtx = if (context.isDeviceProtectedStorage) context else context.createDeviceProtectedStorageContext()
+        return deCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 }
 
@@ -315,6 +361,7 @@ sealed class LedgerStorageState {
 sealed class DeliveryAppendResult {
     data class Appended(val record: DirectBootDeliveryRecord, val unacknowledgedCount: Int) : DeliveryAppendResult()
     data class DuplicateIgnored(val existing: DirectBootDeliveryRecord, val unacknowledgedCount: Int) : DeliveryAppendResult()
+    data class ContentConflict(val existing: DirectBootDeliveryRecord, val candidate: DirectBootDeliveryRecord) : DeliveryAppendResult()
     data class CapacityExhausted(val currentCount: Int, val maxCapacity: Int) : DeliveryAppendResult()
     data class RejectedIneligible(val status: DeliveryValidationStatus) : DeliveryAppendResult()
     data class PersistenceFailed(val reason: String) : DeliveryAppendResult()
@@ -324,6 +371,7 @@ sealed class DeliveryAppendResult {
 
 sealed class DeliveryAckResult {
     data class Acknowledged(val recordId: String, val remainingCount: Int) : DeliveryAckResult()
+    data class AckNotQualified(val reason: String, val currentCount: Int) : DeliveryAckResult()
     data class NotFound(val recordId: String, val remainingCount: Int) : DeliveryAckResult()
     data class RejectedInvalidId(val reason: String) : DeliveryAckResult()
     data class PersistenceFailed(val reason: String) : DeliveryAckResult()

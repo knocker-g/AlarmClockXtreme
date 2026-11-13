@@ -63,6 +63,7 @@ class BootReceiver : BroadcastReceiver() {
         activeScope.launch {
             try {
                 if (action == Intent.ACTION_LOCKED_BOOT_COMPLETED) {
+                    com.sysadmindoc.alarmclock.directboot.DirectBootRegistrationReconciler.getInstance(context).reconcile()
                     DirectBootAlarmCache.scheduleCachedAlarm(appContext)
                     return@launch
                 }

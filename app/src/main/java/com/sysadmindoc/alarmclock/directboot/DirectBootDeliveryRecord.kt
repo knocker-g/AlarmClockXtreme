@@ -34,13 +34,14 @@ data class DirectBootDeliveryRecord(
     val generation: Int,                   // Schedule generation (Normal: >= 1; Quick: 0)
     val instanceToken: String,             // ScheduleAuthority lineage token (required non-blank for Normal; empty for Quick)
     val provenance: String = "",           // Optional provenance metadata (e.g., "BOOT", "RESTORE", or "")
+    val restoreEpoch: Long = 0L,           // Restore epoch provenance (> 0L for DE v2)
     val schemaVersion: Int = CURRENT_SCHEMA_VERSION
 ) {
     /**
      * Evaluates record validity according to KNO-75 invariants.
      */
     fun evaluateValidation(): DeliveryValidationStatus {
-        if (schemaVersion != CURRENT_SCHEMA_VERSION) {
+        if (schemaVersion != CURRENT_SCHEMA_VERSION && schemaVersion != 1) {
             return DeliveryValidationStatus.INVALID_SCHEMA_VERSION
         }
         if (alarmId <= 0L) return DeliveryValidationStatus.INVALID_ALARM_ID
@@ -51,6 +52,7 @@ data class DirectBootDeliveryRecord(
         if (kind == KIND_NORMAL) {
             if (generation < 1) return DeliveryValidationStatus.MISSING_NORMAL_GENERATION
             if (instanceToken.isBlank()) return DeliveryValidationStatus.MISSING_NORMAL_INSTANCE_TOKEN
+            if (schemaVersion >= 2 && restoreEpoch <= 0L) return DeliveryValidationStatus.INVALID_RESTORE_EPOCH
         }
 
         // Validate recordId matches expected canonical lineage
@@ -77,11 +79,12 @@ data class DirectBootDeliveryRecord(
         put("generation", generation)
         put("instanceToken", instanceToken)
         put("provenance", provenance)
+        put("restoreEpoch", restoreEpoch)
         put("schemaVersion", schemaVersion)
     }
 
     companion object {
-        const val CURRENT_SCHEMA_VERSION = 1
+        const val CURRENT_SCHEMA_VERSION = 2
         const val KIND_NORMAL = Alarm.KIND_NORMAL
         const val KIND_QUICK = Alarm.KIND_QUICK
 
@@ -110,6 +113,7 @@ data class DirectBootDeliveryRecord(
             generation: Int,
             instanceToken: String,
             provenance: String = "",
+            restoreEpoch: Long = 1L,
             schemaVersion: Int = CURRENT_SCHEMA_VERSION
         ): DirectBootDeliveryRecord {
             return DirectBootDeliveryRecord(
@@ -121,6 +125,7 @@ data class DirectBootDeliveryRecord(
                 generation = generation,
                 instanceToken = instanceToken,
                 provenance = provenance,
+                restoreEpoch = restoreEpoch,
                 schemaVersion = schemaVersion
             )
         }
@@ -134,6 +139,7 @@ data class DirectBootDeliveryRecord(
             triggerTime: Long,
             deliveredAt: Long,
             provenance: String = "",
+            restoreEpoch: Long = 0L,
             schemaVersion: Int = CURRENT_SCHEMA_VERSION
         ): DirectBootDeliveryRecord {
             return DirectBootDeliveryRecord(
@@ -145,6 +151,7 @@ data class DirectBootDeliveryRecord(
                 generation = 0,
                 instanceToken = "",
                 provenance = provenance,
+                restoreEpoch = restoreEpoch,
                 schemaVersion = schemaVersion
             )
         }
@@ -160,6 +167,7 @@ data class DirectBootDeliveryRecord(
                 generation = json.optInt("generation", -1),
                 instanceToken = json.optString("instanceToken", ""),
                 provenance = json.optString("provenance", ""),
+                restoreEpoch = json.optLong("restoreEpoch", 0L),
                 schemaVersion = json.optInt("schemaVersion", -1)
             )
         }
@@ -174,6 +182,7 @@ enum class DeliveryValidationStatus {
     UNKNOWN_KIND,
     MISSING_NORMAL_GENERATION,
     MISSING_NORMAL_INSTANCE_TOKEN,
+    INVALID_RESTORE_EPOCH,
     INVALID_SCHEMA_VERSION,
     RECORD_ID_MISMATCH
 }

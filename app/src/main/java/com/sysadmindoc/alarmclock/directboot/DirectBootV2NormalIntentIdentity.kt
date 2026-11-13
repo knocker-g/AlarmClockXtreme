@@ -33,6 +33,7 @@ data class DirectBootV2NormalIntentIdentity(
     val generation: Int,
     val instanceToken: String,
     val triggerTime: Long,
+    val restoreEpoch: Long = 0L,
     val kind: String = KIND_NORMAL
 ) {
     init {
@@ -54,6 +55,9 @@ data class DirectBootV2NormalIntentIdentity(
         append("ALARM_ID:$alarmId\n")
         append("GENERATION:$generation\n")
         append("INSTANCE_TOKEN:$tokenUtf8Len:$instanceToken\n")
+        if (restoreEpoch > 0L) {
+            append("RESTORE_EPOCH:$restoreEpoch\n")
+        }
         append("TRIGGER_TIME:$triggerTime\n")
     }
 
@@ -92,6 +96,7 @@ data class DirectBootV2NormalIntentIdentity(
             putExtra(EXTRA_TRIGGER_TIME, triggerTime)
             putExtra(EXTRA_GENERATION, generation)
             putExtra(EXTRA_INSTANCE_TOKEN, instanceToken)
+            putExtra(EXTRA_RESTORE_EPOCH, restoreEpoch)
             putExtra(EXTRA_IDENTITY_DIGEST, computeDigest())
             if (provenance.isNotBlank()) {
                 putExtra(EXTRA_PROVENANCE, provenance)
@@ -155,6 +160,7 @@ data class DirectBootV2NormalIntentIdentity(
         const val EXTRA_TRIGGER_TIME = "com.sysadmindoc.alarmclock.directboot.extra.TRIGGER_TIME"
         const val EXTRA_GENERATION = "com.sysadmindoc.alarmclock.directboot.extra.GENERATION"
         const val EXTRA_INSTANCE_TOKEN = "com.sysadmindoc.alarmclock.directboot.extra.INSTANCE_TOKEN"
+        const val EXTRA_RESTORE_EPOCH = "com.sysadmindoc.alarmclock.directboot.extra.RESTORE_EPOCH"
         const val EXTRA_IDENTITY_DIGEST = "com.sysadmindoc.alarmclock.directboot.extra.IDENTITY_DIGEST"
         const val EXTRA_PROVENANCE = "com.sysadmindoc.alarmclock.directboot.extra.PROVENANCE"
 
@@ -170,6 +176,7 @@ data class DirectBootV2NormalIntentIdentity(
                 generation = item.generation,
                 instanceToken = item.instanceToken,
                 triggerTime = item.triggerTime,
+                restoreEpoch = item.restoreEpoch,
                 kind = item.kind
             )
         }

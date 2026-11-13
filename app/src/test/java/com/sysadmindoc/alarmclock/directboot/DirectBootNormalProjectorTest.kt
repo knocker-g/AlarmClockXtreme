@@ -541,6 +541,7 @@ class DirectBootNormalProjectorTest {
                     vibrationEnabled = true,
                     timezonePolicy = Alarm.TIMEZONE_POLICY_LOCAL,
                     fixedTimezoneId = "",
+                    restoreEpoch = 1L,
                     schemaVersion = DirectBootQueueItem.CURRENT_SCHEMA_VERSION
                 )
                 DirectBootAlarmCache.updateNormalQueue(context, listOf(candidate), now = baseTime)

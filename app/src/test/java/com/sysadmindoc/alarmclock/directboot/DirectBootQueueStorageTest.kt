@@ -54,6 +54,7 @@ class DirectBootQueueStorageTest {
         generation: Int = 1,
         instanceToken: String = "token_$id",
         timeLabel: String = "7:00 AM",
+        restoreEpoch: Long = 1L,
         schemaVersion: Int = DirectBootQueueItem.CURRENT_SCHEMA_VERSION
     ) = DirectBootQueueItem(
         kind = DirectBootQueueItem.KIND_NORMAL,
@@ -66,6 +67,7 @@ class DirectBootQueueStorageTest {
         playDefaultSound = true,
         vibrationEnabled = true,
         updatedAt = baseTime,
+        restoreEpoch = restoreEpoch,
         schemaVersion = schemaVersion
     )
 
@@ -721,7 +723,7 @@ class DirectBootQueueStorageTest {
         val schemaState = DirectBootAlarmCache.readQueueStorage(context)
         assertTrue(schemaState is QueueStorageState.UnsupportedSchema)
         assertEquals(999, (schemaState as QueueStorageState.UnsupportedSchema).foundVersion)
-        assertEquals(2, schemaState.expectedVersion)
+        assertEquals(DirectBootQueueItem.CURRENT_SCHEMA_VERSION, schemaState.expectedVersion)
     }
 
     @Test
@@ -743,7 +745,7 @@ class DirectBootQueueStorageTest {
         val prefs = context.applicationContext.createDeviceProtectedStorageContext()
             .getSharedPreferences("direct_boot_next_alarm", Context.MODE_PRIVATE)
         val futureJson = JSONObject().apply {
-            put("schemaVersion", 3)
+            put("schemaVersion", 999)
             put("items", org.json.JSONArray())
         }.toString()
         prefs.edit().putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, futureJson).commit()
@@ -753,8 +755,8 @@ class DirectBootQueueStorageTest {
 
         assertTrue("enqueueCandidate must fail closed on unsupported schema", result is QueueEnqueueResult.UnsupportedSchema)
         val schemaResult = result as QueueEnqueueResult.UnsupportedSchema
-        assertEquals(3, schemaResult.foundVersion)
-        assertEquals(2, schemaResult.expectedVersion)
+        assertEquals(999, schemaResult.foundVersion)
+        assertEquals(DirectBootQueueItem.CURRENT_SCHEMA_VERSION, schemaResult.expectedVersion)
         assertEquals("Raw payload must remain exactly untouched", futureJson, DirectBootAlarmCache.getRawQueuePayload(context))
     }
 

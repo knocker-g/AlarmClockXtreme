@@ -65,7 +65,8 @@ class DirectBootRegistrationReconcilerTest {
         triggerTime: Long = baseTime + 60_000L,
         generation: Int = 1,
         instanceToken: String = "token_norm_101",
-        updatedAt: Long = baseTime
+        updatedAt: Long = baseTime,
+        restoreEpoch: Long = 1L
     ): DirectBootQueueItem {
         return DirectBootQueueItem(
             kind = DirectBootQueueItem.KIND_NORMAL,
@@ -73,7 +74,8 @@ class DirectBootRegistrationReconcilerTest {
             triggerTime = triggerTime,
             generation = generation,
             instanceToken = instanceToken,
-            updatedAt = updatedAt
+            updatedAt = updatedAt,
+            restoreEpoch = restoreEpoch
         )
     }
 
@@ -81,13 +83,15 @@ class DirectBootRegistrationReconcilerTest {
         alarmId: Long = 101L,
         generation: Int = 1,
         instanceToken: String = "token_norm_101",
-        triggerTime: Long = baseTime + 60_000L
+        triggerTime: Long = baseTime + 60_000L,
+        restoreEpoch: Long = 1L
     ): DirectBootV2NormalIntentIdentity {
         return DirectBootV2NormalIntentIdentity(
             alarmId = alarmId,
             generation = generation,
             instanceToken = instanceToken,
             triggerTime = triggerTime,
+            restoreEpoch = restoreEpoch,
             kind = DirectBootV2NormalIntentIdentity.KIND_NORMAL
         )
     }

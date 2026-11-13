@@ -39,7 +39,7 @@ class DirectBootDeliveryTransitionEngineTest {
 
     private val baseTime = 1_700_000_000_000L
 
-    private fun getDePrefs(): SharedPreferences = context.createDeviceProtectedStorageContext()
+    private fun getDePrefs(): SharedPreferences = (if (context.isDeviceProtectedStorage) context else context.createDeviceProtectedStorageContext())
         .getSharedPreferences(DirectBootDeliveryLedger.PREFS_NAME, Context.MODE_PRIVATE)
 
     @Before
@@ -82,7 +82,8 @@ class DirectBootDeliveryTransitionEngineTest {
         alarmId: Long,
         triggerTime: Long = baseTime + 10_000L,
         generation: Int = 1,
-        instanceToken: String = "token_$alarmId"
+        instanceToken: String = "token_$alarmId",
+        restoreEpoch: Long = 1L
     ): DirectBootQueueItem {
         return DirectBootQueueItem(
             kind = DirectBootQueueItem.KIND_NORMAL,
@@ -94,7 +95,8 @@ class DirectBootDeliveryTransitionEngineTest {
             timeLabel = "7:00 AM",
             playDefaultSound = true,
             vibrationEnabled = true,
-            updatedAt = baseTime
+            updatedAt = baseTime,
+            restoreEpoch = restoreEpoch
         )
     }
 
@@ -121,7 +123,8 @@ class DirectBootDeliveryTransitionEngineTest {
         triggerTime: Long = baseTime + 10_000L,
         generation: Int = 1,
         instanceToken: String = "token_$alarmId",
-        provenance: String = ""
+        provenance: String = "",
+        restoreEpoch: Long = 1L
     ): FiredOccurrenceIdentity {
         return FiredOccurrenceIdentity(
             kind = DirectBootDeliveryRecord.KIND_NORMAL,
@@ -129,6 +132,7 @@ class DirectBootDeliveryTransitionEngineTest {
             triggerTime = triggerTime,
             generation = generation,
             instanceToken = instanceToken,
+            restoreEpoch = restoreEpoch,
             provenance = provenance
         )
     }
@@ -713,27 +717,76 @@ class DirectBootDeliveryTransitionEngineTest {
         )
         DirectBootDeliveryLedger.appendRecord(context, rec2)
 
-        val jobs = listOf(
-            async {
-                DirectBootDeliveryTransitionEngine.transitionNormal(
-                    context = context,
-                    firingIdentity = normalIdentity(alarmId = 1L)
-                )
-            },
-            async {
-                DirectBootDeliveryLedger.acknowledgeRecord(context, rec2.recordId)
+        val lockHeldObservations = java.util.Collections.synchronizedList(mutableListOf<Boolean>())
+        val activeInCriticalSection = java.util.concurrent.atomic.AtomicInteger(0)
+        val maxConcurrentInLock = java.util.concurrent.atomic.AtomicInteger(0)
+
+        DirectBootDeliveryLedger.readbackSeam = { prefs ->
+            lockHeldObservations.add(Thread.holdsLock(DirectBootStorageLock.lock))
+            val currentActive = activeInCriticalSection.incrementAndGet()
+            maxConcurrentInLock.updateAndGet { prev -> maxOf(prev, currentActive) }
+            try {
+                prefs.getString(DirectBootDeliveryLedger.KEY_DELIVERY_LEDGER_PAYLOAD, null)
+            } finally {
+                activeInCriticalSection.decrementAndGet()
             }
+        }
+
+        val results = try {
+            val jobs = listOf(
+                async {
+                    DirectBootDeliveryTransitionEngine.transitionNormal(
+                        context = context,
+                        firingIdentity = normalIdentity(alarmId = 1L)
+                    )
+                },
+                async {
+                    // Raw DE Delivery ACK without live CE takeover proof is sealed in P3-D-P2B
+                    // (qualified ACK concurrency is verified in DirectBootCeHandoffCoordinatorTest A21/A22).
+                    // It still acquires DirectBootStorageLock.lock, serializes against transitionNormal,
+                    // and fails closed with AckNotQualified without deleting rec2 or losing q1's transition.
+                    DirectBootDeliveryLedger.acknowledgeRecord(context, rec2.recordId)
+                }
+            )
+            jobs.awaitAll()
+        } finally {
+            DirectBootDeliveryLedger.resetSeamsForTesting()
+        }
+
+        assertTrue("Expected DeliveryTransitionResult.Confirmed but got ${results[0]}", results[0] is DeliveryTransitionResult.Confirmed)
+        val confirmed = results[0] as DeliveryTransitionResult.Confirmed
+        assertEquals(1L, confirmed.deliveryRecord.alarmId)
+        assertTrue(confirmed.remainingQueue.isEmpty())
+
+        assertTrue("Expected DeliveryAckResult.AckNotQualified for raw ACK without CE proof, got ${results[1]}", results[1] is DeliveryAckResult.AckNotQualified)
+        val ackResult = results[1] as DeliveryAckResult.AckNotQualified
+        assertTrue(
+            "AckNotQualified currentCount must reflect serialized Ledger snapshot (1 before transition commit or 2 after), got ${ackResult.currentCount}",
+            ackResult.currentCount in setOf(1, 2)
         )
 
-        val results = jobs.awaitAll()
-        assertTrue(results[0] is DeliveryTransitionResult.Confirmed)
-        assertTrue(results[1] is DeliveryAckResult.Acknowledged)
+        assertTrue(
+            "All concurrent Ledger inspections must hold canonical DirectBootStorageLock.lock",
+            lockHeldObservations.size >= 2 && lockHeldObservations.all { it }
+        )
+        assertEquals(
+            "Critical section under DirectBootStorageLock.lock must strictly serialize without overlap",
+            1,
+            maxConcurrentInLock.get()
+        )
 
+        // Queue head q1 was consumed cleanly
+        assertEquals(0, DirectBootAlarmCache.readQueue(context, now = baseTime).size)
+
+        // Neither the raw ACK target (rec2) nor the newly transitioned delivery (alarmId=1L) was deleted or lost
         val ledgerState = DirectBootDeliveryLedger.readUnacknowledgedRecords(context)
         assertTrue(ledgerState is LedgerStorageState.ValidWithRecords)
         val records = (ledgerState as LedgerStorageState.ValidWithRecords).records
-        assertEquals(1, records.size)
-        assertEquals(1L, records[0].alarmId)
+        assertEquals(2, records.size)
+        assertEquals(rec2, records[0])
+        assertEquals(2L, records[0].alarmId)
+        assertEquals(confirmed.deliveryRecord, records[1])
+        assertEquals(1L, records[1].alarmId)
     }
 
     @Test

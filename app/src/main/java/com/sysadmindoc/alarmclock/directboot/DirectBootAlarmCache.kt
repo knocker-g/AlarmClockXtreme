@@ -137,6 +137,13 @@ object DirectBootAlarmCache {
         edit.apply()
     }
 
+    fun hasFiredWitness(context: Context, alarmId: Long, triggerTime: Long): Boolean {
+        val prefs = prefs(context)
+        val firedAlarmId = prefs.getLong(KEY_FIRED_ALARM_ID, -1L)
+        val firedTriggerTime = prefs.getLong(KEY_FIRED_TRIGGER_TIME, 0L)
+        return firedAlarmId == alarmId && (triggerTime <= 0L || firedTriggerTime == triggerTime)
+    }
+
     fun consumeFiredOneShotMarker(context: Context, alarm: Alarm, now: Long): Boolean {
         if (alarm.isRecurringSchedule) return false
 
@@ -245,7 +252,7 @@ object DirectBootAlarmCache {
                 return QueueStorageState.Corrupt("Missing schemaVersion field")
             }
             val schemaVersion = root.optInt("schemaVersion", -1)
-            if (schemaVersion != DirectBootQueueItem.CURRENT_SCHEMA_VERSION) {
+            if (schemaVersion != DirectBootQueueItem.CURRENT_SCHEMA_VERSION && schemaVersion != 2) {
                 return QueueStorageState.UnsupportedSchema(
                     foundVersion = schemaVersion,
                     expectedVersion = DirectBootQueueItem.CURRENT_SCHEMA_VERSION
@@ -722,7 +729,7 @@ object DirectBootAlarmCache {
     )
 
     private fun protectedContext(context: Context): Context {
-        return context.applicationContext.createDeviceProtectedStorageContext()
+        return if (context.isDeviceProtectedStorage) context else context.createDeviceProtectedStorageContext()
     }
 
     private fun formatTriggerTime(context: Context, triggerTime: Long): String =

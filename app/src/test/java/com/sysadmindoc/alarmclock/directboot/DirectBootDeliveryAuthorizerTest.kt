@@ -35,13 +35,15 @@ class DirectBootDeliveryAuthorizerTest {
         alarmId: Long = testAlarmId,
         generation: Int = testGeneration,
         instanceToken: String = testToken,
-        triggerTime: Long = testTriggerTime
+        triggerTime: Long = testTriggerTime,
+        restoreEpoch: Long = 1L
     ): DirectBootV2NormalIntentIdentity {
         return DirectBootV2NormalIntentIdentity(
             alarmId = alarmId,
             generation = generation,
             instanceToken = instanceToken,
-            triggerTime = triggerTime
+            triggerTime = triggerTime,
+            restoreEpoch = restoreEpoch
         )
     }
 
@@ -49,7 +51,8 @@ class DirectBootDeliveryAuthorizerTest {
         alarmId: Long = testAlarmId,
         generation: Int = testGeneration,
         instanceToken: String = testToken,
-        triggerTime: Long = testTriggerTime
+        triggerTime: Long = testTriggerTime,
+        restoreEpoch: Long = 1L
     ): DirectBootQueueItem {
         return DirectBootQueueItem(
             kind = DirectBootQueueItem.KIND_NORMAL,
@@ -59,7 +62,8 @@ class DirectBootDeliveryAuthorizerTest {
             instanceToken = instanceToken,
             timeLabel = "07:00",
             playDefaultSound = true,
-            vibrationEnabled = true
+            vibrationEnabled = true,
+            restoreEpoch = restoreEpoch
         )
     }
 

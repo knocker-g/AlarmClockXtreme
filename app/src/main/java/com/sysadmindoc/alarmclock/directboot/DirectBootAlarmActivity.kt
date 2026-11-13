@@ -105,19 +105,44 @@ class DirectBootAlarmActivity : Activity() {
     }
 
     private fun stopDirectBootAlarm() {
+        val gen = intent.getIntExtra(DirectBootV2NormalIntentIdentity.EXTRA_GENERATION, 1)
+        val token = intent.getStringExtra(DirectBootV2NormalIntentIdentity.EXTRA_INSTANCE_TOKEN).orEmpty()
+        val epoch = intent.getLongExtra(DirectBootV2NormalIntentIdentity.EXTRA_RESTORE_EPOCH, 0L)
+        val trig = intent.getLongExtra(DirectBootAlarmReceiver.EXTRA_TRIGGER_TIME, 0L)
+
+        val stopUri = android.net.Uri.parse("acx-directboot-stop://alarm/$alarmId/gen/$gen/epoch/$epoch/trig/$trig/tok/$token")
         val stopIntent = Intent(this, DirectBootAlarmService::class.java).apply {
             action = DirectBootAlarmService.ACTION_STOP
+            data = stopUri
             putExtra(DirectBootAlarmReceiver.EXTRA_ALARM_ID, alarmId)
+            putExtra(DirectBootAlarmReceiver.EXTRA_TRIGGER_TIME, trig)
+            putExtra(DirectBootV2NormalIntentIdentity.EXTRA_GENERATION, gen)
+            putExtra(DirectBootV2NormalIntentIdentity.EXTRA_INSTANCE_TOKEN, token)
+            putExtra(DirectBootV2NormalIntentIdentity.EXTRA_RESTORE_EPOCH, epoch)
         }
         runCatching { startService(stopIntent) }
         finish()
     }
 
     companion object {
-        fun intent(context: android.content.Context, alarmId: Long, timeLabel: String): Intent {
+        fun intent(
+            context: android.content.Context,
+            alarmId: Long,
+            timeLabel: String,
+            generation: Int = 1,
+            instanceToken: String = "",
+            restoreEpoch: Long = 0L,
+            triggerTime: Long = 0L
+        ): Intent {
+            val activityUri = android.net.Uri.parse("acx-directboot-activity://alarm/$alarmId/gen/$generation/epoch/$restoreEpoch/trig/$triggerTime/tok/$instanceToken")
             return Intent(context, DirectBootAlarmActivity::class.java).apply {
+                data = activityUri
                 putExtra(DirectBootAlarmReceiver.EXTRA_ALARM_ID, alarmId)
                 putExtra(DirectBootAlarmReceiver.EXTRA_TIME_LABEL, timeLabel)
+                putExtra(DirectBootAlarmReceiver.EXTRA_TRIGGER_TIME, triggerTime)
+                putExtra(DirectBootV2NormalIntentIdentity.EXTRA_GENERATION, generation)
+                putExtra(DirectBootV2NormalIntentIdentity.EXTRA_INSTANCE_TOKEN, instanceToken)
+                putExtra(DirectBootV2NormalIntentIdentity.EXTRA_RESTORE_EPOCH, restoreEpoch)
                 addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or
                         Intent.FLAG_ACTIVITY_CLEAR_TOP or
@@ -129,13 +154,21 @@ class DirectBootAlarmActivity : Activity() {
         fun fullScreenIntent(
             context: android.content.Context,
             alarmId: Long,
-            timeLabel: String
-        ) = android.app.PendingIntent.getActivity(
-            context,
-            alarmId.toInt(),
-            intent(context, alarmId, timeLabel),
-            android.app.PendingIntent.FLAG_UPDATE_CURRENT or
-                android.app.PendingIntent.FLAG_IMMUTABLE
-        )
+            timeLabel: String,
+            generation: Int = 1,
+            instanceToken: String = "",
+            restoreEpoch: Long = 0L,
+            triggerTime: Long = 0L
+        ): android.app.PendingIntent {
+            val actIntent = intent(context, alarmId, timeLabel, generation, instanceToken, restoreEpoch, triggerTime)
+            val requestCode = (actIntent.data.toString().hashCode() and 0x7FFFFFFF)
+            return android.app.PendingIntent.getActivity(
+                context,
+                requestCode,
+                actIntent,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or
+                    android.app.PendingIntent.FLAG_IMMUTABLE
+            )
+        }
     }
 }

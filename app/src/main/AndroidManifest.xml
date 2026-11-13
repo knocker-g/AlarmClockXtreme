@@ -213,6 +213,16 @@
             </intent-filter>
         </receiver>
 
+        <!-- Unlock Receiver - Process unconsumed Direct Boot records post-unlock -->
+        <receiver
+            android:name=".directboot.DirectBootUnlockReceiver"
+            android:directBootAware="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.USER_UNLOCKED" />
+            </intent-filter>
+        </receiver>
+
         <!-- Exact alarm permission recovery - reschedule after user grants access -->
         <receiver
             android:name=".receiver.ExactAlarmPermissionReceiver"
