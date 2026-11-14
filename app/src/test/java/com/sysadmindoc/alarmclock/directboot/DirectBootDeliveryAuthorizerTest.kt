@@ -656,4 +656,259 @@ class DirectBootDeliveryAuthorizerTest {
         val t3 = smallAuthorizer.issueTicket(identity, nowEpochMs = laterNow)
         assertTrue("After purging expired tickets, capacity must be available", t3 is TicketIssueResult.Success)
     }
+
+    // =========================================================================
+    // KNO-75 C7-A0-v3: Inactive Security Hardening Tests (A0-01 .. A0-10)
+    // =========================================================================
+
+    // A0-01: Epoch mismatch -> REJECT (both preQualify and ticket validation)
+    @Test
+    fun a0_01_epochMismatch_rejectsPrequalificationAndTicketValidation() {
+        val queueItem = sampleQueueItem(restoreEpoch = 2L)
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(queueItem), now = 0L))
+
+        val mismatchedIdentity = sampleIdentity(restoreEpoch = 1L)
+        val intent = mismatchedIdentity.createIntent(context)
+
+        val preQualifyResult = authorizer.preQualify(context, intent)
+        assertFalse(
+            "preQualify MUST reject restoreEpoch mismatch (queue=2 vs intent=1), got $preQualifyResult",
+            preQualifyResult is DeliveryPrequalificationResult.Eligible
+        )
+
+        val ticketIdentity = sampleIdentity(restoreEpoch = 2L)
+        val issueResult = authorizer.issueTicket(ticketIdentity, nowEpochMs = 10_000L)
+        assertTrue(issueResult is TicketIssueResult.Success)
+        val ticket = (issueResult as TicketIssueResult.Success).ticket
+
+        val validateMismatch = authorizer.validateAndConsumeTicket(
+            ticketId = ticket.ticketId,
+            expectedIdentity = mismatchedIdentity,
+            nowEpochMs = 10_500L
+        )
+        assertTrue(
+            "validateAndConsumeTicket MUST reject restoreEpoch mismatch, got $validateMismatch",
+            validateMismatch is TicketValidationResult.IdentityMismatch
+        )
+    }
+
+    // A0-02: Epoch zero -> REJECT (preQualify and ticket validation)
+    @Test
+    fun a0_02_epochZero_rejectsPrequalificationAndTicketValidation() {
+        val queueItem = sampleQueueItem(restoreEpoch = 1L)
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(queueItem), now = 0L))
+
+        val zeroEpochIdentity = sampleIdentity(restoreEpoch = 0L)
+        val intentWithZeroEpoch = zeroEpochIdentity.createIntent(context)
+
+        val preQualifyIntentResult = authorizer.preQualify(context, intentWithZeroEpoch)
+        assertTrue(
+            "preQualify(intent) MUST reject restoreEpoch == 0 as InvalidIdentity, got $preQualifyIntentResult",
+            preQualifyIntentResult is DeliveryPrequalificationResult.InvalidIdentity
+        )
+
+        val preQualifyIdentityResult = authorizer.preQualify(context, zeroEpochIdentity)
+        assertTrue(
+            "preQualify(identity) MUST reject restoreEpoch == 0 as InvalidIdentity, got $preQualifyIdentityResult",
+            preQualifyIdentityResult is DeliveryPrequalificationResult.InvalidIdentity
+        )
+
+        // Even if a ticket was issued with epoch 0 (e.g., programmatic caller), validation must reject epoch 0
+        val zeroTicketRes = authorizer.issueTicket(zeroEpochIdentity, nowEpochMs = 20_000L)
+        assertTrue(zeroTicketRes is TicketIssueResult.Success)
+        val zeroTicket = (zeroTicketRes as TicketIssueResult.Success).ticket
+
+        val validateZeroAgainstOne = authorizer.validateAndConsumeTicket(
+            ticketId = zeroTicket.ticketId,
+            expectedIdentity = sampleIdentity(restoreEpoch = 1L),
+            nowEpochMs = 20_100L
+        )
+        assertTrue(
+            "Ticket with epoch=0 MUST NOT bypass validation against epoch=1, got $validateZeroAgainstOne",
+            validateZeroAgainstOne is TicketValidationResult.IdentityMismatch
+        )
+
+        val zeroTicketRes2 = authorizer.issueTicket(zeroEpochIdentity, nowEpochMs = 20_200L)
+        val zeroTicket2 = (zeroTicketRes2 as TicketIssueResult.Success).ticket
+        val validateZeroAgainstZero = authorizer.validateAndConsumeTicket(
+            ticketId = zeroTicket2.ticketId,
+            expectedIdentity = zeroEpochIdentity,
+            nowEpochMs = 20_300L
+        )
+        assertTrue(
+            "Ticket validation MUST reject zero restoreEpoch even when both are 0, got $validateZeroAgainstZero",
+            validateZeroAgainstZero is TicketValidationResult.IdentityMismatch
+        )
+    }
+
+    // A0-03: Queue Epoch zero / legacy schema v2 -> REJECT (must not reinterpret legacy schema as authorized V2)
+    @Test
+    fun a0_03_queueEpochZeroAndLegacySchema_rejectsPrequalification() {
+        val legacyQueueItem = DirectBootQueueItem(
+            kind = DirectBootQueueItem.KIND_NORMAL,
+            alarmId = testAlarmId,
+            triggerTime = testTriggerTime,
+            generation = testGeneration,
+            instanceToken = testToken,
+            timeLabel = "07:00",
+            restoreEpoch = 0L,
+            schemaVersion = 2
+        )
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(legacyQueueItem), now = 0L))
+
+        val identityEpoch1 = sampleIdentity(restoreEpoch = 1L)
+        val res1 = authorizer.preQualify(context, identityEpoch1.createIntent(context))
+        assertFalse(
+            "Authorizer MUST reject legacy schema v2 / epoch=0 queue item for V2 Normal, got $res1",
+            res1 is DeliveryPrequalificationResult.Eligible
+        )
+
+        val identityEpoch0 = sampleIdentity(restoreEpoch = 0L)
+        val res0 = authorizer.preQualify(context, identityEpoch0.createIntent(context))
+        assertFalse(
+            "Authorizer MUST reject epoch=0 queue item even if intent has epoch=0, got $res0",
+            res0 is DeliveryPrequalificationResult.Eligible
+        )
+    }
+
+    // A0-04: Positive equal Epoch -> PREQUALIFICATION
+    @Test
+    fun a0_04_positiveEqualEpoch_preQualifiesAndValidatesTicket() {
+        val epoch = 7L
+        val item = sampleQueueItem(restoreEpoch = epoch)
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(item), now = 0L))
+
+        val identity = sampleIdentity(restoreEpoch = epoch)
+        val result = authorizer.preQualify(context, identity.createIntent(context))
+        assertTrue("Expected Eligible for matching positive epoch=$epoch, got $result", result is DeliveryPrequalificationResult.Eligible)
+
+        val issueResult = authorizer.issueTicket(identity, nowEpochMs = 30_000L)
+        assertTrue(issueResult is TicketIssueResult.Success)
+        val ticket = (issueResult as TicketIssueResult.Success).ticket
+
+        val validateResult = authorizer.validateAndConsumeTicket(ticket.ticketId, identity, nowEpochMs = 30_500L)
+        assertTrue("Expected Valid ticket for positive equal epoch=$epoch, got $validateResult", validateResult is TicketValidationResult.Valid)
+    }
+
+    // A0-05: Malformed Intent extras -> InvalidIdentity (missing kind, bad id/gen/triggerTime)
+    @Test
+    fun a0_05_malformedV2IntentMissingKindOrInvalidExtras_returnsInvalidIdentity() {
+        val item = sampleQueueItem(restoreEpoch = 1L)
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(item), now = 0L))
+
+        val identity = sampleIdentity(restoreEpoch = 1L)
+        val missingKindIntent = identity.createIntent(context).apply {
+            removeExtra(DirectBootV2NormalIntentIdentity.EXTRA_KIND)
+        }
+        val missingKindRes = authorizer.preQualify(context, missingKindIntent)
+        assertTrue(
+            "Missing EXTRA_KIND MUST be rejected as InvalidIdentity, got $missingKindRes",
+            missingKindRes is DeliveryPrequalificationResult.InvalidIdentity
+        )
+
+        val missingEpochIntent = identity.createIntent(context).apply {
+            removeExtra(DirectBootV2NormalIntentIdentity.EXTRA_RESTORE_EPOCH)
+        }
+        val missingEpochRes = authorizer.preQualify(context, missingEpochIntent)
+        assertTrue(
+            "Missing EXTRA_RESTORE_EPOCH MUST be rejected as InvalidIdentity, got $missingEpochRes",
+            missingEpochRes is DeliveryPrequalificationResult.InvalidIdentity
+        )
+    }
+
+    // A0-06: Corrupt/full storage -> FAIL CLOSED
+    @Test
+    fun a0_06_corruptAndFullStorage_failsClosedAndPreservesRawBytes() {
+        val corruptJson = """{"schemaVersion":3,"items":[{"kind":"NORMAL","alarmId":101,"triggerTime":1700000000000,"generation":1,"instanceToken":"dup_tok","restoreEpoch":1,"schemaVersion":3},{"kind":"NORMAL","alarmId":102,"triggerTime":1700000001000,"generation":1,"instanceToken":"dup_tok","restoreEpoch":1,"schemaVersion":3}]}"""
+        prefs.edit().putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, corruptJson).commit()
+
+        val identity = sampleIdentity(restoreEpoch = 1L)
+        val corruptRes = authorizer.preQualify(context, identity.createIntent(context))
+        assertTrue("Expected StorageUnverifiable for corrupt queue, got $corruptRes", corruptRes is DeliveryPrequalificationResult.StorageUnverifiable)
+        assertEquals(corruptJson, prefs.getString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, null))
+    }
+
+    // A0-09: QUICK isolation -> PRESERVED
+    @Test
+    fun a0_09_quickIsolation_authorizerRejectsQuickIntentAndQuickQueueHead() {
+        val quickHead = DirectBootQueueItem(
+            kind = DirectBootQueueItem.KIND_QUICK,
+            alarmId = testAlarmId,
+            triggerTime = testTriggerTime,
+            generation = 0,
+            instanceToken = ""
+        )
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(quickHead), now = 0L))
+
+        val identity = sampleIdentity(restoreEpoch = 1L)
+        val quickIntent = identity.createIntent(context).apply {
+            putExtra(DirectBootV2NormalIntentIdentity.EXTRA_KIND, DirectBootQueueItem.KIND_QUICK)
+        }
+        val quickIntentRes = authorizer.preQualify(context, quickIntent)
+        assertTrue("Authorizer MUST reject KIND_QUICK intent, got $quickIntentRes", quickIntentRes is DeliveryPrequalificationResult.InvalidIdentity)
+
+        val normalAgainstQuickHead = authorizer.preQualify(context, identity.createIntent(context))
+        assertTrue("Authorizer MUST reject Normal intent against QUICK head, got $normalAgainstQuickHead", normalAgainstQuickHead is DeliveryPrequalificationResult.NotQueueHead)
+    }
+
+    // A0-10: Sensitive diagnostics -> REDACTED
+    @Test
+    fun a0_10_sensitiveDiagnostics_redactedFromAuthorizerReasons() {
+        val secretToken = "secret_tok_a010_authorizer"
+        val secretHeadToken = "secret_head_tok_a010_authorizer"
+
+        // 1. InvalidIdentity with invalid extras must redact instanceToken
+        val badIntent = sampleIdentity(instanceToken = secretToken, restoreEpoch = 1L).createIntent(context).apply {
+            putExtra(DirectBootV2NormalIntentIdentity.EXTRA_ALARM_ID, -1L)
+        }
+        val invalidRes = authorizer.preQualify(context, badIntent) as DeliveryPrequalificationResult.InvalidIdentity
+        assertFalse("InvalidIdentity.reason MUST NOT leak raw instanceToken", invalidRes.reason.contains(secretToken))
+
+        // 2. NotQueueHead must redact head.instanceToken
+        val headItem = sampleQueueItem(alarmId = 202L, instanceToken = secretHeadToken, restoreEpoch = 1L)
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(headItem), now = 0L))
+        val notHeadRes = authorizer.preQualify(
+            context,
+            sampleIdentity(alarmId = 101L, instanceToken = secretToken, restoreEpoch = 1L).createIntent(context)
+        ) as DeliveryPrequalificationResult.NotQueueHead
+        assertFalse("NotQueueHead.reason MUST NOT leak head instanceToken", notHeadRes.reason.contains(secretHeadToken))
+        assertFalse("NotQueueHead.reason MUST NOT leak intent instanceToken", notHeadRes.reason.contains(secretToken))
+
+        // 3. DuplicateDelivery reason must redact raw instanceToken (while keeping recordId field)
+        val dupItem = sampleQueueItem(alarmId = 303L, instanceToken = secretToken, restoreEpoch = 1L)
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(dupItem), now = 0L))
+        val existingRecord = DirectBootDeliveryRecord.createNormal(
+            alarmId = 303L,
+            triggerTime = testTriggerTime,
+            deliveredAt = testTriggerTime + 100L,
+            generation = testGeneration,
+            instanceToken = secretToken,
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootDeliveryLedger.appendRecord(context, existingRecord) is DeliveryAppendResult.Appended)
+        val dupRes = authorizer.preQualify(
+            context,
+            sampleIdentity(alarmId = 303L, instanceToken = secretToken, restoreEpoch = 1L).createIntent(context)
+        ) as DeliveryPrequalificationResult.DuplicateDelivery
+        assertFalse("DuplicateDelivery.reason MUST NOT leak raw instanceToken", dupRes.reason.contains(secretToken))
+
+        // 4. StorageUnverifiable with duplicate token corruption must redact raw instanceToken
+        val dupTokenQueueJson = """{"schemaVersion":3,"items":[{"kind":"NORMAL","alarmId":101,"triggerTime":1700000000000,"generation":1,"instanceToken":"$secretToken","restoreEpoch":1,"schemaVersion":3},{"kind":"NORMAL","alarmId":102,"triggerTime":1700000001000,"generation":1,"instanceToken":"$secretToken","restoreEpoch":1,"schemaVersion":3}]}"""
+        prefs.edit().putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, dupTokenQueueJson).commit()
+        val corruptRes = authorizer.preQualify(
+            context,
+            sampleIdentity(alarmId = 101L, instanceToken = secretToken, restoreEpoch = 1L).createIntent(context)
+        ) as DeliveryPrequalificationResult.StorageUnverifiable
+        assertFalse("StorageUnverifiable.reason MUST NOT leak raw instanceToken", corruptRes.reason.contains(secretToken))
+
+        // 5. IdentityMismatch in ticket validation must redact raw instanceToken
+        val ticketIdObj = authorizer.issueTicket(sampleIdentity(alarmId = 404L, instanceToken = secretToken, restoreEpoch = 1L), nowEpochMs = 40_000L) as TicketIssueResult.Success
+        val mismatchRes = authorizer.validateAndConsumeTicket(
+            ticketId = ticketIdObj.ticket.ticketId,
+            expectedIdentity = sampleIdentity(alarmId = 404L, instanceToken = secretHeadToken, restoreEpoch = 1L),
+            nowEpochMs = 40_100L
+        ) as TicketValidationResult.IdentityMismatch
+        assertFalse("IdentityMismatch.reason MUST NOT leak ticket instanceToken", mismatchRes.reason.contains(secretToken))
+        assertFalse("IdentityMismatch.reason MUST NOT leak expected instanceToken", mismatchRes.reason.contains(secretHeadToken))
+    }
 }

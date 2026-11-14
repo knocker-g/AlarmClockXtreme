@@ -158,6 +158,11 @@ object DirectBootDeliveryTransitionEngine {
                 "instanceToken must not be blank for Normal alarm"
             )
         }
+        if (firingIdentity.restoreEpoch <= 0L) {
+            return DeliveryTransitionResult.Rejected.InvalidOccurrenceIdentity(
+                "Invalid restoreEpoch for V2 Normal alarm: ${firingIdentity.restoreEpoch} (must be > 0)"
+            )
+        }
         if (deliveredAt <= 0L) {
             return DeliveryTransitionResult.Rejected.InvalidOccurrenceIdentity(
                 "Invalid deliveredAt timestamp: $deliveredAt"
@@ -181,8 +186,8 @@ object DirectBootDeliveryTransitionEngine {
                 }
                 is QueueStorageState.ValidWithItems -> queueState.items
                 is QueueStorageState.Corrupt -> {
-                    Log.w(TAG, "transitionNormal rejected: Queue storage is corrupt (${queueState.reason})")
-                    return DeliveryTransitionResult.Rejected.QueueStorageCorrupt(queueState.reason)
+                    Log.w(TAG, "transitionNormal rejected: Queue storage is corrupt")
+                    return DeliveryTransitionResult.Rejected.QueueStorageCorrupt("Queue storage is corrupt")
                 }
                 is QueueStorageState.UnsupportedSchema -> {
                     Log.w(TAG, "transitionNormal rejected: Queue unsupported schema version ${queueState.foundVersion}")
@@ -200,8 +205,8 @@ object DirectBootDeliveryTransitionEngine {
                 is LedgerStorageState.ValidEmpty -> emptyList()
                 is LedgerStorageState.ValidWithRecords -> ledgerState.records
                 is LedgerStorageState.Corrupt -> {
-                    Log.w(TAG, "transitionNormal rejected: Ledger storage is corrupt (${ledgerState.reason})")
-                    return DeliveryTransitionResult.Rejected.LedgerStorageCorrupt(ledgerState.reason)
+                    Log.w(TAG, "transitionNormal rejected: Ledger storage is corrupt")
+                    return DeliveryTransitionResult.Rejected.LedgerStorageCorrupt("Ledger storage is corrupt")
                 }
                 is LedgerStorageState.UnsupportedSchema -> {
                     Log.w(TAG, "transitionNormal rejected: Ledger unsupported schema version ${ledgerState.foundVersion}")
@@ -232,7 +237,7 @@ object DirectBootDeliveryTransitionEngine {
             )
             val existingRecord = currentLedgerRecords.find { it.recordId == targetRecordId }
             if (existingRecord != null) {
-                Log.w(TAG, "transitionNormal rejected: Record $targetRecordId already recorded in Ledger")
+                Log.w(TAG, "transitionNormal rejected: Duplicate delivery already recorded for alarmId=${firingIdentity.alarmId}, generation=${firingIdentity.generation}, triggerTime=${firingIdentity.triggerTime}")
                 return DeliveryTransitionResult.Rejected.DuplicateDeliveryAlreadyRecorded(
                     existing = existingRecord,
                     ledgerCount = currentLedgerRecords.size
@@ -241,11 +246,9 @@ object DirectBootDeliveryTransitionEngine {
 
             // Step 8: Validate Authoritative Queue Head Qualification & Identity Matching
             val queueHead = currentQueueItems.first()
-            val epochMatches = if (firingIdentity.restoreEpoch > 0L && queueHead.restoreEpoch > 0L) {
-                queueHead.restoreEpoch == firingIdentity.restoreEpoch
-            } else {
-                true
-            }
+            val headQualifiedV2 = queueHead.schemaVersion >= DirectBootQueueItem.CURRENT_SCHEMA_VERSION &&
+                queueHead.restoreEpoch > 0L
+            val epochMatches = headQualifiedV2 && queueHead.restoreEpoch == firingIdentity.restoreEpoch
 
             val matchesHead = queueHead.kind == firingIdentity.kind &&
                 queueHead.alarmId == firingIdentity.alarmId &&
@@ -257,7 +260,10 @@ object DirectBootDeliveryTransitionEngine {
             if (!matchesHead) {
                 // Diagnose exact mismatch reason
                 val matchingIndex = currentQueueItems.indexOfFirst {
-                    it.kind == firingIdentity.kind &&
+                    it.schemaVersion >= DirectBootQueueItem.CURRENT_SCHEMA_VERSION &&
+                        it.restoreEpoch > 0L &&
+                        it.restoreEpoch == firingIdentity.restoreEpoch &&
+                        it.kind == firingIdentity.kind &&
                         it.alarmId == firingIdentity.alarmId &&
                         it.generation == firingIdentity.generation &&
                         it.instanceToken == firingIdentity.instanceToken &&
@@ -270,10 +276,20 @@ object DirectBootDeliveryTransitionEngine {
                     )
                 }
                 if (queueHead.alarmId == firingIdentity.alarmId) {
+                    if (!headQualifiedV2) {
+                        return DeliveryTransitionResult.Rejected.OccurrenceIdentityMismatch(
+                            "Authoritative queue head for alarmId ${queueHead.alarmId} is not qualified for V2 (schema=${queueHead.schemaVersion}, epoch=${queueHead.restoreEpoch})"
+                        )
+                    }
                     if (queueHead.generation != firingIdentity.generation) {
                         return DeliveryTransitionResult.Rejected.StaleGenerationMismatch(
                             foundGeneration = queueHead.generation,
                             targetGeneration = firingIdentity.generation
+                        )
+                    }
+                    if (queueHead.restoreEpoch != firingIdentity.restoreEpoch) {
+                        return DeliveryTransitionResult.Rejected.OccurrenceIdentityMismatch(
+                            "Authoritative queue head restoreEpoch (${queueHead.restoreEpoch}) does not match firing restoreEpoch (${firingIdentity.restoreEpoch})"
                         )
                     }
                     return DeliveryTransitionResult.Rejected.OccurrenceIdentityMismatch(
@@ -304,13 +320,6 @@ object DirectBootDeliveryTransitionEngine {
             // Step 10: Construct Updated Queue and Ledger Payloads
             val updatedQueue = currentQueueItems.drop(1)
 
-            val effectiveEpoch = if (firingIdentity.restoreEpoch > 0L) {
-                firingIdentity.restoreEpoch
-            } else {
-                queueHead.restoreEpoch
-            }
-            val recordSchemaVersion = if (effectiveEpoch > 0L) 2 else 1
-
             val newDeliveryRecord = DirectBootDeliveryRecord.createNormal(
                 alarmId = firingIdentity.alarmId,
                 triggerTime = firingIdentity.triggerTime,
@@ -318,8 +327,8 @@ object DirectBootDeliveryTransitionEngine {
                 generation = firingIdentity.generation,
                 instanceToken = firingIdentity.instanceToken,
                 provenance = firingIdentity.provenance,
-                restoreEpoch = effectiveEpoch,
-                schemaVersion = recordSchemaVersion
+                restoreEpoch = firingIdentity.restoreEpoch,
+                schemaVersion = DirectBootDeliveryRecord.CURRENT_SCHEMA_VERSION
             )
             val updatedLedger = currentLedgerRecords + newDeliveryRecord
 
@@ -431,7 +440,8 @@ data class FiredOccurrenceIdentity(
             alarmId > 0L &&
             triggerTime > 0L &&
             generation >= 1 &&
-            instanceToken.isNotBlank()
+            instanceToken.isNotBlank() &&
+            restoreEpoch > 0L
     }
 }
 
