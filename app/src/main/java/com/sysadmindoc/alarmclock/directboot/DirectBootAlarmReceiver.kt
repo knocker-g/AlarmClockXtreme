@@ -14,30 +14,80 @@ class DirectBootAlarmReceiver : BroadcastReceiver() {
         if (action != ACTION_FIRE_DIRECT_BOOT_ALARM && action != DirectBootV2NormalIntentIdentity.ACTION_FIRE_V2_NORMAL_ALARM) return
 
         if (action == DirectBootV2NormalIntentIdentity.ACTION_FIRE_V2_NORMAL_ALARM) {
-            val v2AlarmId = intent.getLongExtra(DirectBootV2NormalIntentIdentity.EXTRA_ALARM_ID, -1L)
-            val v2TriggerTime = intent.getLongExtra(DirectBootV2NormalIntentIdentity.EXTRA_TRIGGER_TIME, 0L)
-            val v2Generation = intent.getIntExtra(DirectBootV2NormalIntentIdentity.EXTRA_GENERATION, 0)
-            val v2InstanceToken = intent.getStringExtra(DirectBootV2NormalIntentIdentity.EXTRA_INSTANCE_TOKEN).orEmpty()
-            val v2RestoreEpoch = intent.getLongExtra(DirectBootV2NormalIntentIdentity.EXTRA_RESTORE_EPOCH, 0L)
-            val v2TicketId = intent.getStringExtra(DirectBootDeliveryAuthorizer.EXTRA_TICKET_ID).orEmpty()
+            val v2Kind: String
+            val v2AlarmId: Long
+            val v2TriggerTime: Long
+            val v2Generation: Int
+            val v2InstanceToken: String
+            val v2RestoreEpoch: Long
+            val v2TicketId: String
+            val v2Uri: android.net.Uri?
+            val v2Digest: String?
+            try {
+                v2Kind = intent.getStringExtra(DirectBootV2NormalIntentIdentity.EXTRA_KIND).orEmpty()
+                v2AlarmId = intent.getLongExtra(DirectBootV2NormalIntentIdentity.EXTRA_ALARM_ID, -1L)
+                v2TriggerTime = intent.getLongExtra(DirectBootV2NormalIntentIdentity.EXTRA_TRIGGER_TIME, 0L)
+                v2Generation = intent.getIntExtra(DirectBootV2NormalIntentIdentity.EXTRA_GENERATION, 0)
+                v2InstanceToken = intent.getStringExtra(DirectBootV2NormalIntentIdentity.EXTRA_INSTANCE_TOKEN).orEmpty()
+                v2RestoreEpoch = intent.getLongExtra(DirectBootV2NormalIntentIdentity.EXTRA_RESTORE_EPOCH, 0L)
+                v2TicketId = intent.getStringExtra(DirectBootDeliveryAuthorizer.EXTRA_TICKET_ID).orEmpty()
+                v2Uri = intent.data
+                v2Digest = intent.getStringExtra(DirectBootV2NormalIntentIdentity.EXTRA_IDENTITY_DIGEST)
+            } catch (_: Exception) {
+                Log.w(TAG, "V2 DirectBoot intent rejected: malformed intent extras")
+                return
+            }
 
-            val identity = DirectBootV2NormalIntentIdentity(
-                alarmId = v2AlarmId,
-                generation = v2Generation,
-                instanceToken = v2InstanceToken,
-                triggerTime = v2TriggerTime,
-                restoreEpoch = v2RestoreEpoch
-            )
+            if (v2Kind != DirectBootV2NormalIntentIdentity.KIND_NORMAL ||
+                v2AlarmId <= 0L ||
+                v2Generation < 1 ||
+                v2InstanceToken.isBlank() ||
+                v2TriggerTime <= 0L ||
+                v2RestoreEpoch <= 0L
+            ) {
+                Log.w(
+                    TAG,
+                    "V2 DirectBoot intent rejected: invalid identity extras (alarmId=$v2AlarmId, gen=$v2Generation, epoch=$v2RestoreEpoch, kind='$v2Kind')"
+                )
+                return
+            }
+
+            val identity = try {
+                DirectBootV2NormalIntentIdentity(
+                    alarmId = v2AlarmId,
+                    generation = v2Generation,
+                    instanceToken = v2InstanceToken,
+                    triggerTime = v2TriggerTime,
+                    restoreEpoch = v2RestoreEpoch,
+                    kind = v2Kind
+                )
+            } catch (_: Exception) {
+                Log.w(TAG, "V2 DirectBoot intent rejected: identity construction failed (alarmId=$v2AlarmId)")
+                return
+            }
+
+            val uriValidation = DirectBootV2NormalIntentIdentity.validateUri(v2Uri, identity)
+            if (uriValidation is UriValidationResult.Rejected) {
+                Log.w(TAG, "V2 DirectBoot intent rejected: invalid URI (${uriValidation.reason})")
+                return
+            }
+
+            if (v2Digest.isNullOrBlank() || v2Digest != identity.computeDigest()) {
+                Log.w(TAG, "V2 DirectBoot intent rejected: missing or mismatched digest (alarmId=$v2AlarmId)")
+                return
+            }
 
             val deContext = if (context.isDeviceProtectedStorage) context else context.createDeviceProtectedStorageContext()
             val adapter = serviceAdapterSeam(deContext)
             val adaptResult = adapter.adaptDelivery(ticketId = v2TicketId, identity = identity)
-            println("V2 ADAPT RESULT: $adaptResult")
 
             if (adaptResult !is ServiceDeliveryAdaptationResult.TransitionCommitted &&
                 adaptResult !is ServiceDeliveryAdaptationResult.CancellationAfterCommit
             ) {
-                Log.w(TAG, "V2 DirectBoot delivery rejected: $adaptResult")
+                Log.w(
+                    TAG,
+                    "V2 DirectBoot delivery rejected: ${adaptResult::class.simpleName} (alarmId=$v2AlarmId, gen=$v2Generation, epoch=$v2RestoreEpoch)"
+                )
                 return
             }
 
@@ -50,7 +100,7 @@ class DirectBootAlarmReceiver : BroadcastReceiver() {
             if (req?.nextCandidateToArm != null) {
                 try {
                     val recRes = reconcilerSeam(deContext).reconcile()
-                    Log.i(TAG, "Reconciler result after post-commit transition: $recRes")
+                    Log.i(TAG, "Reconciler result after post-commit transition: ${recRes::class.simpleName}")
                 } catch (e: Exception) {
                     Log.e(TAG, "Reconciler invocation failed after post-commit transition", e)
                 }
@@ -115,7 +165,7 @@ class DirectBootAlarmReceiver : BroadcastReceiver() {
                     )
                     DirectBootDeliveryLedger.acknowledgeRecord(deContext, delRecord.recordId)
                 } else {
-                    Log.w(TAG, "Missed record commit failed ($missedRes); retaining DE delivery record for post-unlock recovery")
+                    Log.w(TAG, "Missed record commit failed (${missedRes::class.simpleName}); retaining DE delivery record for post-unlock recovery")
                 }
             }
         } finally {
@@ -143,6 +193,16 @@ class DirectBootAlarmReceiver : BroadcastReceiver() {
         @androidx.annotation.VisibleForTesting
         internal var reconcilerSeam: (Context) -> DirectBootRegistrationReconciler = { ctx ->
             DirectBootRegistrationReconciler.getInstance(ctx)
+        }
+
+        @androidx.annotation.VisibleForTesting
+        internal fun resetSeamsForTesting() {
+            serviceAdapterSeam = { ctx ->
+                DirectBootServiceDeliveryAdapter(ctx, DirectBootDeliveryAuthorizer())
+            }
+            reconcilerSeam = { ctx ->
+                DirectBootRegistrationReconciler.getInstance(ctx)
+            }
         }
 
         fun pendingIntent(

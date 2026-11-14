@@ -585,4 +585,43 @@ class DirectBootV2NormalIntentIdentityTest {
             assertTrue(DirectBootV2NormalIntentIdentity.validateUri(identity.toUri(), identity).isValid)
         }
     }
+
+    // -------------------------------------------------------------------------
+    // A0-01 / A0-04: Restore Epoch Framing & Intent Extra Propagation
+    // -------------------------------------------------------------------------
+    @Test
+    fun a0_04_restoreEpochFramingAndDigestSeparation() {
+        val epoch0 = DirectBootV2NormalIntentIdentity(
+            alarmId = baseAlarmId,
+            generation = baseGeneration,
+            instanceToken = baseToken,
+            triggerTime = baseTriggerTime,
+            restoreEpoch = 0L
+        )
+        val epoch1 = DirectBootV2NormalIntentIdentity(
+            alarmId = baseAlarmId,
+            generation = baseGeneration,
+            instanceToken = baseToken,
+            triggerTime = baseTriggerTime,
+            restoreEpoch = 1L
+        )
+        val epoch2 = DirectBootV2NormalIntentIdentity(
+            alarmId = baseAlarmId,
+            generation = baseGeneration,
+            instanceToken = baseToken,
+            triggerTime = baseTriggerTime,
+            restoreEpoch = 2L
+        )
+
+        assertNotEquals(epoch0.computeDigest(), epoch1.computeDigest())
+        assertNotEquals(epoch1.computeDigest(), epoch2.computeDigest())
+        assertTrue(epoch1.canonicalString().contains("RESTORE_EPOCH:1"))
+        assertTrue(epoch2.canonicalString().contains("RESTORE_EPOCH:2"))
+
+        val intentEpoch2 = epoch2.createIntent(context)
+        assertEquals(2L, intentEpoch2.getLongExtra(DirectBootV2NormalIntentIdentity.EXTRA_RESTORE_EPOCH, -1L))
+        assertEquals(DirectBootV2NormalIntentIdentity.KIND_NORMAL, intentEpoch2.getStringExtra(DirectBootV2NormalIntentIdentity.EXTRA_KIND))
+        assertTrue(DirectBootV2NormalIntentIdentity.validateUri(intentEpoch2.data, epoch2).isValid)
+        assertFalse(DirectBootV2NormalIntentIdentity.validateUri(intentEpoch2.data, epoch1).isValid)
+    }
 }

@@ -76,16 +76,30 @@ class DirectBootDeliveryAuthorizer(
             )
         }
 
-        val alarmId = intent.getLongExtra(DirectBootV2NormalIntentIdentity.EXTRA_ALARM_ID, -1L)
-        val triggerTime = intent.getLongExtra(DirectBootV2NormalIntentIdentity.EXTRA_TRIGGER_TIME, -1L)
-        val generation = intent.getIntExtra(DirectBootV2NormalIntentIdentity.EXTRA_GENERATION, -1)
-        val instanceToken = intent.getStringExtra(DirectBootV2NormalIntentIdentity.EXTRA_INSTANCE_TOKEN) ?: ""
-        val restoreEpoch = intent.getLongExtra(DirectBootV2NormalIntentIdentity.EXTRA_RESTORE_EPOCH, 0L)
-        val kind = intent.getStringExtra(DirectBootV2NormalIntentIdentity.EXTRA_KIND) ?: DirectBootV2NormalIntentIdentity.KIND_NORMAL
+        val alarmId: Long
+        val triggerTime: Long
+        val generation: Int
+        val instanceToken: String
+        val restoreEpoch: Long
+        val kind: String
+        val uri: android.net.Uri?
+        val extraDigest: String?
+        try {
+            alarmId = intent.getLongExtra(DirectBootV2NormalIntentIdentity.EXTRA_ALARM_ID, -1L)
+            triggerTime = intent.getLongExtra(DirectBootV2NormalIntentIdentity.EXTRA_TRIGGER_TIME, -1L)
+            generation = intent.getIntExtra(DirectBootV2NormalIntentIdentity.EXTRA_GENERATION, -1)
+            instanceToken = intent.getStringExtra(DirectBootV2NormalIntentIdentity.EXTRA_INSTANCE_TOKEN) ?: ""
+            restoreEpoch = intent.getLongExtra(DirectBootV2NormalIntentIdentity.EXTRA_RESTORE_EPOCH, 0L)
+            kind = intent.getStringExtra(DirectBootV2NormalIntentIdentity.EXTRA_KIND) ?: ""
+            uri = intent.data
+            extraDigest = intent.getStringExtra(DirectBootV2NormalIntentIdentity.EXTRA_IDENTITY_DIGEST)
+        } catch (_: Exception) {
+            return DeliveryPrequalificationResult.InvalidIdentity("Malformed Intent extras")
+        }
 
-        if (alarmId <= 0L || generation < 1 || instanceToken.isBlank() || triggerTime <= 0L || kind != DirectBootV2NormalIntentIdentity.KIND_NORMAL) {
+        if (alarmId <= 0L || generation < 1 || instanceToken.isBlank() || triggerTime <= 0L || restoreEpoch <= 0L || kind != DirectBootV2NormalIntentIdentity.KIND_NORMAL) {
             return DeliveryPrequalificationResult.InvalidIdentity(
-                "Intent missing or invalid identity extras: alarmId=$alarmId, generation=$generation, instanceToken='$instanceToken', triggerTime=$triggerTime, kind='$kind'"
+                "Intent missing or invalid identity extras: alarmId=$alarmId, generation=$generation, triggerTime=$triggerTime, restoreEpoch=$restoreEpoch, kind='$kind'"
             )
         }
 
@@ -98,19 +112,19 @@ class DirectBootDeliveryAuthorizer(
                 restoreEpoch = restoreEpoch,
                 kind = kind
             )
-        } catch (e: Exception) {
-            return DeliveryPrequalificationResult.InvalidIdentity("Failed to construct identity: ${e.message}")
+        } catch (_: Exception) {
+            return DeliveryPrequalificationResult.InvalidIdentity("Failed to construct identity")
         }
 
-        val uri = intent.data
-            ?: return DeliveryPrequalificationResult.InvalidIdentity("Intent missing data URI")
+        if (uri == null) {
+            return DeliveryPrequalificationResult.InvalidIdentity("Intent missing data URI")
+        }
 
         val uriValidation = DirectBootV2NormalIntentIdentity.validateUri(uri, identity)
         if (uriValidation is UriValidationResult.Rejected) {
             return DeliveryPrequalificationResult.InvalidIdentity(uriValidation.reason)
         }
 
-        val extraDigest = intent.getStringExtra(DirectBootV2NormalIntentIdentity.EXTRA_IDENTITY_DIGEST)
         if (extraDigest.isNullOrBlank()) {
             return DeliveryPrequalificationResult.InvalidIdentity(
                 "Intent missing or blank required extra digest"
@@ -134,6 +148,18 @@ class DirectBootDeliveryAuthorizer(
         identity: DirectBootV2NormalIntentIdentity,
         nowEpochMs: Long = System.currentTimeMillis()
     ): DeliveryPrequalificationResult {
+        if (identity.kind != DirectBootV2NormalIntentIdentity.KIND_NORMAL ||
+            identity.alarmId <= 0L ||
+            identity.generation < 1 ||
+            identity.instanceToken.isBlank() ||
+            identity.triggerTime <= 0L ||
+            identity.restoreEpoch <= 0L
+        ) {
+            return DeliveryPrequalificationResult.InvalidIdentity(
+                "Invalid V2 Normal identity: alarmId=${identity.alarmId}, generation=${identity.generation}, triggerTime=${identity.triggerTime}, restoreEpoch=${identity.restoreEpoch}, kind='${identity.kind}'"
+            )
+        }
+
         return synchronized(DirectBootStorageLock.lock) {
             // 1. Inspect Queue Storage
             val queueState = DirectBootAlarmCache.inspectQueueStorageState(context)
@@ -154,7 +180,7 @@ class DirectBootDeliveryAuthorizer(
                 }
                 is QueueStorageState.Corrupt -> {
                     return@synchronized DeliveryPrequalificationResult.StorageUnverifiable(
-                        "Queue storage is corrupt: ${queueState.reason}"
+                        "Queue storage is corrupt"
                     )
                 }
                 is QueueStorageState.UnsupportedSchema -> {
@@ -171,15 +197,18 @@ class DirectBootDeliveryAuthorizer(
                             null
                         )
                     }
-                    val matchesHead = head.kind == identity.kind &&
+                    val matchesHead = head.schemaVersion >= DirectBootQueueItem.CURRENT_SCHEMA_VERSION &&
+                        head.restoreEpoch > 0L &&
+                        head.kind == identity.kind &&
                         head.alarmId == identity.alarmId &&
                         head.generation == identity.generation &&
                         head.instanceToken == identity.instanceToken &&
-                        head.triggerTime == identity.triggerTime
+                        head.triggerTime == identity.triggerTime &&
+                        head.restoreEpoch == identity.restoreEpoch
 
                     if (!matchesHead) {
                         return@synchronized DeliveryPrequalificationResult.NotQueueHead(
-                            "Intent identity does not match queue head: head is (kind=${head.kind}, alarmId=${head.alarmId}, gen=${head.generation}, token='${head.instanceToken}', trigger=${head.triggerTime})",
+                            "Intent identity does not match queue head: head is (kind=${head.kind}, alarmId=${head.alarmId}, gen=${head.generation}, trigger=${head.triggerTime}, epoch=${head.restoreEpoch}, schema=${head.schemaVersion})",
                             identity,
                             head
                         )
@@ -193,7 +222,7 @@ class DirectBootDeliveryAuthorizer(
             when (ledgerState) {
                 is LedgerStorageState.Corrupt -> {
                     return@synchronized DeliveryPrequalificationResult.StorageUnverifiable(
-                        "Delivery ledger is corrupt: ${ledgerState.reason}"
+                        "Delivery ledger is corrupt"
                     )
                 }
                 is LedgerStorageState.UnsupportedSchema -> {
@@ -212,7 +241,7 @@ class DirectBootDeliveryAuthorizer(
                     val isDuplicate = ledgerState.records.any { it.recordId == targetRecordId }
                     if (isDuplicate) {
                         return@synchronized DeliveryPrequalificationResult.DuplicateDelivery(
-                            "Record '$targetRecordId' already exists in delivery ledger",
+                            "Record already exists in delivery ledger for alarmId=${identity.alarmId}, generation=${identity.generation}, triggerTime=${identity.triggerTime}",
                             targetRecordId
                         )
                     }
@@ -313,15 +342,19 @@ class DirectBootDeliveryAuthorizer(
                 )
             }
 
-            val identityMatches = ticket.identity.alarmId == expectedIdentity.alarmId &&
+            val identityMatches = ticket.identity.kind == DirectBootV2NormalIntentIdentity.KIND_NORMAL &&
+                expectedIdentity.kind == DirectBootV2NormalIntentIdentity.KIND_NORMAL &&
+                ticket.identity.alarmId == expectedIdentity.alarmId &&
                 ticket.identity.generation == expectedIdentity.generation &&
                 ticket.identity.instanceToken == expectedIdentity.instanceToken &&
                 ticket.identity.triggerTime == expectedIdentity.triggerTime &&
-                (ticket.identity.restoreEpoch == 0L || expectedIdentity.restoreEpoch == 0L || ticket.identity.restoreEpoch == expectedIdentity.restoreEpoch)
+                ticket.identity.restoreEpoch > 0L &&
+                expectedIdentity.restoreEpoch > 0L &&
+                ticket.identity.restoreEpoch == expectedIdentity.restoreEpoch
 
             if (!identityMatches) {
                 return TicketValidationResult.IdentityMismatch(
-                    "Ticket identity (${ticket.identity}) does not match expected ($expectedIdentity)",
+                    "Ticket identity (alarmId=${ticket.identity.alarmId}, gen=${ticket.identity.generation}, trigger=${ticket.identity.triggerTime}, epoch=${ticket.identity.restoreEpoch}) does not match expected (alarmId=${expectedIdentity.alarmId}, gen=${expectedIdentity.generation}, trigger=${expectedIdentity.triggerTime}, epoch=${expectedIdentity.restoreEpoch})",
                     ticket
                 )
             }

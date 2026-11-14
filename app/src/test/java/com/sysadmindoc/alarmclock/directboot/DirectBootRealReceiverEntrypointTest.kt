@@ -54,6 +54,7 @@ class DirectBootRealReceiverEntrypointTest {
             .build()
         DirectBootCeTakeoverStore.unlockGateSeam = { true }
         DirectBootCeTakeoverStore.clear(ceContext)
+        DirectBootAlarmReceiver.resetSeamsForTesting()
         clearDeStorage()
     }
 
@@ -62,6 +63,7 @@ class DirectBootRealReceiverEntrypointTest {
         database.close()
         DirectBootCeTakeoverStore.clear(ceContext)
         DirectBootCeTakeoverStore.resetSeamsForTesting()
+        DirectBootAlarmReceiver.resetSeamsForTesting()
         clearDeStorage()
     }
 
@@ -299,5 +301,229 @@ class DirectBootRealReceiverEntrypointTest {
     fun g2_8_legacyOnlyAlarm_deliveredCleanly() {
         val isBlocked = AlarmReceiver.isOccurrenceDeliveredByDirectBoot(deContext, 888L, baseTime + 80_000L)
         assertFalse("Legacy-only repeating alarm NOT in DirectBoot Ledger MUST be delivered cleanly", isBlocked)
+    }
+
+    // =========================================================================
+    // KNO-75 C7-A0-v3: Receiver Validation, Privacy & Isolation (A0-05..A0-10)
+    // =========================================================================
+
+    private class RecordingServiceContext(base: Context) : android.content.ContextWrapper(base) {
+        val startedServiceIntents = mutableListOf<Intent>()
+
+        override fun startForegroundService(service: Intent?): android.content.ComponentName {
+            if (service != null) {
+                startedServiceIntents.add(service)
+            }
+            return android.content.ComponentName(packageName, DirectBootAlarmService::class.java.name)
+        }
+    }
+
+    @Test
+    fun a0_05_malformedV2Intents_safeRejectWithoutCrashStateMutationOrServiceStart() {
+        val queueItem = DirectBootQueueItem(
+            kind = DirectBootQueueItem.KIND_NORMAL,
+            alarmId = 501L,
+            triggerTime = baseTime + 50_000L,
+            generation = 1,
+            instanceToken = "tok_valid_501",
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootAlarmCache.writeQueue(deContext, listOf(queueItem), now = baseTime))
+        val queueBefore = DirectBootAlarmCache.getRawQueuePayload(deContext)
+
+        val recordingCtx = RecordingServiceContext(ceContext)
+        val validIdentity = DirectBootV2NormalIntentIdentity.fromQueueItem(queueItem)
+
+        val malformedIntents = listOf(
+            // Missing all identity extras
+            Intent(ceContext, DirectBootAlarmReceiver::class.java).apply {
+                action = DirectBootV2NormalIntentIdentity.ACTION_FIRE_V2_NORMAL_ALARM
+            },
+            // Invalid alarmId <= 0
+            validIdentity.createIntent(ceContext).apply {
+                putExtra(DirectBootV2NormalIntentIdentity.EXTRA_ALARM_ID, -1L)
+            },
+            // Invalid generation < 1
+            validIdentity.createIntent(ceContext).apply {
+                putExtra(DirectBootV2NormalIntentIdentity.EXTRA_GENERATION, 0)
+            },
+            // Blank instanceToken
+            validIdentity.createIntent(ceContext).apply {
+                putExtra(DirectBootV2NormalIntentIdentity.EXTRA_INSTANCE_TOKEN, "   ")
+            },
+            // Invalid triggerTime <= 0
+            validIdentity.createIntent(ceContext).apply {
+                putExtra(DirectBootV2NormalIntentIdentity.EXTRA_TRIGGER_TIME, 0L)
+            },
+            // RestoreEpoch == 0
+            DirectBootV2NormalIntentIdentity(
+                alarmId = 501L,
+                generation = 1,
+                instanceToken = "tok_valid_501",
+                triggerTime = baseTime + 50_000L,
+                restoreEpoch = 0L
+            ).createIntent(ceContext),
+            // Foreign URI
+            validIdentity.createIntent(ceContext).apply {
+                data = android.net.Uri.parse("https://evil.example.com/alarm/501")
+            },
+            // Tampered digest
+            validIdentity.createIntent(ceContext).apply {
+                putExtra(DirectBootV2NormalIntentIdentity.EXTRA_IDENTITY_DIGEST, "0".repeat(64))
+            },
+            // Missing digest
+            validIdentity.createIntent(ceContext).apply {
+                removeExtra(DirectBootV2NormalIntentIdentity.EXTRA_IDENTITY_DIGEST)
+            }
+        )
+
+        val receiver = DirectBootAlarmReceiver()
+        malformedIntents.forEachIndexed { idx, badIntent ->
+            receiver.onReceive(recordingCtx, badIntent)
+            assertEquals("Malformed intent #$idx MUST NOT start service", 0, recordingCtx.startedServiceIntents.size)
+        }
+
+        assertEquals("Queue MUST remain untouched on malformed V2 intents", queueBefore, DirectBootAlarmCache.getRawQueuePayload(deContext))
+        assertTrue("Ledger MUST remain absent on malformed V2 intents", DirectBootDeliveryLedger.readUnacknowledgedRecords(deContext) is LedgerStorageState.Absent)
+        assertTrue("MissedStore MUST remain absent on malformed V2 intents", DirectBootMissedStore.readUnacknowledgedRecords(deContext) is MissedStoreStorageState.Absent)
+    }
+
+    @Test
+    fun a0_06_corruptStorage_receiverFailsClosedWithoutServiceStart() {
+        val corruptQueue = """{"schemaVersion":3,"items":[CORRUPT"""
+        deContext.getSharedPreferences(DirectBootDeliveryLedger.PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, corruptQueue).commit()
+
+        val identity = DirectBootV2NormalIntentIdentity(
+            alarmId = 601L,
+            generation = 1,
+            instanceToken = "tok_601",
+            triggerTime = baseTime + 60_000L,
+            restoreEpoch = 1L
+        )
+        val authorizer = DirectBootDeliveryAuthorizer()
+        val ticket = (authorizer.issueTicket(identity, nowEpochMs = baseTime + 60_000L) as TicketIssueResult.Success).ticket
+        val savedSeam = DirectBootAlarmReceiver.serviceAdapterSeam
+        DirectBootAlarmReceiver.serviceAdapterSeam = { ctx ->
+            DirectBootServiceDeliveryAdapter(ctx, authorizer, clock = { baseTime + 60_000L })
+        }
+
+        val recordingCtx = RecordingServiceContext(ceContext)
+        try {
+            val intent = identity.createIntent(ceContext).apply {
+                putExtra(DirectBootDeliveryAuthorizer.EXTRA_TICKET_ID, ticket.ticketId)
+            }
+            DirectBootAlarmReceiver().onReceive(recordingCtx, intent)
+        } finally {
+            DirectBootAlarmReceiver.serviceAdapterSeam = savedSeam
+        }
+
+        assertEquals("Corrupt queue MUST prevent service start", 0, recordingCtx.startedServiceIntents.size)
+        assertEquals(corruptQueue, DirectBootAlarmCache.getRawQueuePayload(deContext))
+    }
+
+    @Test
+    fun a0_07_defaultV2Ingress_noServiceOutput() {
+        val queueItem = DirectBootQueueItem(
+            kind = DirectBootQueueItem.KIND_NORMAL,
+            alarmId = 701L,
+            triggerTime = baseTime + 70_000L,
+            generation = 1,
+            instanceToken = "tok_default_701",
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootAlarmCache.writeQueue(deContext, listOf(queueItem), now = baseTime))
+
+        val identity = DirectBootV2NormalIntentIdentity.fromQueueItem(queueItem)
+        val defaultV2Intent = identity.createIntent(ceContext)
+
+        val recordingCtx = RecordingServiceContext(ceContext)
+        DirectBootAlarmReceiver().onReceive(recordingCtx, defaultV2Intent)
+
+        assertEquals("Default V2 ingress without authorized ticket MUST NOT produce Service output", 0, recordingCtx.startedServiceIntents.size)
+        assertEquals(1, DirectBootAlarmCache.readQueue(deContext, now = baseTime).size)
+        assertTrue(DirectBootDeliveryLedger.readUnacknowledgedRecords(deContext) is LedgerStorageState.Absent)
+    }
+
+    @Test
+    fun a0_08_legacyV1Receiver_unchangedBehavior() {
+        val v1Intent = Intent(ceContext, DirectBootAlarmReceiver::class.java).apply {
+            action = DirectBootAlarmReceiver.ACTION_FIRE_DIRECT_BOOT_ALARM
+            putExtra(DirectBootAlarmReceiver.EXTRA_ALARM_ID, 801L)
+            putExtra(DirectBootAlarmReceiver.EXTRA_TRIGGER_TIME, baseTime + 80_000L)
+            putExtra(DirectBootAlarmReceiver.EXTRA_LABEL, "Legacy V1 Morning")
+            putExtra(DirectBootAlarmReceiver.EXTRA_TIME_LABEL, "08:00")
+            putExtra(DirectBootAlarmReceiver.EXTRA_PLAY_DEFAULT_SOUND, true)
+            putExtra(DirectBootAlarmReceiver.EXTRA_VIBRATION_ENABLED, false)
+        }
+
+        val recordingCtx = RecordingServiceContext(ceContext)
+        DirectBootAlarmReceiver().onReceive(recordingCtx, v1Intent)
+
+        assertEquals("Legacy V1 receiver MUST still start DirectBootAlarmService", 1, recordingCtx.startedServiceIntents.size)
+        val started = recordingCtx.startedServiceIntents.single()
+        assertEquals(DirectBootAlarmService.ACTION_START, started.action)
+        assertEquals(801L, started.getLongExtra(DirectBootAlarmReceiver.EXTRA_ALARM_ID, -1L))
+        assertEquals(baseTime + 80_000L, started.getLongExtra(DirectBootAlarmReceiver.EXTRA_TRIGGER_TIME, -1L))
+        assertEquals("Legacy V1 Morning", started.getStringExtra(DirectBootAlarmReceiver.EXTRA_LABEL))
+        assertFalse(started.getBooleanExtra(DirectBootAlarmReceiver.EXTRA_VIBRATION_ENABLED, true))
+    }
+
+    @Test
+    fun a0_09_quickIsolation_receiverRejectsQuickV2IntentSafely() {
+        val identity = DirectBootV2NormalIntentIdentity(
+            alarmId = 901L,
+            generation = 1,
+            instanceToken = "tok_901",
+            triggerTime = baseTime + 90_000L,
+            restoreEpoch = 1L
+        )
+        val quickV2Intent = identity.createIntent(ceContext).apply {
+            putExtra(DirectBootV2NormalIntentIdentity.EXTRA_KIND, DirectBootQueueItem.KIND_QUICK)
+            putExtra(DirectBootV2NormalIntentIdentity.EXTRA_GENERATION, 0)
+            putExtra(DirectBootV2NormalIntentIdentity.EXTRA_INSTANCE_TOKEN, "")
+        }
+
+        val recordingCtx = RecordingServiceContext(ceContext)
+        DirectBootAlarmReceiver().onReceive(recordingCtx, quickV2Intent)
+
+        assertEquals("QUICK V2 intent MUST be safely rejected without service start", 0, recordingCtx.startedServiceIntents.size)
+    }
+
+    @Test
+    fun a0_10_sensitiveDiagnostics_noPrintlnAndRedactedLogs() {
+        val secretToken = "secret_receiver_tok_a010"
+        val privateLabel = "Private Medical Appointment A010"
+        val identity = DirectBootV2NormalIntentIdentity(
+            alarmId = 1010L,
+            generation = 1,
+            instanceToken = secretToken,
+            triggerTime = baseTime + 100_000L,
+            restoreEpoch = 1L
+        )
+        val v2Intent = identity.createIntent(ceContext).apply {
+            putExtra(DirectBootAlarmReceiver.EXTRA_LABEL, privateLabel)
+        }
+
+        val originalOut = System.out
+        val outCapture = java.io.ByteArrayOutputStream()
+        System.setOut(java.io.PrintStream(outCapture))
+        org.robolectric.shadows.ShadowLog.clear()
+
+        val recordingCtx = RecordingServiceContext(ceContext)
+        try {
+            DirectBootAlarmReceiver().onReceive(recordingCtx, v2Intent)
+        } finally {
+            System.setOut(originalOut)
+        }
+
+        val printed = outCapture.toString()
+        assertFalse("Receiver MUST NOT emit unstructured V2 ADAPT RESULT println", printed.contains("V2 ADAPT RESULT"))
+        assertFalse("Receiver stdout MUST NOT leak raw instanceToken", printed.contains(secretToken))
+        assertFalse("Receiver stdout MUST NOT leak private alarm label", printed.contains(privateLabel))
+
+        val logs = org.robolectric.shadows.ShadowLog.getLogsForTag("DirectBootAlarmReceiver")
+        assertTrue("Receiver logs MUST NOT leak raw instanceToken", logs.none { it.msg.contains(secretToken) })
+        assertTrue("Receiver logs MUST NOT leak private alarm label", logs.none { it.msg.contains(privateLabel) })
     }
 }
