@@ -62,6 +62,14 @@ class DirectBootEventConsumerEngineTest {
             restoreEpoch = 1L
         )
 
+        val witnessRecord = DirectBootFiredWitnessRecord.createNormal(
+            alarmId = 101L, triggerTime = baseTime + 10_000L, generation = 1, instanceToken = "tok_101", restoreEpoch = 1L,
+            deliveryMode = DirectBootFiredWitnessRecord.MODE_SOUND_AND_VIBRATION,
+            deliveryOutcome = DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_START_ACCEPTED,
+            observedAtEpochMs = baseTime + 10_055L
+        )
+        DirectBootFiredWitnessLedger.appendWitness(context, witnessRecord)
+
         val ceResult = DirectBootCeTakeoverStore.recordDelivered(context, delRecord, baseTime + 10_100L)
         assertTrue("Expected RecordedConfirmed but got $ceResult", ceResult is CeTakeoverIntakeResult.RecordedConfirmed)
 
@@ -160,6 +168,14 @@ class DirectBootEventConsumerEngineTest {
             instanceToken = "tok_104",
             restoreEpoch = 1L
         )
+
+        val witnessRecord = DirectBootFiredWitnessRecord.createNormal(
+            alarmId = 104L, triggerTime = baseTime + 40_000L, generation = 1, instanceToken = "tok_104", restoreEpoch = 1L,
+            deliveryMode = DirectBootFiredWitnessRecord.MODE_SOUND_AND_VIBRATION,
+            deliveryOutcome = DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_START_ACCEPTED,
+            observedAtEpochMs = baseTime + 40_055L
+        )
+        DirectBootFiredWitnessLedger.appendWitness(context, witnessRecord)
 
         DirectBootCeTakeoverStore.recordDelivered(context, delRecord, baseTime + 40_100L)
 

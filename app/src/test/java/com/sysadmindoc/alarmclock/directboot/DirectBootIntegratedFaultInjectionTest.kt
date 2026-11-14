@@ -153,6 +153,14 @@ class DirectBootIntegratedFaultInjectionTest {
             restoreEpoch = 1L
         )
 
+        val witnessRecord = DirectBootFiredWitnessRecord.createNormal(
+            alarmId = 3L, triggerTime = baseTime + 30_000L, generation = 1, instanceToken = "tok_f03", restoreEpoch = 1L,
+            deliveryMode = DirectBootFiredWitnessRecord.MODE_SOUND_AND_VIBRATION,
+            deliveryOutcome = DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_START_ACCEPTED,
+            observedAtEpochMs = baseTime + 30_055L
+        )
+        DirectBootFiredWitnessLedger.appendWitness(deContext, witnessRecord)
+
         DirectBootDeliveryLedger.appendRecord(deContext, delRecord)
 
         // Handoff & ACK complete: DE retired, CE active record present, Room receipt empty
@@ -303,6 +311,14 @@ class DirectBootIntegratedFaultInjectionTest {
             restoreEpoch = 1L
         )
 
+        val witnessRecord = DirectBootFiredWitnessRecord.createNormal(
+            alarmId = 7L, triggerTime = baseTime + 70_000L, generation = 1, instanceToken = "tok_f07", restoreEpoch = 1L,
+            deliveryMode = DirectBootFiredWitnessRecord.MODE_SOUND_AND_VIBRATION,
+            deliveryOutcome = DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_START_ACCEPTED,
+            observedAtEpochMs = baseTime + 70_055L
+        )
+        DirectBootFiredWitnessLedger.appendWitness(deContext, witnessRecord)
+
         DirectBootCeTakeoverStore.recordDelivered(ceContext, delRecord, baseTime + 70_100L)
 
         val executor = Executors.newFixedThreadPool(2)
@@ -338,6 +354,14 @@ class DirectBootIntegratedFaultInjectionTest {
             restoreEpoch = 1L
         )
 
+        val witnessRecord = DirectBootFiredWitnessRecord.createNormal(
+            alarmId = 8L, triggerTime = baseTime + 80_000L, generation = 1, instanceToken = "tok_f08", restoreEpoch = 1L,
+            deliveryMode = DirectBootFiredWitnessRecord.MODE_SOUND_AND_VIBRATION,
+            deliveryOutcome = DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_START_ACCEPTED,
+            observedAtEpochMs = baseTime + 80_055L
+        )
+        DirectBootFiredWitnessLedger.appendWitness(deContext, witnessRecord)
+
         DirectBootCeTakeoverStore.recordDelivered(ceContext, delRecord, baseTime + 80_100L)
         DirectBootEventConsumerEngine.consumePendingTakeoverRecords(deContext, ceContext, database)
 
@@ -362,6 +386,14 @@ class DirectBootIntegratedFaultInjectionTest {
             instanceToken = "tok_f09",
             restoreEpoch = 1L
         )
+
+        val witnessRecord = DirectBootFiredWitnessRecord.createNormal(
+            alarmId = 9L, triggerTime = baseTime + 90_000L, generation = 1, instanceToken = "tok_f09", restoreEpoch = 1L,
+            deliveryMode = DirectBootFiredWitnessRecord.MODE_SOUND_AND_VIBRATION,
+            deliveryOutcome = DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_START_ACCEPTED,
+            observedAtEpochMs = baseTime + 90_055L
+        )
+        DirectBootFiredWitnessLedger.appendWitness(deContext, witnessRecord)
 
         DirectBootCeTakeoverStore.recordDelivered(ceContext, delRecord, baseTime + 90_100L)
         DirectBootEventConsumerEngine.consumePendingTakeoverRecords(deContext, ceContext, database)
