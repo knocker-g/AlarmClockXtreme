@@ -972,4 +972,125 @@ class DirectBootDeliveryTransitionEngineTest {
         assertTrue((result as DeliveryTransitionResult.Rejected).isGuaranteedNoWrite)
         assertEquals(1, DirectBootAlarmCache.readQueue(context, now = baseTime).size)
     }
+
+    // =========================================================================
+    // KNO-75 C7-A0-v3: Restore Epoch, Privacy, Isolation Hardening Tests
+    // =========================================================================
+
+    @Test
+    fun a0_01_epochMismatch_transitionRejectsWithoutMutation() {
+        val q1 = createNormalQueueItem(alarmId = 1L, triggerTime = baseTime + 10_000L, restoreEpoch = 3L)
+        DirectBootAlarmCache.writeQueue(context, listOf(q1), now = baseTime)
+
+        val firingIdentity = normalIdentity(alarmId = 1L, triggerTime = baseTime + 10_000L, restoreEpoch = 2L)
+        val result = DirectBootDeliveryTransitionEngine.transitionNormal(
+            context = context,
+            firingIdentity = firingIdentity,
+            deliveredAt = baseTime + 10_050L
+        )
+
+        assertTrue("Expected Rejected for epoch mismatch, got $result", result is DeliveryTransitionResult.Rejected)
+        assertTrue((result as DeliveryTransitionResult.Rejected).isGuaranteedNoWrite)
+        assertEquals(1, DirectBootAlarmCache.readQueue(context, now = baseTime).size)
+        assertTrue(DirectBootDeliveryLedger.readUnacknowledgedRecords(context) is LedgerStorageState.Absent)
+    }
+
+    @Test
+    fun a0_02_epochZero_firingIdentityRejectsWithoutMutation() {
+        val q1 = createNormalQueueItem(alarmId = 1L, triggerTime = baseTime + 10_000L, restoreEpoch = 1L)
+        DirectBootAlarmCache.writeQueue(context, listOf(q1), now = baseTime)
+
+        val zeroEpochIdentity = normalIdentity(alarmId = 1L, triggerTime = baseTime + 10_000L, restoreEpoch = 0L)
+        assertFalse("isValidNormal MUST require restoreEpoch > 0", zeroEpochIdentity.isValidNormal())
+
+        val result = DirectBootDeliveryTransitionEngine.transitionNormal(
+            context = context,
+            firingIdentity = zeroEpochIdentity,
+            deliveredAt = baseTime + 10_050L
+        )
+
+        assertTrue("Expected InvalidOccurrenceIdentity for restoreEpoch == 0, got $result", result is DeliveryTransitionResult.Rejected.InvalidOccurrenceIdentity)
+        assertTrue((result as DeliveryTransitionResult.Rejected).isGuaranteedNoWrite)
+        assertEquals(1, DirectBootAlarmCache.readQueue(context, now = baseTime).size)
+        assertTrue(DirectBootDeliveryLedger.readUnacknowledgedRecords(context) is LedgerStorageState.Absent)
+    }
+
+    @Test
+    fun a0_03_queueEpochZeroLegacySchema_rejectsWithoutDowngradingToV1() {
+        val legacyQueueItem = DirectBootQueueItem(
+            kind = DirectBootQueueItem.KIND_NORMAL,
+            alarmId = 1L,
+            triggerTime = baseTime + 10_000L,
+            generation = 1,
+            scheduleKind = Alarm.SCHEDULE_KIND_ONE_TIME,
+            instanceToken = "token_1",
+            timeLabel = "7:00 AM",
+            playDefaultSound = true,
+            vibrationEnabled = true,
+            updatedAt = baseTime,
+            restoreEpoch = 0L,
+            schemaVersion = 2
+        )
+        DirectBootAlarmCache.writeQueue(context, listOf(legacyQueueItem), now = baseTime)
+
+        val firingIdentity = normalIdentity(alarmId = 1L, triggerTime = baseTime + 10_000L, restoreEpoch = 1L)
+        val result = DirectBootDeliveryTransitionEngine.transitionNormal(
+            context = context,
+            firingIdentity = firingIdentity,
+            deliveredAt = baseTime + 10_050L
+        )
+
+        assertTrue("Expected Rejected for queue restoreEpoch == 0 / legacy schema v2, got $result", result is DeliveryTransitionResult.Rejected)
+        assertTrue((result as DeliveryTransitionResult.Rejected).isGuaranteedNoWrite)
+        assertEquals(1, DirectBootAlarmCache.readQueue(context, now = baseTime).size)
+        assertTrue(DirectBootDeliveryLedger.readUnacknowledgedRecords(context) is LedgerStorageState.Absent)
+    }
+
+    @Test
+    fun a0_04_positiveEqualEpoch_confirmsAndRecordsEpoch() {
+        val q1 = createNormalQueueItem(alarmId = 1L, triggerTime = baseTime + 10_000L, restoreEpoch = 5L)
+        DirectBootAlarmCache.writeQueue(context, listOf(q1), now = baseTime)
+
+        val result = DirectBootDeliveryTransitionEngine.transitionNormal(
+            context = context,
+            firingIdentity = normalIdentity(alarmId = 1L, triggerTime = baseTime + 10_000L, restoreEpoch = 5L),
+            deliveredAt = baseTime + 10_050L
+        )
+
+        assertTrue("Expected Confirmed for positive equal restoreEpoch=5, got $result", result is DeliveryTransitionResult.Confirmed)
+        val confirmed = result as DeliveryTransitionResult.Confirmed
+        assertEquals(5L, confirmed.deliveryRecord.restoreEpoch)
+        assertEquals(DirectBootDeliveryRecord.CURRENT_SCHEMA_VERSION, confirmed.deliveryRecord.schemaVersion)
+    }
+
+    @Test
+    fun a0_10_transitionEngineDiagnostics_redactRawInstanceToken() {
+        org.robolectric.shadows.ShadowLog.clear()
+        val secretToken = "secret_tok_a010_transition"
+        val q1 = createNormalQueueItem(alarmId = 1L, triggerTime = baseTime + 10_000L, instanceToken = secretToken, restoreEpoch = 1L)
+        DirectBootAlarmCache.writeQueue(context, listOf(q1), now = baseTime)
+
+        val existingRecord = DirectBootDeliveryRecord.createNormal(
+            alarmId = 1L,
+            triggerTime = baseTime + 10_000L,
+            deliveredAt = baseTime + 10_010L,
+            generation = 1,
+            instanceToken = secretToken,
+            restoreEpoch = 1L
+        )
+        DirectBootDeliveryLedger.appendRecord(context, existingRecord)
+
+        val dupResult = DirectBootDeliveryTransitionEngine.transitionNormal(
+            context = context,
+            firingIdentity = normalIdentity(alarmId = 1L, triggerTime = baseTime + 10_000L, instanceToken = secretToken, restoreEpoch = 1L),
+            deliveredAt = baseTime + 10_050L
+        )
+        assertTrue(dupResult is DeliveryTransitionResult.Rejected.DuplicateDeliveryAlreadyRecorded)
+
+        val logs = org.robolectric.shadows.ShadowLog.getLogsForTag("DirectBootDeliveryTransition")
+        assertTrue(
+            "Transition logs MUST NOT contain raw instanceToken",
+            logs.none { it.msg.contains(secretToken) }
+        )
+    }
 }
