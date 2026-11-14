@@ -81,15 +81,15 @@ class AlarmSessionDatabaseMigrationTest {
         sqliteDb.version = 36
         sqliteDb.close()
 
-        // Migrate 36 -> 37 via Room
+        // Migrate 36 -> 37 -> 38 via Room
         val migratedRoomDb = Room.databaseBuilder(context, AlarmDatabase::class.java, dbFile.absolutePath)
             .allowMainThreadQueries()
             .setJournalMode(RoomDatabase.JournalMode.TRUNCATE)
-            .addMigrations(AlarmDatabase.MIGRATION_36_37)
+            .addMigrations(AlarmDatabase.MIGRATION_36_37, AlarmDatabase.MIGRATION_37_38)
             .build()
 
         val db = migratedRoomDb.openHelper.writableDatabase
-        assertEquals(37, db.version)
+        assertEquals(38, db.version)
 
         // Verify existing alarm row survives
         val cursor = db.query("SELECT id, label FROM alarms WHERE id = 1")
@@ -108,6 +108,11 @@ class AlarmSessionDatabaseMigrationTest {
         assertTrue(tombstoneCursor.moveToFirst())
         assertEquals(0L, tombstoneCursor.getLong(0))
         tombstoneCursor.close()
+
+        val receiptCursor = db.query("SELECT COUNT(*) FROM direct_boot_occurrence_receipts")
+        assertTrue(receiptCursor.moveToFirst())
+        assertEquals(0L, receiptCursor.getLong(0))
+        receiptCursor.close()
 
         val seqCursor = db.query("SELECT COUNT(*) FROM session_sequence_generator")
         assertTrue(seqCursor.moveToFirst())

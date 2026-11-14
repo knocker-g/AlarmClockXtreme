@@ -403,6 +403,7 @@ data class DirectBootRegistrationMarker(
                 put("generation", identity.generation)
                 put("instanceToken", identity.instanceToken)
                 put("triggerTime", identity.triggerTime)
+                put("restoreEpoch", identity.restoreEpoch)
                 put("kind", identity.kind)
                 put("occurrenceDigest", identity.computeDigest())
             }
@@ -448,11 +449,14 @@ data class DirectBootRegistrationMarker(
             if (instanceToken.isBlank()) throw IllegalArgumentException("instanceToken MUST NOT be blank")
             if (triggerTime <= 0L) throw IllegalArgumentException("triggerTime MUST be positive, found $triggerTime")
 
+            val restoreEpoch = json.optLong("restoreEpoch", 0L)
+
             val identity = DirectBootV2NormalIntentIdentity(
                 alarmId = alarmId,
                 generation = generation,
                 instanceToken = instanceToken,
                 triggerTime = triggerTime,
+                restoreEpoch = restoreEpoch,
                 kind = kind
             )
 

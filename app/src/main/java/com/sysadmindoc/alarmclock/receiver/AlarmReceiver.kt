@@ -27,6 +27,22 @@ class AlarmReceiver : BroadcastReceiver() {
         val alarmId = intent.getLongExtra(AlarmScheduler.EXTRA_ALARM_ID, -1)
         if (alarmId == -1L) return
         val scheduledAt = intent.getLongExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 0L)
+
+        // C7-I1 Legacy / DirectBoot Owner Safety Fence:
+        // Reject legacy broadcast if DirectBoot has already delivered this occurrence.
+        if (isOccurrenceDeliveredByDirectBoot(context, alarmId, scheduledAt)) {
+            Log.w("AlarmReceiver", "Legacy broadcast for alarm $alarmId @ $scheduledAt rejected: already delivered by DirectBoot")
+            return
+        }
+
+        // Synchronously commit durable legacy delivery claim to DE ledger BEFORE starting service
+        if (alarmId > 0L && scheduledAt > 0L) {
+            if (!claimLegacyDelivery(context, alarmId, scheduledAt)) {
+                Log.w("AlarmReceiver", "Legacy delivery claim rejected for alarm $alarmId @ $scheduledAt: already claimed by DirectBoot or concurrent receiver")
+                return
+            }
+        }
+
         val fireId = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID)
             ?: AlarmIncidentEvent.fireIdFor(alarmId, scheduledAt)
         val incidents = mutableListOf(
@@ -215,8 +231,51 @@ class AlarmReceiver : BroadcastReceiver() {
                 }
             }
         } finally {
-            if (serviceStartSucceeded) {
-                // FGS start succeeded
+            if (!serviceStartSucceeded) {
+                AlarmDeliveryWakeLock.release(deliveryWakeLock)
+            }
+        }
+    }
+
+    companion object {
+        @org.jetbrains.annotations.VisibleForTesting
+        internal fun claimLegacyDelivery(context: Context, alarmId: Long, scheduledAt: Long): Boolean {
+            val deContext = if (context.isDeviceProtectedStorage) context else context.createDeviceProtectedStorageContext()
+            return try {
+                val record = com.sysadmindoc.alarmclock.directboot.DirectBootDeliveryRecord.createNormal(
+                    alarmId = alarmId,
+                    triggerTime = scheduledAt,
+                    deliveredAt = System.currentTimeMillis(),
+                    generation = 1,
+                    instanceToken = "legacy_claim_$alarmId",
+                    provenance = "LEGACY_DELIVERY",
+                    restoreEpoch = 1L
+                )
+                val res = com.sysadmindoc.alarmclock.directboot.DirectBootDeliveryLedger.appendRecord(deContext, record)
+                res is com.sysadmindoc.alarmclock.directboot.DeliveryAppendResult.Appended
+            } catch (_: Exception) {
+                false
+            }
+        }
+
+        @org.jetbrains.annotations.VisibleForTesting
+        internal fun isOccurrenceDeliveredByDirectBoot(context: Context, alarmId: Long, scheduledAt: Long): Boolean {
+            val deContext = if (context.isDeviceProtectedStorage) context else context.createDeviceProtectedStorageContext()
+            val ceContext = context.applicationContext
+            return try {
+                val ledgerState = com.sysadmindoc.alarmclock.directboot.DirectBootDeliveryLedger.readUnacknowledgedRecords(deContext)
+                val inLedger = if (ledgerState is com.sysadmindoc.alarmclock.directboot.LedgerStorageState.ValidWithRecords) {
+                    ledgerState.records.any { it.alarmId == alarmId && (scheduledAt <= 0L || it.triggerTime == scheduledAt) }
+                } else false
+
+                if (inLedger) return true
+
+                val ceState = com.sysadmindoc.alarmclock.directboot.DirectBootCeTakeoverStore.inspectStorageState(ceContext)
+                if (ceState is com.sysadmindoc.alarmclock.directboot.CeTakeoverStorageState.ValidWithRecords) {
+                    ceState.records.any { it.alarmId == alarmId && (scheduledAt <= 0L || it.triggerTime == scheduledAt) }
+                } else false
+            } catch (_: Exception) {
+                false
             }
         }
     }

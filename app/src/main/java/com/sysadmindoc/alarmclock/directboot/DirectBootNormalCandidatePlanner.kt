@@ -316,6 +316,7 @@ object DirectBootNormalCandidatePlanner {
                 updatedAt = now,
                 timezonePolicy = alarm.timezonePolicy,
                 fixedTimezoneId = alarm.fixedTimezoneId,
+                restoreEpoch = meta.restoreEpoch,
                 schemaVersion = DirectBootQueueItem.CURRENT_SCHEMA_VERSION
             )
 

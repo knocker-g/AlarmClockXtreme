@@ -241,11 +241,18 @@ object DirectBootDeliveryTransitionEngine {
 
             // Step 8: Validate Authoritative Queue Head Qualification & Identity Matching
             val queueHead = currentQueueItems.first()
+            val epochMatches = if (firingIdentity.restoreEpoch > 0L && queueHead.restoreEpoch > 0L) {
+                queueHead.restoreEpoch == firingIdentity.restoreEpoch
+            } else {
+                true
+            }
+
             val matchesHead = queueHead.kind == firingIdentity.kind &&
                 queueHead.alarmId == firingIdentity.alarmId &&
                 queueHead.generation == firingIdentity.generation &&
                 queueHead.instanceToken == firingIdentity.instanceToken &&
-                queueHead.triggerTime == firingIdentity.triggerTime
+                queueHead.triggerTime == firingIdentity.triggerTime &&
+                epochMatches
 
             if (!matchesHead) {
                 // Diagnose exact mismatch reason
@@ -297,13 +304,22 @@ object DirectBootDeliveryTransitionEngine {
             // Step 10: Construct Updated Queue and Ledger Payloads
             val updatedQueue = currentQueueItems.drop(1)
 
+            val effectiveEpoch = if (firingIdentity.restoreEpoch > 0L) {
+                firingIdentity.restoreEpoch
+            } else {
+                queueHead.restoreEpoch
+            }
+            val recordSchemaVersion = if (effectiveEpoch > 0L) 2 else 1
+
             val newDeliveryRecord = DirectBootDeliveryRecord.createNormal(
                 alarmId = firingIdentity.alarmId,
                 triggerTime = firingIdentity.triggerTime,
                 deliveredAt = deliveredAt,
                 generation = firingIdentity.generation,
                 instanceToken = firingIdentity.instanceToken,
-                provenance = firingIdentity.provenance
+                provenance = firingIdentity.provenance,
+                restoreEpoch = effectiveEpoch,
+                schemaVersion = recordSchemaVersion
             )
             val updatedLedger = currentLedgerRecords + newDeliveryRecord
 
@@ -407,6 +423,7 @@ data class FiredOccurrenceIdentity(
     val triggerTime: Long,                 // Scheduled epoch millis (> 0L)
     val generation: Int,                   // Schedule generation (Normal: >= 1)
     val instanceToken: String,             // Authority lineage token (non-blank for Normal)
+    val restoreEpoch: Long = 0L,           // Restore epoch provenance (> 0L for DE v2)
     val provenance: String = ""            // Optional provenance metadata
 ) {
     fun isValidNormal(): Boolean {

@@ -9,6 +9,7 @@ import com.sysadmindoc.alarmclock.data.local.entity.ActigraphySession
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmEvent
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmGroup
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
+import com.sysadmindoc.alarmclock.data.local.entity.DirectBootOccurrenceReceipt
 import com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent
 import com.sysadmindoc.alarmclock.data.local.entity.NewsSource
 import com.sysadmindoc.alarmclock.data.local.entity.PreSleepTagEntry
@@ -41,7 +42,8 @@ import com.sysadmindoc.alarmclock.data.model.Alarm
         ScheduleException::class,
         AlarmSessionEntity::class,
         AlarmAdmissionTombstoneEntity::class,
-        SessionSequenceGeneratorEntity::class
+        SessionSequenceGeneratorEntity::class,
+        DirectBootOccurrenceReceipt::class
     ],
     version = AlarmDatabase.VERSION,
     exportSchema = true
@@ -61,9 +63,10 @@ abstract class AlarmDatabase : RoomDatabase() {
     abstract fun issuedOccurrenceDao(): IssuedOccurrenceDao
     abstract fun scheduleExceptionDao(): ScheduleExceptionDao
     abstract fun alarmSessionDao(): AlarmSessionDao
+    abstract fun directBootOccurrenceReceiptDao(): DirectBootOccurrenceReceiptDao
 
     companion object {
-        const val VERSION = 37
+        const val VERSION = 38
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -789,6 +792,31 @@ abstract class AlarmDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_37_38 = object : Migration(37, 38) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `direct_boot_occurrence_receipts` (
+                        `occurrenceKey` TEXT NOT NULL,
+                        `sourceRecordId` TEXT NOT NULL,
+                        `recordType` TEXT NOT NULL,
+                        `alarmId` INTEGER NOT NULL,
+                        `triggerTime` INTEGER NOT NULL,
+                        `generation` INTEGER NOT NULL,
+                        `instanceToken` TEXT NOT NULL,
+                        `restoreEpoch` INTEGER NOT NULL,
+                        `sourcePayloadHash` TEXT NOT NULL,
+                        `consumerOutcome` TEXT NOT NULL,
+                        `completionSequence` INTEGER NOT NULL,
+                        `completedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`occurrenceKey`)
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_direct_boot_occurrence_receipts_alarmId` ON `direct_boot_occurrence_receipts` (`alarmId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_direct_boot_occurrence_receipts_completedAt` ON `direct_boot_occurrence_receipts` (`completedAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_direct_boot_occurrence_receipts_consumerOutcome` ON `direct_boot_occurrence_receipts` (`consumerOutcome`)")
+            }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -825,7 +853,8 @@ abstract class AlarmDatabase : RoomDatabase() {
             MIGRATION_33_34,
             MIGRATION_34_35,
             MIGRATION_35_36,
-            MIGRATION_36_37
+            MIGRATION_36_37,
+            MIGRATION_37_38
         )
     }
 }

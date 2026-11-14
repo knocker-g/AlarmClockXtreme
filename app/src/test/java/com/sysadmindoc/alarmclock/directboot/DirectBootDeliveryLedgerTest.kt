@@ -73,14 +73,16 @@ class DirectBootDeliveryLedgerTest {
         deliveredAt: Long = baseTime + 100_100L,
         generation: Int = 1,
         instanceToken: String = "token_$alarmId",
-        provenance: String = "BOOT"
+        provenance: String = "BOOT",
+        restoreEpoch: Long = 1L
     ): DirectBootDeliveryRecord = DirectBootDeliveryRecord.createNormal(
         alarmId = alarmId,
         triggerTime = triggerTime,
         deliveredAt = deliveredAt,
         generation = generation,
         instanceToken = instanceToken,
-        provenance = provenance
+        provenance = provenance,
+        restoreEpoch = restoreEpoch
     )
 
     private fun quickRecord(
@@ -110,7 +112,8 @@ class DirectBootDeliveryLedgerTest {
         assertTrue("Absent ledger must return LedgerStorageState.Absent", readState is LedgerStorageState.Absent)
 
         val ackResult = DirectBootDeliveryLedger.acknowledgeRecord(context, "non_existent_id")
-        assertTrue("Ack on absent ledger must return NotFound", ackResult is DeliveryAckResult.NotFound)
+        assertTrue("Raw ACK on absent ledger must return AckNotQualified", ackResult is DeliveryAckResult.AckNotQualified)
+        assertEquals(0, (ackResult as DeliveryAckResult.AckNotQualified).currentCount)
     }
 
     @Test
@@ -235,15 +238,16 @@ class DirectBootDeliveryLedgerTest {
         DirectBootDeliveryLedger.appendRecord(context, r2)
         DirectBootDeliveryLedger.appendRecord(context, r3)
 
+        // Raw acknowledgeRecord(context, recordId) without live CE proof must be sealed (AckNotQualified) and preserve all records
         val ackResult = DirectBootDeliveryLedger.acknowledgeRecord(context, r2.recordId)
-        assertTrue(ackResult is DeliveryAckResult.Acknowledged)
-        assertEquals(2, (ackResult as DeliveryAckResult.Acknowledged).remainingCount)
+        assertTrue("Raw ACK without CE proof must return AckNotQualified", ackResult is DeliveryAckResult.AckNotQualified)
+        assertEquals(3, (ackResult as DeliveryAckResult.AckNotQualified).currentCount)
 
         val readState = DirectBootDeliveryLedger.readUnacknowledgedRecords(context)
         assertTrue(readState is LedgerStorageState.ValidWithRecords)
         val unacked = (readState as LedgerStorageState.ValidWithRecords).records
-        assertEquals(2, unacked.size)
-        assertEquals(listOf(r1.recordId, r3.recordId), unacked.map { it.recordId })
+        assertEquals(3, unacked.size)
+        assertEquals(listOf(r1.recordId, r2.recordId, r3.recordId), unacked.map { it.recordId })
     }
 
     @Test
@@ -252,8 +256,8 @@ class DirectBootDeliveryLedgerTest {
         DirectBootDeliveryLedger.appendRecord(context, r1)
 
         val ackResult = DirectBootDeliveryLedger.acknowledgeRecord(context, "unknown_record_id")
-        assertTrue(ackResult is DeliveryAckResult.NotFound)
-        assertEquals(1, (ackResult as DeliveryAckResult.NotFound).remainingCount)
+        assertTrue("Raw ACK must return AckNotQualified", ackResult is DeliveryAckResult.AckNotQualified)
+        assertEquals(1, (ackResult as DeliveryAckResult.AckNotQualified).currentCount)
 
         val readState = DirectBootDeliveryLedger.readUnacknowledgedRecords(context)
         assertTrue(readState is LedgerStorageState.ValidWithRecords)
@@ -414,16 +418,16 @@ class DirectBootDeliveryLedgerTest {
         assertTrue(readState is LedgerStorageState.ValidWithRecords)
         assertEquals(2, (readState as LedgerStorageState.ValidWithRecords).records.size)
 
-        // Acknowledge r1 only
+        // Attempt raw ACK on r1; must return AckNotQualified and preserve both r1 and r2
         val ackResult = DirectBootDeliveryLedger.acknowledgeRecord(context, r1.recordId)
-        assertTrue(ackResult is DeliveryAckResult.Acknowledged)
+        assertTrue(ackResult is DeliveryAckResult.AckNotQualified)
 
-        // Verify unacknowledged r2 is preserved and was not cleared in bulk
+        // Verify unacknowledged r1 and r2 are preserved and were not cleared
         val remainingState = DirectBootDeliveryLedger.readUnacknowledgedRecords(context)
         assertTrue(remainingState is LedgerStorageState.ValidWithRecords)
         val remaining = (remainingState as LedgerStorageState.ValidWithRecords).records
-        assertEquals(1, remaining.size)
-        assertEquals(r2.recordId, remaining.first().recordId)
+        assertEquals(2, remaining.size)
+        assertEquals(listOf(r1.recordId, r2.recordId), remaining.map { it.recordId })
     }
 
     @Test
@@ -512,7 +516,8 @@ class DirectBootDeliveryLedgerTest {
             alarmId = 55L,
             triggerTime = baseTime + 10_000L,
             generation = 1,
-            instanceToken = "token_55"
+            instanceToken = "token_55",
+            restoreEpoch = 1L
         )
         DirectBootAlarmCache.writeQueue(context, listOf(qCandidate), baseTime)
 

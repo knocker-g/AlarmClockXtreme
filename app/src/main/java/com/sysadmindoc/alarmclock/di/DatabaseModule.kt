@@ -9,6 +9,7 @@ import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 import com.sysadmindoc.alarmclock.data.local.AlarmEventDao
 import com.sysadmindoc.alarmclock.data.local.AlarmGroupDao
 import com.sysadmindoc.alarmclock.data.local.AlarmIncidentEventDao
+import com.sysadmindoc.alarmclock.data.local.DirectBootOccurrenceReceiptDao
 import com.sysadmindoc.alarmclock.data.local.DurableOperationIntentDao
 import com.sysadmindoc.alarmclock.data.local.NewsSourceDao
 import com.sysadmindoc.alarmclock.data.local.PreSleepTagDao
@@ -107,6 +108,12 @@ object DatabaseModule {
     @Singleton
     fun provideDurableOperationIntentDao(database: AlarmDatabase): DurableOperationIntentDao {
         return database.durableOperationIntentDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideDirectBootOccurrenceReceiptDao(database: AlarmDatabase): DirectBootOccurrenceReceiptDao {
+        return database.directBootOccurrenceReceiptDao()
     }
 
     @Provides

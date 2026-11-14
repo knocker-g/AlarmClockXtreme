@@ -34,7 +34,8 @@ data class DirectBootQueueItem(
     val updatedAt: Long = 0L,              // Wall-clock instant when snapshot was created
     val timezonePolicy: String = Alarm.TIMEZONE_POLICY_LOCAL,
     val fixedTimezoneId: String = "",
-    val schemaVersion: Int = CURRENT_SCHEMA_VERSION
+    val restoreEpoch: Long = 0L,
+    val schemaVersion: Int = if (restoreEpoch > 0L) CURRENT_SCHEMA_VERSION else 2
 ) {
     val logicalId: QueueLogicalId get() = QueueLogicalId(kind, alarmId)
 
@@ -50,7 +51,7 @@ data class DirectBootQueueItem(
      * Unknown/invalid schema versions fail closed.
      */
     fun evaluateEligibility(now: Long = 0L, allowLegacyV1: Boolean = false): QueueCandidateStatus {
-        if (schemaVersion != CURRENT_SCHEMA_VERSION && !(allowLegacyV1 && schemaVersion == 1)) {
+        if (schemaVersion != CURRENT_SCHEMA_VERSION && schemaVersion != 2 && !(allowLegacyV1 && schemaVersion == 1)) {
             return QueueCandidateStatus.INELIGIBLE_UNSUPPORTED_SCHEMA_VERSION
         }
         if (alarmId <= 0L) return QueueCandidateStatus.INELIGIBLE_INVALID_ID
@@ -65,6 +66,9 @@ data class DirectBootQueueItem(
             }
             if (instanceToken.isBlank() && !allowLegacyV1) {
                 return QueueCandidateStatus.INELIGIBLE_MISSING_INSTANCE_TOKEN
+            }
+            if (schemaVersion >= 3 && restoreEpoch <= 0L) {
+                return QueueCandidateStatus.INELIGIBLE_INVALID_RESTORE_EPOCH
             }
         } else if (kind == KIND_QUICK) {
             // For Quick alarms, triggerTime must be a concrete valid epoch instant (> now).
@@ -98,6 +102,7 @@ data class DirectBootQueueItem(
         put("updatedAt", updatedAt)
         put("timezonePolicy", timezonePolicy)
         put("fixedTimezoneId", fixedTimezoneId)
+        put("restoreEpoch", restoreEpoch)
         put("schemaVersion", schemaVersion)
     }
 
@@ -117,7 +122,7 @@ data class DirectBootQueueItem(
     }
 
     companion object {
-        const val CURRENT_SCHEMA_VERSION = 2
+        const val CURRENT_SCHEMA_VERSION = 3
         const val KIND_NORMAL = Alarm.KIND_NORMAL
         const val KIND_QUICK = Alarm.KIND_QUICK
 
@@ -128,7 +133,9 @@ data class DirectBootQueueItem(
             if (kindCmp != 0) return@Comparator kindCmp
             val idCmp = a.alarmId.compareTo(b.alarmId)
             if (idCmp != 0) return@Comparator idCmp
-            a.generation.compareTo(b.generation)
+            val genCmp = a.generation.compareTo(b.generation)
+            if (genCmp != 0) return@Comparator genCmp
+            a.restoreEpoch.compareTo(b.restoreEpoch)
         }
 
         /**
@@ -177,6 +184,7 @@ data class DirectBootQueueItem(
                 updatedAt = json.optLong("updatedAt", 0L),
                 timezonePolicy = timezonePolicy,
                 fixedTimezoneId = fixedTimezoneId,
+                restoreEpoch = json.optLong("restoreEpoch", 0L),
                 schemaVersion = json.optInt("schemaVersion", -1)
             )
         }
@@ -215,6 +223,7 @@ enum class QueueCandidateStatus {
     INELIGIBLE_UNKNOWN_KIND,
     INELIGIBLE_MISSING_INSTANCE_TOKEN,
     INELIGIBLE_INVALID_GENERATION,
+    INELIGIBLE_INVALID_RESTORE_EPOCH,
     INELIGIBLE_UNSUPPORTED_SCHEMA_VERSION
 }
 

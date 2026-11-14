@@ -68,6 +68,7 @@ class DirectBootServiceDeliveryAdapterTest {
         triggerTime: Long = 1_000_000L,
         generation: Int = 1,
         instanceToken: String = "token_101",
+        restoreEpoch: Long = 1L,
         kind: String = DirectBootV2NormalIntentIdentity.KIND_NORMAL
     ): DirectBootV2NormalIntentIdentity {
         return DirectBootV2NormalIntentIdentity(
@@ -75,6 +76,7 @@ class DirectBootServiceDeliveryAdapterTest {
             generation = generation,
             instanceToken = instanceToken,
             triggerTime = triggerTime,
+            restoreEpoch = restoreEpoch,
             kind = kind
         )
     }
@@ -84,7 +86,8 @@ class DirectBootServiceDeliveryAdapterTest {
         triggerTime: Long = 1_000_000L,
         generation: Int = 1,
         instanceToken: String = "token_101",
-        kind: String = DirectBootQueueItem.KIND_NORMAL
+        kind: String = DirectBootQueueItem.KIND_NORMAL,
+        restoreEpoch: Long = 1L
     ): DirectBootQueueItem {
         return DirectBootQueueItem(
             kind = kind,
@@ -95,6 +98,7 @@ class DirectBootServiceDeliveryAdapterTest {
             timeLabel = "07:00",
             playDefaultSound = true,
             vibrationEnabled = true,
+            restoreEpoch = restoreEpoch,
             schemaVersion = DirectBootQueueItem.CURRENT_SCHEMA_VERSION
         )
     }

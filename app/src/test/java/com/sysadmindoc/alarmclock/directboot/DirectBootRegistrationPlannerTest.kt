@@ -34,7 +34,8 @@ class DirectBootRegistrationPlannerTest {
         triggerTime: Long = baseTime + 60_000L,
         generation: Int = 1,
         instanceToken: String = "token_norm_101",
-        updatedAt: Long = baseTime
+        updatedAt: Long = baseTime,
+        restoreEpoch: Long = 1L
     ): DirectBootQueueItem {
         return DirectBootQueueItem(
             kind = DirectBootQueueItem.KIND_NORMAL,
@@ -42,7 +43,8 @@ class DirectBootRegistrationPlannerTest {
             triggerTime = triggerTime,
             generation = generation,
             instanceToken = instanceToken,
-            updatedAt = updatedAt
+            updatedAt = updatedAt,
+            restoreEpoch = restoreEpoch
         )
     }
 

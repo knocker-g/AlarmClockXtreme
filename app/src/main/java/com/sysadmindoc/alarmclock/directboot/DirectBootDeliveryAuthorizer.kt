@@ -80,6 +80,7 @@ class DirectBootDeliveryAuthorizer(
         val triggerTime = intent.getLongExtra(DirectBootV2NormalIntentIdentity.EXTRA_TRIGGER_TIME, -1L)
         val generation = intent.getIntExtra(DirectBootV2NormalIntentIdentity.EXTRA_GENERATION, -1)
         val instanceToken = intent.getStringExtra(DirectBootV2NormalIntentIdentity.EXTRA_INSTANCE_TOKEN) ?: ""
+        val restoreEpoch = intent.getLongExtra(DirectBootV2NormalIntentIdentity.EXTRA_RESTORE_EPOCH, 0L)
         val kind = intent.getStringExtra(DirectBootV2NormalIntentIdentity.EXTRA_KIND) ?: DirectBootV2NormalIntentIdentity.KIND_NORMAL
 
         if (alarmId <= 0L || generation < 1 || instanceToken.isBlank() || triggerTime <= 0L || kind != DirectBootV2NormalIntentIdentity.KIND_NORMAL) {
@@ -94,6 +95,7 @@ class DirectBootDeliveryAuthorizer(
                 generation = generation,
                 instanceToken = instanceToken,
                 triggerTime = triggerTime,
+                restoreEpoch = restoreEpoch,
                 kind = kind
             )
         } catch (e: Exception) {
@@ -311,7 +313,13 @@ class DirectBootDeliveryAuthorizer(
                 )
             }
 
-            if (ticket.identity != expectedIdentity) {
+            val identityMatches = ticket.identity.alarmId == expectedIdentity.alarmId &&
+                ticket.identity.generation == expectedIdentity.generation &&
+                ticket.identity.instanceToken == expectedIdentity.instanceToken &&
+                ticket.identity.triggerTime == expectedIdentity.triggerTime &&
+                (ticket.identity.restoreEpoch == 0L || expectedIdentity.restoreEpoch == 0L || ticket.identity.restoreEpoch == expectedIdentity.restoreEpoch)
+
+            if (!identityMatches) {
                 return TicketValidationResult.IdentityMismatch(
                     "Ticket identity (${ticket.identity}) does not match expected ($expectedIdentity)",
                     ticket
@@ -323,6 +331,7 @@ class DirectBootDeliveryAuthorizer(
     }
 
     companion object {
+        const val EXTRA_TICKET_ID = "direct_boot_ticket_id"
         const val DEFAULT_TICKET_TTL_MS = 15_000L
         const val DEFAULT_MAX_ACTIVE_TICKETS = 16
     }
