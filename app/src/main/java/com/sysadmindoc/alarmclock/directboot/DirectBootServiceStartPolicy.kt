@@ -100,10 +100,17 @@ internal data class ActiveServiceSnapshot(
     val isAudibleOrVibrating: Boolean = false,
     val autoStopArmed: Boolean = false
 ) {
-    override fun toString(): String {
-        return "ActiveServiceSnapshot(isActive=$isActive, alarmId=$alarmId, triggerTime=$triggerTime, " +
-            "generation=$generation, tokenPresent=${instanceToken.isNotBlank()}, restoreEpoch=$restoreEpoch, " +
-            "isV2Managed=$isV2Managed, isAudibleOrVibrating=$isAudibleOrVibrating, autoStopArmed=$autoStopArmed)"
+    override fun toString(): String = buildString {
+        append("ActiveServiceSnapshot(isActive=").append(isActive)
+        append(", alarmId=").append(alarmId)
+        append(", triggerTime=").append(triggerTime)
+        append(", generation=").append(generation)
+        append(", tokenPresent=").append(instanceToken.isNotBlank())
+        append(", restoreEpoch=").append(restoreEpoch)
+        append(", isV2Managed=").append(isV2Managed)
+        append(", isAudibleOrVibrating=").append(isAudibleOrVibrating)
+        append(", autoStopArmed=").append(autoStopArmed)
+        append(')')
     }
 }
 
@@ -127,15 +134,26 @@ internal data class IncomingStartCandidate(
     val playDefaultSound: Boolean = true,
     val vibrationEnabled: Boolean = true
 ) {
-    override fun toString(): String {
-        return "IncomingStartCandidate(alarmId=$alarmId, triggerTime=$triggerTime, generation=$generation, " +
-            "generationProvided=$generationProvided, tokenPresent=${instanceToken.isNotBlank()}, " +
-            "instanceTokenProvided=$instanceTokenProvided, restoreEpoch=$restoreEpoch, " +
-            "restoreEpochProvided=$restoreEpochProvided, kind='$kind', kindProvided=$kindProvided, " +
-            "uriPresent=${dataUriString != null}, digestPresent=${identityDigest != null}, " +
-            "identityDigestProvided=$identityDigestProvided, ticketPresent=${ticketId != null}, " +
-            "ticketIdProvided=$ticketIdProvided, extrasReadFailed=$extrasReadFailed, " +
-            "playDefaultSound=$playDefaultSound, vibrationEnabled=$vibrationEnabled)"
+    override fun toString(): String = buildString {
+        append("IncomingStartCandidate(alarmId=").append(alarmId)
+        append(", triggerTime=").append(triggerTime)
+        append(", generation=").append(generation)
+        append(", generationProvided=").append(generationProvided)
+        append(", tokenPresent=").append(instanceToken.isNotBlank())
+        append(", instanceTokenProvided=").append(instanceTokenProvided)
+        append(", restoreEpoch=").append(restoreEpoch)
+        append(", restoreEpochProvided=").append(restoreEpochProvided)
+        append(", kindPresent=").append(kind.isNotBlank())
+        append(", kindProvided=").append(kindProvided)
+        append(", uriPresent=").append(dataUriString != null)
+        append(", digestPresent=").append(identityDigest != null)
+        append(", identityDigestProvided=").append(identityDigestProvided)
+        append(", ticketPresent=").append(ticketId != null)
+        append(", ticketIdProvided=").append(ticketIdProvided)
+        append(", extrasReadFailed=").append(extrasReadFailed)
+        append(", playDefaultSound=").append(playDefaultSound)
+        append(", vibrationEnabled=").append(vibrationEnabled)
+        append(')')
     }
 }
 

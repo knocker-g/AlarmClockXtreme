@@ -670,6 +670,38 @@ class DirectBootServiceStartPolicyTest {
         assertFalse("ServiceStartDecisionResult.toString() MUST NOT expose raw instanceToken", resultStr.contains(sentinelToken))
         assertFalse("ServiceStartDecisionResult.reason.name MUST NOT expose raw token", result.reason.name.contains(sentinelToken))
         assertFalse("ServiceStartDecisionResult.lane.name MUST NOT expose raw token", result.lane.name.contains(sentinelToken))
+
+        val sentinelKind = "ATTACKER_KIND_SENTINEL_B1A_777"
+        val sentinelUri = "acx-directboot://normal/alarm/101/v2/SECRET_URI_SENTINEL_666"
+        val untrustedKindCandidate = qualifiedV2Candidate(
+            instanceToken = sentinelToken,
+            kind = sentinelKind,
+            kindProvided = true,
+            dataUriString = sentinelUri,
+            identityDigest = sentinelDigest,
+            identityDigestProvided = true,
+            ticketId = sentinelTicket,
+            ticketIdProvided = true
+        )
+        val untrustedKindCandidateStr = untrustedKindCandidate.toString()
+        assertFalse("IncomingStartCandidate.toString() MUST NOT expose raw kind", untrustedKindCandidateStr.contains(sentinelKind))
+        assertFalse("IncomingStartCandidate.toString() MUST NOT expose raw dataUriString", untrustedKindCandidateStr.contains(sentinelUri))
+        assertFalse("IncomingStartCandidate.toString() MUST NOT expose raw instanceToken", untrustedKindCandidateStr.contains(sentinelToken))
+        assertFalse("IncomingStartCandidate.toString() MUST NOT expose raw ticketId", untrustedKindCandidateStr.contains(sentinelTicket))
+        assertFalse("IncomingStartCandidate.toString() MUST NOT expose raw identityDigest", untrustedKindCandidateStr.contains(sentinelDigest))
+        assertTrue("IncomingStartCandidate.toString() should indicate kind presence safely", untrustedKindCandidateStr.contains("kindPresent=true"))
+        assertTrue("IncomingStartCandidate.toString() should indicate URI presence safely", untrustedKindCandidateStr.contains("uriPresent=true"))
+
+        val rejectedKindResult = DirectBootServiceStartPolicy.classify(
+            ServiceStartClassificationInput(
+                active = active,
+                candidate = untrustedKindCandidate,
+                storage = verifiedClearV2Storage()
+            )
+        )
+        assertEquals(ServiceStartDecision.REJECT_KEEP_OLD, rejectedKindResult.decision)
+        assertEquals(ServiceStartReason.INVALID_KIND, rejectedKindResult.reason)
+        assertFalse("ServiceStartDecisionResult.toString() MUST NOT expose raw kind", rejectedKindResult.toString().contains(sentinelKind))
     }
 
     // =========================================================================
