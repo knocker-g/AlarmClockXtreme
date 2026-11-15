@@ -170,9 +170,10 @@ object DirectBootDeliveryTransitionEngine {
         }
 
         synchronized(DirectBootStorageLock.lock) {
-            // Step 3: Inspect Both Storage Domains Under Shared Lock
+            // Step 3: Inspect Storage Domains Under Shared Lock
             val queueState = DirectBootAlarmCache.inspectQueueStorageState(context)
             val ledgerState = DirectBootDeliveryLedger.inspectStorageState(context)
+            val ownerState = DirectBootDurableOwnerStore.read(context)
 
             // Step 4: Validate Queue Storage Health
             val currentQueueItems: List<DirectBootQueueItem> = when (queueState) {
@@ -218,6 +219,24 @@ object DirectBootDeliveryTransitionEngine {
                 }
             }
 
+            // Step 5b: Validate Durable Owner Storage Health (fail-closed on Corrupt/UnsupportedSchema)
+            val currentOwner: DirectBootDurableOwner? = when (ownerState) {
+                is OwnerReadResult.Absent -> null
+                is OwnerReadResult.Success -> ownerState.owner
+                is OwnerReadResult.Corrupt -> {
+                    Log.w(TAG, "transitionNormal rejected: Durable owner storage is corrupt")
+                    return DeliveryTransitionResult.Rejected.OwnerStorageCorrupt("Durable owner storage is corrupt")
+                }
+                is OwnerReadResult.UnsupportedSchema -> {
+                    Log.w(TAG, "transitionNormal rejected: Durable owner unsupported schema version ${ownerState.foundVersion}")
+                    return DeliveryTransitionResult.Rejected.UnsupportedSchema(
+                        domain = "DurableOwner",
+                        found = ownerState.foundVersion,
+                        expected = ownerState.expectedVersion
+                    )
+                }
+            }
+
             // Step 6: Enforce Ledger Capacity Boundary (Max 16)
             if (currentLedgerRecords.size >= DirectBootDeliveryLedger.MAX_CAPACITY) {
                 Log.w(TAG, "transitionNormal rejected: Ledger capacity exhausted (${currentLedgerRecords.size}/${DirectBootDeliveryLedger.MAX_CAPACITY})")
@@ -227,7 +246,9 @@ object DirectBootDeliveryTransitionEngine {
                 )
             }
 
-            // Step 7: Check Duplicate Delivery Record in Ledger
+            // Step 7: Authoritative DE Occurrence Collision Check (Ledger + Durable Owner)
+            // Matches exact recordId OR any unretired NORMAL record at same (alarmId, triggerTime)
+            // regardless of instanceToken, generation, restoreEpoch, or provenance.
             val targetRecordId = DirectBootDeliveryRecord.computeRecordId(
                 kind = firingIdentity.kind,
                 alarmId = firingIdentity.alarmId,
@@ -236,12 +257,37 @@ object DirectBootDeliveryTransitionEngine {
                 instanceToken = firingIdentity.instanceToken
             )
             val existingRecord = currentLedgerRecords.find { it.recordId == targetRecordId }
+                ?: currentLedgerRecords.find {
+                    it.kind == DirectBootDeliveryRecord.KIND_NORMAL &&
+                        it.alarmId == firingIdentity.alarmId &&
+                        it.triggerTime == firingIdentity.triggerTime
+                }
             if (existingRecord != null) {
-                Log.w(TAG, "transitionNormal rejected: Duplicate delivery already recorded for alarmId=${firingIdentity.alarmId}, generation=${firingIdentity.generation}, triggerTime=${firingIdentity.triggerTime}")
+                Log.w(TAG, "transitionNormal rejected: Occurrence collision already recorded in delivery ledger for alarmId=${firingIdentity.alarmId}, triggerTime=${firingIdentity.triggerTime}")
                 return DeliveryTransitionResult.Rejected.DuplicateDeliveryAlreadyRecorded(
                     existing = existingRecord,
                     ledgerCount = currentLedgerRecords.size
                 )
+            }
+
+            if (currentOwner != null) {
+                val ownerCollides = when (currentOwner.state) {
+                    OwnerState.IDLE -> false
+                    OwnerState.HANDOVER_PENDING -> currentOwner.handoverClaim?.let {
+                        it.alarmId == firingIdentity.alarmId && it.triggerTime == firingIdentity.triggerTime
+                    } == true
+                    OwnerState.V2_ACTIVE -> currentOwner.activeSession?.let {
+                        it.alarmId == firingIdentity.alarmId && it.triggerTime == firingIdentity.triggerTime
+                    } == true
+                }
+                if (ownerCollides) {
+                    Log.w(TAG, "transitionNormal rejected: Occurrence collision with durable owner state ${currentOwner.state.name} for alarmId=${firingIdentity.alarmId}, triggerTime=${firingIdentity.triggerTime}")
+                    return DeliveryTransitionResult.Rejected.OwnerOccurrenceCollision(
+                        ownerState = currentOwner.state,
+                        alarmId = firingIdentity.alarmId,
+                        triggerTime = firingIdentity.triggerTime
+                    )
+                }
             }
 
             // Step 8: Validate Authoritative Queue Head Qualification & Identity Matching
@@ -498,6 +544,8 @@ sealed class DeliveryTransitionResult {
         data class OccurrenceIdentityMismatch(val details: String) : Rejected()
         data class QueueStorageCorrupt(val reason: String) : Rejected()
         data class LedgerStorageCorrupt(val reason: String) : Rejected()
+        data class OwnerStorageCorrupt(val reason: String) : Rejected()
+        data class OwnerOccurrenceCollision(val ownerState: OwnerState, val alarmId: Long, val triggerTime: Long) : Rejected()
         data class UnsupportedSchema(val domain: String, val found: Int, val expected: Int) : Rejected()
         data class PreCommitFailure(val details: String, val cause: Throwable) : Rejected()
     }

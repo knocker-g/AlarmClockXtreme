@@ -1093,4 +1093,563 @@ class DirectBootDeliveryTransitionEngineTest {
             logs.none { it.msg.contains(secretToken) }
         )
     }
+
+    // =========================================================================
+    // KNO-75 B1c-S1-R1: Cross-Token (alarmId, triggerTime) Collision Tests
+    // =========================================================================
+
+    @Test
+    fun s1_b01_legacyDeliveryCrossTokenCollision_transitionNormalRejectsWithoutMutatingQueueOrLedger() {
+        val triggerTime = baseTime + 10_000L
+        val legacyRecord = DirectBootDeliveryRecord.createNormal(
+            alarmId = 101L,
+            triggerTime = triggerTime,
+            deliveredAt = triggerTime + 10L,
+            generation = 1,
+            instanceToken = "legacy_claim_101",
+            provenance = "LEGACY_DELIVERY",
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootDeliveryLedger.appendRecord(context, legacyRecord) is DeliveryAppendResult.Appended)
+
+        val v2QueueItem = createNormalQueueItem(
+            alarmId = 101L,
+            triggerTime = triggerTime,
+            generation = 1,
+            instanceToken = "v2_tok_101",
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(v2QueueItem), now = baseTime))
+
+        val v2Identity = normalIdentity(
+            alarmId = 101L,
+            triggerTime = triggerTime,
+            generation = 1,
+            instanceToken = "v2_tok_101",
+            provenance = "V2_INTENT_DELIVERY",
+            restoreEpoch = 1L
+        )
+
+        val result = DirectBootDeliveryTransitionEngine.transitionNormal(
+            context = context,
+            firingIdentity = v2Identity,
+            deliveredAt = triggerTime + 50L
+        )
+
+        assertTrue(
+            "B1c-S1: TransitionEngine MUST reject V2 occurrence colliding with LEGACY_DELIVERY at same (alarmId, triggerTime), got $result",
+            result is DeliveryTransitionResult.Rejected.DuplicateDeliveryAlreadyRecorded
+        )
+        assertTrue((result as DeliveryTransitionResult.Rejected).isGuaranteedNoWrite)
+        assertFalse(result.deWriteAttempted)
+
+        // Queue and Ledger remain strictly unmutated
+        val onDiskQueue = DirectBootAlarmCache.readQueue(context, now = baseTime)
+        assertEquals(1, onDiskQueue.size)
+        assertEquals("v2_tok_101", onDiskQueue[0].instanceToken)
+
+        val ledgerState = DirectBootDeliveryLedger.readUnacknowledgedRecords(context) as LedgerStorageState.ValidWithRecords
+        assertEquals(1, ledgerState.records.size)
+        assertEquals(legacyRecord.recordId, ledgerState.records[0].recordId)
+    }
+
+    @Test
+    fun s1_b02_inverseTokenCollision_v2RecordBlocksAlternateTokenSameOccurrence() {
+        val triggerTime = baseTime + 20_000L
+        val firstV2Record = DirectBootDeliveryRecord.createNormal(
+            alarmId = 101L,
+            triggerTime = triggerTime,
+            deliveredAt = triggerTime + 10L,
+            generation = 1,
+            instanceToken = "v2_tok_first_101",
+            provenance = "V2_INTENT_DELIVERY",
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootDeliveryLedger.appendRecord(context, firstV2Record) is DeliveryAppendResult.Appended)
+
+        val secondQueueItem = createNormalQueueItem(
+            alarmId = 101L,
+            triggerTime = triggerTime,
+            generation = 2,
+            instanceToken = "v2_tok_second_101",
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(secondQueueItem), now = baseTime))
+
+        val result = DirectBootDeliveryTransitionEngine.transitionNormal(
+            context = context,
+            firingIdentity = normalIdentity(
+                alarmId = 101L,
+                triggerTime = triggerTime,
+                generation = 2,
+                instanceToken = "v2_tok_second_101",
+                restoreEpoch = 1L
+            ),
+            deliveredAt = triggerTime + 50L
+        )
+
+        assertTrue(
+            "B1c-S1: TransitionEngine MUST reject alternate-token/generation V2 occurrence at same (alarmId, triggerTime), got $result",
+            result is DeliveryTransitionResult.Rejected.DuplicateDeliveryAlreadyRecorded
+        )
+        assertTrue((result as DeliveryTransitionResult.Rejected).isGuaranteedNoWrite)
+
+        val onDiskQueue = DirectBootAlarmCache.readQueue(context, now = baseTime)
+        assertEquals(1, onDiskQueue.size)
+        assertEquals("v2_tok_second_101", onDiskQueue[0].instanceToken)
+
+        val ledgerState = DirectBootDeliveryLedger.readUnacknowledgedRecords(context) as LedgerStorageState.ValidWithRecords
+        assertEquals(1, ledgerState.records.size)
+        assertEquals(firstV2Record.recordId, ledgerState.records[0].recordId)
+    }
+
+    @Test
+    fun s1_b03_unrelatedOccurrences_confirmCleanlyDespiteLegacyClaim() {
+        val claimedTime = baseTime + 10_000L
+        val legacyRecord = DirectBootDeliveryRecord.createNormal(
+            alarmId = 101L,
+            triggerTime = claimedTime,
+            deliveredAt = claimedTime + 10L,
+            generation = 1,
+            instanceToken = "legacy_claim_101",
+            provenance = "LEGACY_DELIVERY",
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootDeliveryLedger.appendRecord(context, legacyRecord) is DeliveryAppendResult.Appended)
+
+        val laterSameAlarm = createNormalQueueItem(
+            alarmId = 101L,
+            triggerTime = claimedTime + 60_000L,
+            generation = 1,
+            instanceToken = "v2_tok_101_later",
+            restoreEpoch = 1L
+        )
+        val otherAlarmSameTime = createNormalQueueItem(
+            alarmId = 102L,
+            triggerTime = claimedTime,
+            generation = 1,
+            instanceToken = "v2_tok_102",
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(otherAlarmSameTime, laterSameAlarm), now = baseTime))
+
+        val resOther = DirectBootDeliveryTransitionEngine.transitionNormal(
+            context = context,
+            firingIdentity = normalIdentity(
+                alarmId = 102L,
+                triggerTime = claimedTime,
+                generation = 1,
+                instanceToken = "v2_tok_102",
+                restoreEpoch = 1L
+            ),
+            deliveredAt = claimedTime + 50L
+        )
+        assertTrue("Different alarmId at same triggerTime MUST confirm, got $resOther", resOther is DeliveryTransitionResult.Confirmed)
+
+        val resLater = DirectBootDeliveryTransitionEngine.transitionNormal(
+            context = context,
+            firingIdentity = normalIdentity(
+                alarmId = 101L,
+                triggerTime = claimedTime + 60_000L,
+                generation = 1,
+                instanceToken = "v2_tok_101_later",
+                restoreEpoch = 1L
+            ),
+            deliveredAt = claimedTime + 60_050L
+        )
+        assertTrue("Same alarmId at different triggerTime MUST confirm, got $resLater", resLater is DeliveryTransitionResult.Confirmed)
+    }
+
+    @Test
+    fun s1_b04_normalVsQuickIdentitySemantics_quickInLedgerDoesNotBlockNormal() {
+        val triggerTime = baseTime + 30_000L
+        val quickRecord = DirectBootDeliveryRecord.createQuick(
+            alarmId = 101L,
+            triggerTime = triggerTime,
+            deliveredAt = triggerTime + 10L,
+            provenance = "LEGACY_QUICK"
+        )
+        assertTrue(DirectBootDeliveryLedger.appendRecord(context, quickRecord) is DeliveryAppendResult.Appended)
+
+        val normalItem = createNormalQueueItem(
+            alarmId = 101L,
+            triggerTime = triggerTime,
+            generation = 1,
+            instanceToken = "v2_tok_normal_101",
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(normalItem), now = baseTime))
+
+        val resNormal = DirectBootDeliveryTransitionEngine.transitionNormal(
+            context = context,
+            firingIdentity = normalIdentity(
+                alarmId = 101L,
+                triggerTime = triggerTime,
+                generation = 1,
+                instanceToken = "v2_tok_normal_101",
+                restoreEpoch = 1L
+            ),
+            deliveredAt = triggerTime + 50L
+        )
+        assertTrue("KIND_QUICK record MUST NOT block KIND_NORMAL transition, got $resNormal", resNormal is DeliveryTransitionResult.Confirmed)
+
+        val resQuick = DirectBootDeliveryTransitionEngine.transitionNormal(
+            context = context,
+            firingIdentity = FiredOccurrenceIdentity(
+                kind = DirectBootDeliveryRecord.KIND_QUICK,
+                alarmId = 101L,
+                triggerTime = triggerTime,
+                generation = 0,
+                instanceToken = ""
+            ),
+            deliveredAt = triggerTime + 50L
+        )
+        assertTrue("KIND_QUICK transition MUST still be rejected with QuickNotQualified, got $resQuick", resQuick is DeliveryTransitionResult.Rejected.QuickNotQualified)
+    }
+
+    @Test
+    fun s1_b05_recordIdKeyedDeliveryLedgerBehaviorPreserved() {
+        val triggerTime = baseTime + 40_000L
+        val recGen1 = DirectBootDeliveryRecord.createNormal(
+            alarmId = 7L,
+            triggerTime = triggerTime,
+            deliveredAt = triggerTime + 10L,
+            generation = 1,
+            instanceToken = "token_g1",
+            restoreEpoch = 1L
+        )
+        val recGen2 = DirectBootDeliveryRecord.createNormal(
+            alarmId = 7L,
+            triggerTime = triggerTime,
+            deliveredAt = triggerTime + 20L,
+            generation = 2,
+            instanceToken = "token_g2",
+            restoreEpoch = 1L
+        )
+        val recQuick = DirectBootDeliveryRecord.createQuick(
+            alarmId = 7L,
+            triggerTime = triggerTime,
+            deliveredAt = triggerTime + 30L
+        )
+        assertTrue(DirectBootDeliveryLedger.appendRecord(context, recGen1) is DeliveryAppendResult.Appended)
+        assertTrue(DirectBootDeliveryLedger.appendRecord(context, recGen2) is DeliveryAppendResult.Appended)
+        assertTrue(DirectBootDeliveryLedger.appendRecord(context, recQuick) is DeliveryAppendResult.Appended)
+
+        val state = DirectBootDeliveryLedger.readUnacknowledgedRecords(context) as LedgerStorageState.ValidWithRecords
+        assertEquals(3, state.records.size)
+    }
+
+    @Test
+    fun s1_b06_concurrentTransitionsAgainstLegacyClaim_allRejectWithoutMutation() = runBlocking(Dispatchers.IO) {
+        val triggerTime = baseTime + 50_000L
+        val legacyRecord = DirectBootDeliveryRecord.createNormal(
+            alarmId = 101L,
+            triggerTime = triggerTime,
+            deliveredAt = triggerTime + 10L,
+            generation = 1,
+            instanceToken = "legacy_claim_101",
+            provenance = "LEGACY_DELIVERY",
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootDeliveryLedger.appendRecord(context, legacyRecord) is DeliveryAppendResult.Appended)
+
+        val v2QueueItem = createNormalQueueItem(
+            alarmId = 101L,
+            triggerTime = triggerTime,
+            generation = 1,
+            instanceToken = "v2_tok_101_conc",
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(v2QueueItem), now = baseTime))
+
+        val jobs = (1..8).map {
+            async {
+                DirectBootDeliveryTransitionEngine.transitionNormal(
+                    context = context,
+                    firingIdentity = normalIdentity(
+                        alarmId = 101L,
+                        triggerTime = triggerTime,
+                        generation = 1,
+                        instanceToken = "v2_tok_101_conc",
+                        restoreEpoch = 1L
+                    ),
+                    deliveredAt = triggerTime + 50L
+                )
+            }
+        }
+        val results = jobs.awaitAll()
+        val confirmedCount = results.count { it is DeliveryTransitionResult.Confirmed }
+        val dupRejectedCount = results.count { it is DeliveryTransitionResult.Rejected.DuplicateDeliveryAlreadyRecorded }
+
+        assertEquals("Concurrent transitionNormal MUST NOT confirm against LEGACY_DELIVERY", 0, confirmedCount)
+        assertEquals("All concurrent transitionNormal attempts MUST reject as DuplicateDeliveryAlreadyRecorded", 8, dupRejectedCount)
+
+        assertEquals(1, DirectBootAlarmCache.readQueue(context, now = baseTime).size)
+        val ledgerState = DirectBootDeliveryLedger.readUnacknowledgedRecords(context) as LedgerStorageState.ValidWithRecords
+        assertEquals(1, ledgerState.records.size)
+    }
+
+    // =========================================================================
+    // KNO-75 B1c-S1-P3A: Durable Owner Integration & PreCommitFailure Tests
+    // =========================================================================
+
+    @Test
+    fun p3a_01_handoverPendingOwnerCollision_rejectsWithoutMutatingQueueOrLedger() {
+        val triggerTime = baseTime + 10_000L
+        val pendingOwner = DirectBootDurableOwner(
+            schemaVersion = DirectBootDurableOwnerStore.CURRENT_SCHEMA_VERSION,
+            state = OwnerState.HANDOVER_PENDING,
+            ownerSeq = 0L,
+            bootProvenance = BootProvenance(
+                bootCount = 1,
+                lastElapsedRealtime = 10_000L,
+                bootEpochEstimateMs = baseTime - 10_000L
+            ),
+            handoverClaim = HandoverClaim(
+                handoverId = "ho_p3a_engine_101",
+                alarmId = 101L,
+                triggerTime = triggerTime,
+                generation = 1,
+                instanceToken = "owner_pending_tok_101",
+                restoreEpoch = 1L
+            ),
+            activeSession = null,
+            updatedAtEpochMs = baseTime
+        )
+        val writeRes = DirectBootDurableOwnerStore.write(context, pendingOwner, expectedOwnerSeq = 0L)
+        assertTrue("Precondition: Owner write must succeed, got $writeRes", writeRes is OwnerWriteResult.Success)
+        val readBack = DirectBootDurableOwnerStore.read(context)
+        assertTrue("Precondition: Owner readback must succeed, got $readBack", readBack is OwnerReadResult.Success)
+        assertEquals(OwnerState.HANDOVER_PENDING, (readBack as OwnerReadResult.Success).owner.state)
+        assertEquals(1L, readBack.owner.ownerSeq)
+        assertTrue(
+            "Precondition: Ledger must be absent so collision is strictly Owner-sourced",
+            DirectBootDeliveryLedger.inspectStorageState(context) is LedgerStorageState.Absent
+        )
+
+        val q1 = createNormalQueueItem(alarmId = 101L, triggerTime = triggerTime, instanceToken = "v2_tok_101", restoreEpoch = 1L)
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(q1), now = baseTime))
+        val prefsBefore = getDePrefs().all.toMap()
+
+        val result = DirectBootDeliveryTransitionEngine.transitionNormal(
+            context = context,
+            firingIdentity = normalIdentity(
+                alarmId = 101L,
+                triggerTime = triggerTime,
+                instanceToken = "v2_tok_101",
+                restoreEpoch = 1L
+            ),
+            deliveredAt = triggerTime + 50L
+        )
+
+        assertTrue(
+            "HANDOVER_PENDING owner collision MUST reject as OwnerOccurrenceCollision (distinct from Ledger DuplicateDeliveryAlreadyRecorded), got $result",
+            result is DeliveryTransitionResult.Rejected.OwnerOccurrenceCollision
+        )
+        val collision = result as DeliveryTransitionResult.Rejected.OwnerOccurrenceCollision
+        assertEquals(OwnerState.HANDOVER_PENDING, collision.ownerState)
+        assertEquals(101L, collision.alarmId)
+        assertEquals(triggerTime, collision.triggerTime)
+        assertTrue(collision.isGuaranteedNoWrite)
+        assertFalse(collision.deWriteAttempted)
+        assertTrue(DirectBootDeliveryLedger.inspectStorageState(context) is LedgerStorageState.Absent)
+        assertEquals(prefsBefore, getDePrefs().all.toMap())
+    }
+
+    @Test
+    fun p3a_02_v2ActiveOwnerCollision_rejectsWithoutMutatingQueueOrLedger() {
+        val triggerTime = baseTime + 20_000L
+        val activeOwner = DirectBootDurableOwner(
+            schemaVersion = DirectBootDurableOwnerStore.CURRENT_SCHEMA_VERSION,
+            state = OwnerState.V2_ACTIVE,
+            ownerSeq = 0L,
+            bootProvenance = BootProvenance(
+                bootCount = 1,
+                lastElapsedRealtime = 10_000L,
+                bootEpochEstimateMs = baseTime - 10_000L
+            ),
+            handoverClaim = null,
+            activeSession = ActiveOwnerSession(
+                alarmId = 101L,
+                triggerTime = triggerTime,
+                generation = 1,
+                instanceToken = "owner_active_tok_101",
+                restoreEpoch = 1L
+            ),
+            updatedAtEpochMs = baseTime
+        )
+        val writeRes = DirectBootDurableOwnerStore.write(context, activeOwner, expectedOwnerSeq = 0L)
+        assertTrue("Precondition: Owner write must succeed, got $writeRes", writeRes is OwnerWriteResult.Success)
+        val readBack = DirectBootDurableOwnerStore.read(context)
+        assertTrue("Precondition: Owner readback must succeed, got $readBack", readBack is OwnerReadResult.Success)
+        assertEquals(OwnerState.V2_ACTIVE, (readBack as OwnerReadResult.Success).owner.state)
+        assertEquals(1L, readBack.owner.ownerSeq)
+        assertTrue(
+            "Precondition: Ledger must be absent so collision is strictly Owner-sourced",
+            DirectBootDeliveryLedger.inspectStorageState(context) is LedgerStorageState.Absent
+        )
+
+        val q1 = createNormalQueueItem(alarmId = 101L, triggerTime = triggerTime, instanceToken = "v2_tok_101", restoreEpoch = 1L)
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(q1), now = baseTime))
+        val prefsBefore = getDePrefs().all.toMap()
+
+        val result = DirectBootDeliveryTransitionEngine.transitionNormal(
+            context = context,
+            firingIdentity = normalIdentity(
+                alarmId = 101L,
+                triggerTime = triggerTime,
+                instanceToken = "v2_tok_101",
+                restoreEpoch = 1L
+            ),
+            deliveredAt = triggerTime + 50L
+        )
+
+        assertTrue(
+            "V2_ACTIVE owner collision MUST reject as OwnerOccurrenceCollision (distinct from Ledger DuplicateDeliveryAlreadyRecorded), got $result",
+            result is DeliveryTransitionResult.Rejected.OwnerOccurrenceCollision
+        )
+        val collision = result as DeliveryTransitionResult.Rejected.OwnerOccurrenceCollision
+        assertEquals(OwnerState.V2_ACTIVE, collision.ownerState)
+        assertEquals(101L, collision.alarmId)
+        assertEquals(triggerTime, collision.triggerTime)
+        assertTrue(collision.isGuaranteedNoWrite)
+        assertFalse(collision.deWriteAttempted)
+        assertTrue(DirectBootDeliveryLedger.inspectStorageState(context) is LedgerStorageState.Absent)
+        assertEquals(prefsBefore, getDePrefs().all.toMap())
+    }
+
+    @Test
+    fun p3a_03_idleOwner_remainsNeutralAndConfirmsTransition() {
+        val triggerTime = baseTime + 30_000L
+        val idleOwner = DirectBootDurableOwnerStore.createInitialIdle(
+            bootProvenance = BootProvenance(
+                bootCount = 1,
+                lastElapsedRealtime = 10_000L,
+                bootEpochEstimateMs = baseTime - 10_000L
+            ),
+            nowEpochMs = baseTime
+        )
+        val writeRes = DirectBootDurableOwnerStore.write(context, idleOwner, expectedOwnerSeq = 0L)
+        assertTrue(writeRes is OwnerWriteResult.Success)
+        val readBack = DirectBootDurableOwnerStore.read(context) as OwnerReadResult.Success
+        assertEquals(OwnerState.IDLE, readBack.owner.state)
+        assertEquals(1L, readBack.owner.ownerSeq)
+        val ownerRawBefore = getDePrefs().getString(DirectBootDurableOwnerStore.KEY_DIRECT_BOOT_DURABLE_OWNER, null)
+
+        val q1 = createNormalQueueItem(alarmId = 101L, triggerTime = triggerTime, restoreEpoch = 1L)
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(q1), now = baseTime))
+
+        val result = DirectBootDeliveryTransitionEngine.transitionNormal(
+            context = context,
+            firingIdentity = normalIdentity(alarmId = 101L, triggerTime = triggerTime, restoreEpoch = 1L),
+            deliveredAt = triggerTime + 50L
+        )
+
+        assertTrue("IDLE owner MUST be neutral and allow transitionNormal to confirm, got $result", result is DeliveryTransitionResult.Confirmed)
+        assertEquals(0, DirectBootAlarmCache.readQueue(context, now = baseTime).size)
+        val ledgerState = DirectBootDeliveryLedger.readUnacknowledgedRecords(context) as LedgerStorageState.ValidWithRecords
+        assertEquals(1, ledgerState.records.size)
+        assertEquals(ownerRawBefore, getDePrefs().getString(DirectBootDurableOwnerStore.KEY_DIRECT_BOOT_DURABLE_OWNER, null))
+    }
+
+    @Test
+    fun p3a_04_corruptOwner_failsClosedAndPreservesRawBytes() {
+        val triggerTime = baseTime + 40_000L
+        val q1 = createNormalQueueItem(alarmId = 101L, triggerTime = triggerTime, restoreEpoch = 1L)
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(q1), now = baseTime))
+
+        val corruptRaw = "{corrupt_owner_engine_p3a"
+        assertTrue(getDePrefs().edit().putString(DirectBootDurableOwnerStore.KEY_DIRECT_BOOT_DURABLE_OWNER, corruptRaw).commit())
+        assertTrue(DirectBootDurableOwnerStore.read(context) is OwnerReadResult.Corrupt)
+
+        val prefsBefore = getDePrefs().all.toMap()
+
+        val result = DirectBootDeliveryTransitionEngine.transitionNormal(
+            context = context,
+            firingIdentity = normalIdentity(alarmId = 101L, triggerTime = triggerTime, restoreEpoch = 1L),
+            deliveredAt = triggerTime + 50L
+        )
+
+        assertTrue("Corrupt owner MUST reject with OwnerStorageCorrupt, got $result", result is DeliveryTransitionResult.Rejected.OwnerStorageCorrupt)
+        val rejected = result as DeliveryTransitionResult.Rejected.OwnerStorageCorrupt
+        assertTrue(rejected.isGuaranteedNoWrite)
+        assertFalse(rejected.deWriteAttempted)
+        assertEquals(corruptRaw, getDePrefs().getString(DirectBootDurableOwnerStore.KEY_DIRECT_BOOT_DURABLE_OWNER, null))
+        assertEquals(prefsBefore, getDePrefs().all.toMap())
+    }
+
+    @Test
+    fun p3a_05_unsupportedOwnerSchema_failsClosedAndPreservesRawBytes() {
+        val triggerTime = baseTime + 50_000L
+        val idleOwner = DirectBootDurableOwnerStore.createInitialIdle(nowEpochMs = baseTime)
+        val writeRes = DirectBootDurableOwnerStore.write(context, idleOwner, expectedOwnerSeq = 0L)
+        assertTrue(writeRes is OwnerWriteResult.Success)
+        val serialized = getDePrefs().getString(DirectBootDurableOwnerStore.KEY_DIRECT_BOOT_DURABLE_OWNER, null)!!
+        val unsupportedRaw = org.json.JSONObject(serialized).apply {
+            put("schemaVersion", 99)
+        }.toString()
+        assertTrue(getDePrefs().edit().putString(DirectBootDurableOwnerStore.KEY_DIRECT_BOOT_DURABLE_OWNER, unsupportedRaw).commit())
+
+        val ownerRead = DirectBootDurableOwnerStore.read(context)
+        assertTrue(ownerRead is OwnerReadResult.UnsupportedSchema)
+        assertEquals(99, (ownerRead as OwnerReadResult.UnsupportedSchema).foundVersion)
+
+        val q1 = createNormalQueueItem(alarmId = 101L, triggerTime = triggerTime, restoreEpoch = 1L)
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(q1), now = baseTime))
+        val prefsBefore = getDePrefs().all.toMap()
+
+        val result = DirectBootDeliveryTransitionEngine.transitionNormal(
+            context = context,
+            firingIdentity = normalIdentity(alarmId = 101L, triggerTime = triggerTime, restoreEpoch = 1L),
+            deliveredAt = triggerTime + 50L
+        )
+
+        assertTrue("Unsupported owner schema MUST reject with UnsupportedSchema, got $result", result is DeliveryTransitionResult.Rejected.UnsupportedSchema)
+        val unsupported = result as DeliveryTransitionResult.Rejected.UnsupportedSchema
+        assertEquals("DurableOwner", unsupported.domain)
+        assertEquals(99, unsupported.found)
+        assertEquals(DirectBootDurableOwnerStore.CURRENT_SCHEMA_VERSION, unsupported.expected)
+        assertTrue(unsupported.isGuaranteedNoWrite)
+        assertFalse(unsupported.deWriteAttempted)
+        assertEquals(unsupportedRaw, getDePrefs().getString(DirectBootDurableOwnerStore.KEY_DIRECT_BOOT_DURABLE_OWNER, null))
+        assertEquals(prefsBefore, getDePrefs().all.toMap())
+    }
+
+    @Test
+    fun p3a_06_preCommitNonCancellationException_returnsPreCommitFailureWithoutMutation() {
+        val triggerTime = baseTime + 60_000L
+        val idleOwner = DirectBootDurableOwnerStore.createInitialIdle(nowEpochMs = baseTime)
+        assertTrue(DirectBootDurableOwnerStore.write(context, idleOwner, expectedOwnerSeq = 0L) is OwnerWriteResult.Success)
+
+        val q1 = createNormalQueueItem(alarmId = 101L, triggerTime = triggerTime, restoreEpoch = 1L)
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(q1), now = baseTime))
+        val prefsBefore = getDePrefs().all.toMap()
+
+        var preCommitHookCalls = 0
+        var editorCommitterCalled = false
+
+        val result = DirectBootDeliveryTransitionEngine.transitionNormalForTesting(
+            context = context,
+            firingIdentity = normalIdentity(alarmId = 101L, triggerTime = triggerTime, restoreEpoch = 1L),
+            deliveredAt = triggerTime + 50L,
+            preCommitHook = {
+                preCommitHookCalls++
+                throw IllegalStateException("Injected pre-commit failure P3A")
+            },
+            editorCommitter = { _, _, _ ->
+                editorCommitterCalled = true
+                true
+            }
+        )
+
+        assertTrue("Non-Cancellation pre-commit exception MUST return Rejected.PreCommitFailure, got $result", result is DeliveryTransitionResult.Rejected.PreCommitFailure)
+        val rejected = result as DeliveryTransitionResult.Rejected.PreCommitFailure
+        assertTrue(rejected.isGuaranteedNoWrite)
+        assertFalse(rejected.deWriteAttempted)
+        assertTrue(rejected.cause is IllegalStateException)
+        assertEquals("Injected pre-commit failure P3A", rejected.cause.message)
+        assertEquals(1, preCommitHookCalls)
+        assertFalse("Editor.commit MUST NOT be invoked after pre-commit exception", editorCommitterCalled)
+        assertEquals("Queue, Ledger, and Owner raw SharedPreferences MUST remain untouched", prefsBefore, getDePrefs().all.toMap())
+    }
 }

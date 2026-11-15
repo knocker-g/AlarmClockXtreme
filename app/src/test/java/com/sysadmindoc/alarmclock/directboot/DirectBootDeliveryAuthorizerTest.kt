@@ -911,4 +911,407 @@ class DirectBootDeliveryAuthorizerTest {
         assertFalse("IdentityMismatch.reason MUST NOT leak ticket instanceToken", mismatchRes.reason.contains(secretToken))
         assertFalse("IdentityMismatch.reason MUST NOT leak expected instanceToken", mismatchRes.reason.contains(secretHeadToken))
     }
+
+    // =========================================================================
+    // KNO-75 B1c-S1-R1: Cross-Token (alarmId, triggerTime) Collision Tests
+    // =========================================================================
+
+    @Test
+    fun s1_b01_legacyDeliveryCrossTokenCollision_preQualifyRejectsWithoutMutatingStorage() {
+        val legacyRecord = DirectBootDeliveryRecord.createNormal(
+            alarmId = testAlarmId,
+            triggerTime = testTriggerTime,
+            deliveredAt = testTriggerTime + 50L,
+            generation = 1,
+            instanceToken = "legacy_claim_101",
+            provenance = "LEGACY_DELIVERY",
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootDeliveryLedger.appendRecord(context, legacyRecord) is DeliveryAppendResult.Appended)
+
+        val v2Item = sampleQueueItem(
+            alarmId = testAlarmId,
+            generation = 1,
+            instanceToken = "v2_tok_101",
+            triggerTime = testTriggerTime,
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(v2Item), now = 0L))
+
+        val prefsBefore = prefs.all.toMap()
+        val v2Intent = sampleIdentity(
+            alarmId = testAlarmId,
+            generation = 1,
+            instanceToken = "v2_tok_101",
+            triggerTime = testTriggerTime,
+            restoreEpoch = 1L
+        ).createIntent(context)
+
+        val result = authorizer.preQualify(context, v2Intent)
+        assertTrue(
+            "B1c-S1: Authorizer preQualify MUST reject V2 occurrence colliding with LEGACY_DELIVERY at same (alarmId, triggerTime), got $result",
+            result is DeliveryPrequalificationResult.DuplicateDelivery
+        )
+        assertEquals("Rejected preQualify MUST NOT mutate SharedPreferences", prefsBefore, prefs.all.toMap())
+    }
+
+    @Test
+    fun s1_b02_inverseTokenCollision_v2RecordBlocksAlternateTokenSameOccurrence() {
+        val firstV2Record = DirectBootDeliveryRecord.createNormal(
+            alarmId = testAlarmId,
+            triggerTime = testTriggerTime,
+            deliveredAt = testTriggerTime + 50L,
+            generation = 1,
+            instanceToken = "v2_tok_first_101",
+            provenance = "V2_INTENT_DELIVERY",
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootDeliveryLedger.appendRecord(context, firstV2Record) is DeliveryAppendResult.Appended)
+
+        val secondV2Item = sampleQueueItem(
+            alarmId = testAlarmId,
+            generation = 2,
+            instanceToken = "v2_tok_second_101",
+            triggerTime = testTriggerTime,
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(secondV2Item), now = 0L))
+
+        val prefsBefore = prefs.all.toMap()
+        val secondIntent = sampleIdentity(
+            alarmId = testAlarmId,
+            generation = 2,
+            instanceToken = "v2_tok_second_101",
+            triggerTime = testTriggerTime,
+            restoreEpoch = 1L
+        ).createIntent(context)
+
+        val result = authorizer.preQualify(context, secondIntent)
+        assertTrue(
+            "B1c-S1: Authorizer preQualify MUST reject alternate-token/generation V2 occurrence colliding at same (alarmId, triggerTime), got $result",
+            result is DeliveryPrequalificationResult.DuplicateDelivery
+        )
+        assertEquals("Rejected preQualify MUST NOT mutate SharedPreferences", prefsBefore, prefs.all.toMap())
+    }
+
+    @Test
+    fun s1_b03_unrelatedOccurrences_remainEligibleDespiteLegacyClaim() {
+        val legacyRecord = DirectBootDeliveryRecord.createNormal(
+            alarmId = testAlarmId,
+            triggerTime = testTriggerTime,
+            deliveredAt = testTriggerTime + 50L,
+            generation = 1,
+            instanceToken = "legacy_claim_101",
+            provenance = "LEGACY_DELIVERY",
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootDeliveryLedger.appendRecord(context, legacyRecord) is DeliveryAppendResult.Appended)
+
+        // Same alarmId, different triggerTime
+        val laterItem = sampleQueueItem(
+            alarmId = testAlarmId,
+            generation = 1,
+            instanceToken = "v2_tok_later",
+            triggerTime = testTriggerTime + 60_000L,
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(laterItem), now = 0L))
+        val laterResult = authorizer.preQualify(
+            context,
+            sampleIdentity(
+                alarmId = testAlarmId,
+                generation = 1,
+                instanceToken = "v2_tok_later",
+                triggerTime = testTriggerTime + 60_000L,
+                restoreEpoch = 1L
+            ).createIntent(context)
+        )
+        assertTrue("Different triggerTime MUST remain Eligible, got $laterResult", laterResult is DeliveryPrequalificationResult.Eligible)
+
+        // Different alarmId, same triggerTime
+        val otherAlarmItem = sampleQueueItem(
+            alarmId = 202L,
+            generation = 1,
+            instanceToken = "v2_tok_202",
+            triggerTime = testTriggerTime,
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(otherAlarmItem), now = 0L))
+        val otherResult = authorizer.preQualify(
+            context,
+            sampleIdentity(
+                alarmId = 202L,
+                generation = 1,
+                instanceToken = "v2_tok_202",
+                triggerTime = testTriggerTime,
+                restoreEpoch = 1L
+            ).createIntent(context)
+        )
+        assertTrue("Different alarmId MUST remain Eligible, got $otherResult", otherResult is DeliveryPrequalificationResult.Eligible)
+    }
+
+    @Test
+    fun s1_b04_normalVsQuickIdentitySemantics_quickRecordDoesNotBlockNormal() {
+        val quickRecord = DirectBootDeliveryRecord.createQuick(
+            alarmId = testAlarmId,
+            triggerTime = testTriggerTime,
+            deliveredAt = testTriggerTime + 50L,
+            provenance = "LEGACY_QUICK"
+        )
+        assertTrue(DirectBootDeliveryLedger.appendRecord(context, quickRecord) is DeliveryAppendResult.Appended)
+
+        val normalItem = sampleQueueItem(
+            alarmId = testAlarmId,
+            generation = 1,
+            instanceToken = "v2_tok_normal_101",
+            triggerTime = testTriggerTime,
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(normalItem), now = 0L))
+
+        val normalResult = authorizer.preQualify(
+            context,
+            sampleIdentity(
+                alarmId = testAlarmId,
+                generation = 1,
+                instanceToken = "v2_tok_normal_101",
+                triggerTime = testTriggerTime,
+                restoreEpoch = 1L
+            ).createIntent(context)
+        )
+        assertTrue("KIND_QUICK ledger entry MUST NOT block KIND_NORMAL occurrence, got $normalResult", normalResult is DeliveryPrequalificationResult.Eligible)
+    }
+
+    @Test
+    fun s1_b05_concurrentPrequalifyAgainstLegacyClaim_neverReturnsEligible() {
+        val legacyRecord = DirectBootDeliveryRecord.createNormal(
+            alarmId = testAlarmId,
+            triggerTime = testTriggerTime,
+            deliveredAt = testTriggerTime + 50L,
+            generation = 1,
+            instanceToken = "legacy_claim_101",
+            provenance = "LEGACY_DELIVERY",
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootDeliveryLedger.appendRecord(context, legacyRecord) is DeliveryAppendResult.Appended)
+
+        val v2Item = sampleQueueItem(
+            alarmId = testAlarmId,
+            generation = 1,
+            instanceToken = "v2_tok_concurrent_101",
+            triggerTime = testTriggerTime,
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(v2Item), now = 0L))
+        val v2Intent = sampleIdentity(
+            alarmId = testAlarmId,
+            generation = 1,
+            instanceToken = "v2_tok_concurrent_101",
+            triggerTime = testTriggerTime,
+            restoreEpoch = 1L
+        ).createIntent(context)
+
+        val threadCount = 8
+        val executor = Executors.newFixedThreadPool(threadCount)
+        val startLatch = CountDownLatch(1)
+        val doneLatch = CountDownLatch(threadCount)
+        val eligibleCount = AtomicInteger(0)
+        val duplicateCount = AtomicInteger(0)
+
+        for (i in 0 until threadCount) {
+            executor.submit {
+                try {
+                    startLatch.await()
+                    val res = authorizer.preQualify(context, v2Intent)
+                    when (res) {
+                        is DeliveryPrequalificationResult.Eligible -> eligibleCount.incrementAndGet()
+                        is DeliveryPrequalificationResult.DuplicateDelivery -> duplicateCount.incrementAndGet()
+                        else -> {}
+                    }
+                } finally {
+                    doneLatch.countDown()
+                }
+            }
+        }
+        startLatch.countDown()
+        doneLatch.await()
+        executor.shutdown()
+
+        assertEquals("Concurrent preQualify MUST NEVER return Eligible on LEGACY_DELIVERY collision", 0, eligibleCount.get())
+        assertEquals("All concurrent preQualify calls MUST reject as DuplicateDelivery", threadCount, duplicateCount.get())
+    }
+
+    // =========================================================================
+    // KNO-75 B1c-S1-P3A: Durable Owner Integration Proof Tests
+    // =========================================================================
+
+    @Test
+    fun p3a_01_handoverPendingOwnerCollision_rejectsWithoutMutatingStorage() {
+        val pendingOwner = DirectBootDurableOwner(
+            schemaVersion = DirectBootDurableOwnerStore.CURRENT_SCHEMA_VERSION,
+            state = OwnerState.HANDOVER_PENDING,
+            ownerSeq = 0L,
+            bootProvenance = BootProvenance(
+                bootCount = 1,
+                lastElapsedRealtime = 10_000L,
+                bootEpochEstimateMs = testTriggerTime - 10_000L
+            ),
+            handoverClaim = HandoverClaim(
+                handoverId = "ho_p3a_pending_101",
+                alarmId = testAlarmId,
+                triggerTime = testTriggerTime,
+                generation = 1,
+                instanceToken = "owner_pending_tok_101",
+                restoreEpoch = 1L
+            ),
+            activeSession = null,
+            updatedAtEpochMs = testTriggerTime
+        )
+        val writeRes = DirectBootDurableOwnerStore.write(context, pendingOwner, expectedOwnerSeq = 0L)
+        assertTrue("Precondition: Owner write must succeed, got $writeRes", writeRes is OwnerWriteResult.Success)
+        val readBack = DirectBootDurableOwnerStore.read(context)
+        assertTrue("Precondition: Owner readback must succeed, got $readBack", readBack is OwnerReadResult.Success)
+        assertEquals(OwnerState.HANDOVER_PENDING, (readBack as OwnerReadResult.Success).owner.state)
+        assertEquals(1L, readBack.owner.ownerSeq)
+        assertTrue(
+            "Precondition: Ledger must be absent so collision is strictly Owner-sourced",
+            DirectBootDeliveryLedger.inspectStorageState(context) is LedgerStorageState.Absent
+        )
+
+        val queueItem = sampleQueueItem(instanceToken = "v2_tok_101")
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(queueItem), now = 0L))
+        val prefsBefore = prefs.all.toMap()
+
+        val intent = sampleIdentity(instanceToken = "v2_tok_101").createIntent(context)
+        val result = authorizer.preQualify(context, intent)
+
+        assertTrue("HANDOVER_PENDING owner collision must reject as DuplicateDelivery, got $result", result is DeliveryPrequalificationResult.DuplicateDelivery)
+        val dup = result as DeliveryPrequalificationResult.DuplicateDelivery
+        assertEquals("Collision must reference Owner handoverId rather than a Ledger recordId", "ho_p3a_pending_101", dup.recordId)
+        assertTrue(dup.reason.contains("HANDOVER_PENDING"))
+        assertFalse(dup.reason.contains("owner_pending_tok_101"))
+        assertFalse(dup.reason.contains("v2_tok_101"))
+        assertTrue(DirectBootDeliveryLedger.inspectStorageState(context) is LedgerStorageState.Absent)
+        assertEquals("Rejected preQualify MUST NOT mutate SharedPreferences", prefsBefore, prefs.all.toMap())
+    }
+
+    @Test
+    fun p3a_02_v2ActiveOwnerCollision_rejectsWithoutMutatingStorage() {
+        val activeOwner = DirectBootDurableOwner(
+            schemaVersion = DirectBootDurableOwnerStore.CURRENT_SCHEMA_VERSION,
+            state = OwnerState.V2_ACTIVE,
+            ownerSeq = 0L,
+            bootProvenance = BootProvenance(
+                bootCount = 1,
+                lastElapsedRealtime = 10_000L,
+                bootEpochEstimateMs = testTriggerTime - 10_000L
+            ),
+            handoverClaim = null,
+            activeSession = ActiveOwnerSession(
+                alarmId = testAlarmId,
+                triggerTime = testTriggerTime,
+                generation = 1,
+                instanceToken = "owner_active_tok_101",
+                restoreEpoch = 1L
+            ),
+            updatedAtEpochMs = testTriggerTime
+        )
+        val writeRes = DirectBootDurableOwnerStore.write(context, activeOwner, expectedOwnerSeq = 0L)
+        assertTrue("Precondition: Owner write must succeed, got $writeRes", writeRes is OwnerWriteResult.Success)
+        val readBack = DirectBootDurableOwnerStore.read(context)
+        assertTrue("Precondition: Owner readback must succeed, got $readBack", readBack is OwnerReadResult.Success)
+        assertEquals(OwnerState.V2_ACTIVE, (readBack as OwnerReadResult.Success).owner.state)
+        assertEquals(1L, readBack.owner.ownerSeq)
+        assertTrue(
+            "Precondition: Ledger must be absent so collision is strictly Owner-sourced",
+            DirectBootDeliveryLedger.inspectStorageState(context) is LedgerStorageState.Absent
+        )
+
+        val queueItem = sampleQueueItem(instanceToken = "v2_tok_101")
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(queueItem), now = 0L))
+        val prefsBefore = prefs.all.toMap()
+
+        val intent = sampleIdentity(instanceToken = "v2_tok_101").createIntent(context)
+        val result = authorizer.preQualify(context, intent)
+
+        assertTrue("V2_ACTIVE owner collision must reject as DuplicateDelivery, got $result", result is DeliveryPrequalificationResult.DuplicateDelivery)
+        val dup = result as DeliveryPrequalificationResult.DuplicateDelivery
+        assertEquals(
+            "Collision must reference Owner V2_ACTIVE marker rather than a Ledger recordId",
+            "owner_V2_ACTIVE_${testAlarmId}_${testTriggerTime}",
+            dup.recordId
+        )
+        assertTrue(dup.reason.contains("V2_ACTIVE"))
+        assertTrue(DirectBootDeliveryLedger.inspectStorageState(context) is LedgerStorageState.Absent)
+        assertEquals("Rejected preQualify MUST NOT mutate SharedPreferences", prefsBefore, prefs.all.toMap())
+    }
+
+    @Test
+    fun p3a_03_idleOwner_remainsNeutralAndAllowsEligible() {
+        val idleOwner = DirectBootDurableOwnerStore.createInitialIdle(
+            bootProvenance = BootProvenance(
+                bootCount = 1,
+                lastElapsedRealtime = 10_000L,
+                bootEpochEstimateMs = testTriggerTime - 10_000L
+            ),
+            nowEpochMs = testTriggerTime
+        )
+        val writeRes = DirectBootDurableOwnerStore.write(context, idleOwner, expectedOwnerSeq = 0L)
+        assertTrue(writeRes is OwnerWriteResult.Success)
+        val readBack = DirectBootDurableOwnerStore.read(context) as OwnerReadResult.Success
+        assertEquals(OwnerState.IDLE, readBack.owner.state)
+        assertEquals(1L, readBack.owner.ownerSeq)
+
+        val queueItem = sampleQueueItem()
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(queueItem), now = 0L))
+        val prefsBefore = prefs.all.toMap()
+
+        val result = authorizer.preQualify(context, sampleIdentity().createIntent(context))
+        assertTrue("IDLE owner MUST be neutral and allow Eligible prequalification, got $result", result is DeliveryPrequalificationResult.Eligible)
+        assertEquals(prefsBefore, prefs.all.toMap())
+    }
+
+    @Test
+    fun p3a_04_corruptOwner_failsClosedAndPreservesRawBytes() {
+        val queueItem = sampleQueueItem()
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(queueItem), now = 0L))
+        val corruptRaw = "{corrupt_owner_raw_p3a"
+        assertTrue(prefs.edit().putString(DirectBootDurableOwnerStore.KEY_DIRECT_BOOT_DURABLE_OWNER, corruptRaw).commit())
+        assertTrue(DirectBootDurableOwnerStore.read(context) is OwnerReadResult.Corrupt)
+
+        val prefsBefore = prefs.all.toMap()
+        val result = authorizer.preQualify(context, sampleIdentity().createIntent(context))
+
+        assertTrue("Corrupt owner MUST fail closed with StorageUnverifiable, got $result", result is DeliveryPrequalificationResult.StorageUnverifiable)
+        assertTrue((result as DeliveryPrequalificationResult.StorageUnverifiable).reason.contains("Durable owner storage is corrupt"))
+        assertEquals(corruptRaw, prefs.getString(DirectBootDurableOwnerStore.KEY_DIRECT_BOOT_DURABLE_OWNER, null))
+        assertEquals(prefsBefore, prefs.all.toMap())
+    }
+
+    @Test
+    fun p3a_05_unsupportedOwnerSchema_failsClosedAndPreservesRawBytes() {
+        val idleOwner = DirectBootDurableOwnerStore.createInitialIdle(nowEpochMs = testTriggerTime)
+        val writeRes = DirectBootDurableOwnerStore.write(context, idleOwner, expectedOwnerSeq = 0L)
+        assertTrue(writeRes is OwnerWriteResult.Success)
+        val serialized = prefs.getString(DirectBootDurableOwnerStore.KEY_DIRECT_BOOT_DURABLE_OWNER, null)!!
+        val unsupportedRaw = org.json.JSONObject(serialized).apply {
+            put("schemaVersion", 99)
+        }.toString()
+        assertTrue(prefs.edit().putString(DirectBootDurableOwnerStore.KEY_DIRECT_BOOT_DURABLE_OWNER, unsupportedRaw).commit())
+
+        val ownerRead = DirectBootDurableOwnerStore.read(context)
+        assertTrue(ownerRead is OwnerReadResult.UnsupportedSchema)
+        assertEquals(99, (ownerRead as OwnerReadResult.UnsupportedSchema).foundVersion)
+
+        val queueItem = sampleQueueItem()
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(queueItem), now = 0L))
+        val prefsBefore = prefs.all.toMap()
+
+        val result = authorizer.preQualify(context, sampleIdentity().createIntent(context))
+
+        assertTrue("Unsupported owner schema MUST fail closed with StorageUnverifiable, got $result", result is DeliveryPrequalificationResult.StorageUnverifiable)
+        assertTrue((result as DeliveryPrequalificationResult.StorageUnverifiable).reason.contains("Durable owner storage has unsupported schema version 99"))
+        assertEquals(unsupportedRaw, prefs.getString(DirectBootDurableOwnerStore.KEY_DIRECT_BOOT_DURABLE_OWNER, null))
+        assertEquals(prefsBefore, prefs.all.toMap())
+    }
 }

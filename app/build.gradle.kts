@@ -165,7 +165,11 @@ val unlocalizedComposeFiles = setOf(
     "directboot/DirectBootCeTakeoverStore.kt",
     "directboot/DirectBootFiredWitnessRecord.kt",
     "directboot/DirectBootMissedRecord.kt",
-    "directboot/DirectBootMissedTransitionEngine.kt"
+    "directboot/DirectBootMissedTransitionEngine.kt",
+    // These files contain internal DE storage validation and delivery identity logic,
+    // not user-visible Compose/notification text.
+    "directboot/DirectBootDurableOwnerStore.kt",
+    "directboot/DirectBootDeliveryAuthorizer.kt"
 )
 
 val primaryComposeScreenFiles: List<File> = fileTree("src/main/java/com/sysadmindoc/alarmclock") {
