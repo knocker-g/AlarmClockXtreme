@@ -168,6 +168,7 @@ val unlocalizedComposeFiles = setOf(
     "directboot/DirectBootMissedTransitionEngine.kt",
     // These files contain internal DE storage validation and delivery identity logic,
     // not user-visible Compose/notification text.
+    "directboot/DirectBootLegacyClaimStore.kt",
     "directboot/DirectBootDurableOwnerStore.kt",
     "directboot/DirectBootDeliveryAuthorizer.kt"
 )
