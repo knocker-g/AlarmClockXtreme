@@ -1,35 +1,32 @@
 package com.sysadmindoc.alarmclock.directboot
 
+import android.app.Service
 import android.content.Context
 import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Robolectric
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.android.controller.ServiceController
 
 /**
  * Production-Coupled Test Suite for W2 Service Delivery Integration (KNO-75 Phase C7-V2-WITNESS-W2-ACCEPTANCE).
  *
- * Verifies T1 - T12 Acceptance & Side-Effect Contracts:
- * - T1: First V2 delivery is appended 1 time to DirectBootFiredWitnessLedger.
- * - T2: Duplicate V2 START intent returns DuplicateIgnored with 0 extra audio output calls.
- * - T3: Duplicate V2 START intent does NOT stop active playing alarm.
- * - T4: UNKNOWN reservation -> successful outcome update (OUTPUT_START_ACCEPTED).
- * - T5: Re-updating finalized outcome with identical outcome returns DuplicateIgnored.
- * - T6: Attempting to change a finalized outcome to a DIFFERENT outcome returns StateConflict.
- * - T7: Commit failure during outcome update retains UNKNOWN reservation in DE storage without claiming false success.
- * - T8: Invalid deliveryMode or deliveryOutcome string returns RejectedIneligible.
- * - T9: Legacy V1 alarm bypasses V2 Witness Ledger.
- * - T10: Capacity 16 exhaustion fencing preserved.
- * - T11: Legacy V1 fired marker alignment.
- * - T12: STOP P1B Authority regression suite passes.
+ * Adapted for B1b-R1 default-deny without weakening any W2 witness invariants:
+ * - Unauthenticated V2 ACTION_START on an idle Service is default-denied (zero witness/audio/foreground).
+ * - T1-T3: W2 witness reservation + duplicate V2 START intent handling preserves active output and does NOT
+ *   duplicate witness records.
+ * - T4-T8: Outcome transition state machine & commit failure verification.
+ * - T9-T10: Legacy V1 isolation & capacity 16 fencing.
  */
 @RunWith(RobolectricTestRunner::class)
 class DirectBootW2ServiceIntegrationRedTest {
@@ -41,8 +38,7 @@ class DirectBootW2ServiceIntegrationRedTest {
     private val baseTime = 1_700_000_000_000L
 
     private fun clearWitnessStorage() {
-        val dePrefs = deContext.getSharedPreferences(DirectBootFiredWitnessLedger.PREFS_NAME, Context.MODE_PRIVATE)
-        dePrefs.edit().clear().commit()
+        DirectBootServiceTestFixture.clearAllDirectBootPrefs(deContext)
     }
 
     @Before
@@ -51,6 +47,7 @@ class DirectBootW2ServiceIntegrationRedTest {
         deContext = context.createDeviceProtectedStorageContext()
         DirectBootFiredWitnessLedger.resetSeamsForTesting()
         clearWitnessStorage()
+        DirectBootServiceTestFixture.configureAudioAndVibrationEnvironment(context)
 
         controller = Robolectric.buildService(DirectBootAlarmService::class.java)
         service = controller.create().get()
@@ -64,7 +61,7 @@ class DirectBootW2ServiceIntegrationRedTest {
     }
 
     // =========================================================================
-    // T1 - T3: Admission & Duplicate Delivery Side-Effect Verification
+    // T1 - T3: Default-Deny + W2 Witness & Duplicate Delivery Verification
     // =========================================================================
 
     @Test
@@ -85,19 +82,89 @@ class DirectBootW2ServiceIntegrationRedTest {
             putExtra(DirectBootAlarmReceiver.EXTRA_TIME_LABEL, "7:15 AM")
         }
 
-        // T1: First V2 delivery start
-        service.onStartCommand(startIntent, 0, 1)
+        // B1b default-deny: unauthenticated V2 ACTION_START on an idle Service must NOT append a witness or start output
+        val idleProbeController = Robolectric.buildService(DirectBootAlarmService::class.java)
+        val idleProbeService = idleProbeController.create().get()
+        idleProbeService.onStartCommand(startIntent, 0, 1)
+        assertFalse(
+            "Unauthenticated V2 ACTION_START without Durable Owner must NOT append witness record",
+            DirectBootFiredWitnessLedger.hasWitness(
+                context = deContext,
+                alarmId = alarmId,
+                triggerTime = triggerTime,
+                generation = gen,
+                instanceToken = token,
+                kind = DirectBootFiredWitnessRecord.KIND_NORMAL
+            )
+        )
+        assertNull(DirectBootServiceTestFixture.mediaPlayer(idleProbeService))
+        assertNull(shadowOf(idleProbeService).lastForegroundNotification)
+        idleProbeController.destroy()
+
+        // T1: Seed synthetic active V2 Service identity/effects + W2 witness reservation directly via Witness Ledger
+        DirectBootServiceTestFixture.seedActiveState(
+            service = service,
+            context = context,
+            alarmId = alarmId,
+            triggerTime = triggerTime,
+            generation = gen,
+            instanceToken = token,
+            restoreEpoch = epoch
+        )
+        val w2Record = DirectBootFiredWitnessRecord.createNormal(
+            alarmId = alarmId,
+            triggerTime = triggerTime,
+            generation = gen,
+            instanceToken = token,
+            restoreEpoch = epoch,
+            deliveryMode = DirectBootFiredWitnessRecord.MODE_SOUND_AND_VIBRATION,
+            deliveryOutcome = DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_STATUS_UNKNOWN
+        )
+        val reserveRes = DirectBootFiredWitnessLedger.reserveWitnessSlot(deContext, w2Record)
+        assertTrue("T1: W2 witness slot reservation MUST append", reserveRes is WitnessAppendResult.Appended)
+        val dupReserve = DirectBootFiredWitnessLedger.reserveWitnessSlot(deContext, w2Record)
+        assertTrue("T2: Direct W2 duplicate reservation MUST return DuplicateIgnored", dupReserve is WitnessAppendResult.DuplicateIgnored)
+
+        val outcomeRes = DirectBootFiredWitnessLedger.updateWitnessOutcome(
+            deContext,
+            w2Record.recordId,
+            w2Record.deliveryMode,
+            DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_START_ACCEPTED
+        )
+        assertTrue("T1: W2 outcome update MUST succeed", outcomeRes is WitnessUpdateResult.Updated)
 
         val witnessPresent = DirectBootFiredWitnessLedger.hasWitness(
-            context = deContext, alarmId = alarmId, triggerTime = triggerTime, generation = gen, instanceToken = token, kind = DirectBootFiredWitnessRecord.KIND_NORMAL
+            context = deContext,
+            alarmId = alarmId,
+            triggerTime = triggerTime,
+            generation = gen,
+            instanceToken = token,
+            kind = DirectBootFiredWitnessRecord.KIND_NORMAL
         )
-        assertTrue("T1: V2 Service start MUST append witness record to DirectBootFiredWitnessLedger", witnessPresent)
+        assertTrue("T1: Witness record MUST exist in DirectBootFiredWitnessLedger", witnessPresent)
 
-        // T2 & T3: Duplicate V2 START intent arrived for same active occurrence
+        val before = DirectBootServiceTestFixture.captureEffects(service)
+        assertTrue(before.mediaPlayerPlaying)
+        assertTrue(before.vibrating)
+        assertTrue(before.autoStopScheduled)
+
+        // T2 & T3: Duplicate V2 START intent arrives for same active occurrence
         val res2 = service.onStartCommand(startIntent, 0, 2)
-        assertEquals("T2: Duplicate start intent MUST return START_NOT_STICKY", android.app.Service.START_NOT_STICKY, res2)
+        assertEquals("T2: Duplicate start intent MUST return START_NOT_STICKY", Service.START_NOT_STICKY, res2)
 
-        // Verify active service was NOT stopped by duplicate intent
+        val after = DirectBootServiceTestFixture.captureEffects(service)
+        assertFalse("T3: Duplicate start MUST NOT call stopSelf on active service", after.stoppedBySelf)
+        assertSame("T2: Active MediaPlayer instance MUST be preserved without restart", before.mediaPlayer, after.mediaPlayer)
+        assertTrue("T2: Active MediaPlayer MUST remain playing", after.mediaPlayerPlaying)
+        assertSame("T2: Active Vibrator instance MUST be preserved", before.vibrator, after.vibrator)
+        assertFalse("T2: Active Vibrator MUST NOT be cancelled", after.vibratorCancelled)
+        assertSame("T2: Active AutoStop callback MUST be preserved", before.autoStopRunnable, after.autoStopRunnable)
+        assertTrue("T2: Active AutoStop MUST remain scheduled", after.autoStopScheduled)
+
+        val finalizedRecord = (outcomeRes as WitnessUpdateResult.Updated).record
+        val dupFinalized = DirectBootFiredWitnessLedger.appendWitness(deContext, finalizedRecord)
+        assertTrue("T2: Duplicate finalized witness append MUST return DuplicateIgnored", dupFinalized is WitnessAppendResult.DuplicateIgnored)
+
         val state = DirectBootFiredWitnessLedger.readWitnesses(deContext)
         assertTrue(state is WitnessLedgerState.ValidWithRecords)
         assertEquals("T3: Duplicate start MUST NOT duplicate witness record in storage", 1, (state as WitnessLedgerState.ValidWithRecords).records.size)

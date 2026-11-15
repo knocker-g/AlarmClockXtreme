@@ -96,109 +96,106 @@ class DirectBootAlarmService : Service() {
     }
 
     private fun startDirectBootAlarm(intent: Intent) {
-        val alarmId = intent.getLongExtra(DirectBootAlarmReceiver.EXTRA_ALARM_ID, -1L)
-        if (alarmId <= 0L) {
-            stopSelf()
-            return
+        val activeSnapshot = captureActiveSnapshot()
+        val candidate = DirectBootServiceStartPolicy.extractCandidate(intent)
+
+        // Stage A: Classify with neutral NOT_QUERIED storage to determine lane safely without reading V2-only DE stores.
+        val stageAResult = DirectBootServiceStartPolicy.classify(
+            ServiceStartClassificationInput(
+                active = activeSnapshot,
+                candidate = candidate,
+                storage = StartStorageObservation()
+            )
+        )
+
+        // Stage B: Never authorize V2 output from Stage A. Only genuine LEGACY_V1 avoids V2-only DE storage coupling.
+        val decisionResult = if (stageAResult.lane == CandidateLane.LEGACY_V1) {
+            stageAResult
+        } else {
+            val deContext = if (isDeviceProtectedStorage) this else createDeviceProtectedStorageContext()
+            val storageObservation = observeStorageForCandidate(deContext, candidate)
+            DirectBootServiceStartPolicy.classify(
+                ServiceStartClassificationInput(
+                    active = activeSnapshot,
+                    candidate = candidate,
+                    storage = storageObservation
+                )
+            )
         }
 
-        // C7-I3 5-Step Handover Sequence: Clean up resource claims of active alarm before taking over
+        when (decisionResult.decision) {
+            ServiceStartDecision.REJECT_KEEP_OLD,
+            ServiceStartDecision.UNKNOWN_KEEP_OLD,
+            ServiceStartDecision.PREPARED_NEEDS_OWNER -> {
+                Log.w(
+                    TAG,
+                    "DirectBoot ACTION_START blocked: decision=${decisionResult.decision}, " +
+                        "reason=${decisionResult.reason}, lane=${decisionResult.lane}, " +
+                        "candidateAlarmId=${candidate.alarmId}, activeAlarmId=${activeSnapshot.alarmId}"
+                )
+                if (!activeSnapshot.isActive) {
+                    stopSelf()
+                }
+                return
+            }
+            ServiceStartDecision.DUPLICATE_KEEP_OLD -> {
+                Log.i(
+                    TAG,
+                    "DirectBoot ACTION_START duplicate ignored: reason=${decisionResult.reason}, " +
+                        "lane=${decisionResult.lane}, candidateAlarmId=${candidate.alarmId}, " +
+                        "activeAlarmId=${activeSnapshot.alarmId}"
+                )
+                if (!activeSnapshot.isActive) {
+                    stopSelf()
+                }
+                return
+            }
+            ServiceStartDecision.LEGACY_COMPATIBILITY_PENDING -> {
+                // Defense-in-depth: B1b runtime NEVER admits V2 candidates or non-V1 lanes.
+                if (decisionResult.lane != CandidateLane.LEGACY_V1 ||
+                    candidate.instanceToken.isNotBlank() ||
+                    candidate.restoreEpoch != 0L
+                ) {
+                    Log.e(
+                        TAG,
+                        "Fail-closed guard blocked unexpected non-legacy admission: " +
+                            "lane=${decisionResult.lane}, candidateAlarmId=${candidate.alarmId}"
+                    )
+                    if (!activeSnapshot.isActive) {
+                        stopSelf()
+                    }
+                    return
+                }
+            }
+        }
+
+        val timeLabel = try {
+            intent.getStringExtra(DirectBootAlarmReceiver.EXTRA_TIME_LABEL).orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+
+        // Legacy V1 Handover Sequence: Clean up resource claims of active V1 alarm before taking over
         stopDefaultAlarmSoundInternal()
         stopVibrationInternal()
         autoStopRunnable?.let { handler.removeCallbacks(it) }
 
-        currentAlarmId = alarmId
-        currentTriggerTime = intent.getLongExtra(DirectBootAlarmReceiver.EXTRA_TRIGGER_TIME, 0L)
-        currentGeneration = intent.getIntExtra(DirectBootV2NormalIntentIdentity.EXTRA_GENERATION, 1)
-        currentInstanceToken = intent.getStringExtra(DirectBootV2NormalIntentIdentity.EXTRA_INSTANCE_TOKEN).orEmpty()
-        currentRestoreEpoch = intent.getLongExtra(DirectBootV2NormalIntentIdentity.EXTRA_RESTORE_EPOCH, 0L)
-
-        val label = intent.getStringExtra(DirectBootAlarmReceiver.EXTRA_LABEL).orEmpty()
-        val timeLabel = intent.getStringExtra(DirectBootAlarmReceiver.EXTRA_TIME_LABEL).orEmpty()
-        val playDefaultSound = intent.getBooleanExtra(
-            DirectBootAlarmReceiver.EXTRA_PLAY_DEFAULT_SOUND,
-            true
-        )
-        val vibrationEnabled = intent.getBooleanExtra(
-            DirectBootAlarmReceiver.EXTRA_VIBRATION_ENABLED,
-            true
-        )
-
-        val isV2Alarm = currentGeneration >= 1 && currentInstanceToken.isNotBlank()
-        val deContext = if (isDeviceProtectedStorage) this else createDeviceProtectedStorageContext()
-        var reservationRecord: DirectBootFiredWitnessRecord? = null
-
-        if (isV2Alarm) {
-            val mode = when {
-                playDefaultSound && vibrationEnabled -> DirectBootFiredWitnessRecord.MODE_SOUND_AND_VIBRATION
-                playDefaultSound -> DirectBootFiredWitnessRecord.MODE_SOUND_ONLY
-                vibrationEnabled -> DirectBootFiredWitnessRecord.MODE_VIBRATION_ONLY
-                else -> DirectBootFiredWitnessRecord.MODE_SILENT_NOTIFICATION
-            }
-            reservationRecord = DirectBootFiredWitnessRecord.createNormal(
-                alarmId = alarmId,
-                triggerTime = currentTriggerTime,
-                generation = currentGeneration,
-                instanceToken = currentInstanceToken,
-                restoreEpoch = currentRestoreEpoch,
-                deliveryMode = mode,
-                deliveryOutcome = DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_STATUS_UNKNOWN
-            )
-
-            val reserveResult = DirectBootFiredWitnessLedger.reserveWitnessSlot(deContext, reservationRecord)
-            if (reserveResult is WitnessAppendResult.DuplicateIgnored) {
-                Log.i(TAG, "Duplicate V2 START intent received for active occurrence $alarmId; extra output aborted")
-                return
-            }
-            if (reserveResult !is WitnessAppendResult.Appended) {
-                Log.w(TAG, "Pre-output gate rejected V2 alarm $alarmId: reserveResult $reserveResult; output aborted")
-                stopSelf()
-                return
-            }
-        }
+        currentAlarmId = candidate.alarmId
+        currentTriggerTime = candidate.triggerTime
+        currentGeneration = candidate.generation
+        currentInstanceToken = ""
+        currentRestoreEpoch = 0L
 
         startForeground(NOTIFICATION_ID, buildNotification(timeLabel))
         DirectBootAlarmCache.recordFired(
             context = this,
-            alarmId = alarmId,
-            triggerTime = currentTriggerTime,
+            alarmId = candidate.alarmId,
+            triggerTime = candidate.triggerTime,
             firedAt = System.currentTimeMillis()
         )
 
-        var soundOk = false
-        var vibrationOk = false
-
-        if (playDefaultSound) soundOk = startDefaultAlarmSound()
-        if (vibrationEnabled) vibrationOk = startVibration()
-
-        if (isV2Alarm && reservationRecord != null) {
-            val outcome = when {
-                playDefaultSound && vibrationEnabled -> {
-                    if (soundOk && vibrationOk) DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_START_ACCEPTED
-                    else if (soundOk || vibrationOk) DirectBootFiredWitnessRecord.OUTCOME_PARTIAL_OUTPUT_ACCEPTED
-                    else DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_START_FAILED
-                }
-                playDefaultSound -> {
-                    if (soundOk) DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_START_ACCEPTED
-                    else DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_START_FAILED
-                }
-                vibrationEnabled -> {
-                    if (vibrationOk) DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_START_ACCEPTED
-                    else DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_START_FAILED
-                }
-                else -> DirectBootFiredWitnessRecord.OUTCOME_NO_OUTPUT_REQUESTED
-            }
-
-            val updateRes = DirectBootFiredWitnessLedger.updateWitnessOutcome(
-                context = deContext,
-                recordId = reservationRecord.recordId,
-                deliveryMode = reservationRecord.deliveryMode,
-                deliveryOutcome = outcome
-            )
-            if (updateRes is WitnessUpdateResult.PersistenceFailed || updateRes is WitnessUpdateResult.StorageCorrupt) {
-                Log.w(TAG, "Witness outcome update commit failed ($updateRes); UNKNOWN reservation retained in DE storage for post-unlock takeover")
-            }
-        }
+        if (candidate.playDefaultSound) startDefaultAlarmSound()
+        if (candidate.vibrationEnabled) startVibration()
 
         // Schedule AutoStop with active lineage fencing
         val targetId = currentAlarmId
@@ -214,6 +211,159 @@ class DirectBootAlarmService : Service() {
             }
         }
         handler.postDelayed(autoStopRunnable!!, AUTO_STOP_MS)
+    }
+
+    private fun captureActiveSnapshot(): ActiveServiceSnapshot {
+        val active = currentAlarmId > 0L
+        val playing = try {
+            mediaPlayer?.isPlaying == true
+        } catch (_: Exception) {
+            mediaPlayer != null
+        }
+        val vibrating = vibrator != null
+        return ActiveServiceSnapshot(
+            isActive = active,
+            alarmId = currentAlarmId,
+            triggerTime = currentTriggerTime,
+            generation = currentGeneration,
+            instanceToken = currentInstanceToken,
+            restoreEpoch = currentRestoreEpoch,
+            isV2Managed = active && currentGeneration >= 1 && currentInstanceToken.isNotBlank(),
+            isAudibleOrVibrating = active && (playing || mediaPlayer != null || vibrating),
+            autoStopArmed = active && autoStopRunnable != null
+        )
+    }
+
+    private fun observeStorageForCandidate(
+        deContext: Context,
+        candidate: IncomingStartCandidate
+    ): StartStorageObservation {
+        return try {
+            val witnessState = DirectBootFiredWitnessLedger.readWitnesses(deContext)
+            var witnessOutcome = WitnessOutcomeObservation.NOT_APPLICABLE
+            val witnessStatus = when (witnessState) {
+                is WitnessLedgerState.Absent,
+                is WitnessLedgerState.ValidEmpty -> WitnessObservationStatus.ABSENT_OR_EMPTY
+                is WitnessLedgerState.Corrupt -> WitnessObservationStatus.CORRUPT
+                is WitnessLedgerState.UnsupportedSchema -> WitnessObservationStatus.UNSUPPORTED_SCHEMA
+                is WitnessLedgerState.ValidWithRecords -> {
+                    if (candidate.alarmId > 0L &&
+                        candidate.generation >= 1 &&
+                        candidate.instanceToken.isNotBlank() &&
+                        candidate.restoreEpoch > 0L
+                    ) {
+                        val expectedRecordId = DirectBootFiredWitnessRecord.computeRecordId(
+                            kind = DirectBootFiredWitnessRecord.KIND_NORMAL,
+                            alarmId = candidate.alarmId,
+                            triggerTime = candidate.triggerTime,
+                            generation = candidate.generation,
+                            instanceToken = candidate.instanceToken,
+                            restoreEpoch = candidate.restoreEpoch
+                        )
+                        val exact = witnessState.records.firstOrNull { it.recordId == expectedRecordId }
+                        if (exact != null) {
+                            val fieldsMatch = exact.kind == DirectBootFiredWitnessRecord.KIND_NORMAL &&
+                                exact.alarmId == candidate.alarmId &&
+                                exact.triggerTime == candidate.triggerTime &&
+                                exact.generation == candidate.generation &&
+                                exact.instanceToken == candidate.instanceToken &&
+                                exact.restoreEpoch == candidate.restoreEpoch
+                            if (fieldsMatch) {
+                                witnessOutcome = mapWitnessOutcome(exact.deliveryOutcome)
+                                WitnessObservationStatus.PRESENT_MATCHING_EXACT
+                            } else {
+                                WitnessObservationStatus.PRESENT_CONFLICTING
+                            }
+                        } else {
+                            val conflicting = witnessState.records.any {
+                                it.kind == DirectBootFiredWitnessRecord.KIND_NORMAL &&
+                                    it.alarmId == candidate.alarmId &&
+                                    it.generation == candidate.generation &&
+                                    it.instanceToken == candidate.instanceToken &&
+                                    (it.restoreEpoch != candidate.restoreEpoch || it.triggerTime != candidate.triggerTime)
+                            }
+                            if (conflicting) WitnessObservationStatus.PRESENT_CONFLICTING
+                            else WitnessObservationStatus.ABSENT_OR_EMPTY
+                        }
+                    } else {
+                        WitnessObservationStatus.ABSENT_OR_EMPTY
+                    }
+                }
+            }
+
+            val ledgerState = DirectBootDeliveryLedger.readUnacknowledgedRecords(deContext)
+            val ledgerStatus = when (ledgerState) {
+                is LedgerStorageState.Absent,
+                is LedgerStorageState.ValidEmpty -> LedgerObservationStatus.ABSENT_OR_EMPTY
+                is LedgerStorageState.Corrupt -> LedgerObservationStatus.CORRUPT
+                is LedgerStorageState.UnsupportedSchema -> LedgerObservationStatus.UNSUPPORTED_SCHEMA
+                is LedgerStorageState.ValidWithRecords -> {
+                    if (candidate.alarmId > 0L && candidate.generation >= 1 && candidate.instanceToken.isNotBlank()) {
+                        val expectedRecordId = DirectBootDeliveryRecord.computeRecordId(
+                            kind = DirectBootDeliveryRecord.KIND_NORMAL,
+                            alarmId = candidate.alarmId,
+                            triggerTime = candidate.triggerTime,
+                            generation = candidate.generation,
+                            instanceToken = candidate.instanceToken
+                        )
+                        val matched = ledgerState.records.any {
+                            it.recordId == expectedRecordId && it.restoreEpoch == candidate.restoreEpoch
+                        }
+                        when {
+                            matched -> LedgerObservationStatus.PRESENT_RECORDED
+                            ledgerState.records.size >= DirectBootDeliveryLedger.MAX_CAPACITY -> LedgerObservationStatus.CAPACITY_EXHAUSTED
+                            else -> LedgerObservationStatus.ABSENT_OR_EMPTY
+                        }
+                    } else {
+                        LedgerObservationStatus.ABSENT_OR_EMPTY
+                    }
+                }
+            }
+
+            val queueState = DirectBootAlarmCache.inspectQueueStorageState(deContext)
+            val queueStatus = when (queueState) {
+                is QueueStorageState.Absent,
+                is QueueStorageState.ValidEmpty -> QueueObservationStatus.ABSENT_OR_EMPTY
+                is QueueStorageState.Corrupt -> QueueObservationStatus.CORRUPT
+                is QueueStorageState.UnsupportedSchema -> QueueObservationStatus.UNSUPPORTED_SCHEMA
+                is QueueStorageState.ValidWithItems -> {
+                    val head = queueState.items.firstOrNull()
+                    if (head != null &&
+                        head.kind == DirectBootQueueItem.KIND_NORMAL &&
+                        head.alarmId == candidate.alarmId &&
+                        head.triggerTime == candidate.triggerTime &&
+                        head.generation == candidate.generation &&
+                        head.instanceToken == candidate.instanceToken &&
+                        head.restoreEpoch == candidate.restoreEpoch
+                    ) {
+                        QueueObservationStatus.MATCHES_HEAD
+                    } else {
+                        QueueObservationStatus.NOT_QUEUE_HEAD
+                    }
+                }
+            }
+
+            StartStorageObservation(
+                witnessStorageStatus = witnessStatus,
+                witnessOutcome = witnessOutcome,
+                deliveryLedgerStatus = ledgerStatus,
+                queueStorageStatus = queueStatus,
+                ownerStatus = DurableOwnerObservation.UNAVAILABLE_NO_DURABLE_OWNER
+            )
+        } catch (_: Exception) {
+            StartStorageObservation()
+        }
+    }
+
+    private fun mapWitnessOutcome(deliveryOutcome: String): WitnessOutcomeObservation {
+        return when (deliveryOutcome) {
+            DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_STATUS_UNKNOWN -> WitnessOutcomeObservation.OUTPUT_STATUS_UNKNOWN
+            DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_START_ACCEPTED -> WitnessOutcomeObservation.OUTPUT_START_ACCEPTED
+            DirectBootFiredWitnessRecord.OUTCOME_PARTIAL_OUTPUT_ACCEPTED -> WitnessOutcomeObservation.PARTIAL_OUTPUT_ACCEPTED
+            DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_START_FAILED -> WitnessOutcomeObservation.OUTPUT_START_FAILED
+            DirectBootFiredWitnessRecord.OUTCOME_NO_OUTPUT_REQUESTED -> WitnessOutcomeObservation.NO_OUTPUT_REQUESTED
+            else -> WitnessOutcomeObservation.NOT_APPLICABLE
+        }
     }
 
     private fun buildNotification(timeLabel: String): Notification {
