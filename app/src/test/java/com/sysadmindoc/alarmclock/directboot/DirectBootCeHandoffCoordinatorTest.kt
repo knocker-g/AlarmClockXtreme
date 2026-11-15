@@ -2126,4 +2126,161 @@ class DirectBootCeHandoffCoordinatorTest {
         assertTrue("Expected AlreadyAcknowledgedConfirmed on combined reload, got $combinedReload", combinedReload is CeQualifiedAckResult.AlreadyAcknowledgedConfirmed)
         assertEquals("Reload idempotent calls must perform 0 DE commits", 0, deCommits.get())
     }
+
+    // =========================================================================
+    // KNO-75 B1c-S4 RED Test: Check 10 Epoch Scoping (h1 Cross-Epoch)
+    // =========================================================================
+
+    @Test
+    fun s4_red_h1_crossEpochMissedAndDelivered_acknowledgeDeliveredMustRetireEpoch2AndPreserveEpoch1() {
+        val trigger = baseTime + 60_000L
+        val missedEpoch1 = DirectBootMissedRecord.createNormal(
+            alarmId = 1001L,
+            triggerTime = trigger,
+            missedAt = baseTime + 61_000L,
+            generation = 1,
+            instanceToken = "tok_h1_coord",
+            classification = DirectBootMissedRecord.CLASSIFICATION_SERVICE_START_FAILED,
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootMissedStore.recordMissed(deContext, missedEpoch1) is MissedRecordResult.Recorded)
+
+        val delEpoch2 = DirectBootDeliveryRecord.createNormal(
+            alarmId = 1001L,
+            triggerTime = trigger,
+            deliveredAt = baseTime + 62_000L,
+            generation = 1,
+            instanceToken = "tok_h1_coord",
+            restoreEpoch = 2L
+        )
+        assertTrue(DirectBootDeliveryLedger.appendRecord(deContext, delEpoch2) is DeliveryAppendResult.Appended)
+
+        val handoff = DirectBootCeHandoffCoordinator.handoffDelivered(
+            deContext = deContext,
+            ceContext = ceContext,
+            candidateRecord = delEpoch2,
+            recordedAtEpochMs = baseTime + 70_000L,
+            unlockGate = { true }
+        )
+        assertTrue("Cross-epoch handoff MUST succeed, got $handoff", handoff is CeHandoffResult.Confirmed)
+
+        val ack = DirectBootCeHandoffCoordinator.acknowledgeDeliveredWithCeProof(
+            deContext = deContext,
+            ceContext = ceContext,
+            candidateRecord = delEpoch2,
+            confirmedReceipt = handoff as CeHandoffResult.Confirmed,
+            unlockGate = { true }
+        )
+        assertTrue("Cross-epoch qualified DE ACK MUST return AcknowledgedConfirmed, got $ack", ack is CeQualifiedAckResult.AcknowledgedConfirmed)
+
+        // Epoch 2 DeliveryLedger is retired, while Epoch 1 MissedStore remains intact
+        assertTrue(DirectBootDeliveryLedger.inspectStorageState(deContext) is LedgerStorageState.ValidEmpty)
+        val missedAfter = DirectBootMissedStore.inspectStorageState(deContext) as MissedStoreStorageState.ValidWithRecords
+        assertEquals(listOf(missedEpoch1), missedAfter.records)
+    }
+
+    @Test
+    fun s4_c07_sameEpochOverdueConflictRemainsRejectedEvenWithCoRetirementFlag() {
+        val trigger = baseTime + 60_000L
+        val deDel = DirectBootDeliveryRecord.createNormal(
+            alarmId = 1002L,
+            triggerTime = trigger,
+            deliveredAt = baseTime + 60_500L,
+            generation = 1,
+            instanceToken = "tok_overdue_s4",
+            restoreEpoch = 1L
+        )
+        val deMissedOverdue = DirectBootMissedRecord.createNormal(
+            alarmId = 1002L,
+            triggerTime = trigger,
+            missedAt = baseTime + 90_000L,
+            generation = 1,
+            instanceToken = "tok_overdue_s4",
+            classification = DirectBootMissedRecord.CLASSIFICATION_OVERDUE,
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootDeliveryLedger.appendRecord(deContext, deDel) is DeliveryAppendResult.Appended)
+        val ceRes = DirectBootCeTakeoverStore.recordDelivered(ceContext, deDel, baseTime + 70_000L, unlockGate = { true }) as CeTakeoverIntakeResult.RecordedConfirmed
+        assertTrue(DirectBootMissedStore.recordMissed(deContext, deMissedOverdue) is MissedRecordResult.Recorded)
+
+        val ack = DirectBootCeHandoffCoordinator.acknowledgeDeliveredWithCeProof(
+            deContext = deContext,
+            ceContext = ceContext,
+            candidateRecord = deDel,
+            confirmedReceipt = CeHandoffResult.Confirmed(ceRes.record, 1, alreadyRecordedInCe = true, writePerformed = false),
+            allowServiceStartFailedCoRetirement = true,
+            unlockGate = { true }
+        )
+        assertTrue("OVERDUE coexistence MUST stay DeCrossStoreConflict even when co-retirement flag is true, got $ack", ack is CeQualifiedAckResult.Rejected.DeCrossStoreConflict)
+        assertTrue(DirectBootDeliveryLedger.inspectStorageState(deContext) is LedgerStorageState.ValidWithRecords)
+        assertTrue(DirectBootMissedStore.inspectStorageState(deContext) is MissedStoreStorageState.ValidWithRecords)
+    }
+
+    @Test
+    fun s4_r7a_dualKeyServiceStartFailedCoRetirement_atomicallyRetiresBothAndFailsClosedOnReadbackMismatch() {
+        val trigger = baseTime + 60_000L
+        val deDel = DirectBootDeliveryRecord.createNormal(
+            alarmId = 1003L,
+            triggerTime = trigger,
+            deliveredAt = baseTime + 60_100L,
+            generation = 1,
+            instanceToken = "tok_r7a_coord",
+            restoreEpoch = 1L
+        )
+        val deMissedFail = DirectBootMissedRecord.createNormal(
+            alarmId = 1003L,
+            triggerTime = trigger,
+            missedAt = baseTime + 60_200L,
+            generation = 1,
+            instanceToken = "tok_r7a_coord",
+            classification = DirectBootMissedRecord.CLASSIFICATION_SERVICE_START_FAILED,
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootDeliveryLedger.appendRecord(deContext, deDel) is DeliveryAppendResult.Appended)
+        assertTrue(DirectBootMissedStore.recordMissed(deContext, deMissedFail) is MissedRecordResult.Recorded)
+        val ceRes = DirectBootCeTakeoverStore.recordDelivered(ceContext, deDel, baseTime + 70_000L, unlockGate = { true }) as CeTakeoverIntakeResult.RecordedConfirmed
+        val confirmed = CeHandoffResult.Confirmed(ceRes.record, 1, alreadyRecordedInCe = true, writePerformed = false)
+
+        // Commit failure -> DeCommitFailed, both DE stores preserved
+        DirectBootMissedStore.commitSeam = { CommitExecutionOutcome.CommitFalse }
+        val failRes = DirectBootCeHandoffCoordinator.acknowledgeDeliveredWithCeProof(
+            deContext = deContext,
+            ceContext = ceContext,
+            candidateRecord = deDel,
+            confirmedReceipt = confirmed,
+            allowServiceStartFailedCoRetirement = true,
+            unlockGate = { true }
+        )
+        assertTrue("Expected DeCommitFailed on dual-key commit false, got $failRes", failRes is CeQualifiedAckResult.Uncertain.DeCommitFailed)
+        assertTrue(DirectBootDeliveryLedger.inspectStorageState(deContext) is LedgerStorageState.ValidWithRecords)
+        assertTrue(DirectBootMissedStore.inspectStorageState(deContext) is MissedStoreStorageState.ValidWithRecords)
+
+        // Commit reports Success without writing -> DeReadbackFailed, both DE stores preserved
+        DirectBootMissedStore.commitSeam = { CommitExecutionOutcome.Success }
+        val readbackFail = DirectBootCeHandoffCoordinator.acknowledgeDeliveredWithCeProof(
+            deContext = deContext,
+            ceContext = ceContext,
+            candidateRecord = deDel,
+            confirmedReceipt = confirmed,
+            allowServiceStartFailedCoRetirement = true,
+            unlockGate = { true }
+        )
+        assertTrue("Expected DeReadbackFailed when dual-key readback stays non-empty, got $readbackFail", readbackFail is CeQualifiedAckResult.Uncertain.DeReadbackFailed)
+        assertTrue(DirectBootDeliveryLedger.inspectStorageState(deContext) is LedgerStorageState.ValidWithRecords)
+        assertTrue(DirectBootMissedStore.inspectStorageState(deContext) is MissedStoreStorageState.ValidWithRecords)
+
+        // Clean retry atomically retires both DE stores
+        DirectBootMissedStore.resetSeamsForTesting()
+        val ok = DirectBootCeHandoffCoordinator.acknowledgeDeliveredWithCeProof(
+            deContext = deContext,
+            ceContext = ceContext,
+            candidateRecord = deDel,
+            confirmedReceipt = confirmed,
+            allowServiceStartFailedCoRetirement = true,
+            unlockGate = { true }
+        )
+        assertTrue("Expected AcknowledgedConfirmed on clean retry, got $ok", ok is CeQualifiedAckResult.AcknowledgedConfirmed)
+        assertTrue(DirectBootDeliveryLedger.inspectStorageState(deContext) is LedgerStorageState.ValidEmpty)
+        assertTrue(DirectBootMissedStore.inspectStorageState(deContext) is MissedStoreStorageState.ValidEmpty)
+    }
 }

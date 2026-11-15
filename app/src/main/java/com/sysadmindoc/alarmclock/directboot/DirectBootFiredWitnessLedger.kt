@@ -3,6 +3,7 @@ package com.sysadmindoc.alarmclock.directboot
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
 
 /**
@@ -168,11 +169,11 @@ object DirectBootFiredWitnessLedger {
     fun readWitnesses(context: Context): WitnessLedgerState {
         val deContext = if (context.isDeviceProtectedStorage) context else context.createDeviceProtectedStorageContext()
         synchronized(DirectBootStorageLock.lock) {
-            val prefs = deContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val rawPayload = readbackSeam(prefs) ?: return WitnessLedgerState.ValidEmpty
-            if (rawPayload.isBlank()) return WitnessLedgerState.ValidEmpty
-
             return try {
+                val prefs = deContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                val rawPayload = readbackSeam(prefs) ?: return WitnessLedgerState.ValidEmpty
+                if (rawPayload.isBlank()) return WitnessLedgerState.ValidEmpty
+
                 val array = JSONArray(rawPayload)
                 if (array.length() > MAX_CAPACITY) {
                     return WitnessLedgerState.Corrupt("Stored witness payload length (${array.length()}) exceeds MAX_CAPACITY ($MAX_CAPACITY)")
@@ -193,6 +194,8 @@ object DirectBootFiredWitnessLedger {
                     records.add(rec)
                 }
                 if (records.isEmpty()) WitnessLedgerState.ValidEmpty else WitnessLedgerState.ValidWithRecords(records)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: UnsupportedSchemaException) {
                 WitnessLedgerState.UnsupportedSchema(e.foundVersion, e.expectedVersion)
             } catch (e: Exception) {
@@ -239,8 +242,54 @@ object DirectBootFiredWitnessLedger {
 
             val json = serializeRecords(currentRecords)
             val prefs = deContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            prefs.edit().putString(KEY_WITNESS_PAYLOAD, json).commit()
-            return WitnessAckResult.Acknowledged(recordId, currentRecords.size)
+            val committed = try {
+                commitSeam(prefs.edit().putString(KEY_WITNESS_PAYLOAD, json))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                return WitnessAckResult.PersistenceFailed(
+                    recordId = recordId,
+                    reason = "SharedPreferences commit threw ${t.javaClass.simpleName}: ${t.message}"
+                )
+            }
+            if (!committed) {
+                return WitnessAckResult.PersistenceFailed(
+                    recordId = recordId,
+                    reason = "SharedPreferences commit returned false"
+                )
+            }
+
+            return when (val readbackState = readWitnesses(deContext)) {
+                is WitnessLedgerState.ValidEmpty -> {
+                    if (currentRecords.isEmpty()) {
+                        WitnessAckResult.Acknowledged(recordId, 0)
+                    } else {
+                        WitnessAckResult.ReadbackFailed(
+                            recordId = recordId,
+                            reason = "Readback returned ValidEmpty but expected ${currentRecords.size} remaining witness records"
+                        )
+                    }
+                }
+                is WitnessLedgerState.ValidWithRecords -> {
+                    if (readbackState.records == currentRecords && readbackState.records.none { it.recordId == recordId }) {
+                        WitnessAckResult.Acknowledged(recordId, currentRecords.size)
+                    } else {
+                        WitnessAckResult.ReadbackFailed(
+                            recordId = recordId,
+                            reason = "Readback mismatch after witness ACK commit: expectedCount=${currentRecords.size}, observedCount=${readbackState.records.size}"
+                        )
+                    }
+                }
+                is WitnessLedgerState.Absent -> {
+                    WitnessAckResult.ReadbackFailed(recordId, "Readback returned Absent after witness ACK commit")
+                }
+                is WitnessLedgerState.Corrupt -> {
+                    WitnessAckResult.ReadbackFailed(recordId, "Readback corrupt after witness ACK commit: ${readbackState.reason}")
+                }
+                is WitnessLedgerState.UnsupportedSchema -> {
+                    WitnessAckResult.ReadbackFailed(recordId, "Readback unsupported schema ${readbackState.foundVersion} after witness ACK commit")
+                }
+            }
         }
     }
 

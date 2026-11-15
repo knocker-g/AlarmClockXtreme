@@ -224,6 +224,8 @@ sealed class WitnessAppendResult {
 sealed class WitnessAckResult {
     data class Acknowledged(val recordId: String, val remainingCount: Int) : WitnessAckResult()
     data class NotFound(val recordId: String) : WitnessAckResult()
+    data class PersistenceFailed(val recordId: String, val reason: String) : WitnessAckResult()
+    data class ReadbackFailed(val recordId: String, val reason: String) : WitnessAckResult()
     data class StorageCorrupt(val reason: String) : WitnessAckResult()
     data class UnsupportedSchema(val foundVersion: Int, val expectedVersion: Int) : WitnessAckResult()
 }

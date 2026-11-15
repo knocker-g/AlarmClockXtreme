@@ -651,25 +651,106 @@ object DirectBootCeTakeoverStore {
         occurrenceKey: String,
         unlockGate: (Context) -> Boolean
     ): Boolean {
-        if (occurrenceKey.isBlank()) return false
-        validateCeContextAndUnlock(ceContext, unlockGate)?.let { return false }
+        return releaseSlotWithResult(ceContext, occurrenceKey, unlockGate) is CeSlotReleaseResult.Released
+    }
+
+    fun releaseSlotWithResult(ceContext: Context, occurrenceKey: String): CeSlotReleaseResult {
+        return releaseSlotWithResult(ceContext, occurrenceKey, unlockGateSeam)
+    }
+
+    @VisibleForTesting
+    internal fun releaseSlotWithResult(
+        ceContext: Context,
+        occurrenceKey: String,
+        unlockGate: (Context) -> Boolean
+    ): CeSlotReleaseResult {
+        if (occurrenceKey.isBlank()) {
+            return CeSlotReleaseResult.InvalidOccurrenceKey("occurrenceKey must not be blank")
+        }
+        when (val gateState = validateCeContextAndUnlock(ceContext, unlockGate)) {
+            is CeTakeoverStorageState.CeContextRejected -> return CeSlotReleaseResult.CeContextRejected(gateState.reason)
+            is CeTakeoverStorageState.CeLocked -> return CeSlotReleaseResult.CeLocked(gateState.reason)
+            else -> Unit
+        }
         synchronized(ceStorageLock) {
+            when (val gateState = validateCeContextAndUnlock(ceContext, unlockGate)) {
+                is CeTakeoverStorageState.CeContextRejected -> return CeSlotReleaseResult.CeContextRejected(gateState.reason)
+                is CeTakeoverStorageState.CeLocked -> return CeSlotReleaseResult.CeLocked(gateState.reason)
+                else -> Unit
+            }
             val prefs = getCePrefs(ceContext)
             val raw = try {
                 readbackSeam(prefs)
-            } catch (_: Exception) {
-                return false
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                return CeSlotReleaseResult.StorageCorrupt(
+                    "Exception reading CE takeover payload before release: ${t.javaClass.simpleName}: ${t.message}"
+                )
             }
             val state = parseStorageState(raw)
-            if (state !is CeTakeoverStorageState.ValidWithRecords) return false
-            val remaining = state.records.filter { it.occurrenceKey != occurrenceKey }
-            if (remaining.size == state.records.size) return false
-            val newPayload = serializePayload(remaining)
-            return try {
-                commitSeam(prefs, newPayload)
-            } catch (_: Exception) {
-                false
+            val currentRecords = when (state) {
+                is CeTakeoverStorageState.Absent,
+                is CeTakeoverStorageState.ValidEmpty ->
+                    return CeSlotReleaseResult.AlreadyAbsent(occurrenceKey, remainingCount = 0)
+                is CeTakeoverStorageState.ValidWithRecords -> state.records
+                is CeTakeoverStorageState.Corrupt ->
+                    return CeSlotReleaseResult.StorageCorrupt(state.reason)
+                is CeTakeoverStorageState.UnsupportedSchema ->
+                    return CeSlotReleaseResult.UnsupportedSchema(state.foundVersion, state.expectedVersion)
+                is CeTakeoverStorageState.CeLocked ->
+                    return CeSlotReleaseResult.CeLocked(state.reason)
+                is CeTakeoverStorageState.CeContextRejected ->
+                    return CeSlotReleaseResult.CeContextRejected(state.reason)
             }
+
+            val remaining = currentRecords.filter { it.occurrenceKey != occurrenceKey }
+            if (remaining.size == currentRecords.size) {
+                return CeSlotReleaseResult.AlreadyAbsent(occurrenceKey, remainingCount = currentRecords.size)
+            }
+
+            val newPayload = serializePayload(remaining)
+            val committed = try {
+                commitSeam(prefs, newPayload)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                return CeSlotReleaseResult.CommitException(occurrenceKey, t)
+            }
+            if (!committed) {
+                return CeSlotReleaseResult.CommitFailed(
+                    occurrenceKey = occurrenceKey,
+                    details = "SharedPreferences.Editor.commit() returned false during CE slot release"
+                )
+            }
+
+            val rawAfter = try {
+                readbackSeam(prefs)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                return CeSlotReleaseResult.ReadbackMismatch(
+                    occurrenceKey = occurrenceKey,
+                    details = "Exception during independent CE readback after release: ${t.javaClass.simpleName}: ${t.message}"
+                )
+            }
+
+            val stateAfter = parseStorageState(rawAfter)
+            val verified = when {
+                remaining.isEmpty() -> stateAfter is CeTakeoverStorageState.ValidEmpty
+                else -> stateAfter is CeTakeoverStorageState.ValidWithRecords &&
+                    stateAfter.records.size == remaining.size &&
+                    stateAfter.records.none { it.occurrenceKey == occurrenceKey } &&
+                    stateAfter.records == remaining
+            }
+            if (!verified) {
+                return CeSlotReleaseResult.ReadbackMismatch(
+                    occurrenceKey = occurrenceKey,
+                    details = "Independent CE readback mismatch after slot release: observed=$stateAfter, expectedCount=${remaining.size}"
+                )
+            }
+
+            return CeSlotReleaseResult.Released(occurrenceKey, remainingCount = remaining.size)
         }
     }
 
@@ -999,4 +1080,17 @@ sealed class CeTakeoverIntakeResult {
             val observedState: CeTakeoverStorageState? = null
         ) : Uncertain()
     }
+}
+
+sealed class CeSlotReleaseResult {
+    data class Released(val occurrenceKey: String, val remainingCount: Int) : CeSlotReleaseResult()
+    data class AlreadyAbsent(val occurrenceKey: String, val remainingCount: Int) : CeSlotReleaseResult()
+    data class CeLocked(val reason: String) : CeSlotReleaseResult()
+    data class CeContextRejected(val reason: String) : CeSlotReleaseResult()
+    data class StorageCorrupt(val reason: String) : CeSlotReleaseResult()
+    data class UnsupportedSchema(val foundVersion: Int, val expectedVersion: Int) : CeSlotReleaseResult()
+    data class InvalidOccurrenceKey(val reason: String) : CeSlotReleaseResult()
+    data class CommitFailed(val occurrenceKey: String, val details: String) : CeSlotReleaseResult()
+    data class CommitException(val occurrenceKey: String, val cause: Throwable) : CeSlotReleaseResult()
+    data class ReadbackMismatch(val occurrenceKey: String, val details: String) : CeSlotReleaseResult()
 }
