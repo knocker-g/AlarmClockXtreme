@@ -40,6 +40,8 @@ class DirectBootStopIdentityRedTest {
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
+        DirectBootServiceTestFixture.clearAllDirectBootPrefs(context.createDeviceProtectedStorageContext())
+        DirectBootServiceTestFixture.configureAudioAndVibrationEnvironment(context)
         controller = Robolectric.buildService(DirectBootAlarmService::class.java)
         service = controller.create().get()
     }
@@ -47,6 +49,7 @@ class DirectBootStopIdentityRedTest {
     @After
     fun tearDown() {
         controller.destroy()
+        DirectBootServiceTestFixture.clearAllDirectBootPrefs(context.createDeviceProtectedStorageContext())
     }
 
     // =========================================================================
@@ -71,13 +74,39 @@ class DirectBootStopIdentityRedTest {
             putExtra(DirectBootAlarmReceiver.EXTRA_TIME_LABEL, "7:15 AM")
         }
 
-        service.onStartCommand(startIntent, 0, 1)
+        // Unauthenticated V2 ACTION_START on an idle Service must NOT post a foreground notification or output.
+        val idleProbeController = Robolectric.buildService(DirectBootAlarmService::class.java)
+        val idleProbeService = idleProbeController.create().get()
+        idleProbeService.onStartCommand(startIntent, 0, 1)
+        assertEquals(
+            "Unauthenticated V2 ACTION_START must NOT post foreground notification",
+            null,
+            shadowOf(idleProbeService).lastForegroundNotification
+        )
+        assertEquals(null, DirectBootServiceTestFixture.mediaPlayer(idleProbeService))
+        idleProbeController.destroy()
 
-        val shadowService = shadowOf(service)
-        val notification: Notification? = shadowService.lastForegroundNotification
-        assertNotNull("Foreground notification MUST be posted when service starts", notification)
+        // Seed synthetic active V2 identity via test-only reflection (does not authorize V2 delivery)
+        // and inspect the real production notification builder contract directly.
+        DirectBootServiceTestFixture.seedActiveState(
+            service = service,
+            context = context,
+            alarmId = alarmId,
+            triggerTime = triggerTime,
+            generation = gen,
+            instanceToken = token,
+            restoreEpoch = epoch,
+            timeLabel = "7:15 AM",
+            withAudio = false,
+            withVibration = false,
+            withAutoStop = false,
+            postForegroundNotification = false
+        )
 
-        val actions = notification?.actions
+        val notification: Notification = DirectBootServiceTestFixture.invokeBuildNotification(service, "7:15 AM")
+        assertNotNull("Production buildNotification MUST return Notification", notification)
+
+        val actions = notification.actions
         assertNotNull("Notification MUST contain actions", actions)
         assertTrue("Notification MUST contain at least 1 action", actions?.isNotEmpty() == true)
 
@@ -91,11 +120,14 @@ class DirectBootStopIdentityRedTest {
         assertNotNull("Saved intent inside PendingIntent MUST be present", savedIntent)
 
         // Verifies production fix: Notification stopIntent contains all V2 lineage extras
+        assertEquals(alarmId, savedIntent.getLongExtra(DirectBootAlarmReceiver.EXTRA_ALARM_ID, -1L))
+        assertEquals(triggerTime, savedIntent.getLongExtra(DirectBootAlarmReceiver.EXTRA_TRIGGER_TIME, -1L))
         assertTrue(savedIntent.hasExtra(DirectBootV2NormalIntentIdentity.EXTRA_GENERATION))
         assertTrue(savedIntent.hasExtra(DirectBootV2NormalIntentIdentity.EXTRA_INSTANCE_TOKEN))
         assertTrue(savedIntent.hasExtra(DirectBootV2NormalIntentIdentity.EXTRA_RESTORE_EPOCH))
         assertEquals(gen, savedIntent.getIntExtra(DirectBootV2NormalIntentIdentity.EXTRA_GENERATION, -1))
         assertEquals(token, savedIntent.getStringExtra(DirectBootV2NormalIntentIdentity.EXTRA_INSTANCE_TOKEN))
+        assertEquals(epoch, savedIntent.getLongExtra(DirectBootV2NormalIntentIdentity.EXTRA_RESTORE_EPOCH, -1L))
         assertNotNull("Notification stop intent MUST contain Data URI", savedIntent.data)
     }
 
@@ -111,16 +143,16 @@ class DirectBootStopIdentityRedTest {
         val token = "tok_701"
         val epoch = 1L
 
-        // Start V2 active alarm
-        val startV2 = Intent(context, DirectBootAlarmService::class.java).apply {
-            action = DirectBootAlarmService.ACTION_START
-            putExtra(DirectBootAlarmReceiver.EXTRA_ALARM_ID, alarmId)
-            putExtra(DirectBootAlarmReceiver.EXTRA_TRIGGER_TIME, trig)
-            putExtra(DirectBootV2NormalIntentIdentity.EXTRA_GENERATION, gen)
-            putExtra(DirectBootV2NormalIntentIdentity.EXTRA_INSTANCE_TOKEN, token)
-            putExtra(DirectBootV2NormalIntentIdentity.EXTRA_RESTORE_EPOCH, epoch)
-        }
-        service.onStartCommand(startV2, 0, 1)
+        // Seed synthetic active V2 alarm via test-only fixture
+        DirectBootServiceTestFixture.seedActiveState(
+            service = service,
+            context = context,
+            alarmId = alarmId,
+            triggerTime = trig,
+            generation = gen,
+            instanceToken = token,
+            restoreEpoch = epoch
+        )
 
         // A1: Alarm ID and Generation match, but Token/Epoch/Trigger missing -> REJECTED
         val stopA1 = Intent(context, DirectBootAlarmService::class.java).apply {
@@ -131,6 +163,7 @@ class DirectBootStopIdentityRedTest {
         val resA1 = service.onStartCommand(stopA1, 0, 2)
         assertEquals("A1: Missing token/epoch/trigger MUST be rejected", android.app.Service.START_NOT_STICKY, resA1)
         assertFalse("A1: Service MUST NOT be stopped when partial stop is rejected", shadowOf(service).isStoppedBySelf)
+        assertEquals(alarmId, DirectBootServiceTestFixture.currentAlarmId(service))
 
         // A2: All match BUT TriggerTime is different -> REJECTED
         val stopA2 = Intent(context, DirectBootAlarmService::class.java).apply {
@@ -144,6 +177,7 @@ class DirectBootStopIdentityRedTest {
         val resA2 = service.onStartCommand(stopA2, 0, 3)
         assertEquals("A2: Mismatched trigger time MUST be rejected", android.app.Service.START_NOT_STICKY, resA2)
         assertFalse("A2: Service MUST NOT be stopped when trigger time is mismatched", shadowOf(service).isStoppedBySelf)
+        assertEquals(alarmId, DirectBootServiceTestFixture.currentAlarmId(service))
 
         // A3: Token missing -> REJECTED
         val stopA3 = Intent(context, DirectBootAlarmService::class.java).apply {
@@ -156,6 +190,7 @@ class DirectBootStopIdentityRedTest {
         val resA3 = service.onStartCommand(stopA3, 0, 4)
         assertEquals("A3: Missing token MUST be rejected", android.app.Service.START_NOT_STICKY, resA3)
         assertFalse("A3: Service MUST NOT be stopped when token is missing", shadowOf(service).isStoppedBySelf)
+        assertEquals(alarmId, DirectBootServiceTestFixture.currentAlarmId(service))
 
         // A4: All 5 canonical fields match -> ACCEPTED
         val stopA4 = Intent(context, DirectBootAlarmService::class.java).apply {
@@ -244,27 +279,27 @@ class DirectBootStopIdentityRedTest {
 
     @Test
     fun s3_s4_staleStop_rejected() {
-        // Start candidate A (alarmId=201)
-        val startA = Intent(context, DirectBootAlarmService::class.java).apply {
-            action = DirectBootAlarmService.ACTION_START
-            putExtra(DirectBootAlarmReceiver.EXTRA_ALARM_ID, 201L)
-            putExtra(DirectBootAlarmReceiver.EXTRA_TRIGGER_TIME, baseTime + 10_000L)
-            putExtra(DirectBootV2NormalIntentIdentity.EXTRA_GENERATION, 1)
-            putExtra(DirectBootV2NormalIntentIdentity.EXTRA_INSTANCE_TOKEN, "tok_201")
-            putExtra(DirectBootV2NormalIntentIdentity.EXTRA_RESTORE_EPOCH, 1L)
-        }
-        service.onStartCommand(startA, 0, 1)
+        // Seed candidate A (alarmId=201) via test-only fixture
+        DirectBootServiceTestFixture.seedActiveState(
+            service = service,
+            context = context,
+            alarmId = 201L,
+            triggerTime = baseTime + 10_000L,
+            generation = 1,
+            instanceToken = "tok_201",
+            restoreEpoch = 1L
+        )
 
-        // Handover to candidate B (alarmId=202)
-        val startB = Intent(context, DirectBootAlarmService::class.java).apply {
-            action = DirectBootAlarmService.ACTION_START
-            putExtra(DirectBootAlarmReceiver.EXTRA_ALARM_ID, 202L)
-            putExtra(DirectBootAlarmReceiver.EXTRA_TRIGGER_TIME, baseTime + 20_000L)
-            putExtra(DirectBootV2NormalIntentIdentity.EXTRA_GENERATION, 1)
-            putExtra(DirectBootV2NormalIntentIdentity.EXTRA_INSTANCE_TOKEN, "tok_202")
-            putExtra(DirectBootV2NormalIntentIdentity.EXTRA_RESTORE_EPOCH, 1L)
-        }
-        service.onStartCommand(startB, 0, 2)
+        // Handover to candidate B (alarmId=202) via test-only fixture
+        DirectBootServiceTestFixture.seedActiveState(
+            service = service,
+            context = context,
+            alarmId = 202L,
+            triggerTime = baseTime + 20_000L,
+            generation = 1,
+            instanceToken = "tok_202",
+            restoreEpoch = 1L
+        )
 
         // Stale stop for A arrives
         val stopA = Intent(context, DirectBootAlarmService::class.java).apply {
@@ -278,6 +313,8 @@ class DirectBootStopIdentityRedTest {
 
         val result = service.onStartCommand(stopA, 0, 3)
         assertEquals(android.app.Service.START_NOT_STICKY, result)
+        assertFalse("Stale STOP for A MUST NOT stop active alarm B", shadowOf(service).isStoppedBySelf)
+        assertEquals(202L, DirectBootServiceTestFixture.currentAlarmId(service))
     }
 
     // =========================================================================
@@ -303,5 +340,6 @@ class DirectBootStopIdentityRedTest {
 
         val result = service.onStartCommand(stopLegacy, 0, 2)
         assertEquals(android.app.Service.START_NOT_STICKY, result)
+        assertTrue("Legacy V1 STOP MUST stop active V1 service", shadowOf(service).isStoppedBySelf)
     }
 }
