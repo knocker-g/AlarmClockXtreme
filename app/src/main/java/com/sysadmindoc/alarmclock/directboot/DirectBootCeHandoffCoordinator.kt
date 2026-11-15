@@ -126,6 +126,10 @@ object DirectBootCeHandoffCoordinator {
         return DeStoresSnapshot.Valid(deliveredList, missedList)
     }
 
+    private fun isSameEpochOrUnqualified(epochA: Long, epochB: Long): Boolean {
+        return epochA <= 0L || epochB <= 0L || epochA == epochB
+    }
+
     private fun mapDeFailedToAckRejected(failed: CeHandoffResult.Rejected): CeQualifiedAckResult.Rejected {
         return when (failed) {
             is CeHandoffResult.Rejected.DeStorageCorrupt ->
@@ -213,12 +217,13 @@ object DirectBootCeHandoffCoordinator {
                 is DeStoresSnapshot.Valid -> s
             }
 
-            // Mutual exclusion check across DE stores for the same occurrence
+            // Mutual exclusion check across DE stores for the same occurrence (epoch-scoped)
             val conflictingDeMissed = snapshot.missedRecords.firstOrNull {
                 it.alarmId == candidateRecord.alarmId &&
                     it.triggerTime == candidateRecord.triggerTime &&
                     it.generation == candidateRecord.generation &&
-                    it.instanceToken == candidateRecord.instanceToken
+                    it.instanceToken == candidateRecord.instanceToken &&
+                    isSameEpochOrUnqualified(it.restoreEpoch, candidateRecord.restoreEpoch)
             }
             if (conflictingDeMissed != null) {
                 return CeHandoffResult.Rejected.DeCrossStoreConflict(
@@ -333,12 +338,13 @@ object DirectBootCeHandoffCoordinator {
                 is DeStoresSnapshot.Valid -> s
             }
 
-            // Mutual exclusion check across DE stores for the same occurrence
+            // Mutual exclusion check across DE stores for the same occurrence (epoch-scoped)
             val conflictingDeDelivered = snapshot.deliveredRecords.firstOrNull {
                 it.alarmId == candidateRecord.alarmId &&
                     it.triggerTime == candidateRecord.triggerTime &&
                     it.generation == candidateRecord.generation &&
-                    it.instanceToken == candidateRecord.instanceToken
+                    it.instanceToken == candidateRecord.instanceToken &&
+                    isSameEpochOrUnqualified(it.restoreEpoch, candidateRecord.restoreEpoch)
             }
             if (conflictingDeDelivered != null) {
                 return CeHandoffResult.Rejected.DeCrossStoreConflict(
@@ -453,7 +459,9 @@ object DirectBootCeHandoffCoordinator {
                     it.instanceToken == identity.instanceToken
             }
 
-            if (matchedDelivered != null && matchedMissed != null) {
+            if (matchedDelivered != null && matchedMissed != null &&
+                isSameEpochOrUnqualified(matchedDelivered.restoreEpoch, matchedMissed.restoreEpoch)
+            ) {
                 return CeHandoffResult.Rejected.DeCrossStoreConflict(
                     deliveryRecord = matchedDelivered,
                     missedRecord = matchedMissed,
@@ -495,17 +503,20 @@ object DirectBootCeHandoffCoordinator {
     // P2B Qualified DE ACK & Surgical Single-Record Retirement Entrypoints
     // =========================================================================
 
+    @JvmOverloads
     fun acknowledgeDeliveredWithCeProof(
         deContext: Context,
         ceContext: Context,
         candidateRecord: DirectBootDeliveryRecord,
-        confirmedReceipt: CeHandoffResult.Confirmed? = null
+        confirmedReceipt: CeHandoffResult.Confirmed? = null,
+        allowServiceStartFailedCoRetirement: Boolean = false
     ): CeQualifiedAckResult {
         return acknowledgeDeliveredWithCeProof(
             deContext = deContext,
             ceContext = ceContext,
             candidateRecord = candidateRecord,
             confirmedReceipt = confirmedReceipt,
+            allowServiceStartFailedCoRetirement = allowServiceStartFailedCoRetirement,
             unlockGate = DirectBootCeTakeoverStore.unlockGateSeam,
             preAckCommitHook = {},
             postAckCommitHook = {}
@@ -520,7 +531,8 @@ object DirectBootCeHandoffCoordinator {
         confirmedReceipt: CeHandoffResult.Confirmed? = null,
         unlockGate: (Context) -> Boolean,
         preAckCommitHook: () -> Unit = {},
-        postAckCommitHook: () -> Unit = {}
+        postAckCommitHook: () -> Unit = {},
+        allowServiceStartFailedCoRetirement: Boolean = false
     ): CeQualifiedAckResult {
         return acknowledgeDeliveredInternal(
             deContext = deContext,
@@ -528,6 +540,7 @@ object DirectBootCeHandoffCoordinator {
             candidateRecord = candidateRecord,
             confirmedReceipt = confirmedReceipt,
             allowIdempotentWhenDeAbsent = confirmedReceipt != null,
+            allowServiceStartFailedCoRetirement = allowServiceStartFailedCoRetirement,
             unlockGate = unlockGate,
             preAckCommitHook = preAckCommitHook,
             postAckCommitHook = postAckCommitHook
@@ -624,12 +637,13 @@ object DirectBootCeHandoffCoordinator {
                     is DeStoresSnapshot.Valid -> s
                 }
 
-                // Check 10: Opposite DE store mutual exclusion
+                // Check 10: Opposite DE store mutual exclusion (epoch-scoped)
                 val conflictingDeMissed = snapshot.missedRecords.firstOrNull {
                     it.alarmId == candidateRecord.alarmId &&
                         it.triggerTime == candidateRecord.triggerTime &&
                         it.generation == candidateRecord.generation &&
-                        it.instanceToken == candidateRecord.instanceToken
+                        it.instanceToken == candidateRecord.instanceToken &&
+                        isSameEpochOrUnqualified(it.restoreEpoch, candidateRecord.restoreEpoch)
                 }
                 if (conflictingDeMissed != null) {
                     return CeQualifiedAckResult.Rejected.DeCrossStoreConflict(
@@ -677,6 +691,7 @@ object DirectBootCeHandoffCoordinator {
                         candidateRecord = candidateRecord,
                         confirmedReceipt = null,
                         allowIdempotentWhenDeAbsent = true,
+                        allowServiceStartFailedCoRetirement = false,
                         unlockGate = unlockGate,
                         preAckCommitHook = preAckCommitHook,
                         postAckCommitHook = postAckCommitHook
@@ -727,6 +742,7 @@ object DirectBootCeHandoffCoordinator {
                     candidateRecord = persistedDeRecord,
                     confirmedReceipt = confirmedReceipt,
                     allowIdempotentWhenDeAbsent = true,
+                    allowServiceStartFailedCoRetirement = false,
                     unlockGate = unlockGate,
                     preAckCommitHook = preAckCommitHook,
                     postAckCommitHook = postAckCommitHook
@@ -785,12 +801,13 @@ object DirectBootCeHandoffCoordinator {
                     is DeStoresSnapshot.Valid -> s
                 }
 
-                // Check 10: Opposite DE store mutual exclusion
+                // Check 10: Opposite DE store mutual exclusion (epoch-scoped)
                 val conflictingDeDelivered = snapshot.deliveredRecords.firstOrNull {
                     it.alarmId == candidateRecord.alarmId &&
                         it.triggerTime == candidateRecord.triggerTime &&
                         it.generation == candidateRecord.generation &&
-                        it.instanceToken == candidateRecord.instanceToken
+                        it.instanceToken == candidateRecord.instanceToken &&
+                        isSameEpochOrUnqualified(it.restoreEpoch, candidateRecord.restoreEpoch)
                 }
                 if (conflictingDeDelivered != null) {
                     return CeQualifiedAckResult.Rejected.DeCrossStoreConflict(
@@ -975,6 +992,7 @@ object DirectBootCeHandoffCoordinator {
         candidateRecord: DirectBootDeliveryRecord,
         confirmedReceipt: CeHandoffResult.Confirmed?,
         allowIdempotentWhenDeAbsent: Boolean,
+        allowServiceStartFailedCoRetirement: Boolean,
         unlockGate: (Context) -> Boolean,
         preAckCommitHook: () -> Unit,
         postAckCommitHook: () -> Unit
@@ -1002,24 +1020,33 @@ object DirectBootCeHandoffCoordinator {
                 // Check 1 & Check 2 live inside lock
                 checkCePrerequisitesForAck(ceContext, unlockGate)?.let { return it }
 
-                // Check 10: Both DE stores healthy + no opposite DE store conflict
+                // Check 10: Both DE stores healthy + epoch-scoped opposite DE store mutual exclusion
                 val snapshot = when (val s = inspectBothDeStores(deContext)) {
                     is DeStoresSnapshot.Failed -> return mapDeFailedToAckRejected(s.result)
                     is DeStoresSnapshot.Valid -> s
                 }
-                val conflictingDeMissed = snapshot.missedRecords.firstOrNull {
+                val conflictingDeMissedRecords = snapshot.missedRecords.filter {
                     it.alarmId == candidateRecord.alarmId &&
                         it.triggerTime == candidateRecord.triggerTime &&
                         it.generation == candidateRecord.generation &&
-                        it.instanceToken == candidateRecord.instanceToken
+                        it.instanceToken == candidateRecord.instanceToken &&
+                        isSameEpochOrUnqualified(it.restoreEpoch, candidateRecord.restoreEpoch)
                 }
-                if (conflictingDeMissed != null) {
+                val canCoRetireServiceStartFailed = conflictingDeMissedRecords.isNotEmpty() &&
+                    allowServiceStartFailedCoRetirement &&
+                    candidateRecord.restoreEpoch > 0L &&
+                    conflictingDeMissedRecords.all {
+                        it.classification == DirectBootMissedRecord.CLASSIFICATION_SERVICE_START_FAILED &&
+                            it.restoreEpoch == candidateRecord.restoreEpoch
+                    }
+                if (conflictingDeMissedRecords.isNotEmpty() && !canCoRetireServiceStartFailed) {
                     return CeQualifiedAckResult.Rejected.DeCrossStoreConflict(
                         deliveryRecord = candidateRecord,
-                        missedRecord = conflictingDeMissed,
+                        missedRecord = conflictingDeMissedRecords.first(),
                         details = "Mutual exclusion violation: occurrence exists in both DE DeliveryLedger and DE MissedStore"
                     )
                 }
+                val coRetireMissedRecords = if (canCoRetireServiceStartFailed) conflictingDeMissedRecords else emptyList()
 
                 // Check 3 & Check 4: Live CE schema & record existence
                 val ceRecords: List<CeTakeoverRecord> =
@@ -1138,7 +1165,7 @@ object DirectBootCeHandoffCoordinator {
                             it.instanceToken == candidateRecord.instanceToken)
                 }
 
-                if (persistedDeRecord == null) {
+                if (persistedDeRecord == null && coRetireMissedRecords.isEmpty()) {
                     if (allowIdempotentWhenDeAbsent) {
                         return CeQualifiedAckResult.AlreadyAcknowledgedConfirmed(
                             retiredDeRecordId = expectedRecordId,
@@ -1152,13 +1179,13 @@ object DirectBootCeHandoffCoordinator {
                     )
                 }
 
-                if (persistedDeRecord != candidateRecord) {
+                if (persistedDeRecord != null && persistedDeRecord != candidateRecord) {
                     return CeQualifiedAckResult.Rejected.DeRecordModifiedConflict(
                         "Persisted DE delivery record was modified since handoff: persisted=$persistedDeRecord, candidate=$candidateRecord"
                     )
                 }
 
-                // Surgical single-record retirement
+                // Surgical single-record retirement (plus scoped SERVICE_START_FAILED co-retirement when authorized)
                 val remainingDeRecords = currentDeRecords.filterNot { it.recordId == expectedRecordId }
                 val priorDeCount = currentDeRecords.size
                 val priorRawDePayload = DirectBootDeliveryLedger.getRawPayload(deContext)
@@ -1177,43 +1204,125 @@ object DirectBootCeHandoffCoordinator {
                 }
 
                 // Stage 2: ACK_COMMIT_INVOKED
-                val dePrefs = DirectBootDeliveryLedger.getDePrefs(deContext)
-                val commitSuccess: Boolean = try {
-                    DirectBootDeliveryLedger.commitSeam(dePrefs, intendedDeJson)
-                } catch (t: Throwable) {
-                    val obs = DirectBootDeliveryLedger.evaluateReadback(deContext, priorRawDePayload, intendedDeJson)
-                    return CeQualifiedAckResult.Uncertain.DeCommitException(
-                        details = "DE DeliveryLedger ACK commit threw ${t.javaClass.simpleName}: ${t.message}",
-                        cause = t,
-                        observation = obs,
-                        priorDeCount = priorDeCount,
-                        rawDePayloadAfter = DirectBootDeliveryLedger.getRawPayload(deContext)
-                    )
-                }
+                if (coRetireMissedRecords.isEmpty()) {
+                    val dePrefs = DirectBootDeliveryLedger.getDePrefs(deContext)
+                    val commitSuccess: Boolean = try {
+                        DirectBootDeliveryLedger.commitSeam(dePrefs, intendedDeJson)
+                    } catch (t: Throwable) {
+                        val obs = DirectBootDeliveryLedger.evaluateReadback(deContext, priorRawDePayload, intendedDeJson)
+                        return CeQualifiedAckResult.Uncertain.DeCommitException(
+                            details = "DE DeliveryLedger ACK commit threw ${t.javaClass.simpleName}: ${t.message}",
+                            cause = t,
+                            observation = obs,
+                            priorDeCount = priorDeCount,
+                            rawDePayloadAfter = DirectBootDeliveryLedger.getRawPayload(deContext)
+                        )
+                    }
 
-                if (!commitSuccess) {
-                    val obs = DirectBootDeliveryLedger.evaluateReadback(deContext, priorRawDePayload, intendedDeJson)
-                    return CeQualifiedAckResult.Uncertain.DeCommitFailed(
-                        details = "DE DeliveryLedger ACK commit returned false",
-                        observation = obs,
-                        priorDeCount = priorDeCount,
-                        rawDePayloadAfter = DirectBootDeliveryLedger.getRawPayload(deContext)
-                    )
-                }
+                    if (!commitSuccess) {
+                        val obs = DirectBootDeliveryLedger.evaluateReadback(deContext, priorRawDePayload, intendedDeJson)
+                        return CeQualifiedAckResult.Uncertain.DeCommitFailed(
+                            details = "DE DeliveryLedger ACK commit returned false",
+                            observation = obs,
+                            priorDeCount = priorDeCount,
+                            rawDePayloadAfter = DirectBootDeliveryLedger.getRawPayload(deContext)
+                        )
+                    }
 
-                // Independent DE readback verification
-                val deStateAfter = DirectBootDeliveryLedger.inspectStorageState(deContext)
-                val deReadbackValid = when {
-                    remainingDeRecords.isEmpty() -> deStateAfter is LedgerStorageState.ValidEmpty
-                    else -> deStateAfter is LedgerStorageState.ValidWithRecords &&
-                        deStateAfter.records == remainingDeRecords &&
-                        deStateAfter.records.none { it.recordId == expectedRecordId }
-                }
-                if (!deReadbackValid) {
-                    return CeQualifiedAckResult.Uncertain.DeReadbackFailed(
-                        details = "Independent DE DeliveryLedger readback mismatch after ACK commit: state=$deStateAfter",
-                        rawDePayloadAfter = DirectBootDeliveryLedger.getRawPayload(deContext)
-                    )
+                    // Independent DE readback verification
+                    val deStateAfter = DirectBootDeliveryLedger.inspectStorageState(deContext)
+                    val deReadbackValid = when {
+                        remainingDeRecords.isEmpty() -> deStateAfter is LedgerStorageState.ValidEmpty
+                        else -> deStateAfter is LedgerStorageState.ValidWithRecords &&
+                            deStateAfter.records == remainingDeRecords &&
+                            deStateAfter.records.none { it.recordId == expectedRecordId }
+                    }
+                    if (!deReadbackValid) {
+                        return CeQualifiedAckResult.Uncertain.DeReadbackFailed(
+                            details = "Independent DE DeliveryLedger readback mismatch after ACK commit: state=$deStateAfter",
+                            rawDePayloadAfter = DirectBootDeliveryLedger.getRawPayload(deContext)
+                        )
+                    }
+                } else {
+                    val coRetireIds = coRetireMissedRecords.mapTo(HashSet()) { it.recordId }
+                    val remainingMissedRecords = snapshot.missedRecords.filterNot { it.recordId in coRetireIds }
+                    val priorMissedCount = snapshot.missedRecords.size
+                    val priorRawMissedPayload = DirectBootMissedStore.getRawPayload(deContext)
+                    val intendedMissedJson = DirectBootMissedStore.serializeRecordsToJson(remainingMissedRecords)
+
+                    val sharedPrefs = DirectBootDeliveryLedger.getDePrefs(deContext)
+                    val editor = sharedPrefs.edit()
+                        .putString(DirectBootMissedStore.KEY_MISSED_STORE_PAYLOAD, intendedMissedJson)
+                    if (persistedDeRecord != null) {
+                        editor.putString(DirectBootDeliveryLedger.KEY_DELIVERY_LEDGER_PAYLOAD, intendedDeJson)
+                    }
+
+                    val outcome = try {
+                        DirectBootMissedStore.commitSeam(editor)
+                    } catch (t: Throwable) {
+                        CommitExecutionOutcome.Threw(t)
+                    }
+
+                    when (outcome) {
+                        is CommitExecutionOutcome.Success -> Unit
+                        is CommitExecutionOutcome.CommitFalse -> {
+                            val obs = if (persistedDeRecord != null) {
+                                DirectBootDeliveryLedger.evaluateReadback(deContext, priorRawDePayload, intendedDeJson)
+                            } else {
+                                DirectBootMissedStore.evaluateReadback(deContext, priorRawMissedPayload, intendedMissedJson)
+                            }
+                            return CeQualifiedAckResult.Uncertain.DeCommitFailed(
+                                details = "Atomic DE dual-key (DeliveryLedger + MissedStore SERVICE_START_FAILED) ACK commit returned false",
+                                observation = obs,
+                                priorDeCount = if (persistedDeRecord != null) priorDeCount else priorMissedCount,
+                                rawDePayloadAfter = if (persistedDeRecord != null) DirectBootDeliveryLedger.getRawPayload(deContext) else DirectBootMissedStore.getRawPayload(deContext)
+                            )
+                        }
+                        is CommitExecutionOutcome.Threw -> {
+                            val obs = if (persistedDeRecord != null) {
+                                DirectBootDeliveryLedger.evaluateReadback(deContext, priorRawDePayload, intendedDeJson)
+                            } else {
+                                DirectBootMissedStore.evaluateReadback(deContext, priorRawMissedPayload, intendedMissedJson)
+                            }
+                            return CeQualifiedAckResult.Uncertain.DeCommitException(
+                                details = "Atomic DE dual-key ACK commit threw ${outcome.throwable.javaClass.simpleName}: ${outcome.throwable.message}",
+                                cause = outcome.throwable,
+                                observation = obs,
+                                priorDeCount = if (persistedDeRecord != null) priorDeCount else priorMissedCount,
+                                rawDePayloadAfter = if (persistedDeRecord != null) DirectBootDeliveryLedger.getRawPayload(deContext) else DirectBootMissedStore.getRawPayload(deContext)
+                            )
+                        }
+                    }
+
+                    if (persistedDeRecord != null) {
+                        val deStateAfter = DirectBootDeliveryLedger.inspectStorageState(deContext)
+                        val deReadbackValid = when {
+                            remainingDeRecords.isEmpty() -> deStateAfter is LedgerStorageState.ValidEmpty
+                            else -> deStateAfter is LedgerStorageState.ValidWithRecords &&
+                                deStateAfter.records == remainingDeRecords &&
+                                deStateAfter.records.none { it.recordId == expectedRecordId }
+                        }
+                        if (!deReadbackValid) {
+                            return CeQualifiedAckResult.Uncertain.DeReadbackFailed(
+                                details = "Independent DE DeliveryLedger readback mismatch after dual-key ACK commit: state=$deStateAfter",
+                                rawDePayloadAfter = DirectBootDeliveryLedger.getRawPayload(deContext)
+                            )
+                        }
+                    }
+
+                    val missedStateAfter = DirectBootMissedStore.inspectStorageState(deContext)
+                    val missedReadbackValid = when {
+                        remainingMissedRecords.isEmpty() -> missedStateAfter is MissedStoreStorageState.ValidEmpty
+                        else -> missedStateAfter is MissedStoreStorageState.ValidWithRecords &&
+                            missedStateAfter.records == remainingMissedRecords &&
+                            missedStateAfter.records.none { it.recordId in coRetireIds }
+                    }
+                    if (!missedReadbackValid) {
+                        return CeQualifiedAckResult.Uncertain.DeReadbackFailed(
+                            details = "Independent DE MissedStore readback mismatch after dual-key ACK commit: state=$missedStateAfter",
+                            rawDePayloadAfter = DirectBootMissedStore.getRawPayload(deContext)
+                        )
+                    }
                 }
 
                 // Stage 3: ACK_COMMIT_CONFIRMED
@@ -1277,7 +1386,7 @@ object DirectBootCeHandoffCoordinator {
                 // Check 1 & Check 2 live inside lock
                 checkCePrerequisitesForAck(ceContext, unlockGate)?.let { return it }
 
-                // Check 10: Both DE stores healthy + no opposite DE store conflict
+                // Check 10: Both DE stores healthy + epoch-scoped opposite DE store mutual exclusion
                 val snapshot = when (val s = inspectBothDeStores(deContext)) {
                     is DeStoresSnapshot.Failed -> return mapDeFailedToAckRejected(s.result)
                     is DeStoresSnapshot.Valid -> s
@@ -1286,7 +1395,8 @@ object DirectBootCeHandoffCoordinator {
                     it.alarmId == candidateRecord.alarmId &&
                         it.triggerTime == candidateRecord.triggerTime &&
                         it.generation == candidateRecord.generation &&
-                        it.instanceToken == candidateRecord.instanceToken
+                        it.instanceToken == candidateRecord.instanceToken &&
+                        isSameEpochOrUnqualified(it.restoreEpoch, candidateRecord.restoreEpoch)
                 }
                 if (conflictingDeDelivered != null) {
                     return CeQualifiedAckResult.Rejected.DeCrossStoreConflict(

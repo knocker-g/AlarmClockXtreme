@@ -370,4 +370,110 @@ class DirectBootWitnessLedgerTest {
         val freshContext = ApplicationProvider.getApplicationContext<Context>().createDeviceProtectedStorageContext()
         assertTrue(DirectBootFiredWitnessLedger.hasWitness(freshContext, 999L, baseTime + 999L, 1, "tok_999"))
     }
+
+    // =========================================================================
+    // KNO-75 B1c-S4 RED Tests: Witness ACK Commit / Exception / Readback Verification
+    // =========================================================================
+
+    @Test
+    fun s4_red_acknowledgeWitness_commitFalse_mustNotReturnAcknowledgedAndMustRetainWitness() {
+        val record = DirectBootFiredWitnessRecord.createNormal(
+            alarmId = 1901L,
+            triggerTime = baseTime + 10_000L,
+            generation = 1,
+            instanceToken = "tok_s4_w1",
+            restoreEpoch = 1L,
+            deliveryMode = DirectBootFiredWitnessRecord.MODE_SOUND_AND_VIBRATION,
+            deliveryOutcome = DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_START_ACCEPTED
+        )
+        assertTrue(DirectBootFiredWitnessLedger.appendWitness(deContext, record) is WitnessAppendResult.Appended)
+
+        DirectBootFiredWitnessLedger.commitSeam = { false }
+        val ackRes = DirectBootFiredWitnessLedger.acknowledgeWitness(deContext, record.recordId)
+
+        assertFalse("acknowledgeWitness MUST NOT return Acknowledged when commitSeam returns false, got $ackRes", ackRes is WitnessAckResult.Acknowledged)
+        DirectBootFiredWitnessLedger.resetSeamsForTesting()
+        assertTrue("Witness MUST remain persisted when commit fails", DirectBootFiredWitnessLedger.hasWitness(deContext, 1901L, baseTime + 10_000L, 1, "tok_s4_w1"))
+    }
+
+    @Test
+    fun s4_red_acknowledgeWitness_commitThrows_mustNotReturnAcknowledged() {
+        val record = DirectBootFiredWitnessRecord.createNormal(
+            alarmId = 1902L,
+            triggerTime = baseTime + 12_000L,
+            generation = 1,
+            instanceToken = "tok_s4_w2",
+            restoreEpoch = 1L,
+            deliveryMode = DirectBootFiredWitnessRecord.MODE_SOUND_ONLY,
+            deliveryOutcome = DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_START_ACCEPTED
+        )
+        assertTrue(DirectBootFiredWitnessLedger.appendWitness(deContext, record) is WitnessAppendResult.Appended)
+
+        DirectBootFiredWitnessLedger.commitSeam = { throw java.io.IOException("disk error during witness ack") }
+        val ackRes = DirectBootFiredWitnessLedger.acknowledgeWitness(deContext, record.recordId)
+
+        assertFalse("acknowledgeWitness MUST NOT return Acknowledged when commit throws, got $ackRes", ackRes is WitnessAckResult.Acknowledged)
+    }
+
+    @Test
+    fun s4_red_acknowledgeWitness_readbackMismatch_mustNotReturnAcknowledged() {
+        val record = DirectBootFiredWitnessRecord.createNormal(
+            alarmId = 1903L,
+            triggerTime = baseTime + 14_000L,
+            generation = 1,
+            instanceToken = "tok_s4_w3",
+            restoreEpoch = 1L,
+            deliveryMode = DirectBootFiredWitnessRecord.MODE_VIBRATION_ONLY,
+            deliveryOutcome = DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_START_ACCEPTED
+        )
+        assertTrue(DirectBootFiredWitnessLedger.appendWitness(deContext, record) is WitnessAppendResult.Appended)
+        val stalePayload = deContext
+            .getSharedPreferences(DirectBootFiredWitnessLedger.PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(DirectBootFiredWitnessLedger.KEY_WITNESS_PAYLOAD, null)
+
+        var commitInvoked = false
+        DirectBootFiredWitnessLedger.commitSeam = { editor ->
+            commitInvoked = true
+            editor.commit()
+        }
+        DirectBootFiredWitnessLedger.readbackSeam = { prefs ->
+            if (commitInvoked) stalePayload else prefs.getString(DirectBootFiredWitnessLedger.KEY_WITNESS_PAYLOAD, null)
+        }
+
+        val ackRes = DirectBootFiredWitnessLedger.acknowledgeWitness(deContext, record.recordId)
+        assertFalse("acknowledgeWitness MUST fail readback verification when stale witness payload is observed, got $ackRes", ackRes is WitnessAckResult.Acknowledged)
+        assertTrue("Expected ReadbackFailed, got $ackRes", ackRes is WitnessAckResult.ReadbackFailed)
+    }
+
+    @Test
+    fun s4_acknowledgeWitness_returnsTypedPersistenceFailedAndReadbackCorruptFailsClosed() {
+        val rec1 = DirectBootFiredWitnessRecord.createNormal(
+            alarmId = 1904L,
+            triggerTime = baseTime + 16_000L,
+            generation = 1,
+            instanceToken = "tok_s4_w4",
+            restoreEpoch = 1L,
+            deliveryMode = DirectBootFiredWitnessRecord.MODE_SOUND_AND_VIBRATION,
+            deliveryOutcome = DirectBootFiredWitnessRecord.OUTCOME_OUTPUT_START_ACCEPTED
+        )
+        assertTrue(DirectBootFiredWitnessLedger.appendWitness(deContext, rec1) is WitnessAppendResult.Appended)
+
+        // commit false -> WitnessAckResult.PersistenceFailed
+        DirectBootFiredWitnessLedger.commitSeam = { false }
+        val falseRes = DirectBootFiredWitnessLedger.acknowledgeWitness(deContext, rec1.recordId)
+        assertTrue("Expected PersistenceFailed on commit false, got $falseRes", falseRes is WitnessAckResult.PersistenceFailed)
+
+        // commit throws -> WitnessAckResult.PersistenceFailed
+        DirectBootFiredWitnessLedger.commitSeam = { throw java.io.IOException("disk io") }
+        val exRes = DirectBootFiredWitnessLedger.acknowledgeWitness(deContext, rec1.recordId)
+        assertTrue("Expected PersistenceFailed on commit exception, got $exRes", exRes is WitnessAckResult.PersistenceFailed)
+
+        // readbackSeam throws in readWitnesses -> WitnessLedgerState.Corrupt and StorageCorrupt on ack
+        DirectBootFiredWitnessLedger.resetSeamsForTesting()
+        DirectBootFiredWitnessLedger.readbackSeam = { throw IllegalStateException("readback boom") }
+        val readState = DirectBootFiredWitnessLedger.readWitnesses(deContext)
+        assertTrue("Expected Corrupt when readbackSeam throws, got $readState", readState is WitnessLedgerState.Corrupt)
+        val ackCorrupt = DirectBootFiredWitnessLedger.acknowledgeWitness(deContext, rec1.recordId)
+        assertTrue("Expected StorageCorrupt when readbackSeam throws, got $ackCorrupt", ackCorrupt is WitnessAckResult.StorageCorrupt)
+    }
 }

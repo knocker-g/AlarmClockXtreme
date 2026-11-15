@@ -281,4 +281,92 @@ class DirectBootCeTakeoverStoreTest {
         assertEquals(12L, postFail.confirmedRecord.alarmId)
         assertEquals(1, postFail.totalRecords)
     }
+
+    // =========================================================================
+    // KNO-75 B1c-S4 RED Test: CE Slot Release Readback Verification
+    // =========================================================================
+
+    @Test
+    fun s4_red_releaseSlot_readbackMismatch_mustReturnFalseAndFailClosed() {
+        val rec = sampleDelivered(alarmId = 13L)
+        val intake = DirectBootCeTakeoverStore.recordDelivered(
+            ceContext = ceContext,
+            deliveryRecord = rec,
+            recordedAtEpochMs = baseTime + 70_000L,
+            unlockGate = { true }
+        )
+        assertTrue(intake is CeTakeoverIntakeResult.RecordedConfirmed)
+
+        // Commit returns true without updating storage, so independent readback still sees the record
+        DirectBootCeTakeoverStore.commitSeam = { _, _ -> true }
+
+        val released = DirectBootCeTakeoverStore.releaseSlot(
+            ceContext = ceContext,
+            occurrenceKey = (intake as CeTakeoverIntakeResult.RecordedConfirmed).record.occurrenceKey,
+            unlockGate = { true }
+        )
+        assertFalse("releaseSlot MUST return false when post-commit readback still contains the record", released)
+    }
+
+    @Test
+    fun s4_releaseSlotWithResult_coversAllTypedOutcomesAndReadbackGates() {
+        // InvalidOccurrenceKey
+        assertTrue(
+            DirectBootCeTakeoverStore.releaseSlotWithResult(ceContext, " ", unlockGate = { true }) is CeSlotReleaseResult.InvalidOccurrenceKey
+        )
+
+        // CeContextRejected & CeLocked
+        assertTrue(
+            DirectBootCeTakeoverStore.releaseSlotWithResult(deContext, "k1", unlockGate = { true }) is CeSlotReleaseResult.CeContextRejected
+        )
+        assertTrue(
+            DirectBootCeTakeoverStore.releaseSlotWithResult(ceContext, "k1", unlockGate = { false }) is CeSlotReleaseResult.CeLocked
+        )
+
+        // AlreadyAbsent on empty store + releaseSlot boolean false
+        val emptyRes = DirectBootCeTakeoverStore.releaseSlotWithResult(ceContext, "nonexistent", unlockGate = { true })
+        assertTrue("Expected AlreadyAbsent, got $emptyRes", emptyRes is CeSlotReleaseResult.AlreadyAbsent)
+        assertFalse(DirectBootCeTakeoverStore.releaseSlot(ceContext, "nonexistent", unlockGate = { true }))
+
+        // Seed record for CommitFailed, CommitException, ReadbackMismatch, Released
+        val rec = sampleDelivered(alarmId = 14L)
+        val intake = DirectBootCeTakeoverStore.recordDelivered(ceContext, rec, baseTime + 70_000L, unlockGate = { true }) as CeTakeoverIntakeResult.RecordedConfirmed
+        val occKey = intake.record.occurrenceKey
+
+        DirectBootCeTakeoverStore.commitSeam = { _, _ -> false }
+        assertTrue(
+            DirectBootCeTakeoverStore.releaseSlotWithResult(ceContext, occKey, unlockGate = { true }) is CeSlotReleaseResult.CommitFailed
+        )
+
+        DirectBootCeTakeoverStore.commitSeam = { _, _ -> throw IOException("io failure") }
+        assertTrue(
+            DirectBootCeTakeoverStore.releaseSlotWithResult(ceContext, occKey, unlockGate = { true }) is CeSlotReleaseResult.CommitException
+        )
+
+        DirectBootCeTakeoverStore.commitSeam = { _, _ -> true }
+        assertTrue(
+            DirectBootCeTakeoverStore.releaseSlotWithResult(ceContext, occKey, unlockGate = { true }) is CeSlotReleaseResult.ReadbackMismatch
+        )
+
+        DirectBootCeTakeoverStore.resetSeamsForTesting()
+        val releasedRes = DirectBootCeTakeoverStore.releaseSlotWithResult(ceContext, occKey, unlockGate = { true })
+        assertTrue("Expected Released, got $releasedRes", releasedRes is CeSlotReleaseResult.Released)
+        assertEquals(0, (releasedRes as CeSlotReleaseResult.Released).remainingCount)
+
+        // Corrupt & UnsupportedSchema fail closed
+        val prefs = ceContext.getSharedPreferences(DirectBootCeTakeoverStore.PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putString(DirectBootCeTakeoverStore.KEY_CE_TAKEOVER_PAYLOAD, "{corrupt").commit()
+        assertTrue(
+            DirectBootCeTakeoverStore.releaseSlotWithResult(ceContext, occKey, unlockGate = { true }) is CeSlotReleaseResult.StorageCorrupt
+        )
+
+        val unsupportedPayload = JSONObject().apply {
+            put("schemaVersion", 99)
+            put("records", JSONArray())
+        }.toString()
+        prefs.edit().putString(DirectBootCeTakeoverStore.KEY_CE_TAKEOVER_PAYLOAD, unsupportedPayload).commit()
+        assertTrue(
+            DirectBootCeTakeoverStore.releaseSlotWithResult(ceContext, occKey, unlockGate = { true }) is CeSlotReleaseResult.UnsupportedSchema
+        )
+    }
 }

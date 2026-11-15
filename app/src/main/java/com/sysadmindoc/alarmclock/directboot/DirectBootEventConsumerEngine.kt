@@ -5,30 +5,50 @@ import android.util.Log
 import androidx.room.withTransaction
 import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 import com.sysadmindoc.alarmclock.data.local.entity.DirectBootOccurrenceReceipt
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
 /**
  * Post-Unlock Direct Boot Event Consumer Engine & Room 38 Receipt Transaction Coordinator
- * for KNO-75 (Phase D3-C2-P3D-P3-BATCH-B / Slice E2).
+ * for KNO-75 (Phase D3-C2-P3D-P3-BATCH-B / Slice E2 & B1c-S4).
  *
  * Invariants & Boundaries:
  * - Room 38 Schema: Uses accepted Room 38 [DirectBootOccurrenceReceipt] entity & DAO without schema modifications.
  * - Lock Isolation: Executes Room transactions under SQLite WAL transaction locks with ZERO DE or CE storage locks held.
  * - Missed Policy: Missed takeover records use RECEIPT-ONLY strategy. Inserts [DirectBootOccurrenceReceipt]
  *   with consumerOutcome = "CONSUMED_MISSED" without inserting [AlarmEvent] rows or creating sessions/tombstones.
- * - Legacy v1 Fence: Legacy v1 records (restoreEpoch = 0L) inherit active Room [ScheduleAuthority.restoreEpoch]
- *   IF AND ONLY IF instanceToken matches. If instanceToken mismatches, marks as RESTORE_EPOCH_CONFLICT
- *   and DOES NOT release the CE active slot.
- * - Independent Readback: Releases CE active slots in [DirectBootCeTakeoverStore] ONLY after independent
- *   Room receipt readback verification succeeds.
+ * - Legacy v1 Fence: Legacy v1 records (restoreEpoch = 0L) are marked RESTORE_EPOCH_CONFLICT and NEVER enter retirement.
+ * - Strict Consumer Retirement Order:
+ *   1. Room 38 Receipt Commit & Independent Readback -> [VerifiedRoomReceiptProof]
+ *   2. Qualified DE ACK via [DirectBootCeHandoffCoordinator]
+ *   3. Witness ACK via [DirectBootFiredWitnessLedger.acknowledgeWitness]
+ *   4. CE Slot Release via [DirectBootCeTakeoverStore.releaseSlotWithResult]
+ *   Any failure in Steps 2-4 aborts subsequent retirement steps for that record and returns [ConsumerExecutionResult.IncompleteRetirement].
  */
 object DirectBootEventConsumerEngine {
 
     private const val TAG = "DirectBootEventConsumerEngine"
+    private val consumerMutex = Mutex()
+    private val VALID_CONSUMED_OUTCOMES: Set<String> = setOf("CONSUMED_DELIVERED", "CONSUMED_MISSED")
+
+    data class RecordRetirementFailure(
+        val occurrenceKey: String,
+        val stage: String,
+        val details: String
+    )
 
     sealed class ConsumerExecutionResult {
         data class Success(val processedCount: Int, val receiptsCommitted: Int) : ConsumerExecutionResult()
+        data class IncompleteRetirement(
+            val processedCount: Int,
+            val receiptsCommitted: Int,
+            val deAcknowledgedCount: Int,
+            val witnessAcknowledgedCount: Int,
+            val ceSlotsReleasedCount: Int,
+            val failures: List<RecordRetirementFailure>
+        ) : ConsumerExecutionResult()
         data class Rejected(val reason: String) : ConsumerExecutionResult()
         object NoPendingRecords : ConsumerExecutionResult()
     }
@@ -41,6 +61,11 @@ object DirectBootEventConsumerEngine {
         data class PayloadConflict(val occurrenceKey: String) : RecordConsumptionOutcome()
         data class ReadbackFailed(val occurrenceKey: String) : RecordConsumptionOutcome()
     }
+
+    private data class VerifiedRoomReceiptProof(
+        val ceRecord: CeTakeoverRecord,
+        val receipt: DirectBootOccurrenceReceipt
+    )
 
     /**
      * Calculates Length-Prefixed Canonical Payload Hash V2 (ACX_RECEIPT_V2) for Room 38 receipts.
@@ -82,6 +107,15 @@ object DirectBootEventConsumerEngine {
         ceContext: Context,
         database: AlarmDatabase
     ): ConsumerExecutionResult {
+        return consumerMutex.withLock {
+            consumePendingTakeoverRecordsInternal(ceContext, database)
+        }
+    }
+
+    private suspend fun consumePendingTakeoverRecordsInternal(
+        ceContext: Context,
+        database: AlarmDatabase
+    ): ConsumerExecutionResult {
         val storageState = DirectBootCeTakeoverStore.inspectStorageState(ceContext)
         val pendingRecords = when (storageState) {
             is CeTakeoverStorageState.Absent,
@@ -97,8 +131,14 @@ object DirectBootEventConsumerEngine {
             return ConsumerExecutionResult.NoPendingRecords
         }
 
+        val deContext = if (ceContext.isDeviceProtectedStorage) ceContext else ceContext.createDeviceProtectedStorageContext()
+
         var processedCount = 0
         var receiptsCommitted = 0
+        var deAcknowledgedCount = 0
+        var witnessAcknowledgedCount = 0
+        var ceSlotsReleasedCount = 0
+        val failures = mutableListOf<RecordRetirementFailure>()
 
         for (record in pendingRecords) {
             val outcome = processSingleRecord(ceContext, database, record)
@@ -106,19 +146,134 @@ object DirectBootEventConsumerEngine {
                 is RecordConsumptionOutcome.ConsumedDelivered,
                 is RecordConsumptionOutcome.ConsumedMissed,
                 is RecordConsumptionOutcome.AlreadyConsumed -> {
+                    val proof = verifyAndBuildRoomReceiptProof(database, record, outcome)
+                    if (proof == null) {
+                        failures.add(
+                            RecordRetirementFailure(
+                                occurrenceKey = record.occurrenceKey,
+                                stage = "ROOM_RECEIPT_PROOF",
+                                details = "Room 38 receipt proof verification failed for ${record.occurrenceKey}"
+                            )
+                        )
+                        processedCount++
+                        continue
+                    }
+
                     receiptsCommitted++
-                    val deContext = if (ceContext.isDeviceProtectedStorage) ceContext else ceContext.createDeviceProtectedStorageContext()
-                    val witnessRecordId = DirectBootFiredWitnessRecord.computeRecordId(
-                        record.kind,
-                        record.alarmId,
-                        record.triggerTime,
-                        record.generation,
-                        record.instanceToken,
-                        record.restoreEpoch
+
+                    // Step 2: Qualified DE ACK (Room receipt verified -> authorized to use CeHandoffResult.Confirmed carrier)
+                    val confirmedProofForDeAck = CeHandoffResult.Confirmed(
+                        ceRecord = proof.ceRecord,
+                        totalCeRecords = pendingRecords.size,
+                        alreadyRecordedInCe = true,
+                        writePerformed = false
                     )
-                    DirectBootFiredWitnessLedger.acknowledgeWitness(deContext, witnessRecordId)
-                    DirectBootDeliveryLedger.acknowledgeRecord(deContext, record.sourceRecordId)
-                    DirectBootCeTakeoverStore.releaseSlot(ceContext, record.occurrenceKey)
+                    val deAckResult = when (record) {
+                        is CeTakeoverRecord.Delivered -> {
+                            val candidate = DirectBootDeliveryRecord(
+                                recordId = record.sourceRecordId,
+                                kind = record.kind,
+                                alarmId = record.alarmId,
+                                triggerTime = record.triggerTime,
+                                deliveredAt = record.deliveredAt,
+                                generation = record.generation,
+                                instanceToken = record.instanceToken,
+                                provenance = record.provenance,
+                                restoreEpoch = record.restoreEpoch,
+                                schemaVersion = record.schemaVersion
+                            )
+                            DirectBootCeHandoffCoordinator.acknowledgeDeliveredWithCeProof(
+                                deContext = deContext,
+                                ceContext = ceContext,
+                                candidateRecord = candidate,
+                                confirmedReceipt = confirmedProofForDeAck,
+                                allowServiceStartFailedCoRetirement = (proof.receipt.consumerOutcome == "CONSUMED_MISSED")
+                            )
+                        }
+                        is CeTakeoverRecord.Missed -> {
+                            val candidate = DirectBootMissedRecord(
+                                recordId = record.sourceRecordId,
+                                kind = record.kind,
+                                alarmId = record.alarmId,
+                                triggerTime = record.triggerTime,
+                                missedAt = record.missedAt,
+                                generation = record.generation,
+                                instanceToken = record.instanceToken,
+                                classification = record.classification,
+                                restoreEpoch = record.restoreEpoch,
+                                schemaVersion = record.schemaVersion
+                            )
+                            DirectBootCeHandoffCoordinator.acknowledgeMissedWithCeProof(
+                                deContext = deContext,
+                                ceContext = ceContext,
+                                candidateRecord = candidate,
+                                confirmedReceipt = confirmedProofForDeAck
+                            )
+                        }
+                    }
+
+                    if (!deAckResult.deRecordRetired) {
+                        failures.add(
+                            RecordRetirementFailure(
+                                occurrenceKey = record.occurrenceKey,
+                                stage = "DE_ACK",
+                                details = "Qualified DE ACK rejected/uncertain: $deAckResult"
+                            )
+                        )
+                        processedCount++
+                        continue
+                    }
+                    deAcknowledgedCount++
+
+                    // Step 3: Witness ACK
+                    val witnessRecordId = DirectBootFiredWitnessRecord.computeRecordId(
+                        kind = record.kind,
+                        alarmId = record.alarmId,
+                        triggerTime = record.triggerTime,
+                        generation = record.generation,
+                        instanceToken = record.instanceToken,
+                        restoreEpoch = record.restoreEpoch
+                    )
+                    val witnessAckResult = DirectBootFiredWitnessLedger.acknowledgeWitness(deContext, witnessRecordId)
+                    when (witnessAckResult) {
+                        is WitnessAckResult.Acknowledged -> {
+                            witnessAcknowledgedCount++
+                        }
+                        is WitnessAckResult.NotFound -> {
+                            // Valid when record is Missed / CONSUMED_MISSED / post-Witness crash retry and Witness store parsed cleanly
+                        }
+                        is WitnessAckResult.PersistenceFailed,
+                        is WitnessAckResult.ReadbackFailed,
+                        is WitnessAckResult.StorageCorrupt,
+                        is WitnessAckResult.UnsupportedSchema -> {
+                            failures.add(
+                                RecordRetirementFailure(
+                                    occurrenceKey = record.occurrenceKey,
+                                    stage = "WITNESS_ACK",
+                                    details = "Witness ACK failed: $witnessAckResult"
+                                )
+                            )
+                            processedCount++
+                            continue
+                        }
+                    }
+
+                    // Step 4: CE Slot Release
+                    when (val ceReleaseResult = DirectBootCeTakeoverStore.releaseSlotWithResult(ceContext, record.occurrenceKey)) {
+                        is CeSlotReleaseResult.Released,
+                        is CeSlotReleaseResult.AlreadyAbsent -> {
+                            ceSlotsReleasedCount++
+                        }
+                        else -> {
+                            failures.add(
+                                RecordRetirementFailure(
+                                    occurrenceKey = record.occurrenceKey,
+                                    stage = "CE_RELEASE",
+                                    details = "CE slot release failed: $ceReleaseResult"
+                                )
+                            )
+                        }
+                    }
                 }
                 is RecordConsumptionOutcome.RestoreEpochConflict,
                 is RecordConsumptionOutcome.PayloadConflict,
@@ -129,10 +284,65 @@ object DirectBootEventConsumerEngine {
             processedCount++
         }
 
-        return ConsumerExecutionResult.Success(
-            processedCount = processedCount,
-            receiptsCommitted = receiptsCommitted
-        )
+        return if (failures.isEmpty()) {
+            ConsumerExecutionResult.Success(
+                processedCount = processedCount,
+                receiptsCommitted = receiptsCommitted
+            )
+        } else {
+            ConsumerExecutionResult.IncompleteRetirement(
+                processedCount = processedCount,
+                receiptsCommitted = receiptsCommitted,
+                deAcknowledgedCount = deAcknowledgedCount,
+                witnessAcknowledgedCount = witnessAcknowledgedCount,
+                ceSlotsReleasedCount = ceSlotsReleasedCount,
+                failures = failures.toList()
+            )
+        }
+    }
+
+    private suspend fun verifyAndBuildRoomReceiptProof(
+        database: AlarmDatabase,
+        record: CeTakeoverRecord,
+        outcome: RecordConsumptionOutcome
+    ): VerifiedRoomReceiptProof? {
+        val candidateReceipt = when (outcome) {
+            is RecordConsumptionOutcome.ConsumedDelivered -> outcome.receipt
+            is RecordConsumptionOutcome.ConsumedMissed -> outcome.receipt
+            is RecordConsumptionOutcome.AlreadyConsumed -> outcome.existingReceipt
+            else -> return null
+        }
+
+        if (record.restoreEpoch <= 0L) return null
+        if (candidateReceipt.consumerOutcome !in VALID_CONSUMED_OUTCOMES) return null
+        if (candidateReceipt.occurrenceKey != record.occurrenceKey ||
+            candidateReceipt.sourceRecordId != record.sourceRecordId ||
+            candidateReceipt.recordType != record.recordType ||
+            candidateReceipt.alarmId != record.alarmId ||
+            candidateReceipt.triggerTime != record.triggerTime ||
+            candidateReceipt.generation != record.generation ||
+            candidateReceipt.instanceToken != record.instanceToken ||
+            candidateReceipt.restoreEpoch <= 0L ||
+            candidateReceipt.restoreEpoch != record.restoreEpoch
+        ) {
+            return null
+        }
+
+        val expectedHash = computeHashForRecord(record, record.restoreEpoch)
+        if (candidateReceipt.sourcePayloadHash != expectedHash) return null
+
+        val readback = try {
+            database.directBootOccurrenceReceiptDao().findByOccurrenceKey(record.occurrenceKey)
+        } catch (e: Exception) {
+            Log.w(TAG, "Room 38 receipt readback exception for ${record.occurrenceKey}: ${e.message}")
+            return null
+        }
+
+        if (readback == null || readback != candidateReceipt) {
+            return null
+        }
+
+        return VerifiedRoomReceiptProof(ceRecord = record, receipt = readback)
     }
 
     /**
@@ -144,18 +354,30 @@ object DirectBootEventConsumerEngine {
         record: CeTakeoverRecord
     ): RecordConsumptionOutcome {
         val receiptDao = database.directBootOccurrenceReceiptDao()
-        val authorityDao = database.scheduleAuthorityDao()
 
         val transactionOutcome = database.withTransaction {
             // 1. Idempotency Check: Pre-read existing receipt by occurrenceKey
             val existingReceipt = receiptDao.findByOccurrenceKey(record.occurrenceKey)
             if (existingReceipt != null) {
-                if (existingReceipt.restoreEpoch != record.restoreEpoch) {
+                if (existingReceipt.consumerOutcome == "RESTORE_EPOCH_CONFLICT") {
+                    return@withTransaction RecordConsumptionOutcome.RestoreEpochConflict(record.alarmId, record.instanceToken)
+                }
+                if (existingReceipt.consumerOutcome !in VALID_CONSUMED_OUTCOMES) {
+                    return@withTransaction RecordConsumptionOutcome.PayloadConflict(record.occurrenceKey)
+                }
+                if (existingReceipt.restoreEpoch != record.restoreEpoch || existingReceipt.restoreEpoch <= 0L) {
                     Log.w(TAG, "Restore epoch mismatch for existing receipt ${record.occurrenceKey}: existing=${existingReceipt.restoreEpoch}, candidate=${record.restoreEpoch}")
                     return@withTransaction RecordConsumptionOutcome.PayloadConflict(record.occurrenceKey)
                 }
                 val candidateHash = computeHashForRecord(record, record.restoreEpoch)
-                if (existingReceipt.sourcePayloadHash == candidateHash) {
+                if (existingReceipt.sourcePayloadHash == candidateHash &&
+                    existingReceipt.sourceRecordId == record.sourceRecordId &&
+                    existingReceipt.recordType == record.recordType &&
+                    existingReceipt.alarmId == record.alarmId &&
+                    existingReceipt.triggerTime == record.triggerTime &&
+                    existingReceipt.generation == record.generation &&
+                    existingReceipt.instanceToken == record.instanceToken
+                ) {
                     return@withTransaction RecordConsumptionOutcome.AlreadyConsumed(existingReceipt)
                 } else {
                     return@withTransaction RecordConsumptionOutcome.PayloadConflict(record.occurrenceKey)
@@ -262,7 +484,12 @@ object DirectBootEventConsumerEngine {
             is RecordConsumptionOutcome.ConsumedDelivered,
             is RecordConsumptionOutcome.ConsumedMissed -> {
                 val readback = receiptDao.findByOccurrenceKey(record.occurrenceKey)
-                if (readback != null) {
+                val expectedReceipt = when (transactionOutcome) {
+                    is RecordConsumptionOutcome.ConsumedDelivered -> transactionOutcome.receipt
+                    is RecordConsumptionOutcome.ConsumedMissed -> transactionOutcome.receipt
+                    else -> null
+                }
+                if (readback != null && readback == expectedReceipt) {
                     transactionOutcome
                 } else {
                     RecordConsumptionOutcome.ReadbackFailed(record.occurrenceKey)
