@@ -238,11 +238,19 @@ class DirectBootDeliveryAuthorizer(
                         generation = identity.generation,
                         instanceToken = identity.instanceToken
                     )
-                    val isDuplicate = ledgerState.records.any { it.recordId == targetRecordId }
-                    if (isDuplicate) {
+                    // Authoritative DE collision fence for NORMAL occurrences:
+                    // match exact recordId OR any unretired NORMAL record at same (alarmId, triggerTime)
+                    // regardless of instanceToken, generation, restoreEpoch, or provenance.
+                    val collidingRecord = ledgerState.records.firstOrNull { it.recordId == targetRecordId }
+                        ?: ledgerState.records.firstOrNull {
+                            it.kind == DirectBootDeliveryRecord.KIND_NORMAL &&
+                                it.alarmId == identity.alarmId &&
+                                it.triggerTime == identity.triggerTime
+                        }
+                    if (collidingRecord != null) {
                         return@synchronized DeliveryPrequalificationResult.DuplicateDelivery(
-                            "Record already exists in delivery ledger for alarmId=${identity.alarmId}, generation=${identity.generation}, triggerTime=${identity.triggerTime}",
-                            targetRecordId
+                            "Record already exists in delivery ledger for alarmId=${identity.alarmId}, triggerTime=${identity.triggerTime}",
+                            collidingRecord.recordId
                         )
                     }
                     if (ledgerState.records.size >= DirectBootDeliveryLedger.MAX_CAPACITY) {
@@ -253,6 +261,44 @@ class DirectBootDeliveryAuthorizer(
                 }
                 is LedgerStorageState.Absent, is LedgerStorageState.ValidEmpty -> {
                     // Empty ledger is valid and ready for new record
+                }
+            }
+
+            // 3. Inspect Durable Owner Storage (fail-closed on Corrupt/UnsupportedSchema;
+            // reject if pending or active claim matches incoming NORMAL (alarmId, triggerTime)).
+            when (val ownerState = DirectBootDurableOwnerStore.read(context)) {
+                is OwnerReadResult.Corrupt -> {
+                    return@synchronized DeliveryPrequalificationResult.StorageUnverifiable(
+                        "Durable owner storage is corrupt"
+                    )
+                }
+                is OwnerReadResult.UnsupportedSchema -> {
+                    return@synchronized DeliveryPrequalificationResult.StorageUnverifiable(
+                        "Durable owner storage has unsupported schema version ${ownerState.foundVersion} (expected ${ownerState.expectedVersion})"
+                    )
+                }
+                is OwnerReadResult.Success -> {
+                    val owner = ownerState.owner
+                    val ownerCollides = when (owner.state) {
+                        OwnerState.IDLE -> false
+                        OwnerState.HANDOVER_PENDING -> owner.handoverClaim?.let {
+                            it.alarmId == identity.alarmId && it.triggerTime == identity.triggerTime
+                        } == true
+                        OwnerState.V2_ACTIVE -> owner.activeSession?.let {
+                            it.alarmId == identity.alarmId && it.triggerTime == identity.triggerTime
+                        } == true
+                    }
+                    if (ownerCollides) {
+                        val collisionRef = owner.handoverClaim?.handoverId
+                            ?: "owner_${owner.state.name}_${identity.alarmId}_${identity.triggerTime}"
+                        return@synchronized DeliveryPrequalificationResult.DuplicateDelivery(
+                            "Occurrence collision with durable owner state ${owner.state.name} for alarmId=${identity.alarmId}, triggerTime=${identity.triggerTime}",
+                            collisionRef
+                        )
+                    }
+                }
+                is OwnerReadResult.Absent -> {
+                    // No durable owner claim recorded
                 }
             }
 
