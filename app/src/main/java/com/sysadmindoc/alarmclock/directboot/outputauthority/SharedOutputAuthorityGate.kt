@@ -456,7 +456,6 @@ class SharedOutputAuthorityGate(
         if (!isEnabled) return false
         val effectiveBootCount = resolveBootCount(context) ?: return false
         val deContext = if (context.isDeviceProtectedStorage) context else context.createDeviceProtectedStorageContext()
-        arbiter.releaseIfMatches(key, activeNonce)
         return synchronized(DirectBootStorageLock.lock) {
             val state = DirectBootLegacyClaimStore.inspectStorageState(deContext)
             val records = when (state) {
@@ -467,7 +466,10 @@ class SharedOutputAuthorityGate(
             if (existing.claimNonce != activeNonce) {
                 return@synchronized false
             }
-            if (existing.state == LegacyClaimState.OUTPUT_CLAIMING || existing.state == LegacyClaimState.OUTPUT_OBSERVED) {
+            if (existing.state == LegacyClaimState.OUTPUT_CLAIMING ||
+                existing.state == LegacyClaimState.OUTPUT_OBSERVED ||
+                existing.state == LegacyClaimState.START_REQUESTED
+            ) {
                 val tr = DirectBootLegacyClaimStore.transition(
                     context = deContext,
                     key = key,
@@ -479,7 +481,12 @@ class SharedOutputAuthorityGate(
                     bootCount = effectiveBootCount,
                     terminalOutcome = outcome
                 )
-                tr is LegacyClaimWriteResult.Committed
+                if (tr is LegacyClaimWriteResult.Committed) {
+                    arbiter.releaseIfMatches(key, activeNonce)
+                    true
+                } else {
+                    false
+                }
             } else {
                 false
             }

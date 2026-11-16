@@ -29,6 +29,12 @@ import dagger.assisted.AssistedInject
  * double-fire a working alarm: a delivered fire always writes a `BROADCAST`
  * incident, which short-circuits the re-fire.
  */
+@org.jetbrains.annotations.VisibleForTesting
+internal var outputAuthorityGateSeam: com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate? = null
+
+@org.jetbrains.annotations.VisibleForTesting
+internal var roomReceiptCheckerSeam: ((Long, Long) -> Boolean)? = null
+
 @HiltWorker
 class FireWatchdogWorker @AssistedInject constructor(
     @Assisted private val context: Context,
@@ -69,6 +75,39 @@ class FireWatchdogWorker @AssistedInject constructor(
             return Result.success()
         }
 
+        val gate = outputAuthorityGateSeam ?: com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate.getInstance(context)
+        var claimNonce: String? = null
+        val occKey = if (gate.isEnabled) {
+            if (alarmId <= 0L || scheduledAt <= 0L) {
+                recordIncident(
+                    alarmId = alarmId,
+                    fireId = fireId,
+                    scheduledAt = scheduledAt,
+                    type = AlarmIncidentEvent.TYPE_SCHEDULE,
+                    status = AlarmIncidentEvent.STATUS_SKIPPED,
+                    reasonCode = "FIRE_WATCHDOG_INVALID_KEY"
+                )
+                return Result.success()
+            }
+            val key = com.sysadmindoc.alarmclock.directboot.OutputOccurrenceKey(alarmId, scheduledAt, 0)
+            val res = gate.reserveForServiceStart(context, key, com.sysadmindoc.alarmclock.directboot.LegacyClaimSource.FIRE_WATCHDOG)
+            if (res !is com.sysadmindoc.alarmclock.directboot.outputauthority.OutputAuthorizationResult.Authorized) {
+                recordIncident(
+                    alarmId = alarmId,
+                    fireId = fireId,
+                    scheduledAt = scheduledAt,
+                    type = AlarmIncidentEvent.TYPE_SCHEDULE,
+                    status = AlarmIncidentEvent.STATUS_SKIPPED,
+                    reasonCode = "FIRE_WATCHDOG_AUTHORITY_REJECTED_${res.javaClass.simpleName}"
+                )
+                return Result.success()
+            }
+            claimNonce = res.activeNonce
+            key
+        } else {
+            null
+        }
+
         // Re-fire through the same path WakeConfirmWorker uses so behavior can't
         // diverge from a normal fire. This goes straight to the service (not via
         // AlarmReceiver), so it writes no BROADCAST incident and cannot trigger a
@@ -78,6 +117,9 @@ class FireWatchdogWorker @AssistedInject constructor(
             putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
             putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, scheduledAt)
             putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, fireId)
+            if (claimNonce != null) {
+                putExtra(AlarmService.EXTRA_CLAIM_NONCE, claimNonce)
+            }
         }
         return try {
             context.startForegroundService(startIntent)
@@ -95,14 +137,30 @@ class FireWatchdogWorker @AssistedInject constructor(
             // the foreground-service start, and the whole point of the watchdog
             // is that a missed alarm does not stay missed. Surface it as a
             // full-screen intent instead of failing quietly.
+            val roomChecker = roomReceiptCheckerSeam ?: try {
+                val dao = alarmRepository.database.directBootOccurrenceReceiptDao()
+                val checker: (Long, Long) -> Boolean = { aId, sAt ->
+                    dao.findByAlarmId(aId).any { it.triggerTime == sAt }
+                }
+                checker
+            } catch (_: Throwable) { null }
+
             val fallbackPosted = alarm != null && AlarmFullScreenFallback.post(
                 context = context,
-                alarm = alarm,
+                alarmId = alarm.id,
                 scheduledAt = scheduledAt,
                 fireId = fireId,
                 hideLabel = preferencesManager.getCurrentSettings()
-                    .hideAlarmLabelsOnPublicSurfaces
+                    .hideAlarmLabelsOnPublicSurfaces,
+                label = alarm.label,
+                claimNonce = claimNonce,
+                refireCount = 0,
+                roomReceiptChecker = roomChecker,
+                authorityGate = if (gate.isEnabled) gate else null
             )
+            if (!fallbackPosted && occKey != null && claimNonce != null) {
+                gate.abortClaim(context, occKey, claimNonce, com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+            }
             recordIncident(
                 alarmId = alarmId,
                 fireId = fireId,

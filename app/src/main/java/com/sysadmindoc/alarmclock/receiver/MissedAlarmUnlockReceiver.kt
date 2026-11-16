@@ -35,6 +35,21 @@ import kotlinx.coroutines.withTimeout
  * the user unlocks the device or unplugs it from power. Clears the persisted
  * state on every fire so a single missed alarm can only re-trigger once.
  */
+@org.jetbrains.annotations.VisibleForTesting
+internal var missedAlarmOutputAuthorityGateSeam: com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate? = null
+
+@org.jetbrains.annotations.VisibleForTesting
+internal var missedAlarmRoomReceiptCheckerSeam: ((Long, Long) -> Boolean)? = null
+
+@org.jetbrains.annotations.VisibleForTesting
+internal var missedAlarmTestAlarmRepository: com.sysadmindoc.alarmclock.data.repository.AlarmRepository? = null
+
+@org.jetbrains.annotations.VisibleForTesting
+internal var missedAlarmTestIncidentRepository: com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository? = null
+
+@org.jetbrains.annotations.VisibleForTesting
+internal var missedAlarmTestPreferencesManager: com.sysadmindoc.alarmclock.data.preferences.PreferencesManager? = null
+
 class MissedAlarmUnlockReceiver : BroadcastReceiver() {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -48,19 +63,33 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
         scope.launch {
             val claimToken = MissedAlarmReplayPolicy.tryAcquireClaim()
                 ?: run {
-                    pending.finish()
+                    pending?.finish()
                     return@launch
                 }
             try {
                 withTimeout(8_000L) {
-                    val ep = EntryPointAccessors.fromApplication(
-                        context.applicationContext,
-                        AlarmClockApp.AppEntryPoint::class.java
-                    )
-                    val prefsMgr = EntryPointAccessors.fromApplication(
-                        context.applicationContext,
-                        PreferencesEntryPoint::class.java
-                    ).preferencesManager()
+                    val ep = try {
+                        EntryPointAccessors.fromApplication(
+                            context.applicationContext,
+                            AlarmClockApp.AppEntryPoint::class.java
+                        )
+                    } catch (_: Throwable) { null }
+
+                    val prefsMgr = missedAlarmTestPreferencesManager ?: try {
+                        EntryPointAccessors.fromApplication(
+                            context.applicationContext,
+                            PreferencesEntryPoint::class.java
+                        ).preferencesManager()
+                    } catch (_: Throwable) { null }
+
+                    val alarmRepo = missedAlarmTestAlarmRepository ?: ep?.alarmRepository()
+                    val incidentRepo = missedAlarmTestIncidentRepository ?: ep?.alarmIncidentRepository()
+
+                    if (prefsMgr == null || alarmRepo == null || incidentRepo == null) {
+                        Log.w("MissedAlarmUnlockReceiver", "Dependencies unavailable for missed alarm replay")
+                        return@withTimeout
+                    }
+
                     val settings = prefsMgr.getCurrentSettings()
 
                     val store = context.applicationContext
@@ -81,7 +110,7 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
                     }
                     if (!decision.shouldReplay) return@withTimeout
 
-                    val alarm = ep.alarmRepository().getById(id)
+                    val alarm = alarmRepo.getById(id)
                         ?.takeIf { it.isEnabled }
                         ?: run {
                             clearMissedAlarmMarkerIfMatching(store, id, at)
@@ -91,7 +120,7 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
                     val fireId = AlarmFireDismissContract.fireId(alarm.id, at)
 
                     // Check 1: If positive delivery proof already exists for this occurrence, consume and exit
-                    if (ep.alarmIncidentRepository().occurrenceDeliveryCount(alarm.id, at) > 0) {
+                    if (incidentRepo.occurrenceDeliveryCount(alarm.id, at) > 0) {
                         clearMissedAlarmMarkerIfMatching(store, id, at)
                         return@withTimeout
                     }
@@ -101,7 +130,7 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
                     val nowMs = System.currentTimeMillis()
                     if (lastDispatchedAt > 0L && (nowMs - lastDispatchedAt) < 15_000L) {
                         val lateProofFound = awaitPositiveDeliveryProof(
-                            repo = ep.alarmIncidentRepository(),
+                            repo = incidentRepo,
                             alarmId = alarm.id,
                             scheduledAt = at,
                             timeoutMs = 2_500L
@@ -115,11 +144,55 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
                     // Record dispatch attempt timestamp under lock
                     MissedAlarmReplayPolicy.recordDispatchTimestamp(store, System.currentTimeMillis())
 
-                    val fireIntent = AlarmFireDismissContract.startServiceIntent(context, alarm.id, at, fireId)
+                    val gate = missedAlarmOutputAuthorityGateSeam ?: com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate.getInstance(context)
+                    var claimNonce: String? = null
+                    val occKey = if (gate.isEnabled) {
+                        if (alarm.id <= 0L || at <= 0L) {
+                            Log.w("MissedAlarmUnlockReceiver", "Authority reservation rejected: invalid occurrence identity (alarmId=${alarm.id}, at=$at)")
+                            clearMissedAlarmMarkerIfMatching(store, id, at)
+                            return@withTimeout
+                        }
+                        val roomChecker = missedAlarmRoomReceiptCheckerSeam ?: try {
+                            val dao = alarmRepo.database.directBootOccurrenceReceiptDao()
+                            val checker: (Long, Long) -> Boolean = { aId, sAt ->
+                                dao.findByAlarmId(aId).any { it.triggerTime == sAt }
+                            }
+                            checker
+                        } catch (_: Throwable) { null }
+
+                        if (roomChecker == null) {
+                            Log.w("MissedAlarmUnlockReceiver", "Authority reservation rejected: roomReceiptChecker unavailable when gate is enabled")
+                            return@withTimeout
+                        }
+
+                        val receiptExists = try { roomChecker(alarm.id, at) } catch (_: Throwable) { true }
+                        if (receiptExists) {
+                            Log.w("MissedAlarmUnlockReceiver", "Authority reservation rejected: occurrence receipt exists in Room for ${alarm.id} @ $at")
+                            clearMissedAlarmMarkerIfMatching(store, id, at)
+                            return@withTimeout
+                        }
+
+                        val key = com.sysadmindoc.alarmclock.directboot.OutputOccurrenceKey(alarm.id, at, 0)
+                        val res = gate.reserveForServiceStart(context, key, com.sysadmindoc.alarmclock.directboot.LegacyClaimSource.MISSED_UNLOCK)
+                        if (res !is com.sysadmindoc.alarmclock.directboot.outputauthority.OutputAuthorizationResult.Authorized) {
+                            Log.w("MissedAlarmUnlockReceiver", "Authority reservation rejected for replay alarm ${alarm.id}: $res")
+                            return@withTimeout
+                        }
+                        claimNonce = res.activeNonce
+                        key
+                    } else {
+                        null
+                    }
+
+                    val fireIntent = AlarmFireDismissContract.startServiceIntent(context, alarm.id, at, fireId).apply {
+                        if (claimNonce != null) {
+                            putExtra(AlarmService.EXTRA_CLAIM_NONCE, claimNonce)
+                        }
+                    }
                     var deliverySucceeded = false
                     try {
                         context.startForegroundService(fireIntent)
-                        ep.alarmIncidentRepository().record(
+                        incidentRepo.record(
                             alarmId = alarm.id,
                             fireId = fireId,
                             scheduledAt = at,
@@ -129,7 +202,7 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
                             source = incidentSource
                         )
                         deliverySucceeded = awaitPositiveDeliveryProof(
-                            repo = ep.alarmIncidentRepository(),
+                            repo = incidentRepo,
                             alarmId = alarm.id,
                             scheduledAt = at,
                             timeoutMs = 1_500L
@@ -137,7 +210,7 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
                     } catch (e: Exception) {
                         Log.e("MissedAlarmUnlockReceiver",
                             "startForegroundService failed for replay alarm ${alarm.id}", e)
-                        ep.alarmIncidentRepository().record(
+                        incidentRepo.record(
                             alarmId = alarm.id,
                             fireId = fireId,
                             scheduledAt = at,
@@ -146,15 +219,31 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
                             reasonCode = "MISSED_REPLAY_START_FAILED_${e.javaClass.simpleName}",
                             source = incidentSource
                         )
+                        val roomChecker = missedAlarmRoomReceiptCheckerSeam ?: try {
+                            val dao = alarmRepo.database.directBootOccurrenceReceiptDao()
+                            val checker: (Long, Long) -> Boolean = { aId, sAt ->
+                                dao.findByAlarmId(aId).any { it.triggerTime == sAt }
+                            }
+                            checker
+                        } catch (_: Throwable) { null }
+
                         val fallbackPosted = AlarmFullScreenFallback.post(
                             context = context,
-                            alarm = alarm,
+                            alarmId = alarm.id,
                             scheduledAt = at,
                             fireId = fireId,
-                            hideLabel = settings.hideAlarmLabelsOnPublicSurfaces
+                            hideLabel = settings.hideAlarmLabelsOnPublicSurfaces,
+                            label = alarm.label,
+                            claimNonce = claimNonce,
+                            refireCount = 0,
+                            roomReceiptChecker = roomChecker,
+                            authorityGate = if (gate.isEnabled) gate else null
                         )
                         deliverySucceeded = fallbackPosted
-                        ep.alarmIncidentRepository().record(
+                        if (!fallbackPosted && occKey != null && claimNonce != null) {
+                            gate.abortClaim(context, occKey, claimNonce, com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+                        }
+                        incidentRepo.record(
                             alarmId = alarm.id,
                             fireId = fireId,
                             scheduledAt = at,
@@ -178,7 +267,7 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
                 Log.e("MissedAlarmUnlockReceiver", "Unexpected error in missed alarm replay", e)
             } finally {
                 MissedAlarmReplayPolicy.releaseClaim(claimToken)
-                pending.finish()
+                pending?.finish()
             }
         }
     }

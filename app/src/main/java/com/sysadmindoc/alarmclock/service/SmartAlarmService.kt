@@ -38,8 +38,19 @@ import javax.inject.Inject
  * If scored phone-motion buckets indicate a conservative light-motion window, fires the alarm early.
  * If the scheduled time arrives without detection, the regular AlarmReceiver fires normally.
  */
+@org.jetbrains.annotations.VisibleForTesting
+internal var smartAlarmOutputAuthorityGateSeam: com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate? = null
+
+@org.jetbrains.annotations.VisibleForTesting
+internal var smartAlarmRoomReceiptCheckerSeam: ((Long, Long) -> Boolean)? = null
+
 @AndroidEntryPoint
 class SmartAlarmService : Service(), SensorEventListener {
+
+    @androidx.annotation.VisibleForTesting
+    internal fun callStartAlarmServiceForTesting() {
+        startAlarmService()
+    }
 
     @Inject lateinit var actigraphyRepository: ActigraphyRepository
     @Inject lateinit var alarmScheduler: AlarmScheduler
@@ -248,6 +259,25 @@ class SmartAlarmService : Service(), SensorEventListener {
     }
 
     private fun startAlarmService() {
+        val gate = smartAlarmOutputAuthorityGateSeam ?: com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate.getInstance(this)
+        var claimNonce: String? = null
+        val occKey = if (gate.isEnabled) {
+            if (alarmId <= 0L || targetTimeMs <= 0L) {
+                android.util.Log.w("SmartAlarmService", "Authority reservation rejected: invalid occurrence identity (alarmId=$alarmId, targetTimeMs=$targetTimeMs)")
+                return
+            }
+            val key = com.sysadmindoc.alarmclock.directboot.OutputOccurrenceKey(alarmId, targetTimeMs, 0)
+            val res = gate.reserveForServiceStart(this, key, com.sysadmindoc.alarmclock.directboot.LegacyClaimSource.SMART_ALARM)
+            if (res !is com.sysadmindoc.alarmclock.directboot.outputauthority.OutputAuthorizationResult.Authorized) {
+                android.util.Log.w("SmartAlarmService", "Authority reservation rejected for early fire alarm $alarmId: $res")
+                return
+            }
+            claimNonce = res.activeNonce
+            key
+        } else {
+            null
+        }
+
         val fireId = com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent.fireIdFor(alarmId, targetTimeMs)
         val intent = Intent(this, AlarmService::class.java).apply {
             action = AlarmService.ACTION_START_ALARM
@@ -258,26 +288,46 @@ class SmartAlarmService : Service(), SensorEventListener {
             // still-future original minute and rings a second time.
             putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, targetTimeMs)
             putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, fireId)
+            if (claimNonce != null) {
+                putExtra(AlarmService.EXTRA_CLAIM_NONCE, claimNonce)
+            }
         }
 
         try {
             startForegroundService(intent)
         } catch (e: Exception) {
             android.util.Log.e("SmartAlarmService", "startForegroundService failed for early fire alarm $alarmId", e)
+            var fallbackPosted = false
             try {
                 val settings = preferencesManager.getCachedSettings()
                 val alarm = kotlinx.coroutines.runBlocking { alarmRepository.getById(alarmId) }
+                val roomChecker = smartAlarmRoomReceiptCheckerSeam ?: try {
+                    val dao = alarmRepository.database.directBootOccurrenceReceiptDao()
+                    val checker: (Long, Long) -> Boolean = { aId, sAt ->
+                        dao.findByAlarmId(aId).any { it.triggerTime == sAt }
+                    }
+                    checker
+                } catch (_: Throwable) { null }
+
                 if (alarm != null) {
-                    AlarmFullScreenFallback.post(
+                    fallbackPosted = AlarmFullScreenFallback.post(
                         context = this,
-                        alarm = alarm,
+                        alarmId = alarm.id,
                         scheduledAt = targetTimeMs,
                         fireId = fireId,
-                        hideLabel = settings.hideAlarmLabelsOnPublicSurfaces
+                        hideLabel = settings.hideAlarmLabelsOnPublicSurfaces,
+                        label = alarm.label,
+                        claimNonce = claimNonce,
+                        refireCount = 0,
+                        roomReceiptChecker = roomChecker,
+                        authorityGate = if (gate.isEnabled) gate else null
                     )
                 }
             } catch (fallbackErr: Exception) {
                 android.util.Log.e("SmartAlarmService", "Fallback notification post failed for early fire alarm $alarmId", fallbackErr)
+            }
+            if (!fallbackPosted && occKey != null && claimNonce != null) {
+                gate.abortClaim(this, occKey, claimNonce, com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
             }
         }
     }
