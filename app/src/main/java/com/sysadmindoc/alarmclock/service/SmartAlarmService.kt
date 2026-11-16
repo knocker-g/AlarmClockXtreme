@@ -327,7 +327,19 @@ class SmartAlarmService : Service(), SensorEventListener {
                 android.util.Log.e("SmartAlarmService", "Fallback notification post failed for early fire alarm $alarmId", fallbackErr)
             }
             if (!fallbackPosted && occKey != null && claimNonce != null) {
-                gate.abortClaim(this, occKey, claimNonce, com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+                val aborted = gate.abortClaim(this, occKey, claimNonce, com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+                if (!aborted) {
+                    android.util.Log.e("SmartAlarmService", "abortClaim failed for early fire alarm $alarmId; preserving fail-closed state")
+                    alarmIncidentRepository.recordAsync(
+                        alarmId = alarmId,
+                        fireId = fireId,
+                        scheduledAt = targetTimeMs,
+                        type = com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                        status = com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent.STATUS_FAILED,
+                        reasonCode = "SMART_ALARM_ABORT_CLAIM_FAILED",
+                        source = "SmartAlarmService"
+                    )
+                }
             }
         }
     }

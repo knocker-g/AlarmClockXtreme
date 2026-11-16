@@ -27,17 +27,27 @@ import com.sysadmindoc.alarmclock.receiver.MissedAlarmUnlockReceiver
 import com.sysadmindoc.alarmclock.service.AlarmFullScreenFallback
 import com.sysadmindoc.alarmclock.service.AlarmService
 import com.sysadmindoc.alarmclock.service.SmartAlarmService
+import com.sysadmindoc.alarmclock.data.local.IssuedOccurrenceDao
+import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
+import com.sysadmindoc.alarmclock.receiver.testAlarmRepository
+import com.sysadmindoc.alarmclock.receiver.testIncidentRepository
+import com.sysadmindoc.alarmclock.receiver.testIssuedOccurrenceDao
+import com.sysadmindoc.alarmclock.receiver.testOnIncidentRecordedCompletion
 import com.sysadmindoc.alarmclock.worker.FireWatchdogWorker
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.spyk
+import io.mockk.verify
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import java.util.concurrent.CountDownLatch
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -98,6 +108,7 @@ class IngressOutputAuthorityIntegrationTest {
 
     @After
     fun tearDown() {
+        DirectBootLegacyClaimStore.resetSeamsForTesting()
         clearStorage()
         gate.arbiter.clearForTesting()
         AlarmFullScreenFallback.clearForTesting()
@@ -115,6 +126,10 @@ class IngressOutputAuthorityIntegrationTest {
         com.sysadmindoc.alarmclock.receiver.missedAlarmTestAlarmRepository = null
         com.sysadmindoc.alarmclock.receiver.missedAlarmTestIncidentRepository = null
         com.sysadmindoc.alarmclock.receiver.missedAlarmTestPreferencesManager = null
+        testAlarmRepository = null
+        testIncidentRepository = null
+        testIssuedOccurrenceDao = null
+        testOnIncidentRecordedCompletion = null
     }
 
     private fun clearStorage() {
@@ -122,6 +137,7 @@ class IngressOutputAuthorityIntegrationTest {
             .edit()
             .remove(DirectBootLegacyClaimStore.KEY_LEGACY_CLAIM_STORE_PAYLOAD)
             .remove("direct_boot_v2_alarm_queue_payload")
+            .remove("direct_boot_delivery_ledger_payload")
             .remove(DirectBootDurableOwnerStore.KEY_DIRECT_BOOT_DURABLE_OWNER)
             .commit()
     }
@@ -496,6 +512,317 @@ class IngressOutputAuthorityIntegrationTest {
         assertNotNull(record)
         assertEquals(LegacyClaimSource.MISSED_UNLOCK, record!!.source)
         assertEquals(nonce, record.claimNonce)
+    }
+
+    // --- S5-C1 INGRESS ABORT FAILURE PROPAGATION & FLAG OFF TESTS ---
+
+    @Test
+    fun testAlarmReceiver_flagOn_abortFailure_recordsIncidentPreservesClaimAndBlocksRetry() {
+        gate.isEnabled = true
+        com.sysadmindoc.alarmclock.receiver.outputAuthorityGateSeam = gate
+        shadowOf(context as Application).denyPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+
+        val issuedDao = mockk<IssuedOccurrenceDao>(relaxed = true)
+        coEvery { issuedDao.countActivatedOccurrencesForAlarm(301L) } returns 1
+        coEvery { issuedDao.evaluateActiveOccurrenceAdmission(any(), any(), any(), any()) } returns true
+        coEvery { issuedDao.claimFallbackLease(any(), any(), any(), any(), any(), any(), any()) } returns 1
+        every { alarmRepository.issuedOccurrenceDao() } returns issuedDao
+        testAlarmRepository = alarmRepository
+        testIncidentRepository = incidentRepository
+        testIssuedOccurrenceDao = issuedDao
+
+        val latch = CountDownLatch(1)
+        var recordedEvents: List<com.sysadmindoc.alarmclock.receiver.ReceiverAlarmIncident>? = null
+        testOnIncidentRecordedCompletion = { events ->
+            recordedEvents = events
+            latch.countDown()
+        }
+
+        val spyContext = spyk(context) {
+            every { startForegroundService(any()) } throws IllegalStateException("FGS blocked")
+        }
+
+        // Allow initial START_REQUESTED write, fail abortClaim TERMINAL write
+        val prefs = DirectBootLegacyClaimStore.prefs(context)
+        DirectBootLegacyClaimStore.commitSeam = { p, payload ->
+            if (payload.contains("\"TERMINAL\"")) {
+                false
+            } else {
+                p.edit().putString(DirectBootLegacyClaimStore.KEY_LEGACY_CLAIM_STORE_PAYLOAD, payload).commit()
+            }
+        }
+
+        val scheduledAt = 91_000L
+        val intent = Intent().apply {
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, 301L)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, scheduledAt)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "fire-301-abort-fail")
+            putExtra(AlarmScheduler.EXTRA_ISSUE_TOKEN, "issue-tok-301")
+        }
+
+        try {
+            val receiver = AlarmReceiver()
+            receiver.onReceive(spyContext, intent)
+            assertTrue("Async recovery must finish", latch.await(5, TimeUnit.SECONDS))
+        } finally {
+            DirectBootLegacyClaimStore.resetSeamsForTesting()
+            prefs.all // verify readable
+        }
+
+        assertNotNull(recordedEvents)
+        assertTrue(
+            "Abort failure incident MUST be recorded",
+            recordedEvents!!.any {
+                it.status == AlarmIncidentEvent.STATUS_FAILED &&
+                    it.reasonCode == "AUTHORITY_ABORT_CLAIM_FAILED"
+            }
+        )
+        coVerify(exactly = 0) { issuedDao.releaseFallbackLeaseOnFailure(any(), any(), any()) }
+
+        // DE claim MUST be preserved fail-closed (not cleared, not TERMINAL)
+        val storage = DirectBootLegacyClaimStore.inspectStorageState(context) as LegacyClaimStorageState.ValidWithRecords
+        val rec = storage.records.firstOrNull { it.alarmId == 301L && it.scheduledAt == scheduledAt }
+        assertNotNull("DE claim must be preserved on abort failure", rec)
+        assertEquals(LegacyClaimState.START_REQUESTED, rec!!.state)
+
+        // Retry of the same occurrence must NOT produce double output
+        val receiverRetry = AlarmReceiver()
+        receiverRetry.onReceive(context, intent)
+        assertNull("Retry on preserved DE claim MUST NOT start service", shadowOf(context as Application).nextStartedService)
+    }
+
+    @Test
+    fun testFireWatchdog_flagOn_abortFailure_returnsFailureRecordsIncidentAndBlocksRetry() {
+        gate.isEnabled = true
+        com.sysadmindoc.alarmclock.worker.outputAuthorityGateSeam = gate
+        shadowOf(context as Application).denyPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+
+        val scheduledAt = System.currentTimeMillis() - 2 * 60 * 1000L
+        val spyContext = spyk(context) {
+            every { startForegroundService(any()) } throws IllegalStateException("FGS blocked")
+        }
+
+        val workerParams = mockk<androidx.work.WorkerParameters>(relaxed = true)
+        every { workerParams.inputData } returns androidx.work.workDataOf(
+            FireWatchdogWorker.KEY_ALARM_ID to 301L,
+            FireWatchdogWorker.KEY_SCHEDULED_AT to scheduledAt
+        )
+        coEvery { incidentRepository.occurrenceDeliveryCount(301L, scheduledAt) } returns 0
+
+        val worker = FireWatchdogWorker(
+            context = spyContext,
+            workerParams = workerParams,
+            alarmRepository = alarmRepository,
+            preferencesManager = preferencesManager,
+            alarmIncidentRepository = incidentRepository
+        )
+
+        DirectBootLegacyClaimStore.commitSeam = { p, payload ->
+            if (payload.contains("\"TERMINAL\"")) {
+                false
+            } else {
+                p.edit().putString(DirectBootLegacyClaimStore.KEY_LEGACY_CLAIM_STORE_PAYLOAD, payload).commit()
+            }
+        }
+
+        val result = try {
+            runBlocking { worker.doWork() }
+        } finally {
+            DirectBootLegacyClaimStore.resetSeamsForTesting()
+        }
+
+        assertEquals(
+            "FireWatchdogWorker MUST return Result.failure() when abortClaim fails",
+            androidx.work.ListenableWorker.Result.failure(),
+            result
+        )
+        coVerify(atLeast = 1) {
+            incidentRepository.record(
+                alarmId = 301L,
+                fireId = any(),
+                scheduledAt = scheduledAt,
+                eventAt = any(),
+                type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "FIRE_WATCHDOG_ABORT_CLAIM_FAILED",
+                source = FireWatchdogWorker.SOURCE,
+                algorithmVersion = any()
+            )
+        }
+
+        // DE claim MUST remain START_REQUESTED
+        val storage = DirectBootLegacyClaimStore.inspectStorageState(context) as LegacyClaimStorageState.ValidWithRecords
+        val rec = storage.records.firstOrNull { it.alarmId == 301L && it.scheduledAt == scheduledAt }
+        assertNotNull(rec)
+        assertEquals(LegacyClaimState.START_REQUESTED, rec!!.state)
+
+        // Retry with normal context must NOT start service
+        val retryWorker = createWatchdogWorker(301L, scheduledAt)
+        runBlocking { retryWorker.doWork() }
+        assertNull("Retry of same occurrence MUST NOT start service", shadowOf(context as Application).nextStartedService)
+    }
+
+    @Test
+    fun testSmartAlarm_flagOn_abortFailure_recordsIncidentPreservesClaimAndBlocksRetry() {
+        gate.isEnabled = true
+        com.sysadmindoc.alarmclock.service.smartAlarmOutputAuthorityGateSeam = gate
+        shadowOf(context as Application).denyPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+
+        val scheduledAt = 92_000L
+        val service = createSmartAlarmService(301L, scheduledAt)
+        val spyService = spyk(service) {
+            every { startForegroundService(any()) } throws IllegalStateException("FGS blocked")
+        }
+
+        DirectBootLegacyClaimStore.commitSeam = { p, payload ->
+            if (payload.contains("\"TERMINAL\"")) {
+                false
+            } else {
+                p.edit().putString(DirectBootLegacyClaimStore.KEY_LEGACY_CLAIM_STORE_PAYLOAD, payload).commit()
+            }
+        }
+
+        try {
+            spyService.callStartAlarmServiceForTesting()
+        } finally {
+            DirectBootLegacyClaimStore.resetSeamsForTesting()
+        }
+
+        verify(atLeast = 1) {
+            incidentRepository.recordAsync(
+                alarmId = 301L,
+                fireId = any(),
+                scheduledAt = scheduledAt,
+                eventAt = any(),
+                type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "SMART_ALARM_ABORT_CLAIM_FAILED",
+                source = "SmartAlarmService",
+                algorithmVersion = any()
+            )
+        }
+
+        val storage = DirectBootLegacyClaimStore.inspectStorageState(context) as LegacyClaimStorageState.ValidWithRecords
+        val rec = storage.records.firstOrNull { it.alarmId == 301L && it.scheduledAt == scheduledAt }
+        assertNotNull(rec)
+        assertEquals(LegacyClaimState.START_REQUESTED, rec!!.state)
+
+        // Retry must NOT start service
+        service.callStartAlarmServiceForTesting()
+        assertNull("Retry on preserved claim MUST NOT start service", shadowOf(context as Application).nextStartedService)
+    }
+
+    @Test
+    fun testMissedUnlock_flagOn_abortFailure_recordsIncidentPreservesClaimAndBlocksRetry() {
+        gate.isEnabled = true
+        com.sysadmindoc.alarmclock.receiver.missedAlarmOutputAuthorityGateSeam = gate
+        com.sysadmindoc.alarmclock.receiver.missedAlarmRoomReceiptCheckerSeam = { _, _ -> false }
+        shadowOf(context as Application).denyPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+
+        val missedAt = System.currentTimeMillis() - 60_000L
+        seedMissedAlarmState(301L, missedAt)
+
+        val abortIncidentLatch = CountDownLatch(1)
+        coEvery {
+            incidentRepository.record(
+                alarmId = 301L,
+                fireId = any(),
+                scheduledAt = missedAt,
+                eventAt = any(),
+                type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "MISSED_REPLAY_ABORT_CLAIM_FAILED",
+                source = any(),
+                algorithmVersion = any()
+            )
+        } coAnswers {
+            abortIncidentLatch.countDown()
+            1L
+        }
+
+        val spyContext = spyk(context) {
+            every { startForegroundService(any()) } throws IllegalStateException("FGS blocked")
+        }
+
+        DirectBootLegacyClaimStore.commitSeam = { p, payload ->
+            if (payload.contains("\"TERMINAL\"")) {
+                false
+            } else {
+                p.edit().putString(DirectBootLegacyClaimStore.KEY_LEGACY_CLAIM_STORE_PAYLOAD, payload).commit()
+            }
+        }
+
+        try {
+            val receiver = MissedAlarmUnlockReceiver()
+            receiver.onReceive(spyContext, Intent(Intent.ACTION_USER_PRESENT))
+            assertTrue("Missed unlock abort failure incident must be recorded", abortIncidentLatch.await(5, TimeUnit.SECONDS))
+        } finally {
+            DirectBootLegacyClaimStore.resetSeamsForTesting()
+        }
+
+        val storage = DirectBootLegacyClaimStore.inspectStorageState(context) as LegacyClaimStorageState.ValidWithRecords
+        val rec = storage.records.firstOrNull { it.alarmId == 301L && it.scheduledAt == missedAt }
+        assertNotNull(rec)
+        assertEquals(LegacyClaimState.START_REQUESTED, rec!!.state)
+
+        // Retry with normal context must NOT start service
+        val receiverRetry = MissedAlarmUnlockReceiver()
+        receiverRetry.onReceive(context, Intent(Intent.ACTION_USER_PRESENT))
+        Thread.sleep(300)
+        assertNull("Retry on preserved claim MUST NOT start service", shadowOf(context as Application).nextStartedService)
+    }
+
+    @Test
+    fun testIngress_flagOff_fallbackFailure_preservesLegacyCleanupBehavior() {
+        gate.isEnabled = false
+        com.sysadmindoc.alarmclock.worker.outputAuthorityGateSeam = gate
+        shadowOf(context as Application).denyPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+
+        val scheduledAt = System.currentTimeMillis() - 2 * 60 * 1000L
+        val spyContext = spyk(context) {
+            every { startForegroundService(any()) } throws IllegalStateException("FGS blocked")
+        }
+
+        val workerParams = mockk<androidx.work.WorkerParameters>(relaxed = true)
+        every { workerParams.inputData } returns androidx.work.workDataOf(
+            FireWatchdogWorker.KEY_ALARM_ID to 301L,
+            FireWatchdogWorker.KEY_SCHEDULED_AT to scheduledAt
+        )
+        coEvery { incidentRepository.occurrenceDeliveryCount(301L, scheduledAt) } returns 0
+
+        val worker = FireWatchdogWorker(
+            context = spyContext,
+            workerParams = workerParams,
+            alarmRepository = alarmRepository,
+            preferencesManager = preferencesManager,
+            alarmIncidentRepository = incidentRepository
+        )
+
+        val result = runBlocking { worker.doWork() }
+        assertEquals(
+            "Flag OFF must preserve legacy Result.success() return",
+            androidx.work.ListenableWorker.Result.success(),
+            result
+        )
+        coVerify(exactly = 0) {
+            incidentRepository.record(
+                alarmId = any(),
+                fireId = any(),
+                scheduledAt = any(),
+                eventAt = any(),
+                type = any(),
+                status = any(),
+                reasonCode = "FIRE_WATCHDOG_ABORT_CLAIM_FAILED",
+                source = any(),
+                algorithmVersion = any()
+            )
+        }
+        val storage = DirectBootLegacyClaimStore.inspectStorageState(context)
+        assertTrue(
+            "Flag OFF must not write DE claims",
+            storage is LegacyClaimStorageState.Absent || storage is LegacyClaimStorageState.ValidEmpty
+        )
+        assertFalse("abortClaim must return false when Flag is OFF", gate.abortClaim(context, OutputOccurrenceKey(301L, scheduledAt, 0), "any"))
     }
 
     // --- CONCURRENCY & INTEGRITY TESTS ---

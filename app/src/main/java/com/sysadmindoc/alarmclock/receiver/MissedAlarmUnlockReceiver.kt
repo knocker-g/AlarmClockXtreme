@@ -227,21 +227,40 @@ class MissedAlarmUnlockReceiver : BroadcastReceiver() {
                             checker
                         } catch (_: Throwable) { null }
 
-                        val fallbackPosted = AlarmFullScreenFallback.post(
-                            context = context,
-                            alarmId = alarm.id,
-                            scheduledAt = at,
-                            fireId = fireId,
-                            hideLabel = settings.hideAlarmLabelsOnPublicSurfaces,
-                            label = alarm.label,
-                            claimNonce = claimNonce,
-                            refireCount = 0,
-                            roomReceiptChecker = roomChecker,
-                            authorityGate = if (gate.isEnabled) gate else null
-                        )
+                        val fallbackPosted = try {
+                            AlarmFullScreenFallback.post(
+                                context = context,
+                                alarmId = alarm.id,
+                                scheduledAt = at,
+                                fireId = fireId,
+                                hideLabel = settings.hideAlarmLabelsOnPublicSurfaces,
+                                label = alarm.label,
+                                claimNonce = claimNonce,
+                                refireCount = 0,
+                                roomReceiptChecker = roomChecker,
+                                authorityGate = if (gate.isEnabled) gate else null
+                            )
+                        } catch (fallbackErr: Exception) {
+                            Log.e("MissedAlarmUnlockReceiver", "Fallback notification post failed for replay alarm ${alarm.id}", fallbackErr)
+                            false
+                        }
                         deliverySucceeded = fallbackPosted
-                        if (!fallbackPosted && occKey != null && claimNonce != null) {
+                        val abortSucceeded = if (!fallbackPosted && occKey != null && claimNonce != null) {
                             gate.abortClaim(context, occKey, claimNonce, com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+                        } else {
+                            true
+                        }
+                        if (!abortSucceeded) {
+                            Log.e("MissedAlarmUnlockReceiver", "abortClaim failed for replay alarm ${alarm.id}; preserving fail-closed state")
+                            incidentRepo.record(
+                                alarmId = alarm.id,
+                                fireId = fireId,
+                                scheduledAt = at,
+                                type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                                status = AlarmIncidentEvent.STATUS_FAILED,
+                                reasonCode = "MISSED_REPLAY_ABORT_CLAIM_FAILED",
+                                source = incidentSource
+                            )
                         }
                         incidentRepo.record(
                             alarmId = alarm.id,

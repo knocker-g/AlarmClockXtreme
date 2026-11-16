@@ -454,16 +454,29 @@ class SharedOutputAuthorityGate(
         outcome: LegacyTerminalOutcome = LegacyTerminalOutcome.REJECTED_NO_OUTPUT
     ): Boolean {
         if (!isEnabled) return false
+        if (activeNonce.isBlank()) return false
+
+        // OS Binder / Settings read and DE context resolution strictly outside DE StorageLock
         val effectiveBootCount = resolveBootCount(context) ?: return false
         val deContext = if (context.isDeviceProtectedStorage) context else context.createDeviceProtectedStorageContext()
-        return synchronized(DirectBootStorageLock.lock) {
+
+        val committed = synchronized(DirectBootStorageLock.lock) {
             val state = DirectBootLegacyClaimStore.inspectStorageState(deContext)
             val records = when (state) {
                 is LegacyClaimStorageState.ValidWithRecords -> state.records
-                else -> emptyList()
+                is LegacyClaimStorageState.Corrupt,
+                is LegacyClaimStorageState.UnsupportedSchema,
+                is LegacyClaimStorageState.Absent,
+                is LegacyClaimStorageState.ValidEmpty -> return@synchronized false
             }
             val existing = records.firstOrNull { it.key == key } ?: return@synchronized false
+            if (existing.state == LegacyClaimState.UNKNOWN || existing.state == LegacyClaimState.TERMINAL) {
+                return@synchronized false
+            }
             if (existing.claimNonce != activeNonce) {
+                return@synchronized false
+            }
+            if (existing.processSessionToken != processSessionToken || existing.bootCount != effectiveBootCount) {
                 return@synchronized false
             }
             if (existing.state == LegacyClaimState.OUTPUT_CLAIMING ||
@@ -481,16 +494,19 @@ class SharedOutputAuthorityGate(
                     bootCount = effectiveBootCount,
                     terminalOutcome = outcome
                 )
-                if (tr is LegacyClaimWriteResult.Committed) {
-                    arbiter.releaseIfMatches(key, activeNonce)
-                    true
-                } else {
-                    false
-                }
+                tr is LegacyClaimWriteResult.Committed
             } else {
                 false
             }
         }
+
+        if (!committed) return false
+
+        // Strictly outside DirectBootStorageLock.lock: release Arbiter handle only after DE commit+readback succeeded
+        check(!Thread.holdsLock(DirectBootStorageLock.lock)) {
+            "DirectBootStorageLock must NOT be held during Arbiter operations"
+        }
+        return arbiter.releaseIfMatches(key, activeNonce)
     }
 
     private fun abortClaiming(

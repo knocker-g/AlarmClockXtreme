@@ -145,21 +145,38 @@ class FireWatchdogWorker @AssistedInject constructor(
                 checker
             } catch (_: Throwable) { null }
 
-            val fallbackPosted = alarm != null && AlarmFullScreenFallback.post(
-                context = context,
-                alarmId = alarm.id,
-                scheduledAt = scheduledAt,
-                fireId = fireId,
-                hideLabel = preferencesManager.getCurrentSettings()
-                    .hideAlarmLabelsOnPublicSurfaces,
-                label = alarm.label,
-                claimNonce = claimNonce,
-                refireCount = 0,
-                roomReceiptChecker = roomChecker,
-                authorityGate = if (gate.isEnabled) gate else null
-            )
-            if (!fallbackPosted && occKey != null && claimNonce != null) {
+            val fallbackPosted = try {
+                alarm != null && AlarmFullScreenFallback.post(
+                    context = context,
+                    alarmId = alarm.id,
+                    scheduledAt = scheduledAt,
+                    fireId = fireId,
+                    hideLabel = preferencesManager.getCurrentSettings()
+                        .hideAlarmLabelsOnPublicSurfaces,
+                    label = alarm.label,
+                    claimNonce = claimNonce,
+                    refireCount = 0,
+                    roomReceiptChecker = roomChecker,
+                    authorityGate = if (gate.isEnabled) gate else null
+                )
+            } catch (_: Exception) {
+                false
+            }
+            val abortSucceeded = if (!fallbackPosted && occKey != null && claimNonce != null) {
                 gate.abortClaim(context, occKey, claimNonce, com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+            } else {
+                true
+            }
+            if (!abortSucceeded) {
+                android.util.Log.e(SOURCE, "abortClaim failed for alarm $alarmId @ $scheduledAt; preserving fail-closed state")
+                recordIncident(
+                    alarmId = alarmId,
+                    fireId = fireId,
+                    scheduledAt = scheduledAt,
+                    type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                    status = AlarmIncidentEvent.STATUS_FAILED,
+                    reasonCode = "FIRE_WATCHDOG_ABORT_CLAIM_FAILED"
+                )
             }
             recordIncident(
                 alarmId = alarmId,
@@ -171,7 +188,7 @@ class FireWatchdogWorker @AssistedInject constructor(
                 reasonCode = if (fallbackPosted) "FIRE_WATCHDOG_FSI_FALLBACK"
                 else "FIRE_WATCHDOG_REFIRE_START_FAILED"
             )
-            Result.success()
+            if (abortSucceeded) Result.success() else Result.failure()
         }
     }
 
