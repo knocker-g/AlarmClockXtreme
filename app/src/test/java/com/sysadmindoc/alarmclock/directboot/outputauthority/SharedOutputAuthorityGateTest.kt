@@ -12,6 +12,7 @@ import com.sysadmindoc.alarmclock.directboot.DirectBootEventConsumerEngine
 import com.sysadmindoc.alarmclock.directboot.DirectBootLegacyClaimStore
 import com.sysadmindoc.alarmclock.directboot.DirectBootStorageLock
 import com.sysadmindoc.alarmclock.directboot.HandoverClaim
+import com.sysadmindoc.alarmclock.directboot.LegacyClaimRecord
 import com.sysadmindoc.alarmclock.directboot.LegacyClaimRetirementResult
 import com.sysadmindoc.alarmclock.directboot.LegacyClaimSource
 import com.sysadmindoc.alarmclock.directboot.LegacyClaimState
@@ -19,6 +20,11 @@ import com.sysadmindoc.alarmclock.directboot.LegacyClaimStorageState
 import com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome
 import com.sysadmindoc.alarmclock.directboot.OutputOccurrenceKey
 import com.sysadmindoc.alarmclock.directboot.OwnerState
+import io.mockk.every
+import io.mockk.spyk
+import java.util.concurrent.CyclicBarrier
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -55,6 +61,8 @@ class SharedOutputAuthorityGateTest {
 
     @After
     fun tearDown() {
+        DirectBootLegacyClaimStore.resetSeamsForTesting()
+        gate.arbiter.clearForTesting()
         db.close()
         clearStorage()
     }
@@ -430,5 +438,293 @@ class SharedOutputAuthorityGateTest {
         val t2 = SharedOutputAuthorityGate.generateProcessSessionToken()
         assertNotEquals(t1, t2)
         assertTrue(t1.startsWith("proc-"))
+    }
+
+    // =========================================================================
+    // S5-C1 Lock Separation & Abort Cleanup Falsification Tests
+    // =========================================================================
+
+    @Test
+    fun testAbortClaim_neverCallsArbiterWhileHoldingDeLock() {
+        val arbiterSpy = spyk(OutputResourceArbiter())
+        var arbiterCalled = false
+        var lockHeldDuringArbiterCall: Boolean? = null
+        every { arbiterSpy.releaseIfMatches(any(), any()) } answers {
+            arbiterCalled = true
+            lockHeldDuringArbiterCall = Thread.holdsLock(DirectBootStorageLock.lock)
+            callOriginal()
+        }
+
+        val localGate = SharedOutputAuthorityGate(
+            arbiter = arbiterSpy,
+            processSessionToken = "proc-test",
+            bootCount = 10L
+        ).apply { isEnabled = true }
+
+        val key = OutputOccurrenceKey(201L, 20_100L, 0)
+        val res = localGate.reserveForServiceStart(context, key, LegacyClaimSource.ALARM_RECEIVER)
+        val handoverNonce = (res as OutputAuthorizationResult.Authorized).activeNonce
+        val claim = localGate.claimOutput(
+            context = context,
+            key = key,
+            incomingNonce = handoverNonce,
+            sink = OutputSinkType.ALARM_SERVICE_1001,
+            roomReceiptChecker = { _, _ -> false }
+        )
+        val activeNonce = (claim as OutputAuthorizationResult.Authorized).activeNonce
+
+        val aborted = localGate.abortClaim(context, key, activeNonce, LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+        assertTrue("abortClaim should succeed", aborted)
+        assertTrue("Arbiter releaseIfMatches must be invoked", arbiterCalled)
+        assertEquals("Arbiter MUST NOT be called while holding DirectBootStorageLock.lock", false, lockHeldDuringArbiterCall)
+        assertNull("Arbiter handle must be released after DE commit", arbiterSpy.activeHandle)
+
+        val storage = DirectBootLegacyClaimStore.inspectStorageState(context) as LegacyClaimStorageState.ValidWithRecords
+        val rec = storage.records.first { it.key == key }
+        assertEquals(LegacyClaimState.TERMINAL, rec.state)
+        assertEquals(LegacyTerminalOutcome.REJECTED_NO_OUTPUT, rec.terminalOutcome)
+    }
+
+    @Test
+    fun testAbortClaim_commitFalse_doesNotReleaseOwnerAndReturnsFalse() {
+        gate.isEnabled = true
+        val key = OutputOccurrenceKey(202L, 20_200L, 0)
+        val res = gate.reserveForServiceStart(context, key, LegacyClaimSource.ALARM_RECEIVER)
+        val handoverNonce = (res as OutputAuthorizationResult.Authorized).activeNonce
+        val claim = gate.claimOutput(
+            context = context,
+            key = key,
+            incomingNonce = handoverNonce,
+            sink = OutputSinkType.ALARM_SERVICE_1001,
+            roomReceiptChecker = { _, _ -> false }
+        )
+        val activeNonce = (claim as OutputAuthorizationResult.Authorized).activeNonce
+        assertEquals(key, gate.arbiter.activeHandle?.key)
+
+        DirectBootLegacyClaimStore.commitSeam = { _, _ -> false }
+        val aborted = try {
+            gate.abortClaim(context, key, activeNonce, LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+        } finally {
+            DirectBootLegacyClaimStore.resetSeamsForTesting()
+        }
+
+        assertFalse("abortClaim MUST return false when commitSeam returns false", aborted)
+        assertNotNull("Arbiter owner MUST NOT be released on persistence failure", gate.arbiter.activeHandle)
+        assertEquals(activeNonce, gate.arbiter.activeHandle?.activeNonce)
+
+        val storage = DirectBootLegacyClaimStore.inspectStorageState(context) as LegacyClaimStorageState.ValidWithRecords
+        val rec = storage.records.first { it.key == key }
+        assertEquals(LegacyClaimState.OUTPUT_CLAIMING, rec.state)
+    }
+
+    @Test
+    fun testAbortClaim_commitExceptionAndReadbackMismatch_failClosed() {
+        gate.isEnabled = true
+        val key1 = OutputOccurrenceKey(203L, 20_300L, 0)
+        val res1 = gate.reserveForServiceStart(context, key1, LegacyClaimSource.ALARM_RECEIVER)
+        val handover1 = (res1 as OutputAuthorizationResult.Authorized).activeNonce
+        val claim1 = gate.claimOutput(
+            context = context,
+            key = key1,
+            incomingNonce = handover1,
+            sink = OutputSinkType.ALARM_SERVICE_1001,
+            roomReceiptChecker = { _, _ -> false }
+        )
+        val activeNonce1 = (claim1 as OutputAuthorizationResult.Authorized).activeNonce
+
+        // Subcase A: commitSeam throws exception
+        DirectBootLegacyClaimStore.commitSeam = { _, _ -> throw RuntimeException("Simulated DE commit failure") }
+        val abortOnException = try {
+            gate.abortClaim(context, key1, activeNonce1, LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+        } finally {
+            DirectBootLegacyClaimStore.resetSeamsForTesting()
+        }
+        assertFalse("abortClaim MUST return false on commit exception", abortOnException)
+        assertEquals(key1, gate.arbiter.activeHandle?.key)
+
+        // Subcase B: readbackSeam returns stale payload (readback mismatch)
+        val stalePayload = DirectBootLegacyClaimStore.prefs(context)
+            .getString(DirectBootLegacyClaimStore.KEY_LEGACY_CLAIM_STORE_PAYLOAD, null)
+        assertNotNull(stalePayload)
+        DirectBootLegacyClaimStore.readbackSeam = { _ -> stalePayload }
+        val abortOnMismatch = try {
+            gate.abortClaim(context, key1, activeNonce1, LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+        } finally {
+            DirectBootLegacyClaimStore.resetSeamsForTesting()
+        }
+        assertFalse("abortClaim MUST return false on readback mismatch", abortOnMismatch)
+        assertEquals("Arbiter owner MUST NOT be released on readback mismatch", activeNonce1, gate.arbiter.activeHandle?.activeNonce)
+    }
+
+    @Test
+    fun testAbortClaim_staleNonce_refusesToReleaseCompetingNewOwner() {
+        gate.isEnabled = true
+        val key1 = OutputOccurrenceKey(204L, 20_400L, 0)
+        val res1 = gate.reserveForServiceStart(context, key1, LegacyClaimSource.ALARM_RECEIVER)
+        val handover1 = (res1 as OutputAuthorizationResult.Authorized).activeNonce
+        val claim1 = gate.claimOutput(
+            context = context,
+            key = key1,
+            incomingNonce = handover1,
+            sink = OutputSinkType.ALARM_SERVICE_1001,
+            roomReceiptChecker = { _, _ -> false }
+        )
+        val activeNonce1 = (claim1 as OutputAuthorizationResult.Authorized).activeNonce
+
+        // Stale handover nonce cannot abort active OUTPUT_CLAIMING owner
+        val staleSameKey = gate.abortClaim(context, key1, handover1, LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+        assertFalse("Stale handover nonce MUST be rejected", staleSameKey)
+        assertEquals(activeNonce1, gate.arbiter.activeHandle?.activeNonce)
+
+        // Competing new owner (key2) preempts key1
+        val key2 = OutputOccurrenceKey(205L, 20_500L, 0)
+        val res2 = gate.reserveForServiceStart(context, key2, LegacyClaimSource.FIRE_WATCHDOG)
+        val handover2 = (res2 as OutputAuthorizationResult.Authorized).activeNonce
+        val claim2 = gate.claimOutput(
+            context = context,
+            key = key2,
+            incomingNonce = handover2,
+            sink = OutputSinkType.FULLSCREEN_FALLBACK_1001,
+            roomReceiptChecker = { _, _ -> false },
+            stopPreemptedOwner = { true }
+        )
+        val activeNonce2 = (claim2 as OutputAuthorizationResult.Authorized).activeNonce
+        assertEquals(key2, gate.arbiter.activeHandle?.key)
+
+        // Stale nonce1 or handover2 cannot release competing owner key2
+        assertFalse(gate.abortClaim(context, key1, activeNonce1, LegacyTerminalOutcome.REJECTED_NO_OUTPUT))
+        assertFalse(gate.abortClaim(context, key2, activeNonce1, LegacyTerminalOutcome.REJECTED_NO_OUTPUT))
+        assertFalse(gate.abortClaim(context, key2, handover2, LegacyTerminalOutcome.REJECTED_NO_OUTPUT))
+        assertEquals("Competing owner key2 MUST remain active in arbiter", key2, gate.arbiter.activeHandle?.key)
+        assertEquals(activeNonce2, gate.arbiter.activeHandle?.activeNonce)
+
+        // Provenance mismatch cannot abort active owner
+        val originalToken = gate.processSessionToken
+        gate.processSessionToken = "proc-other-session"
+        assertFalse("Provenance mismatch MUST reject abortClaim fail-closed", gate.abortClaim(context, key2, activeNonce2))
+        gate.processSessionToken = originalToken
+        assertEquals(activeNonce2, gate.arbiter.activeHandle?.activeNonce)
+    }
+
+    @Test
+    fun testAbortClaim_concurrentAbortAndNewClaim_serializesSafely() {
+        gate.isEnabled = true
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            for (iter in 1..10) {
+                clearStorage()
+                gate.arbiter.clearForTesting()
+
+                val key1 = OutputOccurrenceKey(300L + iter, 30_000L + iter, 0)
+                val res1 = gate.reserveForServiceStart(context, key1, LegacyClaimSource.ALARM_RECEIVER)
+                val h1 = (res1 as OutputAuthorizationResult.Authorized).activeNonce
+                val c1 = gate.claimOutput(
+                    context = context,
+                    key = key1,
+                    incomingNonce = h1,
+                    sink = OutputSinkType.ALARM_SERVICE_1001,
+                    roomReceiptChecker = { _, _ -> false }
+                )
+                val active1 = (c1 as OutputAuthorizationResult.Authorized).activeNonce
+
+                val key2 = OutputOccurrenceKey(400L + iter, 40_000L + iter, 0)
+                val res2 = gate.reserveForServiceStart(context, key2, LegacyClaimSource.FIRE_WATCHDOG)
+                val h2 = (res2 as OutputAuthorizationResult.Authorized).activeNonce
+
+                val barrier = CyclicBarrier(2)
+                val fAbort = executor.submit<Boolean> {
+                    barrier.await()
+                    gate.abortClaim(context, key1, active1, LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+                }
+                val fClaim = executor.submit<OutputAuthorizationResult> {
+                    barrier.await()
+                    gate.claimOutput(
+                        context = context,
+                        key = key2,
+                        incomingNonce = h2,
+                        sink = OutputSinkType.ALARM_SERVICE_1001,
+                        roomReceiptChecker = { _, _ -> false },
+                        stopPreemptedOwner = { handle -> gate.arbiter.requestStop(handle) }
+                    )
+                }
+
+                fAbort.get(5, TimeUnit.SECONDS)
+                val claimRes2 = fClaim.get(5, TimeUnit.SECONDS)
+                assertTrue("Competing claim for key2 must succeed cleanly: $claimRes2", claimRes2 is OutputAuthorizationResult.Authorized)
+                val active2 = (claimRes2 as OutputAuthorizationResult.Authorized).activeNonce
+
+                // key2 MUST remain active in arbiter and key1 MUST be TERMINAL in DE store
+                assertEquals(key2, gate.arbiter.activeHandle?.key)
+                assertEquals(active2, gate.arbiter.activeHandle?.activeNonce)
+                val storage = DirectBootLegacyClaimStore.inspectStorageState(context) as LegacyClaimStorageState.ValidWithRecords
+                assertEquals(LegacyClaimState.TERMINAL, storage.records.first { it.key == key1 }.state)
+                assertEquals(LegacyClaimState.OUTPUT_CLAIMING, storage.records.first { it.key == key2 }.state)
+            }
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun testAbortClaim_unknownCorruptAndUnsupportedSchema_rejectsFailClosed() {
+        gate.isEnabled = true
+
+        // Subcase A: UNKNOWN record in DE store
+        val keyUnknown = OutputOccurrenceKey(501L, 50_100L, 0)
+        val unknownNonce = "nonce-unk-501"
+        DirectBootLegacyClaimStore.writeInitialClaim(
+            context = context,
+            record = LegacyClaimRecord(
+                alarmId = keyUnknown.alarmId,
+                scheduledAt = keyUnknown.scheduledAt,
+                refireCount = 0,
+                source = LegacyClaimSource.ALARM_RECEIVER,
+                claimNonce = unknownNonce,
+                processSessionToken = "proc-test",
+                bootCount = 10L,
+                state = LegacyClaimState.START_REQUESTED
+            )
+        )
+        DirectBootLegacyClaimStore.transition(
+            context = context,
+            key = keyUnknown,
+            expectedFrom = LegacyClaimState.START_REQUESTED,
+            toState = LegacyClaimState.UNKNOWN,
+            expectedNonce = unknownNonce,
+            newNonce = unknownNonce,
+            processSessionToken = "proc-test",
+            bootCount = 10L
+        )
+        assertFalse("UNKNOWN state MUST fail closed on abortClaim", gate.abortClaim(context, keyUnknown, unknownNonce))
+        val afterUnknown = DirectBootLegacyClaimStore.inspectStorageState(context) as LegacyClaimStorageState.ValidWithRecords
+        assertEquals(LegacyClaimState.UNKNOWN, afterUnknown.records.first { it.key == keyUnknown }.state)
+
+        // Subcase B: Corrupt DE store payload
+        val keyCorrupt = OutputOccurrenceKey(502L, 50_200L, 0)
+        gate.arbiter.acquirePending(keyCorrupt, OutputSinkType.ALARM_SERVICE_1001, "nonce-corrupt")
+        val corruptRaw = "{not-valid-json"
+        DirectBootLegacyClaimStore.prefs(context)
+            .edit()
+            .putString(DirectBootLegacyClaimStore.KEY_LEGACY_CLAIM_STORE_PAYLOAD, corruptRaw)
+            .commit()
+        assertFalse("Corrupt storage MUST reject abortClaim fail-closed", gate.abortClaim(context, keyCorrupt, "nonce-corrupt"))
+        assertEquals("Arbiter handle MUST NOT be released on corrupt storage", keyCorrupt, gate.arbiter.activeHandle?.key)
+        assertEquals(
+            corruptRaw,
+            DirectBootLegacyClaimStore.prefs(context).getString(DirectBootLegacyClaimStore.KEY_LEGACY_CLAIM_STORE_PAYLOAD, null)
+        )
+
+        // Subcase C: UnsupportedSchema DE store payload
+        val unsupportedRaw = """{"schemaVersion":99,"records":[]}"""
+        DirectBootLegacyClaimStore.prefs(context)
+            .edit()
+            .putString(DirectBootLegacyClaimStore.KEY_LEGACY_CLAIM_STORE_PAYLOAD, unsupportedRaw)
+            .commit()
+        assertFalse("UnsupportedSchema MUST reject abortClaim fail-closed", gate.abortClaim(context, keyCorrupt, "nonce-corrupt"))
+        assertEquals("Arbiter handle MUST NOT be released on unsupported schema", keyCorrupt, gate.arbiter.activeHandle?.key)
+        assertEquals(
+            unsupportedRaw,
+            DirectBootLegacyClaimStore.prefs(context).getString(DirectBootLegacyClaimStore.KEY_LEGACY_CLAIM_STORE_PAYLOAD, null)
+        )
     }
 }

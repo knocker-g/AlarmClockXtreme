@@ -134,13 +134,30 @@ class AlarmReceiver : BroadcastReceiver() {
             // Asynchronous recovery using goAsync() on Dispatchers.IO (NO runBlocking!)
             val pending = try { goAsync() } catch (_: Exception) { null }
             kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO).launch {
+                var abortHandled = false
+                var resolvedIncidentRepo: com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository? = null
                 try {
-                    val entryPoint = EntryPointAccessors.fromApplication(
-                        context.applicationContext,
-                        com.sysadmindoc.alarmclock.AlarmClockApp.AppEntryPoint::class.java
-                    )
-                    val alarmRepo = testAlarmRepository ?: entryPoint.alarmRepository()
-                    val incidentRepo = testIncidentRepository ?: entryPoint.alarmIncidentRepository()
+                    val entryPoint = try {
+                        EntryPointAccessors.fromApplication(
+                            context.applicationContext,
+                            com.sysadmindoc.alarmclock.AlarmClockApp.AppEntryPoint::class.java
+                        )
+                    } catch (_: Throwable) { null }
+                    val alarmRepo = testAlarmRepository ?: entryPoint?.alarmRepository()
+                    val incidentRepo = testIncidentRepository ?: entryPoint?.alarmIncidentRepository()
+                    resolvedIncidentRepo = incidentRepo
+
+                    if (alarmRepo == null || incidentRepo == null) {
+                        Log.w("AlarmReceiver", "Dependencies unavailable during fallback recovery for alarm $alarmId")
+                        if (occKey != null && claimNonce != null) {
+                            abortHandled = true
+                            val aborted = gate.abortClaim(context, occKey, claimNonce, com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+                            if (!aborted) {
+                                Log.e("AlarmReceiver", "abortClaim failed while dependencies unavailable for alarm $alarmId")
+                            }
+                        }
+                        return@launch
+                    }
 
                     val issueToken = intent.getStringExtra(AlarmScheduler.EXTRA_ISSUE_TOKEN).orEmpty()
                     val issuedDao = testIssuedOccurrenceDao ?: alarmRepo.issuedOccurrenceDao()
@@ -186,7 +203,9 @@ class AlarmReceiver : BroadcastReceiver() {
                         }
 
                         if (leased) {
-                            val hideLabel = entryPoint.preferencesManager().shouldHideLabelsOnPublicSurfaces()
+                            val hideLabel = try {
+                                entryPoint?.preferencesManager()?.shouldHideLabelsOnPublicSurfaces() ?: false
+                            } catch (_: Throwable) { false }
                             val roomChecker = roomReceiptCheckerSeam ?: try {
                                 val dao = alarmRepo.database.directBootOccurrenceReceiptDao()
                                 val checker: (Long, Long) -> Boolean = { aId, sAt ->
@@ -212,11 +231,8 @@ class AlarmReceiver : BroadcastReceiver() {
                                 false
                             }
 
-                            if (!fallbackPosted && occKey != null && claimNonce != null) {
-                                gate.abortClaim(context, occKey, claimNonce, com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
-                            }
-
                             if (fallbackPosted) {
+                                abortHandled = true
                                 val ackSuccess = if (issueToken.isNotBlank()) {
                                     issuedDao.acknowledgeFallbackPosted(issueToken, leaseToken, System.currentTimeMillis()) == 1
                                 } else {
@@ -246,9 +262,31 @@ class AlarmReceiver : BroadcastReceiver() {
                                     )
                                 }
                             } else {
-                                if (issueToken.isNotBlank()) {
-                                    issuedDao.releaseFallbackLeaseOnFailure(issueToken, leaseToken, System.currentTimeMillis())
+                                val abortSucceeded = if (occKey != null && claimNonce != null) {
+                                    abortHandled = true
+                                    gate.abortClaim(context, occKey, claimNonce, com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+                                } else {
+                                    abortHandled = true
+                                    true
                                 }
+
+                                if (abortSucceeded) {
+                                    if (issueToken.isNotBlank()) {
+                                        issuedDao.releaseFallbackLeaseOnFailure(issueToken, leaseToken, System.currentTimeMillis())
+                                    }
+                                } else {
+                                    Log.e("AlarmReceiver", "abortClaim failed after fallback failure for alarm $alarmId; preserving fail-closed state")
+                                    incidents += ReceiverAlarmIncident(
+                                        alarmId = alarmId,
+                                        fireId = fireId,
+                                        scheduledAt = scheduledAt,
+                                        type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                                        status = AlarmIncidentEvent.STATUS_FAILED,
+                                        reasonCode = "AUTHORITY_ABORT_CLAIM_FAILED",
+                                        source = "AlarmReceiver"
+                                    )
+                                }
+
                                 incidents += ReceiverAlarmIncident(
                                     alarmId = alarmId,
                                     fireId = fireId,
@@ -262,13 +300,39 @@ class AlarmReceiver : BroadcastReceiver() {
                         } else {
                             Log.w("AlarmReceiver", "Skipping fallback for alarm $alarmId: fallback lease claim rejected (token '$issueToken')")
                             if (occKey != null && claimNonce != null) {
-                                gate.abortClaim(context, occKey, claimNonce, com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+                                abortHandled = true
+                                val aborted = gate.abortClaim(context, occKey, claimNonce, com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+                                if (!aborted) {
+                                    Log.e("AlarmReceiver", "abortClaim failed after lease rejection for alarm $alarmId; preserving fail-closed state")
+                                    incidents += ReceiverAlarmIncident(
+                                        alarmId = alarmId,
+                                        fireId = fireId,
+                                        scheduledAt = scheduledAt,
+                                        type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                                        status = AlarmIncidentEvent.STATUS_FAILED,
+                                        reasonCode = "AUTHORITY_ABORT_CLAIM_FAILED",
+                                        source = "AlarmReceiver"
+                                    )
+                                }
                             }
                         }
                     } else {
                         Log.w("AlarmReceiver", "Skipping fallback for alarm $alarmId: stale, disabled or duplicate occurrence (token '$issueToken')")
                         if (occKey != null && claimNonce != null) {
-                            gate.abortClaim(context, occKey, claimNonce, com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+                            abortHandled = true
+                            val aborted = gate.abortClaim(context, occKey, claimNonce, com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+                            if (!aborted) {
+                                Log.e("AlarmReceiver", "abortClaim failed after occurrence admission rejection for alarm $alarmId; preserving fail-closed state")
+                                incidents += ReceiverAlarmIncident(
+                                    alarmId = alarmId,
+                                    fireId = fireId,
+                                    scheduledAt = scheduledAt,
+                                    type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                                    status = AlarmIncidentEvent.STATUS_FAILED,
+                                    reasonCode = "AUTHORITY_ABORT_CLAIM_FAILED",
+                                    source = "AlarmReceiver"
+                                )
+                            }
                         }
                     }
 
@@ -289,6 +353,39 @@ class AlarmReceiver : BroadcastReceiver() {
                     runCatching { testOnIncidentRecordedCompletion?.invoke(incidents) }
                 } catch (fallbackError: Exception) {
                     Log.e("AlarmReceiver", "Asynchronous fallback recovery failed for alarm $alarmId", fallbackError)
+                    if (!abortHandled && occKey != null && claimNonce != null) {
+                        val aborted = gate.abortClaim(context, occKey, claimNonce, com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+                        if (!aborted) {
+                            Log.e("AlarmReceiver", "abortClaim failed in fallback error handler for alarm $alarmId; preserving fail-closed state")
+                            incidents += ReceiverAlarmIncident(
+                                alarmId = alarmId,
+                                fireId = fireId,
+                                scheduledAt = scheduledAt,
+                                type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                                status = AlarmIncidentEvent.STATUS_FAILED,
+                                reasonCode = "AUTHORITY_ABORT_CLAIM_FAILED",
+                                source = "AlarmReceiver"
+                            )
+                        }
+                    }
+                    resolvedIncidentRepo?.let { repo ->
+                        runCatching {
+                            incidents.forEach { event ->
+                                repo.record(
+                                    alarmId = event.alarmId,
+                                    fireId = event.fireId.ifBlank {
+                                        AlarmIncidentEvent.fireIdFor(event.alarmId, event.scheduledAt)
+                                    },
+                                    scheduledAt = event.scheduledAt,
+                                    type = event.type,
+                                    status = event.status,
+                                    reasonCode = event.reasonCode,
+                                    source = event.source
+                                )
+                            }
+                            testOnIncidentRecordedCompletion?.invoke(incidents)
+                        }
+                    }
                 } finally {
                     AlarmDeliveryWakeLock.release(deliveryWakeLock)
                     pending?.finish()
