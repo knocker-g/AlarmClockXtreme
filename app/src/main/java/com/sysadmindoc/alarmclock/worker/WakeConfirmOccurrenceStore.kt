@@ -64,7 +64,8 @@ object WakeConfirmOccurrenceStore {
         val enqueueConfirmed: Boolean,
         val legacyConfirmedKeyPreexistedAtDismiss: Boolean,
         val legacyCompatSeeded: Boolean = false,
-        val scheduledDueAtMillis: Long = 0L
+        val scheduledDueAtMillis: Long = 0L,
+        val workRequestId: String = ""
     ) {
         fun toJson(): JSONObject = JSONObject().apply {
             put("alarmId", alarmId)
@@ -83,6 +84,7 @@ object WakeConfirmOccurrenceStore {
             put("legacyConfirmedKeyPreexistedAtDismiss", legacyConfirmedKeyPreexistedAtDismiss)
             put("legacyCompatSeeded", legacyCompatSeeded)
             put("scheduledDueAtMillis", scheduledDueAtMillis)
+            put("workRequestId", workRequestId)
         }
 
         companion object {
@@ -102,14 +104,15 @@ object WakeConfirmOccurrenceStore {
                 enqueueConfirmed = json.optBoolean("enqueueConfirmed", false),
                 legacyConfirmedKeyPreexistedAtDismiss = json.optBoolean("legacyConfirmedKeyPreexistedAtDismiss", false),
                 legacyCompatSeeded = json.optBoolean("legacyCompatSeeded", false),
-                scheduledDueAtMillis = json.optLong("scheduledDueAtMillis", 0L)
+                scheduledDueAtMillis = json.optLong("scheduledDueAtMillis", 0L),
+                workRequestId = json.optString("workRequestId", "")
             )
         }
     }
 
     internal sealed class EnqueueVerificationResult {
-        object Enqueued : EnqueueVerificationResult()
-        object Reused : EnqueueVerificationResult()
+        data class Enqueued(val workRequestId: String = "") : EnqueueVerificationResult()
+        data class Reused(val workRequestId: String = "") : EnqueueVerificationResult()
         data class Failed(val reason: String) : EnqueueVerificationResult()
     }
 
@@ -381,7 +384,8 @@ object WakeConfirmOccurrenceStore {
                             existing.scheduledDueAtMillis
                         } else {
                             scheduledDueAtMillis
-                        }
+                        },
+                        workRequestId = ""
                     )
                 } else {
                     return CommitResult.Failed("Stale or regressed dismiss refireCount=$refireCount vs highest=${existing.highestClaimedRefire}")
@@ -404,7 +408,8 @@ object WakeConfirmOccurrenceStore {
                     enqueueConfirmed = false,
                     legacyConfirmedKeyPreexistedAtDismiss = legacyKeyPreexisted,
                     legacyCompatSeeded = false,
-                    scheduledDueAtMillis = scheduledDueAtMillis
+                    scheduledDueAtMillis = scheduledDueAtMillis,
+                    workRequestId = ""
                 )
             }
 
@@ -435,7 +440,8 @@ object WakeConfirmOccurrenceStore {
         context: Context,
         alarmId: Long,
         scheduledAt: Long,
-        stepToken: String
+        stepToken: String,
+        workRequestId: String = ""
     ): CommitResult {
         synchronized(DirectBootStorageLock.lock) {
             val current = when (val st = inspectDeStorageState(context)) {
@@ -449,8 +455,15 @@ object WakeConfirmOccurrenceStore {
             val rec = current[idx]
             if (rec.confirmed || rec.cancelled) return CommitResult.Failed("Occurrence already finalized")
             if (rec.stepToken != stepToken) return CommitResult.Failed("stepToken mismatch on enqueue confirmation")
+            if (rec.workRequestId.isNotBlank() && workRequestId.isNotBlank() && rec.workRequestId != workRequestId) {
+                return CommitResult.Failed("workRequestId mismatch on enqueue confirmation")
+            }
 
-            val updated = rec.copy(enqueueConfirmed = true)
+            val resolvedWorkRequestId = workRequestId.ifBlank { rec.workRequestId }
+            val updated = rec.copy(
+                enqueueConfirmed = true,
+                workRequestId = resolvedWorkRequestId
+            )
             val nextList = current.toMutableList().apply { set(idx, updated) }
             commitAndVerify(context, nextList)?.let { return it }
             return CommitResult.Committed(updated)
@@ -918,7 +931,8 @@ object WakeConfirmOccurrenceStore {
                 nextAuthorizedRefire = targetRefire + 1,
                 stepToken = "",
                 enqueueConfirmed = false,
-                scheduledDueAtMillis = 0L
+                scheduledDueAtMillis = 0L,
+                workRequestId = ""
             )
             val nextList = current.toMutableList().apply { set(idx, consumed) }
             commitAndVerify(context, nextList)?.let { fail ->
@@ -1095,6 +1109,12 @@ object WakeConfirmOccurrenceStore {
     internal fun occurrenceTag(alarmId: Long, scheduledAt: Long): String =
         OwnerWorkIdentity.occurrenceUniqueName(alarmId, scheduledAt, SupportingWorkType.WAKE_CONFIRM)
 
+    internal fun refireStepTag(refireCount: Int): String =
+        "acx_wc_refire_$refireCount"
+
+    internal fun stepTokenTag(stepToken: String): String =
+        "acx_wc_token_$stepToken"
+
     internal fun resolveOriginalDueAtMillis(
         rec: Record,
         alarm: com.sysadmindoc.alarmclock.data.model.Alarm
@@ -1112,24 +1132,93 @@ object WakeConfirmOccurrenceStore {
         return rec.dismissedAt + delayMs
     }
 
-    private fun workInfoMatchesOccurrence(
+    private fun workInfoHasIdentityTags(
         info: WorkInfo,
         plan: WakeConfirmationPlan,
         alarmId: Long,
         scheduledAt: Long,
-        expectedRequestId: java.util.UUID? = null
+        refireCount: Int,
+        stepToken: String,
+        requireStepTokenTag: Boolean
     ): Boolean {
-        if (info.state == WorkInfo.State.CANCELLED) return false
-        if (expectedRequestId == null) {
-            if (info.state.isFinished) return false
-        } else {
-            if (info.id != expectedRequestId && info.state.isFinished) return false
-        }
         if (!info.tags.contains(plan.tag)) return false
         if (!info.tags.contains(WakeConfirmWorker::class.java.name)) return false
+
         val expectedOccTag = occurrenceTag(alarmId, scheduledAt)
         val occTags = info.tags.filter { it.startsWith("acx_occ_${SupportingWorkType.WAKE_CONFIRM.id}_") }
-        return occTags.isEmpty() || occTags.contains(expectedOccTag)
+        if (occTags.isEmpty() || !occTags.contains(expectedOccTag) || occTags.any { it != expectedOccTag }) {
+            return false
+        }
+
+        val expectedRefireTag = refireStepTag(refireCount)
+        val refireTags = info.tags.filter { it.startsWith("acx_wc_refire_") }
+        if (refireTags.isEmpty() || !refireTags.contains(expectedRefireTag) || refireTags.any { it != expectedRefireTag }) {
+            return false
+        }
+
+        val tokenTags = info.tags.filter { it.startsWith("acx_wc_token_") }
+        if (stepToken.isNotBlank()) {
+            val expectedTokenTag = stepTokenTag(stepToken)
+            if (tokenTags.isEmpty() || !tokenTags.contains(expectedTokenTag) || tokenTags.any { it != expectedTokenTag }) {
+                return false
+            }
+        } else {
+            if (requireStepTokenTag || tokenTags.isNotEmpty()) {
+                return false
+            }
+        }
+        return true
+    }
+
+    private fun workInfoMatchesNewlyEnqueuedRequest(
+        info: WorkInfo,
+        plan: WakeConfirmationPlan,
+        alarmId: Long,
+        scheduledAt: Long,
+        refireCount: Int,
+        stepToken: String,
+        expectedRequestId: UUID
+    ): Boolean {
+        if (info.id != expectedRequestId) return false
+        if (info.state == WorkInfo.State.CANCELLED || info.state == WorkInfo.State.FAILED) return false
+        return workInfoHasIdentityTags(
+            info = info,
+            plan = plan,
+            alarmId = alarmId,
+            scheduledAt = scheduledAt,
+            refireCount = refireCount,
+            stepToken = stepToken,
+            requireStepTokenTag = false
+        )
+    }
+
+    private fun workInfoMatchesForReuse(
+        info: WorkInfo,
+        plan: WakeConfirmationPlan,
+        alarmId: Long,
+        scheduledAt: Long,
+        refireCount: Int,
+        stepToken: String,
+        expectedWorkRequestId: UUID? = null
+    ): Boolean {
+        if (info.state != WorkInfo.State.ENQUEUED &&
+            info.state != WorkInfo.State.RUNNING &&
+            info.state != WorkInfo.State.BLOCKED
+        ) {
+            return false
+        }
+        if (expectedWorkRequestId != null && info.id != expectedWorkRequestId) {
+            return false
+        }
+        return workInfoHasIdentityTags(
+            info = info,
+            plan = plan,
+            alarmId = alarmId,
+            scheduledAt = scheduledAt,
+            refireCount = refireCount,
+            stepToken = stepToken,
+            requireStepTokenTag = true
+        )
     }
 
     internal suspend fun enqueueAndVerifyWakeConfirmWork(
@@ -1139,11 +1228,37 @@ object WakeConfirmOccurrenceStore {
         plan: WakeConfirmationPlan,
         initialDelayMs: Long,
         policy: ExistingWorkPolicy,
-        reuseExistingIfPresent: Boolean
+        reuseExistingIfPresent: Boolean,
+        expectedWorkRequestIdString: String = ""
     ): EnqueueVerificationResult {
         check(!Thread.holdsLock(DirectBootStorageLock.lock)) {
             "WorkManager MUST NOT be accessed while holding DirectBootStorageLock.lock"
         }
+        val expectedAlarmId = plan.inputData.getLong(WakeConfirmWorker.KEY_ALARM_ID, -1L)
+        val expectedScheduledAt = plan.inputData.getLong(WakeConfirmWorker.KEY_SCHEDULED_AT, -1L)
+        val expectedRefireCount = plan.inputData.getInt(WakeConfirmWorker.KEY_REFIRE_COUNT, -1)
+        val expectedStepToken = plan.inputData.getString(WakeConfirmWorker.KEY_STEP_TOKEN).orEmpty()
+        if (alarmId <= 0L ||
+            scheduledAt <= 0L ||
+            expectedAlarmId != alarmId ||
+            expectedScheduledAt != scheduledAt ||
+            expectedRefireCount !in 0..WakeConfirmWorker.MAX_REFIRES
+        ) {
+            return EnqueueVerificationResult.Failed("Invalid WakeConfirm plan identity for ($alarmId, $scheduledAt)")
+        }
+        if (reuseExistingIfPresent && expectedStepToken.isBlank()) {
+            return EnqueueVerificationResult.Failed("Missing stepToken for WakeConfirm work reuse")
+        }
+        val parsedExpectedUuid = if (expectedWorkRequestIdString.isNotBlank()) {
+            try {
+                UUID.fromString(expectedWorkRequestIdString)
+            } catch (_: Exception) {
+                return EnqueueVerificationResult.Failed("Malformed persisted workRequestId for ${plan.uniqueWorkName}")
+            }
+        } else {
+            null
+        }
+
         return withContext(Dispatchers.IO) {
             val wm = try {
                 WorkManager.getInstance(context.applicationContext)
@@ -1157,17 +1272,32 @@ object WakeConfirmOccurrenceStore {
                 } catch (e: Exception) {
                     return@withContext EnqueueVerificationResult.Failed("WorkManager lookup failed: ${e.message}")
                 }
-                if (existingInfos.any { workInfoMatchesOccurrence(it, plan, alarmId, scheduledAt) }) {
-                    return@withContext EnqueueVerificationResult.Reused
+                val matchedExisting = existingInfos.firstOrNull {
+                    workInfoMatchesForReuse(
+                        info = it,
+                        plan = plan,
+                        alarmId = alarmId,
+                        scheduledAt = scheduledAt,
+                        refireCount = expectedRefireCount,
+                        stepToken = expectedStepToken,
+                        expectedWorkRequestId = parsedExpectedUuid
+                    )
+                }
+                if (matchedExisting != null) {
+                    return@withContext EnqueueVerificationResult.Reused(matchedExisting.id.toString())
                 }
             }
 
-            val request = OneTimeWorkRequestBuilder<WakeConfirmWorker>()
+            val requestBuilder = OneTimeWorkRequestBuilder<WakeConfirmWorker>()
                 .setInitialDelay(initialDelayMs.coerceAtLeast(0L), TimeUnit.MILLISECONDS)
                 .setInputData(plan.inputData)
                 .addTag(plan.tag)
                 .addTag(occurrenceTag(alarmId, scheduledAt))
-                .build()
+                .addTag(refireStepTag(expectedRefireCount))
+            if (expectedStepToken.isNotBlank()) {
+                requestBuilder.addTag(stepTokenTag(expectedStepToken))
+            }
+            val request = requestBuilder.build()
 
             val opState = try {
                 val operation = wm.enqueueUniqueWork(plan.uniqueWorkName, policy, request)
@@ -1188,13 +1318,24 @@ object WakeConfirmOccurrenceStore {
                 return@withContext EnqueueVerificationResult.Failed("WorkManager post-enqueue lookup failed: ${e.message}")
             }
 
-            if (verifiedInfos.none { workInfoMatchesOccurrence(it, plan, alarmId, scheduledAt, expectedRequestId = request.id) }) {
+            if (verifiedInfos.none {
+                    workInfoMatchesNewlyEnqueuedRequest(
+                        info = it,
+                        plan = plan,
+                        alarmId = alarmId,
+                        scheduledAt = scheduledAt,
+                        refireCount = expectedRefireCount,
+                        stepToken = expectedStepToken,
+                        expectedRequestId = request.id
+                    )
+                }
+            ) {
                 return@withContext EnqueueVerificationResult.Failed(
                     "WorkInfo identity mismatch for ${plan.uniqueWorkName}"
                 )
             }
 
-            EnqueueVerificationResult.Enqueued
+            EnqueueVerificationResult.Enqueued(request.id.toString())
         }
     }
 
@@ -1246,13 +1387,22 @@ object WakeConfirmOccurrenceStore {
             plan = plan,
             initialDelayMs = remainingDelayMs,
             policy = ExistingWorkPolicy.KEEP,
-            reuseExistingIfPresent = true
+            reuseExistingIfPresent = true,
+            expectedWorkRequestIdString = rec.workRequestId
         )
-        if (enqueueRes is EnqueueVerificationResult.Failed) {
-            return@withLock false
+        val verifiedWorkId = when (enqueueRes) {
+            is EnqueueVerificationResult.Enqueued -> enqueueRes.workRequestId
+            is EnqueueVerificationResult.Reused -> enqueueRes.workRequestId
+            is EnqueueVerificationResult.Failed -> return@withLock false
         }
 
-        markEnqueueConfirmed(context, rec.alarmId, rec.scheduledAt, rec.stepToken) is CommitResult.Committed
+        markEnqueueConfirmed(
+            context = context,
+            alarmId = rec.alarmId,
+            scheduledAt = rec.scheduledAt,
+            stepToken = rec.stepToken,
+            workRequestId = verifiedWorkId
+        ) is CommitResult.Committed
     }
 
     /**
@@ -1381,18 +1531,25 @@ object WakeConfirmOccurrenceStore {
 
             // WorkManager inspection & enqueue strictly outside DE/Room locks and off Main thread
             when (
-                enqueueAndVerifyWakeConfirmWork(
+                val enqRes = enqueueAndVerifyWakeConfirmWork(
                     context = context,
                     alarmId = freshValid.alarmId,
                     scheduledAt = freshValid.scheduledAt,
                     plan = plan,
                     initialDelayMs = remainingDelayMs,
                     policy = ExistingWorkPolicy.KEEP,
-                    reuseExistingIfPresent = true
+                    reuseExistingIfPresent = true,
+                    expectedWorkRequestIdString = freshValid.workRequestId
                 )
             ) {
                 is EnqueueVerificationResult.Reused -> {
-                    val markRes = markEnqueueConfirmed(context, freshValid.alarmId, freshValid.scheduledAt, freshValid.stepToken)
+                    val markRes = markEnqueueConfirmed(
+                        context = context,
+                        alarmId = freshValid.alarmId,
+                        scheduledAt = freshValid.scheduledAt,
+                        stepToken = freshValid.stepToken,
+                        workRequestId = enqRes.workRequestId
+                    )
                     if (markRes is CommitResult.Committed) {
                         reused++
                         runCatching {
@@ -1411,7 +1568,13 @@ object WakeConfirmOccurrenceStore {
                     }
                 }
                 is EnqueueVerificationResult.Enqueued -> {
-                    val markRes = markEnqueueConfirmed(context, freshValid.alarmId, freshValid.scheduledAt, freshValid.stepToken)
+                    val markRes = markEnqueueConfirmed(
+                        context = context,
+                        alarmId = freshValid.alarmId,
+                        scheduledAt = freshValid.scheduledAt,
+                        stepToken = freshValid.stepToken,
+                        workRequestId = enqRes.workRequestId
+                    )
                     if (markRes is CommitResult.Committed) {
                         enqueued++
                         runCatching {
