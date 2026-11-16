@@ -7,6 +7,8 @@ import com.sysadmindoc.alarmclock.data.preferences.AppSettings
 import com.sysadmindoc.alarmclock.data.remote.WeatherCodes
 import com.sysadmindoc.alarmclock.data.remote.WeatherResponse
 import com.sysadmindoc.alarmclock.data.repository.CalendarEvent
+import com.sysadmindoc.alarmclock.domain.OwnerWorkIdentity
+import com.sysadmindoc.alarmclock.domain.SupportingWorkType
 import com.sysadmindoc.alarmclock.util.AlarmTimeFormatter
 import com.sysadmindoc.alarmclock.worker.WakeConfirmWorker
 import java.time.LocalDate
@@ -14,6 +16,7 @@ import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.util.Locale
+import java.util.UUID
 import kotlin.math.roundToInt
 
 internal data class MorningBriefingPayload(
@@ -148,19 +151,28 @@ internal object AlarmPostDismissController {
         alarm: Alarm,
         fireId: String,
         scheduledAt: Long,
-        refireCount: Int
+        refireCount: Int,
+        stepToken: String = ""
     ): WakeConfirmationPlan {
         val delayMinutes = alarm.wakeConfirmDelayMinutes.coerceAtLeast(1).toLong()
+        val effectiveToken = stepToken.ifBlank {
+            if (refireCount < WakeConfirmWorker.MAX_REFIRES) UUID.randomUUID().toString() else ""
+        }
         val data = workDataOf(
             WakeConfirmWorker.KEY_ALARM_ID to alarm.id,
             WakeConfirmWorker.KEY_ALARM_FIRE_ID to fireId,
             WakeConfirmWorker.KEY_SCHEDULED_AT to scheduledAt,
-            WakeConfirmWorker.KEY_REFIRE_COUNT to refireCount
+            WakeConfirmWorker.KEY_REFIRE_COUNT to refireCount,
+            WakeConfirmWorker.KEY_STEP_TOKEN to effectiveToken
         )
-        val name = "wake_confirm_${alarm.id}"
+        val uniqueName = if (alarm.id > 0L && scheduledAt > 0L) {
+            OwnerWorkIdentity.occurrenceUniqueName(alarm.id, scheduledAt, SupportingWorkType.WAKE_CONFIRM)
+        } else {
+            OwnerWorkIdentity.legacyUniqueName(alarm.id.coerceAtLeast(1L), SupportingWorkType.WAKE_CONFIRM)
+        }
         return WakeConfirmationPlan(
-            uniqueWorkName = name,
-            tag = name,
+            uniqueWorkName = uniqueName,
+            tag = "wake_confirm_${alarm.id}",
             delayMinutes = delayMinutes,
             inputData = data
         )

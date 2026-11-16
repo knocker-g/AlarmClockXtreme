@@ -1,6 +1,8 @@
 package com.sysadmindoc.alarmclock.service
 
 import com.sysadmindoc.alarmclock.data.model.Alarm
+import com.sysadmindoc.alarmclock.domain.OwnerWorkIdentity
+import com.sysadmindoc.alarmclock.domain.SupportingWorkType
 import com.sysadmindoc.alarmclock.data.preferences.AppSettings
 import com.sysadmindoc.alarmclock.data.remote.CurrentUnits
 import com.sysadmindoc.alarmclock.data.remote.CurrentWeather
@@ -202,7 +204,10 @@ class AlarmServiceControllerTest {
 
         assertTrue(AlarmPostDismissController.shouldScheduleWakeConfirmation(alarm))
         assertFalse(AlarmPostDismissController.shouldSpeakMorningAnnouncement(alarm))
-        assertEquals("wake_confirm_42", plan.uniqueWorkName)
+        assertEquals(
+            OwnerWorkIdentity.occurrenceUniqueName(42L, 123_456L, SupportingWorkType.WAKE_CONFIRM),
+            plan.uniqueWorkName
+        )
         assertEquals("wake_confirm_42", plan.tag)
         assertEquals(1L, plan.delayMinutes)
         assertEquals(42L, plan.inputData.getLong(WakeConfirmWorker.KEY_ALARM_ID, -1L))

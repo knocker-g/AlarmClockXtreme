@@ -77,6 +77,9 @@ interface AlarmEventDao {
     @Query("SELECT * FROM alarm_events WHERE id IN (SELECT MAX(id) FROM alarm_events GROUP BY alarmId)")
     fun observeLatestEventsPerAlarm(): Flow<List<AlarmEvent>>
 
+    @Query("SELECT COUNT(*) FROM alarm_events WHERE alarmId = :alarmId AND scheduledTime = :scheduledAt AND action = 'DISMISSED'")
+    suspend fun countDismissedByOccurrence(alarmId: Long, scheduledAt: Long): Int
+
     @Query("DELETE FROM alarm_events")
     suspend fun deleteAll()
 }

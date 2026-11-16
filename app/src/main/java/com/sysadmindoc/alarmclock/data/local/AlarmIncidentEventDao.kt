@@ -80,6 +80,13 @@ interface AlarmIncidentEventDao {
     )
     suspend fun trimToLatest(maxRows: Int)
 
+    @Query(
+        "SELECT COUNT(*) FROM alarm_incident_events " +
+            "WHERE alarmId = :alarmId AND scheduledAt = :scheduledAt " +
+            "AND status = 'SUCCEEDED' AND reasonCode IN ('DISMISSED', 'MAX_SNOOZE_DISMISSED')"
+    )
+    suspend fun countDismissedIncidentsByOccurrence(alarmId: Long, scheduledAt: Long): Int
+
     @Query("DELETE FROM alarm_incident_events")
     suspend fun deleteAll()
 }

@@ -1253,6 +1253,8 @@ class AlarmScheduler @Inject constructor(
         if (includeFollowUpWorkers) {
             workManager.cancelUniqueWork("guardian_$alarmId")
             workManager.cancelUniqueWork("wake_confirm_$alarmId")
+            workManager.cancelAllWorkByTag("wake_confirm_$alarmId")
+            com.sysadmindoc.alarmclock.worker.WakeConfirmOccurrenceStore.cancelAllForAlarm(context, alarmId)
         }
     }
 
