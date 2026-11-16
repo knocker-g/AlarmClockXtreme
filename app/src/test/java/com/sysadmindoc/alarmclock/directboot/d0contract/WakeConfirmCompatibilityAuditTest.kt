@@ -1,6 +1,8 @@
 package com.sysadmindoc.alarmclock.directboot.d0contract
 
 import com.sysadmindoc.alarmclock.data.model.Alarm
+import com.sysadmindoc.alarmclock.domain.OwnerWorkIdentity
+import com.sysadmindoc.alarmclock.domain.SupportingWorkType
 import com.sysadmindoc.alarmclock.service.AlarmPostDismissController
 import com.sysadmindoc.alarmclock.service.AlarmService
 import com.sysadmindoc.alarmclock.worker.WakeConfirmWorker
@@ -31,7 +33,11 @@ class WakeConfirmCompatibilityAuditTest {
             scheduledAt = 1_700_000_000_000L,
             refireCount = 1
         )
-        assertEquals("wake_confirm_42", plan.uniqueWorkName)
+        assertEquals(
+            OwnerWorkIdentity.occurrenceUniqueName(42L, 1_700_000_000_000L, SupportingWorkType.WAKE_CONFIRM),
+            plan.uniqueWorkName
+        )
+        assertEquals("wake_confirm_42", plan.tag)
         assertEquals(10L, plan.delayMinutes)
         assertEquals(42L, plan.inputData.getLong(WakeConfirmWorker.KEY_ALARM_ID, -1L))
         assertEquals("alarm-42-1700000000000", plan.inputData.getString(WakeConfirmWorker.KEY_ALARM_FIRE_ID))

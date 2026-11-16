@@ -65,6 +65,7 @@ import com.sysadmindoc.alarmclock.ui.theme.TextMuted
 import com.sysadmindoc.alarmclock.ui.theme.TextPrimary
 import com.sysadmindoc.alarmclock.ui.theme.SnoozeYellow
 import com.sysadmindoc.alarmclock.ui.theme.TextSecondary
+import com.sysadmindoc.alarmclock.worker.WakeConfirmOccurrenceStore
 import com.sysadmindoc.alarmclock.worker.WakeConfirmWorker
 import dagger.hilt.android.EntryPointAccessors
 import kotlinx.coroutines.delay
@@ -84,6 +85,24 @@ class WakeConfirmActivity : ComponentActivity() {
          */
         const val EXTRA_DEADLINE_MILLIS = "deadline_millis"
         const val EXTRA_REFIRE_COUNT = "refire_count"
+
+        /**
+         * Persists occurrence-scoped WakeConfirm confirmation (`confirmed_${alarmId}_${scheduledAt}`)
+         * via synchronous commit + readback and synchronizes DE WakeConfirm lineage.
+         * Never writes the un-scoped legacy `confirmed_$alarmId` key.
+         */
+        internal fun handleConfirmAwake(
+            context: Context,
+            alarmId: Long,
+            scheduledAt: Long
+        ): Boolean {
+            if (alarmId <= 0L || scheduledAt <= 0L) return false
+            return WakeConfirmOccurrenceStore.confirmOccurrence(
+                context = context,
+                alarmId = alarmId,
+                scheduledAt = scheduledAt
+            )
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -131,16 +150,17 @@ class WakeConfirmActivity : ComponentActivity() {
                     deadlineMillis = deadlineMillis,
                     remainingRefires = remainingRefires,
                     onConfirmAwake = {
-                        if (alarmId != -1L) {
-                            val prefs = getSharedPreferences("wake_confirm", Context.MODE_PRIVATE)
-                            prefs.edit().putBoolean("confirmed_$alarmId", true).apply()
-                        }
+                        val confirmed = handleConfirmAwake(
+                            context = this,
+                            alarmId = alarmId,
+                            scheduledAt = scheduledAt
+                        )
                         recordIncidentAsync(
                             alarmId = alarmId,
                             fireId = fireId,
                             scheduledAt = scheduledAt,
-                            status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                            reasonCode = "WAKE_CONFIRM_CONFIRMED_IN_ACTIVITY"
+                            status = if (confirmed) AlarmIncidentEvent.STATUS_SUCCEEDED else AlarmIncidentEvent.STATUS_FAILED,
+                            reasonCode = if (confirmed) "WAKE_CONFIRM_CONFIRMED_IN_ACTIVITY" else "WAKE_CONFIRM_CONFIRM_REJECTED"
                         )
                         finish()
                     },
@@ -167,21 +187,23 @@ class WakeConfirmActivity : ComponentActivity() {
         reasonCode: String
     ) {
         if (alarmId <= 0L) return
-        EntryPointAccessors
-            .fromApplication(
-                applicationContext,
-                AlarmClockApp.AppEntryPoint::class.java
-            )
-            .alarmIncidentRepository()
-            .recordAsync(
-                alarmId = alarmId,
-                fireId = fireId.ifBlank { AlarmIncidentEvent.fireIdFor(alarmId, scheduledAt) },
-                scheduledAt = scheduledAt,
-                type = AlarmIncidentEvent.TYPE_WAKE_CONFIRM,
-                status = status,
-                reasonCode = reasonCode,
-                source = "WakeConfirmActivity"
-            )
+        runCatching {
+            EntryPointAccessors
+                .fromApplication(
+                    applicationContext,
+                    AlarmClockApp.AppEntryPoint::class.java
+                )
+                .alarmIncidentRepository()
+                .recordAsync(
+                    alarmId = alarmId,
+                    fireId = fireId.ifBlank { AlarmIncidentEvent.fireIdFor(alarmId, scheduledAt) },
+                    scheduledAt = scheduledAt,
+                    type = AlarmIncidentEvent.TYPE_WAKE_CONFIRM,
+                    status = status,
+                    reasonCode = reasonCode,
+                    source = "WakeConfirmActivity"
+                )
+        }
     }
 }
 

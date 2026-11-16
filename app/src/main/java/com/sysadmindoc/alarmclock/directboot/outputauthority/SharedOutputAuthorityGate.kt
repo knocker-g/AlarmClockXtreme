@@ -429,6 +429,86 @@ class SharedOutputAuthorityGate(
         }
     }
 
+    /**
+     * Authorizes and reserves a WakeConfirm refire (`refireCount` 1..3) when Output Authority
+     * is enabled (`isEnabled == true`), tying DE WakeConfirm lineage to the LegacyClaimStore.
+     */
+    fun reserveWakeConfirmRefire(
+        context: Context,
+        key: OutputOccurrenceKey
+    ): OutputAuthorizationResult {
+        if (!isEnabled) return OutputAuthorizationResult.GateDisabled
+
+        if (key.alarmId <= 0L || key.scheduledAt <= 0L || key.refireCount !in 1..com.sysadmindoc.alarmclock.worker.WakeConfirmWorker.MAX_REFIRES) {
+            return OutputAuthorizationResult.WakeConfirmUnauthorized("Invalid WakeConfirm refire key: $key")
+        }
+
+        val deContext = if (context.isDeviceProtectedStorage) context else context.createDeviceProtectedStorageContext()
+        if (!com.sysadmindoc.alarmclock.worker.WakeConfirmOccurrenceStore.isRefireAuthorizedForGate(
+                context = deContext,
+                alarmId = key.alarmId,
+                scheduledAt = key.scheduledAt,
+                refireCount = key.refireCount
+            )
+        ) {
+            return OutputAuthorizationResult.WakeConfirmUnauthorized(
+                "WakeConfirm DE lineage does not authorize refire ${key.refireCount} for (${key.alarmId}, ${key.scheduledAt})"
+            )
+        }
+
+        val parentKey = key.copy(refireCount = key.refireCount - 1)
+        val parentUnauthorized: OutputAuthorizationResult.WakeConfirmUnauthorized? = synchronized(DirectBootStorageLock.lock) {
+            when (val st = DirectBootLegacyClaimStore.inspectStorageState(deContext)) {
+                is LegacyClaimStorageState.Corrupt ->
+                    OutputAuthorizationResult.WakeConfirmUnauthorized("Claim store corrupt: ${st.reason}")
+                is LegacyClaimStorageState.UnsupportedSchema ->
+                    OutputAuthorizationResult.WakeConfirmUnauthorized("Unsupported schema ${st.foundVersion}")
+                is LegacyClaimStorageState.ValidWithRecords -> {
+                    val parent = st.records.firstOrNull { it.key == parentKey }
+                    if (parent != null && (parent.state != LegacyClaimState.TERMINAL || parent.terminalOutcome != LegacyTerminalOutcome.CONSUMED_DISMISSED)) {
+                        OutputAuthorizationResult.WakeConfirmUnauthorized(
+                            "Parent occurrence $parentKey not TERMINAL/CONSUMED_DISMISSED (state=${parent.state}, outcome=${parent.terminalOutcome})"
+                        )
+                    } else null
+                }
+                else -> null
+            }
+        }
+        if (parentUnauthorized != null) {
+            return parentUnauthorized
+        }
+
+        return reserveForServiceStart(
+            context = context,
+            key = key,
+            source = LegacyClaimSource.WAKE_CONFIRM
+        )
+    }
+
+    /**
+     * Verifies durable occurrence confirmation for Output Authority coordination.
+     */
+    fun confirmWakeAwake(
+        context: Context,
+        key: OutputOccurrenceKey
+    ): OutputAuthorizationResult {
+        if (!isEnabled) return OutputAuthorizationResult.GateDisabled
+        if (key.alarmId <= 0L || key.scheduledAt <= 0L) {
+            return OutputAuthorizationResult.WakeConfirmUnauthorized("Invalid occurrence key: $key")
+        }
+        val deContext = if (context.isDeviceProtectedStorage) context else context.createDeviceProtectedStorageContext()
+        val rec = com.sysadmindoc.alarmclock.worker.WakeConfirmOccurrenceStore.findRecord(
+            context = deContext,
+            alarmId = key.alarmId,
+            scheduledAt = key.scheduledAt
+        )
+        return if (rec?.confirmed == true && !rec.cancelled) {
+            OutputAuthorizationResult.Authorized(nextNonce("wake-confirm"), key)
+        } else {
+            OutputAuthorizationResult.WakeConfirmUnauthorized("Occurrence (${key.alarmId}, ${key.scheduledAt}) not durably confirmed")
+        }
+    }
+
     fun retireClaimWithProof(
         context: Context,
         database: AlarmDatabase,

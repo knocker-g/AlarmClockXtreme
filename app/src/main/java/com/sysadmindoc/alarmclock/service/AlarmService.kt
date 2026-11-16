@@ -44,13 +44,16 @@ import com.sysadmindoc.alarmclock.data.repository.WeatherRepository
 import com.sysadmindoc.alarmclock.domain.OnCallDndOverride
 import com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome
 import com.sysadmindoc.alarmclock.directboot.OutputOccurrenceKey
+import com.sysadmindoc.alarmclock.directboot.WakeConfirmLineage
 import com.sysadmindoc.alarmclock.directboot.outputauthority.ActiveOutputHandle
 import com.sysadmindoc.alarmclock.directboot.outputauthority.OutputAuthorizationResult
 import com.sysadmindoc.alarmclock.directboot.outputauthority.OutputSinkType
 import com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
+import com.sysadmindoc.alarmclock.domain.OwnerWorkIdentity
 import com.sysadmindoc.alarmclock.domain.SnoozeCapOutcome
 import com.sysadmindoc.alarmclock.domain.SnoozeCapPolicy
+import com.sysadmindoc.alarmclock.domain.SupportingWorkType
 import com.sysadmindoc.alarmclock.receiver.DismissReceiver
 import com.sysadmindoc.alarmclock.receiver.SnoozeCountdownReceiver
 import com.sysadmindoc.alarmclock.receiver.SnoozeReceiver
@@ -58,6 +61,7 @@ import com.sysadmindoc.alarmclock.ui.alarmfiring.MorningBriefingActivity
 import com.sysadmindoc.alarmclock.util.AlarmTimeFormatter
 import com.sysadmindoc.alarmclock.util.AlarmPublicText
 import com.sysadmindoc.alarmclock.wear.WearNextAlarmBridge
+import com.sysadmindoc.alarmclock.worker.WakeConfirmOccurrenceStore
 import com.sysadmindoc.alarmclock.worker.WakeConfirmWorker
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
@@ -937,6 +941,9 @@ class AlarmService : Service() {
         val current = currentGeneration()
         if (current != null && current.matches(startGen)) {
             clearAlarmRuntimeState(startGen.alarmId)
+            currentWakeConfirmRefireCount = 0
+            currentActiveNonce = null
+            currentClaimNonce = null
             updateActiveAlarm(null, targetGen = startGen)
             releaseAlarmMediaSession()
             stopAlarmPlayback(startGen)
@@ -974,6 +981,7 @@ class AlarmService : Service() {
             val current = currentGeneration()
             if (current != null && current.matches(startGen)) {
                 clearAlarmRuntimeState(alarmId)
+                currentWakeConfirmRefireCount = 0
                 updateActiveAlarm(null, targetGen = startGen)
                 releaseAlarmMediaSession()
                 stopSelf()
@@ -986,21 +994,53 @@ class AlarmService : Service() {
             return
         }
 
-        if (!alarm.isEnabled) {
+        if (currentWakeConfirmRefireCount !in 0..WakeConfirmWorker.MAX_REFIRES) {
             recordIncident(
                 type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
                 status = AlarmIncidentEvent.STATUS_FAILED,
-                reasonCode = "ALARM_DISABLED_START_REJECTED",
+                reasonCode = "WAKE_CONFIRM_REFIRE_OUT_OF_BOUNDS",
                 source = "AlarmService"
             )
             val current = currentGeneration()
             if (current != null && current.matches(startGen)) {
                 clearAlarmRuntimeState(alarmId)
+                currentWakeConfirmRefireCount = 0
                 updateActiveAlarm(null, targetGen = startGen)
                 releaseAlarmMediaSession()
                 stopSelf()
             }
             return
+        }
+
+        if (!alarm.isEnabled) {
+            val oneShotRefireAuthorized = !alarm.isRecurringSchedule &&
+                currentWakeConfirmRefireCount in 1..WakeConfirmWorker.MAX_REFIRES &&
+                withContext(Dispatchers.IO) {
+                    WakeConfirmOccurrenceStore.isRefireServiceStartAuthorized(
+                        context = this@AlarmService,
+                        alarmId = alarmId,
+                        scheduledAt = startGen.scheduledAt,
+                        refireCount = currentWakeConfirmRefireCount,
+                        isRecurringSchedule = alarm.isRecurringSchedule
+                    )
+                }
+            if (!oneShotRefireAuthorized) {
+                recordIncident(
+                    type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                    status = AlarmIncidentEvent.STATUS_FAILED,
+                    reasonCode = "ALARM_DISABLED_START_REJECTED",
+                    source = "AlarmService"
+                )
+                val current = currentGeneration()
+                if (current != null && current.matches(startGen)) {
+                    clearAlarmRuntimeState(alarmId)
+                    currentWakeConfirmRefireCount = 0
+                    updateActiveAlarm(null, targetGen = startGen)
+                    releaseAlarmMediaSession()
+                    stopSelf()
+                }
+                return
+            }
         }
 
         if (currentGeneration()?.matches(startGen) != true) {
@@ -1240,9 +1280,25 @@ class AlarmService : Service() {
                     }
                 }
                 if (currentGeneration()?.matches(startGen) == true) {
+                    val refireAtSilence = currentWakeConfirmRefireCount
                     clearAlarmRuntimeState(alarmId)
+                    currentWakeConfirmRefireCount = 0
                     currentSnoozeCount = 0
                     currentAlarmId = -1
+                    val activeNonce = currentActiveNonce
+                    if (getGate().isEnabled && activeNonce != null) {
+                        withContext(NonCancellable + Dispatchers.IO) {
+                            getGate().completeTerminal(
+                                context = this@AlarmService,
+                                key = OutputOccurrenceKey(startGen.alarmId, startGen.scheduledAt, refireAtSilence),
+                                activeNonce = activeNonce,
+                                outcome = LegacyTerminalOutcome.CONSUMED_AUTO_SILENCED,
+                                wakeConfirm = null
+                            )
+                        }
+                        currentActiveNonce = null
+                        currentClaimNonce = null
+                    }
                     updateActiveAlarm(null, targetGen = startGen)
                     alarmScheduler.handleAlarmFired(alarmId, startGen.scheduledAt)
                     stopAlarmPlayback(startGen)
@@ -2794,14 +2850,25 @@ class AlarmService : Service() {
                 }
                 val webhookScheduledAt = acceptedGen.scheduledAt
                 val webhookFireId = acceptedGen.fireId
+                val refireAtDismiss = currentWakeConfirmRefireCount
                 currentSnoozeCount = alarm.maxSnoozeCount
-                recordEventAsync(
+                val dismissEvent = AlarmFireDismissContract.alarmEvent(
                     alarm = alarm,
                     scheduledAt = acceptedGen.scheduledAt,
                     firedAt = alarmFiredAt,
                     action = AlarmEvent.ACTION_DISMISSED,
+                    actionAt = System.currentTimeMillis(),
                     snoozeCount = currentSnoozeCount
                 )
+                val dismissPersisted = withContext(Dispatchers.IO) {
+                    runCatching {
+                        eventRepository.record(dismissEvent)
+                        true
+                    }.getOrElse { e ->
+                        Log.w(TAG, "Failed to persist max-snooze dismiss event for $acceptedGen", e)
+                        false
+                    }
+                }
                 recordIncidentAsync(
                     type = AlarmIncidentEvent.TYPE_USER_ACTION,
                     status = AlarmIncidentEvent.STATUS_SUCCEEDED,
@@ -2812,13 +2879,58 @@ class AlarmService : Service() {
                     scheduledAt = acceptedGen.scheduledAt
                 )
                 if (AlarmPostDismissController.shouldScheduleWakeConfirmation(alarm)) {
-                    scheduleWakeConfirmation(
-                        alarm = alarm,
-                        fireId = acceptedGen.fireId,
-                        scheduledAt = acceptedGen.scheduledAt
-                    )
+                    if (dismissPersisted) {
+                        scheduleWakeConfirmation(
+                            alarm = alarm,
+                            fireId = acceptedGen.fireId,
+                            scheduledAt = acceptedGen.scheduledAt,
+                            refireCount = refireAtDismiss
+                        )
+                    } else {
+                        recordIncidentAsync(
+                            type = AlarmIncidentEvent.TYPE_WAKE_CONFIRM,
+                            status = AlarmIncidentEvent.STATUS_FAILED,
+                            reasonCode = "WAKE_CONFIRM_ABORTED_DISMISS_COMMIT_FAILED",
+                            source = "AlarmService",
+                            alarmId = alarm.id,
+                            fireId = acceptedGen.fireId,
+                            scheduledAt = acceptedGen.scheduledAt
+                        )
+                    }
+                }
+                val activeNonce = currentActiveNonce
+                if (getGate().isEnabled && activeNonce != null) {
+                    val wcLineage = withContext(Dispatchers.IO) {
+                        WakeConfirmOccurrenceStore.findRecord(
+                            this@AlarmService,
+                            alarm.id,
+                            acceptedGen.scheduledAt
+                        )?.let { rec ->
+                            WakeConfirmLineage(
+                                parentDismissed = rec.parentDismissed,
+                                wakeConfirmEnabled = rec.wakeConfirmEnabled,
+                                nextAuthorizedRefire = rec.nextAuthorizedRefire,
+                                highestClaimedRefire = rec.highestClaimedRefire,
+                                confirmed = rec.confirmed,
+                                stepToken = rec.stepToken,
+                                oneShotDisabledAllowed = rec.oneShotDisabledAllowed
+                            )
+                        }
+                    }
+                    withContext(Dispatchers.IO) {
+                        getGate().completeTerminal(
+                            context = this@AlarmService,
+                            key = OutputOccurrenceKey(alarm.id, acceptedGen.scheduledAt, refireAtDismiss),
+                            activeNonce = activeNonce,
+                            outcome = LegacyTerminalOutcome.CONSUMED_DISMISSED,
+                            wakeConfirm = wcLineage
+                        )
+                    }
+                    currentActiveNonce = null
+                    currentClaimNonce = null
                 }
                 clearAlarmRuntimeState(alarmId)
+                currentWakeConfirmRefireCount = 0
                 currentSnoozeCount = 0
                 currentAlarmId = -1
 
@@ -2974,6 +3086,38 @@ class AlarmService : Service() {
                     if (alarm.guardianEnabled) {
                         WorkManager.getInstance(applicationContext).cancelUniqueWork("guardian_${alarm.id}")
                     }
+                    val refireAtSnooze = currentWakeConfirmRefireCount
+                    currentWakeConfirmRefireCount = 0
+                    if (acceptedGen.alarmId > 0L && acceptedGen.scheduledAt > 0L) {
+                        WorkManager.getInstance(applicationContext).cancelUniqueWork(
+                            OwnerWorkIdentity.occurrenceUniqueName(
+                                acceptedGen.alarmId,
+                                acceptedGen.scheduledAt,
+                                SupportingWorkType.WAKE_CONFIRM
+                            )
+                        )
+                        withContext(Dispatchers.IO) {
+                            WakeConfirmOccurrenceStore.cancelOccurrence(
+                                this@AlarmService,
+                                acceptedGen.alarmId,
+                                acceptedGen.scheduledAt
+                            )
+                        }
+                    }
+                    val activeNonce = currentActiveNonce
+                    if (getGate().isEnabled && activeNonce != null) {
+                        withContext(Dispatchers.IO) {
+                            getGate().completeTerminal(
+                                context = this@AlarmService,
+                                key = OutputOccurrenceKey(alarm.id, acceptedGen.scheduledAt, refireAtSnooze),
+                                activeNonce = activeNonce,
+                                outcome = LegacyTerminalOutcome.CONSUMED_SNOOZED,
+                                wakeConfirm = null
+                            )
+                        }
+                        currentActiveNonce = null
+                        currentClaimNonce = null
+                    }
                     currentSnoozeCount = nextSnoozeCount
                     persistSnoozeCount(alarmId, currentSnoozeCount)
 
@@ -3066,15 +3210,26 @@ class AlarmService : Service() {
             if (alarm != null) {
                 val wakeConfirmFireId = acceptedGen.fireId
                 val wakeConfirmScheduledAt = acceptedGen.scheduledAt
-                recordEventAsync(
+                val refireAtDismiss = currentWakeConfirmRefireCount
+                val dismissEvent = AlarmFireDismissContract.alarmEvent(
                     alarm = alarm,
                     scheduledAt = acceptedGen.scheduledAt,
                     firedAt = alarmFiredAt,
                     action = AlarmEvent.ACTION_DISMISSED,
-                    snoozeCount = currentSnoozeCount,
+                    actionAt = System.currentTimeMillis(),
                     challengeRetryCount = challengeRetryCount,
-                    challengeSolveTimeMs = challengeSolveTimeMs
+                    challengeSolveTimeMs = challengeSolveTimeMs,
+                    snoozeCount = currentSnoozeCount
                 )
+                val dismissPersisted = withContext(Dispatchers.IO) {
+                    runCatching {
+                        eventRepository.record(dismissEvent)
+                        true
+                    }.getOrElse { e ->
+                        Log.w(TAG, "Failed to persist dismiss event for $acceptedGen", e)
+                        false
+                    }
+                }
                 recordIncidentAsync(
                     type = AlarmIncidentEvent.TYPE_USER_ACTION,
                     status = AlarmIncidentEvent.STATUS_SUCCEEDED,
@@ -3085,6 +3240,7 @@ class AlarmService : Service() {
                     scheduledAt = acceptedGen.scheduledAt
                 )
                 clearAlarmRuntimeState(alarmId)
+                currentWakeConfirmRefireCount = 0
                 currentSnoozeCount = 0
                 currentAlarmId = -1
 
@@ -3160,13 +3316,58 @@ class AlarmService : Service() {
                 // F12: Morning briefing screen
                 showMorningBriefing(alarm)
 
-                // F5: Post-alarm wake confirmation
+                // F5: Post-alarm wake confirmation (strictly ordered AFTER Room dismiss persistence)
                 if (AlarmPostDismissController.shouldScheduleWakeConfirmation(alarm)) {
-                    scheduleWakeConfirmation(
-                        alarm = alarm,
-                        fireId = wakeConfirmFireId,
-                        scheduledAt = wakeConfirmScheduledAt
-                    )
+                    if (dismissPersisted) {
+                        scheduleWakeConfirmation(
+                            alarm = alarm,
+                            fireId = wakeConfirmFireId,
+                            scheduledAt = wakeConfirmScheduledAt,
+                            refireCount = refireAtDismiss
+                        )
+                    } else {
+                        recordIncidentAsync(
+                            type = AlarmIncidentEvent.TYPE_WAKE_CONFIRM,
+                            status = AlarmIncidentEvent.STATUS_FAILED,
+                            reasonCode = "WAKE_CONFIRM_ABORTED_DISMISS_COMMIT_FAILED",
+                            source = "AlarmService",
+                            alarmId = alarm.id,
+                            fireId = wakeConfirmFireId,
+                            scheduledAt = wakeConfirmScheduledAt
+                        )
+                    }
+                }
+
+                val activeNonce = currentActiveNonce
+                if (getGate().isEnabled && activeNonce != null) {
+                    val wcLineage = withContext(Dispatchers.IO) {
+                        WakeConfirmOccurrenceStore.findRecord(
+                            this@AlarmService,
+                            alarm.id,
+                            wakeConfirmScheduledAt
+                        )?.let { rec ->
+                            WakeConfirmLineage(
+                                parentDismissed = rec.parentDismissed,
+                                wakeConfirmEnabled = rec.wakeConfirmEnabled,
+                                nextAuthorizedRefire = rec.nextAuthorizedRefire,
+                                highestClaimedRefire = rec.highestClaimedRefire,
+                                confirmed = rec.confirmed,
+                                stepToken = rec.stepToken,
+                                oneShotDisabledAllowed = rec.oneShotDisabledAllowed
+                            )
+                        }
+                    }
+                    withContext(Dispatchers.IO) {
+                        getGate().completeTerminal(
+                            context = this@AlarmService,
+                            key = OutputOccurrenceKey(alarm.id, wakeConfirmScheduledAt, refireAtDismiss),
+                            activeNonce = activeNonce,
+                            outcome = LegacyTerminalOutcome.CONSUMED_DISMISSED,
+                            wakeConfirm = wcLineage
+                        )
+                    }
+                    currentActiveNonce = null
+                    currentClaimNonce = null
                 }
 
                 // v1.2.0: Cancel guardian if active (alarm was dismissed in time)
@@ -3180,6 +3381,7 @@ class AlarmService : Service() {
                     alarmId = alarmId
                 )
                 clearAlarmRuntimeState(alarmId)
+                currentWakeConfirmRefireCount = 0
                 currentSnoozeCount = 0
                 currentAlarmId = -1
                 updateActiveAlarm(null, targetGen = acceptedGen)
@@ -3461,29 +3663,86 @@ class AlarmService : Service() {
     // from a corrupt setting) doesn't fire the worker the same instant we
     // dismissed — which would race the worker's prompt against the morning
     // briefing animation.
-    private fun scheduleWakeConfirmation(
+    private suspend fun scheduleWakeConfirmation(
         alarm: Alarm,
         fireId: String,
         scheduledAt: Long,
         refireCount: Int = currentWakeConfirmRefireCount
     ) {
+        val commitResult = withContext(Dispatchers.IO) {
+            WakeConfirmOccurrenceStore.commitDismissLineage(
+                context = this@AlarmService,
+                alarmId = alarm.id,
+                scheduledAt = scheduledAt,
+                fireId = fireId,
+                refireCount = refireCount,
+                wakeConfirmEnabled = alarm.wakeConfirmEnabled,
+                isRecurringSchedule = alarm.isRecurringSchedule
+            )
+        }
+        if (commitResult !is WakeConfirmOccurrenceStore.CommitResult.Committed) {
+            Log.w(
+                TAG,
+                "Aborting WakeConfirmWorker enqueue for alarm=${alarm.id} scheduledAt=$scheduledAt: DE lineage commit failed ($commitResult)"
+            )
+            recordIncidentAsync(
+                type = AlarmIncidentEvent.TYPE_WAKE_CONFIRM,
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "WAKE_CONFIRM_DE_LINEAGE_COMMIT_FAILED",
+                source = "AlarmService",
+                alarmId = alarm.id,
+                fireId = fireId,
+                scheduledAt = scheduledAt
+            )
+            return
+        }
+
+        val stepToken = commitResult.record.stepToken
+        // Strictly outside DE/Room locks: enqueue occurrence-scoped WorkManager job
         val plan = AlarmPostDismissController.wakeConfirmationPlan(
             alarm = alarm,
             fireId = fireId,
             scheduledAt = scheduledAt,
-            refireCount = refireCount
+            refireCount = refireCount,
+            stepToken = stepToken
         )
         val request = OneTimeWorkRequestBuilder<WakeConfirmWorker>()
             .setInitialDelay(plan.delayMinutes, TimeUnit.MINUTES)
             .setInputData(plan.inputData)
             .addTag(plan.tag)
             .build()
-        WorkManager.getInstance(applicationContext)
-            .enqueueUniqueWork(
-                plan.uniqueWorkName,
-                ExistingWorkPolicy.REPLACE,
-                request
+        val enqueued = try {
+            WorkManager.getInstance(applicationContext)
+                .enqueueUniqueWork(
+                    plan.uniqueWorkName,
+                    ExistingWorkPolicy.REPLACE,
+                    request
+                )
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "WorkManager enqueue failed for WakeConfirm (${alarm.id}, $scheduledAt); DE lineage retained for retry", e)
+            false
+        }
+        if (!enqueued) {
+            recordIncidentAsync(
+                type = AlarmIncidentEvent.TYPE_WAKE_CONFIRM,
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "WAKE_CONFIRM_ENQUEUE_FAILED_PENDING_RETRY",
+                source = "AlarmService",
+                alarmId = alarm.id,
+                fireId = fireId,
+                scheduledAt = scheduledAt
             )
+            return
+        }
+        withContext(Dispatchers.IO) {
+            WakeConfirmOccurrenceStore.markEnqueueConfirmed(
+                context = this@AlarmService,
+                alarmId = alarm.id,
+                scheduledAt = scheduledAt,
+                stepToken = stepToken
+            )
+        }
         recordIncidentAsync(
             type = AlarmIncidentEvent.TYPE_WAKE_CONFIRM,
             status = AlarmIncidentEvent.STATUS_REQUESTED,

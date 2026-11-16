@@ -270,6 +270,17 @@ class AlarmIncidentRepositoryTest {
                 )
         }
 
+        override suspend fun countDismissedIncidentsByOccurrence(
+            alarmId: Long,
+            scheduledAt: Long
+        ): Int = inserted.count {
+            it.alarmId == alarmId &&
+                it.scheduledAt == scheduledAt &&
+                it.type == AlarmIncidentEvent.TYPE_USER_ACTION &&
+                it.status == AlarmIncidentEvent.STATUS_SUCCEEDED &&
+                it.reasonCode in listOf("DISMISSED", "MAX_SNOOZE_DISMISSED")
+        }
+
         override suspend fun deleteOlderThan(beforeMs: Long) {
             deleteOlderThanCalled = true
             deletedBeforeMs = beforeMs
