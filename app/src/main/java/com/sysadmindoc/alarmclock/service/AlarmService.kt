@@ -42,6 +42,11 @@ import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.data.repository.CalendarRepository
 import com.sysadmindoc.alarmclock.data.repository.WeatherRepository
 import com.sysadmindoc.alarmclock.domain.OnCallDndOverride
+import com.sysadmindoc.alarmclock.directboot.OutputOccurrenceKey
+import com.sysadmindoc.alarmclock.directboot.outputauthority.ActiveOutputHandle
+import com.sysadmindoc.alarmclock.directboot.outputauthority.OutputAuthorizationResult
+import com.sysadmindoc.alarmclock.directboot.outputauthority.OutputSinkType
+import com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.domain.SnoozeCapOutcome
 import com.sysadmindoc.alarmclock.domain.SnoozeCapPolicy
@@ -88,6 +93,7 @@ class AlarmService : Service() {
         const val ACTION_DISMISS = "com.sysadmindoc.alarmclock.DISMISS"
         const val ACTION_SET_CHALLENGE_DUCKING =
             "com.sysadmindoc.alarmclock.SET_CHALLENGE_DUCKING"
+        const val EXTRA_CLAIM_NONCE = "claim_nonce"
         const val EXTRA_CUSTOM_SNOOZE_MINUTES = "custom_snooze_minutes"
         const val EXTRA_SNOOZE_UNTIL_MILLIS = "snooze_until_millis"
         const val EXTRA_CHALLENGE_RETRY_COUNT = "challenge_retry_count"
@@ -249,6 +255,52 @@ class AlarmService : Service() {
     // error path — if both the radio and the default fallback fail, we could
     // otherwise leak orphaned playback instances.
     private val audioStarting = AtomicBoolean(false)
+
+    @VisibleForTesting
+    internal var testStartAlarmCompletionLatch: CompletableDeferred<Unit>? = null
+    @VisibleForTesting
+    internal var outputAuthorityGate: SharedOutputAuthorityGate? = null
+    @VisibleForTesting
+    internal var roomReceiptCheckerSeam: ((Long, Long) -> Boolean)? = null
+    @VisibleForTesting
+    internal var currentClaimNonce: String? = null
+    @VisibleForTesting
+    internal var currentActiveNonce: String? = null
+    @VisibleForTesting
+    internal val testAudioStarted = java.util.concurrent.atomic.AtomicBoolean(false)
+    @VisibleForTesting
+    internal val testVibrationStarted = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    internal fun getGate(): SharedOutputAuthorityGate {
+        return outputAuthorityGate ?: SharedOutputAuthorityGate.getInstance(this)
+    }
+
+    internal fun getRoomReceiptChecker(): ((Long, Long) -> Boolean)? {
+        roomReceiptCheckerSeam?.let { return it }
+        return try {
+            val dao = repository.database.directBootOccurrenceReceiptDao()
+            val checker: (Long, Long) -> Boolean = { alarmId, scheduledAt ->
+                val receipts = dao.findByAlarmId(alarmId)
+                receipts.any { it.triggerTime == scheduledAt }
+            }
+            checker
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    internal fun handlePreemptedOwner(handle: ActiveOutputHandle): Boolean {
+        if (handle.activeNonce != currentActiveNonce) {
+            return false
+        }
+        val gen = currentGeneration()
+        stopAlarmPlayback(gen)
+        currentActiveNonce = null
+        currentClaimNonce = null
+        val gate = getGate()
+        gate.arbiter.releaseIfMatches(handle.key, handle.activeNonce)
+        return true
+    }
 
     // v1.11.3 (ALA-88): Execution guard for ACTION_SNOOZE to prevent race-induced
     // duplicate scheduling and state corruption.
@@ -441,6 +493,7 @@ class AlarmService : Service() {
                         currentWakeConfirmRefireCount = intent.getIntExtra(
                             EXTRA_WAKE_CONFIRM_REFIRE_COUNT, 0
                         )
+                        currentClaimNonce = intent.getStringExtra(EXTRA_CLAIM_NONCE)
                         recordIncidentAsync(
                             type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
                             status = AlarmIncidentEvent.STATUS_RECEIVED,
@@ -449,7 +502,13 @@ class AlarmService : Service() {
                         )
                         activateAlarmMediaSession("START_COMMAND")
                         startForegroundWithPlaceholder()
-                        serviceScope.launch(Dispatchers.Main.immediate) { startAlarm(startGen) }
+                        serviceScope.launch(Dispatchers.Main.immediate) {
+                            try {
+                                startAlarm(startGen)
+                            } finally {
+                                testStartAlarmCompletionLatch?.complete(Unit)
+                            }
+                        }
                     }
                 }
             }
@@ -803,6 +862,32 @@ class AlarmService : Service() {
         return START_NOT_STICKY
     }
 
+    private suspend fun stopServiceDueToAuthorityRejection(startGen: AlarmGeneration, reason: String) {
+        recordIncident(
+            type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+            status = AlarmIncidentEvent.STATUS_FAILED,
+            reasonCode = "OUTPUT_AUTHORITY_REJECTED_$reason",
+            source = "AlarmService",
+            alarmId = startGen.alarmId,
+            fireId = startGen.fireId,
+            scheduledAt = startGen.scheduledAt
+        )
+        val current = currentGeneration()
+        if (current != null && current.matches(startGen)) {
+            clearAlarmRuntimeState(startGen.alarmId)
+            updateActiveAlarm(null, targetGen = startGen)
+            releaseAlarmMediaSession()
+            stopAlarmPlayback(startGen)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+            stopSelf()
+        }
+    }
+
     private suspend fun startAlarm(startGen: AlarmGeneration) {
         val alarmId = startGen.alarmId
         if (currentGeneration()?.matches(startGen) != true) {
@@ -868,6 +953,67 @@ class AlarmService : Service() {
             return
         }
 
+        val gate = getGate()
+        val activeNonce: String?
+        if (gate.isEnabled) {
+            val nonce = currentClaimNonce
+            if (nonce.isNullOrBlank()) {
+                Log.w(TAG, "Rejecting startAlarm: claimNonce is null or blank when gate is enabled")
+                stopServiceDueToAuthorityRejection(startGen, "NULL_OR_BLANK_CLAIM_NONCE")
+                return
+            }
+            val roomChecker = getRoomReceiptChecker()
+            if (roomChecker == null) {
+                Log.w(TAG, "Rejecting startAlarm: roomReceiptChecker is null when gate is enabled in CE mode")
+                stopServiceDueToAuthorityRejection(startGen, "ROOM_CHECKER_NULL")
+                return
+            }
+            val key = OutputOccurrenceKey(
+                alarmId = startGen.alarmId,
+                scheduledAt = startGen.scheduledAt,
+                refireCount = currentWakeConfirmRefireCount
+            )
+            val auth = withContext(Dispatchers.IO) {
+                gate.claimOutput(
+                    context = this@AlarmService,
+                    key = key,
+                    incomingNonce = nonce,
+                    sink = OutputSinkType.ALARM_SERVICE_1001,
+                    directBootModeOnly = false,
+                    roomReceiptChecker = roomChecker,
+                    stopPreemptedOwner = { handlePreemptedOwner(it) }
+                )
+            }
+            if (auth !is OutputAuthorizationResult.Authorized) {
+                Log.w(TAG, "Rejecting startAlarm: authority gate denied claim: $auth")
+                stopServiceDueToAuthorityRejection(startGen, "GATE_CLAIM_DENIED")
+                return
+            }
+            currentActiveNonce = auth.activeNonce
+            activeNonce = auth.activeNonce
+
+            val obs = withContext(Dispatchers.IO) {
+                gate.observePhysicalOutput(
+                    context = this@AlarmService,
+                    key = key,
+                    activeNonce = activeNonce,
+                    sink = OutputSinkType.ALARM_SERVICE_1001,
+                    roomReceiptChecker = roomChecker
+                )
+            }
+            if (obs !is OutputAuthorizationResult.Authorized) {
+                Log.w(TAG, "Rejecting startAlarm: observePhysicalOutput failed: $obs")
+                gate.arbiter.releaseIfMatches(key, activeNonce)
+                currentActiveNonce = null
+                stopServiceDueToAuthorityRejection(startGen, "OBSERVE_OUTPUT_FAILED")
+                return
+            }
+        } else {
+            activeNonce = null
+        }
+
+        if (currentGeneration()?.matches(startGen) != true) return
+
         OnCallDndOverride.begin(this, settings.onCallModeEnabled)
 
         // v1.5.4: startForeground() was already called synchronously in
@@ -929,6 +1075,10 @@ class AlarmService : Service() {
         }
 
         if (currentGeneration()?.matches(startGen) != true) return
+        if (gate.isEnabled && (activeNonce == null || gate.arbiter.activeHandle?.activeNonce != activeNonce)) {
+            Log.w(TAG, "Aborting startAudio: preemption occurred before audio onset")
+            return
+        }
 
         startAudio(alarm, startGen)
 
@@ -943,9 +1093,19 @@ class AlarmService : Service() {
             if (delayMillis > 0) {
                 serviceScope.launch {
                     kotlinx.coroutines.delay(delayMillis)
-                    if (currentGeneration()?.matches(startGen) == true) startVibration(alarm)
+                    if (currentGeneration()?.matches(startGen) == true) {
+                        if (gate.isEnabled && (activeNonce == null || gate.arbiter.activeHandle?.activeNonce != activeNonce)) {
+                            Log.w(TAG, "Aborting delayed vibration: preemption occurred before vibration onset")
+                            return@launch
+                        }
+                        startVibration(alarm)
+                    }
                 }
             } else {
+                if (gate.isEnabled && (activeNonce == null || gate.arbiter.activeHandle?.activeNonce != activeNonce)) {
+                    Log.w(TAG, "Aborting vibration: preemption occurred before vibration onset")
+                    return
+                }
                 startVibration(alarm)
             }
         }
@@ -1336,6 +1496,7 @@ class AlarmService : Service() {
     }
 
     private fun startAudio(alarm: Alarm, startGen: AlarmGeneration) {
+        testAudioStarted.set(true)
         // Silent mode - skip audio entirely
         if (alarm.ringtoneUri == "silent" || AlarmHapticController.usesMutedAlarmAudio(alarm)) {
             recordIncidentAsync(
@@ -2361,6 +2522,15 @@ class AlarmService : Service() {
     }
 
     private fun startVibration(alarm: Alarm) {
+        val gate = getGate()
+        if (gate.isEnabled) {
+            val activeNonce = currentActiveNonce
+            if (activeNonce == null || gate.arbiter.activeHandle?.activeNonce != activeNonce) {
+                Log.w(TAG, "Aborting startVibration: preemption occurred before vibration onset")
+                return
+            }
+        }
+        testVibrationStarted.set(true)
         vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager)?.defaultVibrator
         } else {
@@ -3489,6 +3659,15 @@ class AlarmService : Service() {
     }
 
     private fun stopAlarmPlayback(targetGen: AlarmGeneration? = null) {
+        testAudioStarted.set(false)
+        testVibrationStarted.set(false)
+        currentActiveNonce?.let { nonce ->
+            val gen = targetGen ?: currentGeneration()
+            if (gen != null) {
+                val key = OutputOccurrenceKey(gen.alarmId, gen.scheduledAt, currentWakeConfirmRefireCount)
+                getGate().arbiter.releaseIfMatches(key, nonce)
+            }
+        }
         invalidatePlaybackTokens()
         OnCallDndOverride.end(this)
         volumeJob?.cancel()

@@ -58,6 +58,18 @@ class OutputResourceArbiterTest {
     }
 
     @Test
+    fun testAcquirePending_rejectsDifferentSinkForSameOccurrenceAndNonce() {
+        val key = OutputOccurrenceKey(1L, 1000L, 0)
+        arbiter.acquirePending(key, OutputSinkType.ALARM_SERVICE_1001, "nonce-1")
+
+        // Cross-sink acquisition for same occurrence MUST be rejected even if nonce matches
+        val (acquired2, preempted2) = arbiter.acquirePending(key, OutputSinkType.FULLSCREEN_FALLBACK_1001, "nonce-1")
+        assertFalse("Cross-sink acquisition for same occurrence MUST be rejected", acquired2)
+        assertNull(preempted2)
+        assertEquals(OutputSinkType.ALARM_SERVICE_1001, arbiter.activeHandle?.sink)
+    }
+
+    @Test
     fun testPreemption_returnsPreemptedHandleWithoutHoldingLocks() {
         val key1 = OutputOccurrenceKey(1L, 1000L, 0)
         val key2 = OutputOccurrenceKey(2L, 2000L, 0)
