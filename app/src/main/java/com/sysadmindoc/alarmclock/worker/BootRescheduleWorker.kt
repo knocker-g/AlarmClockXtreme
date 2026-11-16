@@ -1,6 +1,7 @@
 package com.sysadmindoc.alarmclock.worker
 
 import android.content.Context
+import android.content.Intent
 import android.util.Log
 import androidx.hilt.work.HiltWorker
 import androidx.work.BackoffPolicy
@@ -11,6 +12,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.domain.ScheduleAuthorityReconciler
 import dagger.assisted.Assisted
@@ -32,7 +34,8 @@ class BootRescheduleWorker @AssistedInject constructor(
     private val routeAuthority: com.sysadmindoc.alarmclock.domain.ProductionSchedulingRouteAuthority = com.sysadmindoc.alarmclock.domain.ProductionSchedulingRouteAuthority(),
     private val quickAlarmScheduler: com.sysadmindoc.alarmclock.domain.QuickAlarmScheduler? = null,
     private val holidayReconcileCoordinator: com.sysadmindoc.alarmclock.data.repository.HolidayReconcileCoordinator? = null,
-    private val upcomingCoordinator: com.sysadmindoc.alarmclock.domain.projection.UpcomingScheduleReconcileCoordinator? = null
+    private val upcomingCoordinator: com.sysadmindoc.alarmclock.domain.projection.UpcomingScheduleReconcileCoordinator? = null,
+    private val alarmRepository: AlarmRepository? = null
 ) : CoroutineWorker(context, workerParams) {
 
     override suspend fun doWork(): Result {
@@ -58,6 +61,22 @@ class BootRescheduleWorker @AssistedInject constructor(
             )
 
             val reconcileResult = holidayReconcileCoordinator?.reconcile(isMaterialChange = false)
+
+            if (alarmRepository != null) {
+                val trigger = when (sourceAction) {
+                    Intent.ACTION_USER_UNLOCKED -> WakeConfirmOccurrenceStore.RecoveryTrigger.UNLOCK
+                    Intent.ACTION_BOOT_COMPLETED,
+                    Intent.ACTION_MY_PACKAGE_REPLACED,
+                    Intent.ACTION_TIME_CHANGED,
+                    Intent.ACTION_TIMEZONE_CHANGED -> WakeConfirmOccurrenceStore.RecoveryTrigger.REBOOT
+                    else -> WakeConfirmOccurrenceStore.RecoveryTrigger.REBOOT
+                }
+                WakeConfirmOccurrenceStore.recoverPendingEnqueues(
+                    context = applicationContext,
+                    alarmRepository = alarmRepository,
+                    trigger = trigger
+                )
+            }
 
             if (reconcileResult is com.sysadmindoc.alarmclock.data.repository.HolidayReconcileResult.PendingRetry) {
                 if (runAttemptCount < MAX_ATTEMPTS) {

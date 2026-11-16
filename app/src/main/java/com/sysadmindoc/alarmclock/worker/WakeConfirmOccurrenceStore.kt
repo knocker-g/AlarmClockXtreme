@@ -4,10 +4,21 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
 import androidx.annotation.VisibleForTesting
+import androidx.core.os.UserManagerCompat
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
+import com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository
+import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.directboot.DirectBootStorageLock
+import com.sysadmindoc.alarmclock.domain.OwnerWorkIdentity
+import com.sysadmindoc.alarmclock.domain.SupportingWorkType
+import com.sysadmindoc.alarmclock.service.AlarmPostDismissController
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 /**
  * Occurrence-scoped Device-Encrypted (DE) WakeConfirm lineage & CE confirmation store.
@@ -111,6 +122,33 @@ object WakeConfirmOccurrenceStore {
         object Unconfirmed : ConfirmationStatus()
         data class StorageUnverifiable(val reason: String) : ConfirmationStatus()
     }
+
+    sealed class ConfirmOccurrenceResult {
+        data class Confirmed(val deUpdated: Boolean) : ConfirmOccurrenceResult()
+        data class CeConfirmedDePendingReconciliation(val reason: String) : ConfirmOccurrenceResult()
+        data class Rejected(val reason: String) : ConfirmOccurrenceResult()
+    }
+
+    sealed class LegacyOccurrenceResolution {
+        data class Resolved(val scheduledAt: Long, val fireId: String) : LegacyOccurrenceResolution()
+        data class Rejected(val reason: String) : LegacyOccurrenceResolution()
+    }
+
+    enum class RecoveryTrigger {
+        REBOOT,
+        UNLOCK,
+        PROCESS_DEATH,
+        HEALTH_CHECK
+    }
+
+    data class RecoveryResult(
+        val trigger: RecoveryTrigger,
+        val inspectedCount: Int = 0,
+        val enqueuedCount: Int = 0,
+        val reusedCount: Int = 0,
+        val skippedCount: Int = 0,
+        val failedCount: Int = 0
+    )
 
     @VisibleForTesting
     internal var deCommitSeam: (SharedPreferences, String) -> Boolean = { prefs, payload ->
@@ -220,14 +258,19 @@ object WakeConfirmOccurrenceStore {
     fun getPendingRetryableEnqueues(context: Context): List<Record> {
         synchronized(DirectBootStorageLock.lock) {
             return when (val st = inspectDeStorageState(context)) {
-                is StorageState.Valid -> st.records.filter {
-                    it.parentDismissed &&
-                        it.wakeConfirmEnabled &&
-                        !it.confirmed &&
-                        !it.cancelled &&
-                        !it.enqueueConfirmed &&
-                        it.stepToken.isNotBlank() &&
-                        it.nextAuthorizedRefire in 1..WakeConfirmWorker.MAX_REFIRES + 1
+                is StorageState.Valid -> st.records.filter { rec ->
+                    val hasNewerOccurrence = st.records.any { other ->
+                        other.alarmId == rec.alarmId && other.scheduledAt > rec.scheduledAt
+                    }
+                    !hasNewerOccurrence &&
+                        rec.parentDismissed &&
+                        rec.wakeConfirmEnabled &&
+                        !rec.confirmed &&
+                        !rec.cancelled &&
+                        !rec.enqueueConfirmed &&
+                        rec.stepToken.isNotBlank() &&
+                        rec.highestClaimedRefire in 0 until WakeConfirmWorker.MAX_REFIRES &&
+                        rec.nextAuthorizedRefire in 1..WakeConfirmWorker.MAX_REFIRES
                 }
                 else -> emptyList()
             }
@@ -508,14 +551,39 @@ object WakeConfirmOccurrenceStore {
     /**
      * Marks an occurrence confirmed via [WakeConfirmActivity] with CE commit + readback,
      * and synchronizes DE lineage. Never writes legacy `confirmed_$alarmId`.
+     *
+     * Distinguishes CE durable confirmation from DE lineage synchronization:
+     * - Returns [ConfirmOccurrenceResult.Rejected] if key invalid, cancelled, or CE commit/readback fails.
+     * - Returns [ConfirmOccurrenceResult.CeConfirmedDePendingReconciliation] if CE succeeded
+     *   but DE storage was Corrupt/UnsupportedSchema or DE commit/readback failed (CE is preserved).
+     * - Returns [ConfirmOccurrenceResult.Confirmed] only when CE succeeded and DE was updated
+     *   (or DE legitimately has no record for this occurrence).
      */
-    fun confirmOccurrence(
+    fun confirmOccurrenceDetailed(
         context: Context,
         alarmId: Long,
         scheduledAt: Long,
         nowMillis: Long = System.currentTimeMillis()
-    ): Boolean {
-        if (alarmId <= 0L || scheduledAt <= 0L) return false
+    ): ConfirmOccurrenceResult {
+        if (alarmId <= 0L || scheduledAt <= 0L) {
+            return ConfirmOccurrenceResult.Rejected("Invalid occurrence key ($alarmId, $scheduledAt)")
+        }
+
+        // Pre-check DE state outside CE write so a cancelled occurrence never writes CE confirmation
+        val preCheckRejection: ConfirmOccurrenceResult.Rejected? = synchronized(DirectBootStorageLock.lock) {
+            when (val st = inspectDeStorageState(context)) {
+                is StorageState.Valid -> {
+                    val rec = st.records.firstOrNull { it.alarmId == alarmId && it.scheduledAt == scheduledAt }
+                    if (rec?.cancelled == true) {
+                        ConfirmOccurrenceResult.Rejected("Occurrence ($alarmId, $scheduledAt) is cancelled")
+                    } else {
+                        null
+                    }
+                }
+                else -> null
+            }
+        }
+        if (preCheckRejection != null) return preCheckRejection
 
         val prefs = cePrefs(context)
         val key = confirmedKey(alarmId, scheduledAt)
@@ -526,28 +594,68 @@ object WakeConfirmOccurrenceStore {
         } catch (_: Exception) {
             false
         }
-        if (!committed) return false
+        if (!committed) {
+            return ConfirmOccurrenceResult.Rejected("CE confirmation commit failed")
+        }
 
         val readback = try {
             ceReadbackBooleanSeam(prefs, key)
         } catch (_: Exception) {
             false
         }
-        if (!readback) return false
-
-        synchronized(DirectBootStorageLock.lock) {
-            val st = inspectDeStorageState(context)
-            if (st !is StorageState.Valid) return true // CE durable confirmation succeeded
-            val idx = st.records.indexOfFirst { it.alarmId == alarmId && it.scheduledAt == scheduledAt }
-            if (idx < 0) return true
-            val rec = st.records[idx]
-            if (rec.cancelled) return false
-            val updated = rec.copy(confirmed = true, stepToken = "")
-            val nextList = st.records.toMutableList().apply { set(idx, updated) }
-            val fail = commitAndVerify(context, nextList)
-            return fail == null
+        if (!readback) {
+            return ConfirmOccurrenceResult.Rejected("CE confirmation readback failed")
         }
+
+        var removeCeDueToConcurrentCancel = false
+        val deResult = synchronized(DirectBootStorageLock.lock) {
+            when (val st = inspectDeStorageState(context)) {
+                is StorageState.Absent, is StorageState.ValidEmpty ->
+                    ConfirmOccurrenceResult.Confirmed(deUpdated = false)
+                is StorageState.Corrupt ->
+                    ConfirmOccurrenceResult.CeConfirmedDePendingReconciliation("DE storage corrupt: ${st.reason}")
+                is StorageState.UnsupportedSchema ->
+                    ConfirmOccurrenceResult.CeConfirmedDePendingReconciliation("Unsupported DE schema: ${st.foundVersion}")
+                is StorageState.Valid -> {
+                    val idx = st.records.indexOfFirst { it.alarmId == alarmId && it.scheduledAt == scheduledAt }
+                    if (idx < 0) {
+                        ConfirmOccurrenceResult.Confirmed(deUpdated = false)
+                    } else {
+                        val rec = st.records[idx]
+                        if (rec.cancelled) {
+                            removeCeDueToConcurrentCancel = true
+                            ConfirmOccurrenceResult.Rejected("Occurrence ($alarmId, $scheduledAt) cancelled concurrently")
+                        } else {
+                            val updated = rec.copy(confirmed = true, stepToken = "")
+                            val nextList = st.records.toMutableList().apply { set(idx, updated) }
+                            val fail = commitAndVerify(context, nextList)
+                            if (fail == null) {
+                                ConfirmOccurrenceResult.Confirmed(deUpdated = true)
+                            } else {
+                                ConfirmOccurrenceResult.CeConfirmedDePendingReconciliation(fail.reason)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (removeCeDueToConcurrentCancel) {
+            runCatching { prefs.edit().remove(key).remove(atKey).commit() }
+        }
+        return deResult
     }
+
+    /**
+     * Legacy boolean wrapper over [confirmOccurrenceDetailed].
+     * Returns `true` ONLY when [ConfirmOccurrenceResult.Confirmed] (never returns `true` on
+     * Corrupt, UnsupportedSchema, DE commit failure, DE readback mismatch, or cancelled occurrence).
+     */
+    fun confirmOccurrence(
+        context: Context,
+        alarmId: Long,
+        scheduledAt: Long,
+        nowMillis: Long = System.currentTimeMillis()
+    ): Boolean = confirmOccurrenceDetailed(context, alarmId, scheduledAt, nowMillis) is ConfirmOccurrenceResult.Confirmed
 
     /**
      * Checks occurrence confirmation, performing 4-proof crash-safe migration from legacy
@@ -572,6 +680,9 @@ object WakeConfirmOccurrenceStore {
         }
 
         val matching = deRecords.firstOrNull { it.alarmId == alarmId && it.scheduledAt == scheduledAt }
+        if (matching?.cancelled == true) {
+            return ConfirmationStatus.Unconfirmed
+        }
         if (matching?.confirmed == true) {
             return ConfirmationStatus.Confirmed
         }
@@ -584,27 +695,43 @@ object WakeConfirmOccurrenceStore {
             false
         }
         if (scopedConfirmed) {
-            // Sync DE lineage if needed
-            if (matching != null && !matching.confirmed && !matching.cancelled) {
-                synchronized(DirectBootStorageLock.lock) {
-                    val st = inspectDeStorageState(context)
-                    if (st is StorageState.Valid) {
-                        val idx = st.records.indexOfFirst { it.alarmId == alarmId && it.scheduledAt == scheduledAt }
-                        if (idx >= 0 && !st.records[idx].cancelled) {
-                            val nextList = st.records.toMutableList().apply {
-                                set(idx, st.records[idx].copy(confirmed = true, stepToken = ""))
+            // Reconcile DE lineage if needed; NEVER ignore DE commit/readback failure or Corrupt/UnsupportedSchema
+            if (matching != null && !matching.confirmed) {
+                val deSyncFailure: ConfirmationStatus? = synchronized(DirectBootStorageLock.lock) {
+                    when (val st = inspectDeStorageState(context)) {
+                        is StorageState.Corrupt -> ConfirmationStatus.StorageUnverifiable(st.reason)
+                        is StorageState.UnsupportedSchema -> ConfirmationStatus.StorageUnverifiable("Unsupported schema ${st.foundVersion}")
+                        is StorageState.Absent, is StorageState.ValidEmpty ->
+                            ConfirmationStatus.StorageUnverifiable("DE lineage missing during confirmation reconciliation")
+                        is StorageState.Valid -> {
+                            val idx = st.records.indexOfFirst { it.alarmId == alarmId && it.scheduledAt == scheduledAt }
+                            if (idx < 0) {
+                                ConfirmationStatus.StorageUnverifiable("Missing DE record during confirmation reconciliation")
+                            } else if (st.records[idx].cancelled) {
+                                ConfirmationStatus.Unconfirmed
+                            } else {
+                                val nextList = st.records.toMutableList().apply {
+                                    set(idx, st.records[idx].copy(confirmed = true, stepToken = ""))
+                                }
+                                val fail = commitAndVerify(context, nextList)
+                                if (fail != null) ConfirmationStatus.StorageUnverifiable(fail.reason) else null
                             }
-                            commitAndVerify(context, nextList)
                         }
                     }
                 }
+                if (deSyncFailure != null) return deSyncFailure
             }
             // Complete interrupted cleanup if legacy key existed for this exact occurrence
             val legacyKey = legacyConfirmedKey(alarmId)
+            val legacyPresentNow = try {
+                ceReadbackBooleanSeam(prefs, legacyKey)
+            } catch (_: Exception) {
+                false
+            }
             if (matching != null &&
                 !matching.legacyConfirmedKeyPreexistedAtDismiss &&
                 !deRecords.any { it.alarmId == alarmId && it.scheduledAt != scheduledAt && it.dismissedAt >= matching.dismissedAt } &&
-                prefs.getBoolean(legacyKey, false)
+                legacyPresentNow
             ) {
                 prefs.edit().remove(legacyKey).commit()
             }
@@ -665,17 +792,29 @@ object WakeConfirmOccurrenceStore {
         if (!ceOk) return ConfirmationStatus.Unconfirmed
 
         // Step 2: Commit + readback DE lineage confirmed = true
-        val deOk = synchronized(DirectBootStorageLock.lock) {
-            val st = inspectDeStorageState(context)
-            if (st !is StorageState.Valid) return@synchronized false
-            val idx = st.records.indexOfFirst { it.alarmId == alarmId && it.scheduledAt == scheduledAt }
-            if (idx < 0 || st.records[idx].cancelled) return@synchronized false
-            val nextList = st.records.toMutableList().apply {
-                set(idx, st.records[idx].copy(confirmed = true, stepToken = ""))
+        val deStep2Status: ConfirmationStatus? = synchronized(DirectBootStorageLock.lock) {
+            when (val st = inspectDeStorageState(context)) {
+                is StorageState.Corrupt -> ConfirmationStatus.StorageUnverifiable(st.reason)
+                is StorageState.UnsupportedSchema -> ConfirmationStatus.StorageUnverifiable("Unsupported schema ${st.foundVersion}")
+                is StorageState.Absent, is StorageState.ValidEmpty ->
+                    ConfirmationStatus.StorageUnverifiable("DE lineage missing during legacy migration")
+                is StorageState.Valid -> {
+                    val idx = st.records.indexOfFirst { it.alarmId == alarmId && it.scheduledAt == scheduledAt }
+                    if (idx < 0) {
+                        ConfirmationStatus.StorageUnverifiable("Missing DE record during legacy migration")
+                    } else if (st.records[idx].cancelled) {
+                        ConfirmationStatus.Unconfirmed
+                    } else {
+                        val nextList = st.records.toMutableList().apply {
+                            set(idx, st.records[idx].copy(confirmed = true, stepToken = ""))
+                        }
+                        val fail = commitAndVerify(context, nextList)
+                        if (fail != null) ConfirmationStatus.StorageUnverifiable(fail.reason) else null
+                    }
+                }
             }
-            commitAndVerify(context, nextList) == null
         }
-        if (!deOk) return ConfirmationStatus.Unconfirmed
+        if (deStep2Status != null) return deStep2Status
 
         // Step 3: Remove legacy key ONLY AFTER both CE & DE commits verified
         prefs.edit().remove(legacyKey).commit()
@@ -831,8 +970,86 @@ object WakeConfirmOccurrenceStore {
     }
 
     /**
+     * Resolves missing/zero `scheduledAt` for legacy pre-S5-D workers ONLY when a single
+     * unambiguous occurrence can be proven via DE lineage or persisted Room Dismiss records.
+     * Fails closed on 0 candidates, >= 2 ambiguous candidates, mismatch, or corrupt DE storage.
+     */
+    suspend fun resolveLegacyMissingScheduledAt(
+        context: Context,
+        alarmId: Long,
+        workerFireId: String,
+        workerStepToken: String,
+        roomDismissedTimesFetcher: suspend (Long) -> List<Long>
+    ): LegacyOccurrenceResolution {
+        if (alarmId <= 0L) {
+            return LegacyOccurrenceResolution.Rejected("Invalid alarmId=$alarmId")
+        }
+
+        val deSnapshot: Pair<List<Record>?, String?> = synchronized(DirectBootStorageLock.lock) {
+            when (val st = inspectDeStorageState(context)) {
+                is StorageState.Absent, is StorageState.ValidEmpty -> emptyList<Record>() to null
+                is StorageState.Valid -> st.records to null
+                is StorageState.Corrupt -> null to "DE lineage corrupt: ${st.reason}"
+                is StorageState.UnsupportedSchema -> null to "Unsupported DE schema: ${st.foundVersion}"
+            }
+        }
+        deSnapshot.second?.let { return LegacyOccurrenceResolution.Rejected(it) }
+        val forAlarm = deSnapshot.first!!.filter { it.alarmId == alarmId }
+        if (forAlarm.isNotEmpty()) {
+            val active = forAlarm.filter {
+                it.parentDismissed && it.wakeConfirmEnabled && !it.confirmed && !it.cancelled
+            }
+            if (active.size != 1) {
+                return LegacyOccurrenceResolution.Rejected(
+                    "Expected 1 active DE record for alarm $alarmId, found ${active.size}"
+                )
+            }
+            val candidate = active.single()
+            if (forAlarm.any { it.scheduledAt > candidate.scheduledAt }) {
+                return LegacyOccurrenceResolution.Rejected("Active DE record superseded by newer occurrence")
+            }
+            if (workerFireId.isNotBlank() && candidate.fireId.isNotBlank() && workerFireId != candidate.fireId) {
+                return LegacyOccurrenceResolution.Rejected("Legacy worker fireId mismatch")
+            }
+            if (candidate.stepToken.isNotBlank() && workerStepToken.isNotBlank() && workerStepToken != candidate.stepToken) {
+                return LegacyOccurrenceResolution.Rejected("Legacy worker stepToken mismatch")
+            }
+            val resolvedFireId = candidate.fireId.ifBlank {
+                AlarmIncidentEvent.fireIdFor(alarmId, candidate.scheduledAt)
+            }
+            return LegacyOccurrenceResolution.Resolved(candidate.scheduledAt, resolvedFireId)
+        }
+
+        // DE lineage absent for this alarmId: pre-S5-D worker must have blank stepToken and Room dismiss proof
+        if (workerStepToken.isNotBlank()) {
+            return LegacyOccurrenceResolution.Rejected("Worker carries stepToken while DE lineage is absent")
+        }
+        val distinctTimes = try {
+            roomDismissedTimesFetcher(alarmId).filter { it > 0L }.distinct()
+        } catch (e: Exception) {
+            return LegacyOccurrenceResolution.Rejected("Room dismiss lookup failed: ${e.message}")
+        }
+        val filteredByFireId = if (workerFireId.isNotBlank()) {
+            distinctTimes.filter { ts -> AlarmIncidentEvent.fireIdFor(alarmId, ts) == workerFireId }
+        } else {
+            distinctTimes
+        }
+        if (filteredByFireId.size != 1) {
+            return LegacyOccurrenceResolution.Rejected(
+                "Cannot uniquely prove single dismissed occurrence in Room (candidates=${filteredByFireId.size})"
+            )
+        }
+        val resolvedScheduledAt = filteredByFireId.single()
+        val resolvedFireId = workerFireId.ifBlank {
+            AlarmIncidentEvent.fireIdFor(alarmId, resolvedScheduledAt)
+        }
+        return LegacyOccurrenceResolution.Resolved(resolvedScheduledAt, resolvedFireId)
+    }
+
+    /**
      * Retries WorkManager enqueue for a previously committed DE lineage record whose initial
      * enqueue failed (`enqueueConfirmed == false`), reusing its durable `stepToken`.
+     * Inspects existing WorkManager occurrence unique work BEFORE enqueueing so active jobs are reused.
      * Never calls WorkManager under [DirectBootStorageLock.lock].
      */
     fun retryPendingWakeConfirmEnqueue(
@@ -840,39 +1057,259 @@ object WakeConfirmOccurrenceStore {
         alarm: com.sysadmindoc.alarmclock.data.model.Alarm,
         scheduledAt: Long
     ): Boolean {
-        val rec = findRecord(context, alarm.id, scheduledAt) ?: return false
+        val candidate: Record? = synchronized(DirectBootStorageLock.lock) {
+            val st = inspectDeStorageState(context) as? StorageState.Valid ?: return@synchronized null
+            if (st.records.any { it.alarmId == alarm.id && it.scheduledAt > scheduledAt }) {
+                return@synchronized null
+            }
+            st.records.firstOrNull { it.alarmId == alarm.id && it.scheduledAt == scheduledAt }
+        }
+        val rec = candidate ?: return false
         if (!rec.parentDismissed || !rec.wakeConfirmEnabled || rec.confirmed || rec.cancelled || rec.enqueueConfirmed) {
             return false
         }
-        if (rec.stepToken.isBlank() || rec.highestClaimedRefire !in 0 until WakeConfirmWorker.MAX_REFIRES) {
+        if (rec.stepToken.isBlank() ||
+            rec.highestClaimedRefire !in 0 until WakeConfirmWorker.MAX_REFIRES ||
+            rec.nextAuthorizedRefire !in 1..WakeConfirmWorker.MAX_REFIRES
+        ) {
             return false
         }
 
-        val plan = com.sysadmindoc.alarmclock.service.AlarmPostDismissController.wakeConfirmationPlan(
+        val plan = AlarmPostDismissController.wakeConfirmationPlan(
             alarm = alarm,
-            fireId = rec.fireId,
+            fireId = rec.fireId.ifBlank { AlarmIncidentEvent.fireIdFor(alarm.id, rec.scheduledAt) },
             scheduledAt = rec.scheduledAt,
             refireCount = rec.highestClaimedRefire,
             stepToken = rec.stepToken
         )
-        val request = androidx.work.OneTimeWorkRequestBuilder<WakeConfirmWorker>()
-            .setInitialDelay(plan.delayMinutes, java.util.concurrent.TimeUnit.MINUTES)
-            .setInputData(plan.inputData)
-            .addTag(plan.tag)
-            .build()
-        val enqueued = try {
-            androidx.work.WorkManager.getInstance(context.applicationContext)
-                .enqueueUniqueWork(
-                    plan.uniqueWorkName,
-                    androidx.work.ExistingWorkPolicy.REPLACE,
-                    request
-                )
-            true
+        val wm = WorkManager.getInstance(context.applicationContext)
+        val hasUnfinished = try {
+            wm.getWorkInfosForUniqueWork(plan.uniqueWorkName).get().any { !it.state.isFinished }
         } catch (_: Exception) {
             false
         }
-        if (!enqueued) return false
+        if (!hasUnfinished) {
+            val request = OneTimeWorkRequestBuilder<WakeConfirmWorker>()
+                .setInitialDelay(plan.delayMinutes, TimeUnit.MINUTES)
+                .setInputData(plan.inputData)
+                .addTag(plan.tag)
+                .build()
+            val enqueued = try {
+                wm.enqueueUniqueWork(
+                    plan.uniqueWorkName,
+                    ExistingWorkPolicy.KEEP,
+                    request
+                )
+                true
+            } catch (_: Exception) {
+                false
+            }
+            if (!enqueued) return false
+        }
         return markEnqueueConfirmed(context, rec.alarmId, rec.scheduledAt, rec.stepToken) is CommitResult.Committed
+    }
+
+    /**
+     * Bounded recovery pass for pending WakeConfirm enqueues (`enqueueConfirmed == false`).
+     * Invoked from existing recovery entrypoints ([BootRescheduleWorker], [AlarmHealthWorker],
+     * [com.sysadmindoc.alarmclock.AlarmClockApp]) with explicit [RecoveryTrigger] distinction.
+     *
+     * Contracts:
+     * - Defers cleanly when CE storage is still locked ([UserManagerCompat.isUserUnlocked] == false).
+     * - Verifies Room Dismiss proof and CE/DE confirmation state strictly OUTSIDE [DirectBootStorageLock.lock].
+     * - Never holds DE or Room locks while inspecting/calling WorkManager.
+     * - Reuses existing unfinished occurrence unique work without replacing or duplicating.
+     * - Preserves pending state on enqueue failure (never marks confirmed).
+     */
+    suspend fun recoverPendingEnqueues(
+        context: Context,
+        alarmRepository: AlarmRepository,
+        trigger: RecoveryTrigger,
+        alarmIncidentRepository: AlarmIncidentRepository? = null
+    ): RecoveryResult {
+        if (!UserManagerCompat.isUserUnlocked(context)) {
+            return RecoveryResult(trigger = trigger)
+        }
+
+        val pending = getPendingRetryableEnqueues(context)
+        if (pending.isEmpty()) {
+            return RecoveryResult(trigger = trigger)
+        }
+
+        var enqueued = 0
+        var reused = 0
+        var skipped = 0
+        var failed = 0
+
+        for (rec in pending) {
+            val alarm = try {
+                alarmRepository.getById(rec.alarmId)
+            } catch (_: Exception) {
+                null
+            }
+            if (alarm == null || !alarm.wakeConfirmEnabled || (!alarm.isEnabled && alarm.isRecurringSchedule)) {
+                skipped++
+                continue
+            }
+
+            val roomDismissChecker: suspend () -> Boolean = {
+                val db = alarmRepository.database
+                val eventCount = db.alarmEventDao().countDismissedByOccurrence(rec.alarmId, rec.scheduledAt)
+                val incidentCount = db.alarmIncidentEventDao().countDismissedIncidentsByOccurrence(rec.alarmId, rec.scheduledAt)
+                eventCount > 0 || incidentCount > 0
+            }
+
+            val hasRoomDismiss = try {
+                roomDismissChecker()
+            } catch (_: Exception) {
+                false
+            }
+            if (!hasRoomDismiss) {
+                skipped++
+                continue
+            }
+
+            when (
+                checkAndMigrateConfirmation(
+                    context = context,
+                    alarmId = rec.alarmId,
+                    scheduledAt = rec.scheduledAt,
+                    roomDismissChecker = roomDismissChecker
+                )
+            ) {
+                is ConfirmationStatus.Confirmed -> {
+                    skipped++
+                    continue
+                }
+                is ConfirmationStatus.StorageUnverifiable -> {
+                    failed++
+                    continue
+                }
+                is ConfirmationStatus.Unconfirmed -> Unit
+            }
+
+            // Re-verify fresh DE record is still non-stale, non-cancelled, unconfirmed, and pending
+            val freshValid: Record? = synchronized(DirectBootStorageLock.lock) {
+                val st = inspectDeStorageState(context) as? StorageState.Valid ?: return@synchronized null
+                if (st.records.any { it.alarmId == rec.alarmId && it.scheduledAt > rec.scheduledAt }) {
+                    return@synchronized null
+                }
+                st.records.firstOrNull { it.alarmId == rec.alarmId && it.scheduledAt == rec.scheduledAt }
+                    ?.takeIf {
+                        it.parentDismissed &&
+                            it.wakeConfirmEnabled &&
+                            !it.confirmed &&
+                            !it.cancelled &&
+                            !it.enqueueConfirmed &&
+                            it.stepToken == rec.stepToken &&
+                            it.stepToken.isNotBlank() &&
+                            it.highestClaimedRefire in 0 until WakeConfirmWorker.MAX_REFIRES &&
+                            it.nextAuthorizedRefire in 1..WakeConfirmWorker.MAX_REFIRES
+                    }
+            }
+            if (freshValid == null) {
+                skipped++
+                continue
+            }
+
+            val fireId = freshValid.fireId.ifBlank {
+                AlarmIncidentEvent.fireIdFor(alarm.id, freshValid.scheduledAt)
+            }
+            val plan = AlarmPostDismissController.wakeConfirmationPlan(
+                alarm = alarm,
+                fireId = fireId,
+                scheduledAt = freshValid.scheduledAt,
+                refireCount = freshValid.highestClaimedRefire,
+                stepToken = freshValid.stepToken
+            )
+
+            // WorkManager inspection & enqueue strictly outside DE and Room locks
+            val wm = try {
+                WorkManager.getInstance(context.applicationContext)
+            } catch (_: Exception) {
+                failed++
+                continue
+            }
+
+            val existingInfos = try {
+                wm.getWorkInfosForUniqueWork(plan.uniqueWorkName).get()
+            } catch (_: Exception) {
+                null
+            }
+            if (existingInfos == null) {
+                failed++
+                continue
+            }
+
+            val hasUnfinished = existingInfos.any { !it.state.isFinished }
+            if (hasUnfinished) {
+                val markRes = markEnqueueConfirmed(context, freshValid.alarmId, freshValid.scheduledAt, freshValid.stepToken)
+                if (markRes is CommitResult.Committed) {
+                    reused++
+                    runCatching {
+                        alarmIncidentRepository?.record(
+                            alarmId = freshValid.alarmId,
+                            fireId = fireId,
+                            scheduledAt = freshValid.scheduledAt,
+                            type = AlarmIncidentEvent.TYPE_WAKE_CONFIRM,
+                            status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                            reasonCode = "WAKE_CONFIRM_RECOVERY_REUSED_${trigger.name}",
+                            source = "WakeConfirmRecovery"
+                        )
+                    }
+                } else {
+                    failed++
+                }
+                continue
+            }
+
+            val request = OneTimeWorkRequestBuilder<WakeConfirmWorker>()
+                .setInitialDelay(plan.delayMinutes, TimeUnit.MINUTES)
+                .setInputData(plan.inputData)
+                .addTag(plan.tag)
+                .build()
+            val enqueuedOk = try {
+                wm.enqueueUniqueWork(
+                    plan.uniqueWorkName,
+                    ExistingWorkPolicy.KEEP,
+                    request
+                )
+                true
+            } catch (_: Exception) {
+                false
+            }
+            if (!enqueuedOk) {
+                failed++
+                continue
+            }
+
+            val markRes = markEnqueueConfirmed(context, freshValid.alarmId, freshValid.scheduledAt, freshValid.stepToken)
+            if (markRes is CommitResult.Committed) {
+                enqueued++
+                runCatching {
+                    alarmIncidentRepository?.record(
+                        alarmId = freshValid.alarmId,
+                        fireId = fireId,
+                        scheduledAt = freshValid.scheduledAt,
+                        type = AlarmIncidentEvent.TYPE_WAKE_CONFIRM,
+                        status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                        reasonCode = "WAKE_CONFIRM_RECOVERY_ENQUEUED_${trigger.name}",
+                        source = "WakeConfirmRecovery"
+                    )
+                }
+            } else {
+                failed++
+            }
+        }
+
+        return RecoveryResult(
+            trigger = trigger,
+            inspectedCount = pending.size,
+            enqueuedCount = enqueued,
+            reusedCount = reused,
+            skippedCount = skipped,
+            failedCount = failed
+        )
     }
 
     private fun commitAndVerify(context: Context, records: List<Record>): CommitResult.Failed? {

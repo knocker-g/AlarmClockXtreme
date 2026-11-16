@@ -91,18 +91,27 @@ class WakeConfirmActivity : ComponentActivity() {
          * via synchronous commit + readback and synchronizes DE WakeConfirm lineage.
          * Never writes the un-scoped legacy `confirmed_$alarmId` key.
          */
-        internal fun handleConfirmAwake(
+        internal fun handleConfirmAwakeDetailed(
             context: Context,
             alarmId: Long,
             scheduledAt: Long
-        ): Boolean {
-            if (alarmId <= 0L || scheduledAt <= 0L) return false
-            return WakeConfirmOccurrenceStore.confirmOccurrence(
+        ): WakeConfirmOccurrenceStore.ConfirmOccurrenceResult {
+            if (alarmId <= 0L || scheduledAt <= 0L) {
+                return WakeConfirmOccurrenceStore.ConfirmOccurrenceResult.Rejected("Invalid occurrence key")
+            }
+            return WakeConfirmOccurrenceStore.confirmOccurrenceDetailed(
                 context = context,
                 alarmId = alarmId,
                 scheduledAt = scheduledAt
             )
         }
+
+        internal fun handleConfirmAwake(
+            context: Context,
+            alarmId: Long,
+            scheduledAt: Long
+        ): Boolean = handleConfirmAwakeDetailed(context, alarmId, scheduledAt) is
+            WakeConfirmOccurrenceStore.ConfirmOccurrenceResult.Confirmed
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -150,17 +159,25 @@ class WakeConfirmActivity : ComponentActivity() {
                     deadlineMillis = deadlineMillis,
                     remainingRefires = remainingRefires,
                     onConfirmAwake = {
-                        val confirmed = handleConfirmAwake(
+                        val confirmRes = handleConfirmAwakeDetailed(
                             context = this,
                             alarmId = alarmId,
                             scheduledAt = scheduledAt
                         )
+                        val (status, reason) = when (confirmRes) {
+                            is WakeConfirmOccurrenceStore.ConfirmOccurrenceResult.Confirmed ->
+                                AlarmIncidentEvent.STATUS_SUCCEEDED to "WAKE_CONFIRM_CONFIRMED_IN_ACTIVITY"
+                            is WakeConfirmOccurrenceStore.ConfirmOccurrenceResult.CeConfirmedDePendingReconciliation ->
+                                AlarmIncidentEvent.STATUS_SUCCEEDED to "WAKE_CONFIRM_CE_CONFIRMED_DE_PENDING_RECONCILE"
+                            is WakeConfirmOccurrenceStore.ConfirmOccurrenceResult.Rejected ->
+                                AlarmIncidentEvent.STATUS_FAILED to "WAKE_CONFIRM_CONFIRM_REJECTED"
+                        }
                         recordIncidentAsync(
                             alarmId = alarmId,
                             fireId = fireId,
                             scheduledAt = scheduledAt,
-                            status = if (confirmed) AlarmIncidentEvent.STATUS_SUCCEEDED else AlarmIncidentEvent.STATUS_FAILED,
-                            reasonCode = if (confirmed) "WAKE_CONFIRM_CONFIRMED_IN_ACTIVITY" else "WAKE_CONFIRM_CONFIRM_REJECTED"
+                            status = status,
+                            reasonCode = reason
                         )
                         finish()
                     },

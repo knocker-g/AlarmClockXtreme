@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import androidx.annotation.VisibleForTesting
 import androidx.core.app.NotificationCompat
 import androidx.hilt.work.HiltWorker
@@ -83,6 +84,16 @@ class WakeConfirmWorker @AssistedInject constructor(
             return (NOTIF_ID_BASE + offset).toInt()
         }
 
+        internal fun notificationTag(alarmId: Long, scheduledAt: Long): String? {
+            if (scheduledAt <= 0L) return null
+            return buildString {
+                append("wake_confirm_")
+                append(alarmId)
+                append('_')
+                append(scheduledAt)
+            }
+        }
+
         // Time the user has to tap "I'm awake" before the alarm re-fires.
         const val CONFIRM_WAIT_SECONDS = 60
         private const val CONFIRM_WAIT_MS = CONFIRM_WAIT_SECONDS * 1_000L
@@ -92,23 +103,48 @@ class WakeConfirmWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result {
         val alarmId = inputData.getLong(KEY_ALARM_ID, -1L)
-        val scheduledAt = inputData.getLong(KEY_SCHEDULED_AT, 0L)
-        if (alarmId <= 0L || scheduledAt <= 0L) {
-            if (alarmId > 0L) {
-                recordIncident(
-                    alarmId = alarmId,
-                    fireId = AlarmIncidentEvent.fireIdFor(alarmId, scheduledAt),
-                    scheduledAt = scheduledAt.coerceAtLeast(0L),
-                    status = AlarmIncidentEvent.STATUS_SKIPPED,
-                    reasonCode = "WAKE_CONFIRM_INVALID_OCCURRENCE"
-                )
-            }
+        if (alarmId <= 0L) {
             return Result.success()
         }
 
-        val fireId = inputData.getString(KEY_ALARM_FIRE_ID)
-            ?.takeIf { it.isNotBlank() }
-            ?: AlarmIncidentEvent.fireIdFor(alarmId, scheduledAt)
+        val rawScheduledAt = inputData.getLong(KEY_SCHEDULED_AT, 0L)
+        val rawFireId = inputData.getString(KEY_ALARM_FIRE_ID).orEmpty().trim()
+        val stepToken = inputData.getString(KEY_STEP_TOKEN).orEmpty()
+        val wasLegacyMissingScheduledAt = rawScheduledAt <= 0L
+
+        val scheduledAt: Long
+        val fireId: String
+        if (wasLegacyMissingScheduledAt) {
+            val db = alarmRepository.database
+            val resolution = WakeConfirmOccurrenceStore.resolveLegacyMissingScheduledAt(
+                context = context,
+                alarmId = alarmId,
+                workerFireId = rawFireId,
+                workerStepToken = stepToken,
+                roomDismissedTimesFetcher = { aid ->
+                    (db.alarmEventDao().findRecentDismissedScheduledTimes(aid) +
+                        db.alarmIncidentEventDao().findRecentDismissedScheduledTimes(aid))
+                        .filter { it > 0L }
+                        .distinct()
+                }
+            )
+            if (resolution !is WakeConfirmOccurrenceStore.LegacyOccurrenceResolution.Resolved) {
+                recordIncident(
+                    alarmId = alarmId,
+                    fireId = rawFireId.ifBlank { AlarmIncidentEvent.fireIdFor(alarmId, 0L) },
+                    scheduledAt = 0L,
+                    status = AlarmIncidentEvent.STATUS_SKIPPED,
+                    reasonCode = "WAKE_CONFIRM_INVALID_OCCURRENCE"
+                )
+                return Result.success()
+            }
+            scheduledAt = resolution.scheduledAt
+            fireId = resolution.fireId
+        } else {
+            scheduledAt = rawScheduledAt
+            fireId = rawFireId.takeIf { it.isNotBlank() }
+                ?: AlarmIncidentEvent.fireIdFor(alarmId, scheduledAt)
+        }
 
         val refireCount = inputData.getInt(KEY_REFIRE_COUNT, 0)
         if (refireCount !in 0..MAX_REFIRES) {
@@ -121,8 +157,6 @@ class WakeConfirmWorker @AssistedInject constructor(
             )
             return Result.success()
         }
-
-        val stepToken = inputData.getString(KEY_STEP_TOKEN).orEmpty()
 
         val alarm = alarmRepository.getById(alarmId) ?: run {
             recordIncident(
@@ -245,7 +279,7 @@ class WakeConfirmWorker @AssistedInject constructor(
         // Poll for confirmation up to the shared deadline.
         while (System.currentTimeMillis() < deadline) {
             if (isStopped) {
-                cancelPrompt(alarmId, scheduledAt)
+                cancelPrompt(alarmId, scheduledAt, wasLegacyMissingScheduledAt)
                 recordIncident(
                     alarmId = alarmId,
                     fireId = fireId,
@@ -264,7 +298,7 @@ class WakeConfirmWorker @AssistedInject constructor(
                 )
             ) {
                 is WakeConfirmOccurrenceStore.ConfirmationStatus.Confirmed -> {
-                    cancelPrompt(alarmId, scheduledAt)
+                    cancelPrompt(alarmId, scheduledAt, wasLegacyMissingScheduledAt)
                     recordIncident(
                         alarmId = alarmId,
                         fireId = fireId,
@@ -275,7 +309,7 @@ class WakeConfirmWorker @AssistedInject constructor(
                     return Result.success()
                 }
                 is WakeConfirmOccurrenceStore.ConfirmationStatus.StorageUnverifiable -> {
-                    cancelPrompt(alarmId, scheduledAt)
+                    cancelPrompt(alarmId, scheduledAt, wasLegacyMissingScheduledAt)
                     recordIncident(
                         alarmId = alarmId,
                         fireId = fireId,
@@ -290,7 +324,7 @@ class WakeConfirmWorker @AssistedInject constructor(
 
             val latestRec = WakeConfirmOccurrenceStore.findRecord(context, alarmId, scheduledAt)
             if (latestRec?.cancelled == true) {
-                cancelPrompt(alarmId, scheduledAt)
+                cancelPrompt(alarmId, scheduledAt, wasLegacyMissingScheduledAt)
                 recordIncident(
                     alarmId = alarmId,
                     fireId = fireId,
@@ -305,28 +339,42 @@ class WakeConfirmWorker @AssistedInject constructor(
         }
 
         // Final confirmation check right on the deadline before timing out
-        if (
+        when (
             WakeConfirmOccurrenceStore.checkAndMigrateConfirmation(
                 context = context,
                 alarmId = alarmId,
                 scheduledAt = scheduledAt,
                 roomDismissChecker = roomDismissChecker
-            ) is WakeConfirmOccurrenceStore.ConfirmationStatus.Confirmed
-        ) {
-            cancelPrompt(alarmId, scheduledAt)
-            recordIncident(
-                alarmId = alarmId,
-                fireId = fireId,
-                scheduledAt = scheduledAt,
-                status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                reasonCode = "WAKE_CONFIRM_CONFIRMED"
             )
-            return Result.success()
+        ) {
+            is WakeConfirmOccurrenceStore.ConfirmationStatus.Confirmed -> {
+                cancelPrompt(alarmId, scheduledAt, wasLegacyMissingScheduledAt)
+                recordIncident(
+                    alarmId = alarmId,
+                    fireId = fireId,
+                    scheduledAt = scheduledAt,
+                    status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                    reasonCode = "WAKE_CONFIRM_CONFIRMED"
+                )
+                return Result.success()
+            }
+            is WakeConfirmOccurrenceStore.ConfirmationStatus.StorageUnverifiable -> {
+                cancelPrompt(alarmId, scheduledAt, wasLegacyMissingScheduledAt)
+                recordIncident(
+                    alarmId = alarmId,
+                    fireId = fireId,
+                    scheduledAt = scheduledAt,
+                    status = AlarmIncidentEvent.STATUS_FAILED,
+                    reasonCode = "WAKE_CONFIRM_STORAGE_UNVERIFIABLE"
+                )
+                return Result.failure()
+            }
+            is WakeConfirmOccurrenceStore.ConfirmationStatus.Unconfirmed -> Unit
         }
 
         // No confirmation in time: clear the prompt and re-fire the alarm
         // unless the repeat cap has been reached.
-        cancelPrompt(alarmId, scheduledAt)
+        cancelPrompt(alarmId, scheduledAt, wasLegacyMissingScheduledAt)
         recordIncident(
             alarmId = alarmId,
             fireId = fireId,
@@ -471,8 +519,10 @@ class WakeConfirmWorker @AssistedInject constructor(
     ): Boolean {
         val nm = context.getSystemService(NotificationManager::class.java) ?: return false
         val notifId = notificationId(alarmId, scheduledAt)
+        val notifTag = notificationTag(alarmId, scheduledAt)
         val activityIntent = Intent(context, WakeConfirmActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            data = Uri.parse("acx://wake-confirm/$alarmId/$scheduledAt")
             putExtra(WakeConfirmActivity.EXTRA_ALARM_ID, alarmId)
             putExtra(WakeConfirmActivity.EXTRA_ALARM_FIRE_ID, fireId)
             putExtra(WakeConfirmActivity.EXTRA_SCHEDULED_AT, scheduledAt)
@@ -507,13 +557,16 @@ class WakeConfirmWorker @AssistedInject constructor(
             .setOngoing(true)
             .build()
 
-        nm.notify(notifId, notification)
+        nm.notify(notifTag, notifId, notification)
         return true
     }
 
-    private fun cancelPrompt(alarmId: Long, scheduledAt: Long) {
-        context.getSystemService(NotificationManager::class.java)
-            ?.cancel(notificationId(alarmId, scheduledAt))
+    private fun cancelPrompt(alarmId: Long, scheduledAt: Long, cancelLegacyUntagged: Boolean = false) {
+        val nm = context.getSystemService(NotificationManager::class.java) ?: return
+        nm.cancel(notificationTag(alarmId, scheduledAt), notificationId(alarmId, scheduledAt))
+        if (cancelLegacyUntagged) {
+            nm.cancel(notificationId(alarmId, 0L))
+        }
     }
 
     private suspend fun recordIncident(

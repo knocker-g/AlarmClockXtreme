@@ -26,6 +26,7 @@ import com.sysadmindoc.alarmclock.wear.WearNextAlarmBridge
 import com.sysadmindoc.alarmclock.worker.AlarmHealthWorker
 import com.sysadmindoc.alarmclock.worker.CalendarAutoAlarmWorker
 import com.sysadmindoc.alarmclock.worker.HolidaySyncWorker
+import com.sysadmindoc.alarmclock.worker.WakeConfirmOccurrenceStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -88,13 +89,16 @@ class AlarmClockApp : Application(), Configuration.Provider {
             return
         }
 
-        initializeUnlockedApp()
+        initializeUnlockedApp(WakeConfirmOccurrenceStore.RecoveryTrigger.PROCESS_DEATH)
     }
 
     var databaseIncompatible = false
         private set
 
-    private fun initializeUnlockedApp() {
+    private fun initializeUnlockedApp(
+        recoveryTrigger: WakeConfirmOccurrenceStore.RecoveryTrigger =
+            WakeConfirmOccurrenceStore.RecoveryTrigger.PROCESS_DEATH
+    ) {
         if (unlockedStartupComplete) return
 
         val compatibilityStatus = DatabaseCompatibilityGate.preflight(this)
@@ -154,6 +158,23 @@ class AlarmClockApp : Application(), Configuration.Provider {
                 CalendarAutoAlarmWorker.cancelPeriodic(this@AlarmClockApp)
             }
             CalendarAutoAlarmWorker.enqueueRefresh(this@AlarmClockApp, "app_start")
+        }
+
+        if (WakeConfirmOccurrenceStore.getPendingRetryableEnqueues(this).isNotEmpty()) {
+            appScope.launch {
+                try {
+                    WakeConfirmOccurrenceStore.recoverPendingEnqueues(
+                        context = this@AlarmClockApp,
+                        alarmRepository = entryPoint.alarmRepository(),
+                        trigger = recoveryTrigger,
+                        alarmIncidentRepository = entryPoint.alarmIncidentRepository()
+                    )
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w("AlarmClockApp", "Pending WakeConfirm recovery failed during $recoveryTrigger", e)
+                }
+            }
         }
 
         // Start persistent next-alarm notification observer
@@ -243,7 +264,7 @@ class AlarmClockApp : Application(), Configuration.Provider {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 if (intent.action == Intent.ACTION_USER_UNLOCKED) {
-                    initializeUnlockedApp()
+                    initializeUnlockedApp(WakeConfirmOccurrenceStore.RecoveryTrigger.UNLOCK)
                 }
             }
         }
