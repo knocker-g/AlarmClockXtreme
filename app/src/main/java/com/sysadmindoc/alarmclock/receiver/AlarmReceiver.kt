@@ -7,6 +7,7 @@ import android.util.Log
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.service.AlarmFireDismissContract
+import com.sysadmindoc.alarmclock.service.AlarmService
 import dagger.hilt.android.EntryPointAccessors
 import kotlinx.coroutines.launch
 
@@ -15,6 +16,12 @@ internal var testAlarmRepository: com.sysadmindoc.alarmclock.data.repository.Ala
 
 @org.jetbrains.annotations.VisibleForTesting
 internal var testIssuedOccurrenceDao: com.sysadmindoc.alarmclock.data.local.IssuedOccurrenceDao? = null
+
+@org.jetbrains.annotations.VisibleForTesting
+internal var outputAuthorityGateSeam: com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate? = null
+
+@org.jetbrains.annotations.VisibleForTesting
+internal var roomReceiptCheckerSeam: ((Long, Long) -> Boolean)? = null
 
 /**
  * Receives the alarm broadcast from AlarmManager and starts the foreground
@@ -45,6 +52,37 @@ class AlarmReceiver : BroadcastReceiver() {
 
         val fireId = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID)
             ?: AlarmIncidentEvent.fireIdFor(alarmId, scheduledAt)
+
+        val gate = outputAuthorityGateSeam ?: com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate.getInstance(context)
+        var claimNonce: String? = null
+        val occKey = if (gate.isEnabled) {
+            if (alarmId <= 0L || scheduledAt <= 0L) {
+                Log.w("AlarmReceiver", "Authority reservation rejected: invalid occurrence identity (alarmId=$alarmId, scheduledAt=$scheduledAt)")
+                return
+            }
+            val key = com.sysadmindoc.alarmclock.directboot.OutputOccurrenceKey(alarmId, scheduledAt, 0)
+            val res = gate.reserveForServiceStart(context, key, com.sysadmindoc.alarmclock.directboot.LegacyClaimSource.ALARM_RECEIVER)
+            if (res !is com.sysadmindoc.alarmclock.directboot.outputauthority.OutputAuthorizationResult.Authorized) {
+                Log.w("AlarmReceiver", "Authority reservation rejected for alarm $alarmId @ $scheduledAt: $res")
+                recordAlarmIncidentsAsync(context, listOf(
+                    ReceiverAlarmIncident(
+                        alarmId = alarmId,
+                        fireId = fireId,
+                        scheduledAt = scheduledAt,
+                        type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                        status = AlarmIncidentEvent.STATUS_FAILED,
+                        reasonCode = "AUTHORITY_RESERVATION_REJECTED_${res.javaClass.simpleName}",
+                        source = "AlarmReceiver"
+                    )
+                ))
+                return
+            }
+            claimNonce = res.activeNonce
+            key
+        } else {
+            null
+        }
+
         val incidents = mutableListOf(
             ReceiverAlarmIncident(
                 alarmId = alarmId,
@@ -57,7 +95,11 @@ class AlarmReceiver : BroadcastReceiver() {
             )
         )
 
-        val serviceIntent = AlarmFireDismissContract.startServiceIntent(context, alarmId, scheduledAt, fireId)
+        val serviceIntent = AlarmFireDismissContract.startServiceIntent(context, alarmId, scheduledAt, fireId).apply {
+            if (claimNonce != null) {
+                putExtra(AlarmService.EXTRA_CLAIM_NONCE, claimNonce)
+            }
+        }
         val deliveryWakeLock = AlarmDeliveryWakeLock.acquire(context)
         var serviceStartSucceeded = false
 
@@ -145,17 +187,33 @@ class AlarmReceiver : BroadcastReceiver() {
 
                         if (leased) {
                             val hideLabel = entryPoint.preferencesManager().shouldHideLabelsOnPublicSurfaces()
+                            val roomChecker = roomReceiptCheckerSeam ?: try {
+                                val dao = alarmRepo.database.directBootOccurrenceReceiptDao()
+                                val checker: (Long, Long) -> Boolean = { aId, sAt ->
+                                    dao.findByAlarmId(aId).any { it.triggerTime == sAt }
+                                }
+                                checker
+                            } catch (_: Throwable) { null }
+
                             val fallbackPosted = try {
                                 com.sysadmindoc.alarmclock.service.AlarmFullScreenFallback.post(
                                     context = context,
                                     alarmId = alarmId,
                                     scheduledAt = scheduledAt,
                                     fireId = fireId,
-                                    hideLabel = hideLabel
+                                    hideLabel = hideLabel,
+                                    claimNonce = claimNonce,
+                                    refireCount = 0,
+                                    roomReceiptChecker = roomChecker,
+                                    authorityGate = if (gate.isEnabled) gate else null
                                 )
                             } catch (e: Exception) {
                                 Log.e("AlarmReceiver", "AlarmFullScreenFallback.post threw exception for alarm $alarmId", e)
                                 false
+                            }
+
+                            if (!fallbackPosted && occKey != null && claimNonce != null) {
+                                gate.abortClaim(context, occKey, claimNonce, com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
                             }
 
                             if (fallbackPosted) {
@@ -203,9 +261,15 @@ class AlarmReceiver : BroadcastReceiver() {
                             }
                         } else {
                             Log.w("AlarmReceiver", "Skipping fallback for alarm $alarmId: fallback lease claim rejected (token '$issueToken')")
+                            if (occKey != null && claimNonce != null) {
+                                gate.abortClaim(context, occKey, claimNonce, com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+                            }
                         }
                     } else {
                         Log.w("AlarmReceiver", "Skipping fallback for alarm $alarmId: stale, disabled or duplicate occurrence (token '$issueToken')")
+                        if (occKey != null && claimNonce != null) {
+                            gate.abortClaim(context, occKey, claimNonce, com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+                        }
                     }
 
                     // Record all incidents directly using suspend repository API before pending.finish()

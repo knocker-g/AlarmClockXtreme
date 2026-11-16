@@ -153,6 +153,12 @@ object MissedAlarmReplayPolicy {
         }
     }
 
+    @androidx.annotation.VisibleForTesting
+    suspend fun resetForTesting() = claimMutex.withLock {
+        activeClaimToken = null
+        activeClaimExpiresAt = 0L
+    }
+
     enum class Decision(val shouldReplay: Boolean, val shouldClearState: Boolean) {
         REPLAY(shouldReplay = true, shouldClearState = false),
         DROP_DISABLED(shouldReplay = false, shouldClearState = true),
