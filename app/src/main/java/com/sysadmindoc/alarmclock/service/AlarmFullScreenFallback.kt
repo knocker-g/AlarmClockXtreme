@@ -26,6 +26,13 @@ import com.sysadmindoc.alarmclock.data.model.Alarm
 object AlarmFullScreenFallback {
     private const val TAG = "AlarmFullScreenFallback"
 
+    private val postedNonces = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    @androidx.annotation.VisibleForTesting
+    fun clearForTesting() {
+        postedNonces.clear()
+    }
+
     /**
      * Posts the fallback for [alarm]. Returns false when notifications are not
      * permitted or the post itself failed, so the caller can record that too.
@@ -57,13 +64,49 @@ object AlarmFullScreenFallback {
         scheduledAt: Long,
         fireId: String,
         hideLabel: Boolean,
-        label: String = ""
+        label: String = "",
+        claimNonce: String? = null,
+        refireCount: Int = 0,
+        roomReceiptChecker: ((Long, Long) -> Boolean)? = null,
+        authorityGate: com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate? = null
     ): Boolean {
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) return false
+
+        val gate = authorityGate ?: com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate.getInstance(context)
+        val activeNonce: String?
+        val key = if (gate.isEnabled) {
+            if (claimNonce.isNullOrBlank()) {
+                Log.w(TAG, "Fallback rejected: claimNonce is null or blank when gate is enabled")
+                return false
+            }
+            if (postedNonces.contains(claimNonce)) {
+                Log.w(TAG, "Fallback rejected: double-post for claimNonce=$claimNonce")
+                return false
+            }
+            val occKey = com.sysadmindoc.alarmclock.directboot.OutputOccurrenceKey(alarmId, scheduledAt, refireCount)
+            val auth = gate.claimOutput(
+                context = context,
+                key = occKey,
+                incomingNonce = claimNonce,
+                sink = com.sysadmindoc.alarmclock.directboot.outputauthority.OutputSinkType.FULLSCREEN_FALLBACK_1001,
+                directBootModeOnly = false,
+                roomReceiptChecker = roomReceiptChecker
+            )
+            if (auth !is com.sysadmindoc.alarmclock.directboot.outputauthority.OutputAuthorizationResult.Authorized) {
+                Log.w(TAG, "Fallback rejected by authority gate: $auth")
+                return false
+            }
+            postedNonces.add(claimNonce)
+            activeNonce = auth.activeNonce
+            occKey
+        } else {
+            activeNonce = null
+            null
+        }
 
         return try {
             val firingIntent = AlarmFireDismissContract.firingActivityIntent(
@@ -103,11 +146,29 @@ object AlarmFullScreenFallback {
             } else {
                 builder.setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             }
+            if (key != null && activeNonce != null) {
+                val obs = gate.observePhysicalOutput(
+                    context = context,
+                    key = key,
+                    activeNonce = activeNonce,
+                    sink = com.sysadmindoc.alarmclock.directboot.outputauthority.OutputSinkType.FULLSCREEN_FALLBACK_1001,
+                    roomReceiptChecker = roomReceiptChecker
+                )
+                if (obs !is com.sysadmindoc.alarmclock.directboot.outputauthority.OutputAuthorizationResult.Authorized) {
+                    Log.w(TAG, "Fallback observePhysicalOutput failed: $obs")
+                    if (claimNonce != null) postedNonces.remove(claimNonce)
+                    return false
+                }
+            }
             NotificationManagerCompat.from(context)
                 .notify(AlarmService.NOTIFICATION_ID, builder.build())
             true
         } catch (e: Exception) {
             Log.e(TAG, "Full-screen fallback failed for $alarmId", e)
+            if (key != null && activeNonce != null) {
+                gate.arbiter.releaseIfMatches(key, activeNonce)
+                if (claimNonce != null) postedNonces.remove(claimNonce)
+            }
             false
         }
     }

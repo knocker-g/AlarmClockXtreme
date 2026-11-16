@@ -67,10 +67,10 @@ class OutputResourceArbiter {
             val current = activeHandle
             if (current != null) {
                 if (current.key == key) {
-                    return if (current.activeNonce == activeNonce) {
+                    return if (current.activeNonce == activeNonce && current.sink == sink) {
                         true to null // Idempotent reentrancy
                     } else {
-                        false to null // Stale nonce for same occurrence
+                        false to null // Stale nonce or cross-sink conflict for same occurrence
                     }
                 }
                 // Preemption required
