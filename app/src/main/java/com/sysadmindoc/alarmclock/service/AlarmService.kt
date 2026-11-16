@@ -3741,12 +3741,16 @@ class AlarmService : Service() {
             )
             return
         }
+        val verifiedWorkRequestId = (enqueueResult as? WakeConfirmOccurrenceStore.EnqueueVerificationResult.Enqueued)
+            ?.workRequestId
+            .orEmpty()
         val confirmResult = withContext(Dispatchers.IO) {
             WakeConfirmOccurrenceStore.markEnqueueConfirmed(
                 context = this@AlarmService,
                 alarmId = alarm.id,
                 scheduledAt = scheduledAt,
-                stepToken = stepToken
+                stepToken = stepToken,
+                workRequestId = verifiedWorkRequestId
             )
         }
         if (confirmResult !is WakeConfirmOccurrenceStore.CommitResult.Committed) {

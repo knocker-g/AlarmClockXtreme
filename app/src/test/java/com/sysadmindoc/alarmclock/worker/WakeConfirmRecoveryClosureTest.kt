@@ -249,7 +249,7 @@ class WakeConfirmRecoveryClosureTest {
 
     @Test
     fun `02 crash after enqueue before markEnqueueConfirmed reuses existing WorkManager work idempotently`() = runBlocking {
-        WakeConfirmOccurrenceStore.commitDismissLineage(
+        val commitRes = WakeConfirmOccurrenceStore.commitDismissLineage(
             context = context,
             alarmId = 42L,
             scheduledAt = trig1,
@@ -257,7 +257,7 @@ class WakeConfirmRecoveryClosureTest {
             refireCount = 0,
             wakeConfirmEnabled = true,
             isRecurringSchedule = true
-        )
+        ) as WakeConfirmOccurrenceStore.CommitResult.Committed
         coEvery { alarmEventDao.countDismissedByOccurrence(42L, trig1) } returns 1
 
         val uniqueName = OwnerWorkIdentity.occurrenceUniqueName(42L, trig1, SupportingWorkType.WAKE_CONFIRM)
@@ -265,6 +265,9 @@ class WakeConfirmRecoveryClosureTest {
         val preReq = OneTimeWorkRequestBuilder<WakeConfirmWorker>()
             .setInitialDelay(120, TimeUnit.SECONDS)
             .addTag("wake_confirm_42")
+            .addTag(WakeConfirmOccurrenceStore.occurrenceTag(42L, trig1))
+            .addTag(WakeConfirmOccurrenceStore.refireStepTag(0))
+            .addTag(WakeConfirmOccurrenceStore.stepTokenTag(commitRes.record.stepToken))
             .build()
         wm.enqueueUniqueWork(uniqueName, ExistingWorkPolicy.REPLACE, preReq).result.get()
         val originalWorkId = wm.getWorkInfosForUniqueWork(uniqueName).get().single().id
