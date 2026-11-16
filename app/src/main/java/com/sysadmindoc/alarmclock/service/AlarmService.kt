@@ -42,6 +42,7 @@ import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.data.repository.CalendarRepository
 import com.sysadmindoc.alarmclock.data.repository.WeatherRepository
 import com.sysadmindoc.alarmclock.domain.OnCallDndOverride
+import com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome
 import com.sysadmindoc.alarmclock.directboot.OutputOccurrenceKey
 import com.sysadmindoc.alarmclock.directboot.outputauthority.ActiveOutputHandle
 import com.sysadmindoc.alarmclock.directboot.outputauthority.OutputAuthorizationResult
@@ -271,6 +272,28 @@ class AlarmService : Service() {
     @VisibleForTesting
     internal val testVibrationStarted = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    enum class PlaybackLifecycleState {
+        IDLE,
+        START_REQUESTED,
+        START_ACCEPTED,
+        PLAYBACK_ACTIVE,
+        STOP_REQUESTED,
+        STOP_ACCEPTED,
+        STOP_CONFIRMED
+    }
+
+    @VisibleForTesting
+    internal val playbackStateHistory = java.util.concurrent.CopyOnWriteArrayList<PlaybackLifecycleState>()
+
+    @VisibleForTesting
+    internal fun clearPlaybackHistoryForTesting() {
+        playbackStateHistory.clear()
+    }
+
+    internal fun recordPlaybackState(state: PlaybackLifecycleState) {
+        playbackStateHistory.add(state)
+    }
+
     internal fun getGate(): SharedOutputAuthorityGate {
         return outputAuthorityGate ?: SharedOutputAuthorityGate.getInstance(this)
     }
@@ -290,13 +313,52 @@ class AlarmService : Service() {
     }
 
     internal fun handlePreemptedOwner(handle: ActiveOutputHandle): Boolean {
-        if (handle.activeNonce != currentActiveNonce) {
+        recordPlaybackState(PlaybackLifecycleState.STOP_REQUESTED)
+        if (handle.activeNonce != currentActiveNonce || (currentAlarmId != -1L && handle.key.alarmId != currentAlarmId)) {
+            Log.w(TAG, "Rejecting preemption stop: handle mismatch (handleNonce=${handle.activeNonce}, currentNonce=$currentActiveNonce, handleAlarmId=${handle.key.alarmId}, currentAlarmId=$currentAlarmId)")
             return false
         }
-        val gen = currentGeneration()
-        stopAlarmPlayback(gen)
-        currentActiveNonce = null
-        currentClaimNonce = null
+
+        val stopBlock = {
+            if (handle.activeNonce == currentActiveNonce && (currentAlarmId == -1L || handle.key.alarmId == currentAlarmId)) {
+                recordPlaybackState(PlaybackLifecycleState.STOP_ACCEPTED)
+                val gen = currentGeneration()
+                stopAlarmPlayback(gen)
+                currentActiveNonce = null
+                currentClaimNonce = null
+                recordPlaybackState(PlaybackLifecycleState.STOP_CONFIRMED)
+                true
+            } else {
+                false
+            }
+        }
+
+        val stopped = if (Looper.myLooper() == Looper.getMainLooper()) {
+            stopBlock()
+        } else {
+            val latch = java.util.concurrent.CountDownLatch(1)
+            var result = false
+            val posted = Handler(Looper.getMainLooper()).post {
+                try {
+                    result = stopBlock()
+                } finally {
+                    latch.countDown()
+                }
+            }
+            if (!posted) return false
+            val completed = try {
+                latch.await(2000, java.util.concurrent.TimeUnit.MILLISECONDS)
+            } catch (_: InterruptedException) {
+                false
+            }
+            completed && result
+        }
+
+        if (!stopped) {
+            Log.w(TAG, "Preemption stop failed or timed out for $handle")
+            return false
+        }
+
         val gate = getGate()
         gate.arbiter.releaseIfMatches(handle.key, handle.activeNonce)
         return true
@@ -956,6 +1018,7 @@ class AlarmService : Service() {
         val gate = getGate()
         val activeNonce: String?
         if (gate.isEnabled) {
+            recordPlaybackState(PlaybackLifecycleState.START_REQUESTED)
             val nonce = currentClaimNonce
             if (nonce.isNullOrBlank()) {
                 Log.w(TAG, "Rejecting startAlarm: claimNonce is null or blank when gate is enabled")
@@ -991,6 +1054,7 @@ class AlarmService : Service() {
             }
             currentActiveNonce = auth.activeNonce
             activeNonce = auth.activeNonce
+            recordPlaybackState(PlaybackLifecycleState.START_ACCEPTED)
 
             val obs = withContext(Dispatchers.IO) {
                 gate.observePhysicalOutput(
@@ -1003,7 +1067,7 @@ class AlarmService : Service() {
             }
             if (obs !is OutputAuthorizationResult.Authorized) {
                 Log.w(TAG, "Rejecting startAlarm: observePhysicalOutput failed: $obs")
-                gate.arbiter.releaseIfMatches(key, activeNonce)
+                gate.abortClaim(this@AlarmService, key, activeNonce, LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
                 currentActiveNonce = null
                 stopServiceDueToAuthorityRejection(startGen, "OBSERVE_OUTPUT_FAILED")
                 return
@@ -1496,6 +1560,7 @@ class AlarmService : Service() {
     }
 
     private fun startAudio(alarm: Alarm, startGen: AlarmGeneration) {
+        recordPlaybackState(PlaybackLifecycleState.PLAYBACK_ACTIVE)
         testAudioStarted.set(true)
         // Silent mode - skip audio entirely
         if (alarm.ringtoneUri == "silent" || AlarmHapticController.usesMutedAlarmAudio(alarm)) {

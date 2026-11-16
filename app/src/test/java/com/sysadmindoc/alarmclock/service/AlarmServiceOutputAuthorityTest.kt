@@ -422,4 +422,47 @@ class AlarmServiceOutputAuthorityTest {
         val staleObserve = gate.arbiter.confirmObserved(key, nonce)
         assertFalse("After stop, old nonce confirmation in arbiter MUST fail", staleObserve)
     }
+
+    @Test
+    fun testAlarmService_preemption_lifecycleSequence_verified() {
+        gate.isEnabled = true
+        val service = createInjectedService()
+
+        val key1 = OutputOccurrenceKey(201L, 1000L, 0)
+        val nonce1 = "nonce-owner-life-1"
+        gate.arbiter.acquirePending(key1, OutputSinkType.ALARM_SERVICE_1001, nonce1)
+        service.currentActiveNonce = nonce1
+        service.currentAlarmId = 201L
+        service.recordPlaybackState(AlarmService.PlaybackLifecycleState.START_REQUESTED)
+        service.recordPlaybackState(AlarmService.PlaybackLifecycleState.START_ACCEPTED)
+        service.recordPlaybackState(AlarmService.PlaybackLifecycleState.PLAYBACK_ACTIVE)
+
+        val stopConfirmed = service.handlePreemptedOwner(
+            ActiveOutputHandle(key1, OutputSinkType.ALARM_SERVICE_1001, nonce1)
+        )
+
+        assertTrue("Preemption stop must succeed", stopConfirmed)
+        val history = service.playbackStateHistory
+        assertTrue("Must contain STOP_REQUESTED", history.contains(AlarmService.PlaybackLifecycleState.STOP_REQUESTED))
+        assertTrue("Must contain STOP_ACCEPTED", history.contains(AlarmService.PlaybackLifecycleState.STOP_ACCEPTED))
+        assertTrue("Must contain STOP_CONFIRMED", history.contains(AlarmService.PlaybackLifecycleState.STOP_CONFIRMED))
+        assertEquals(AlarmService.PlaybackLifecycleState.STOP_CONFIRMED, history.last())
+    }
+
+    @Test
+    fun testAlarmService_preemption_identityMismatch_failsClosed() {
+        gate.isEnabled = true
+        val service = createInjectedService()
+
+        val key1 = OutputOccurrenceKey(201L, 1000L, 0)
+        val nonce1 = "nonce-owner-life-2"
+        service.currentActiveNonce = nonce1
+        service.currentAlarmId = 201L
+
+        // Attempt stop with mismatched alarmId
+        val mismatchedHandle = ActiveOutputHandle(OutputOccurrenceKey(999L, 1000L, 0), OutputSinkType.ALARM_SERVICE_1001, nonce1)
+        val stopResult = service.handlePreemptedOwner(mismatchedHandle)
+        assertFalse("Stop MUST fail closed on alarmId mismatch", stopResult)
+        assertFalse("Must not reach STOP_CONFIRMED on mismatch", service.playbackStateHistory.contains(AlarmService.PlaybackLifecycleState.STOP_CONFIRMED))
+    }
 }
