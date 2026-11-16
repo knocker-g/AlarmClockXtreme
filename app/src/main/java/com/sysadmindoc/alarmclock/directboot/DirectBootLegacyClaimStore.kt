@@ -380,11 +380,18 @@ object DirectBootLegacyClaimStore {
                     reason = "Expected state $expectedFrom but found ${existing.state}"
                 )
             }
-            if (expectedNonce != null && existing.claimNonce != expectedNonce) {
+            if (expectedNonce.isNullOrBlank() || existing.claimNonce != expectedNonce) {
                 return LegacyClaimWriteResult.RejectedInvalidTransition(
                     from = existing.state,
                     to = toState,
-                    reason = "ClaimNonce mismatch"
+                    reason = "ClaimNonce mismatch or null"
+                )
+            }
+            if (toState != LegacyClaimState.UNKNOWN && (existing.processSessionToken != processSessionToken || existing.bootCount != bootCount)) {
+                return LegacyClaimWriteResult.RejectedInvalidTransition(
+                    from = existing.state,
+                    to = toState,
+                    reason = "Provenance mismatch (processSessionToken or bootCount)"
                 )
             }
             if (!isTransitionAllowed(existing.state, toState, terminalOutcome)) {
