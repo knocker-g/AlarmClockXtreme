@@ -7,6 +7,8 @@ import androidx.annotation.VisibleForTesting
 import androidx.core.os.UserManagerCompat
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.Operation
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository
@@ -15,6 +17,12 @@ import com.sysadmindoc.alarmclock.directboot.DirectBootStorageLock
 import com.sysadmindoc.alarmclock.domain.OwnerWorkIdentity
 import com.sysadmindoc.alarmclock.domain.SupportingWorkType
 import com.sysadmindoc.alarmclock.service.AlarmPostDismissController
+import com.sysadmindoc.alarmclock.service.WakeConfirmationPlan
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -38,6 +46,8 @@ object WakeConfirmOccurrenceStore {
     const val CURRENT_SCHEMA_VERSION = 1
     const val MAX_CAPACITY = 64
 
+    private val recoveryMutex = Mutex()
+
     data class Record(
         val alarmId: Long,
         val scheduledAt: Long,
@@ -53,7 +63,8 @@ object WakeConfirmOccurrenceStore {
         val stepToken: String,
         val enqueueConfirmed: Boolean,
         val legacyConfirmedKeyPreexistedAtDismiss: Boolean,
-        val legacyCompatSeeded: Boolean = false
+        val legacyCompatSeeded: Boolean = false,
+        val scheduledDueAtMillis: Long = 0L
     ) {
         fun toJson(): JSONObject = JSONObject().apply {
             put("alarmId", alarmId)
@@ -71,6 +82,7 @@ object WakeConfirmOccurrenceStore {
             put("enqueueConfirmed", enqueueConfirmed)
             put("legacyConfirmedKeyPreexistedAtDismiss", legacyConfirmedKeyPreexistedAtDismiss)
             put("legacyCompatSeeded", legacyCompatSeeded)
+            put("scheduledDueAtMillis", scheduledDueAtMillis)
         }
 
         companion object {
@@ -89,9 +101,16 @@ object WakeConfirmOccurrenceStore {
                 stepToken = json.optString("stepToken", ""),
                 enqueueConfirmed = json.optBoolean("enqueueConfirmed", false),
                 legacyConfirmedKeyPreexistedAtDismiss = json.optBoolean("legacyConfirmedKeyPreexistedAtDismiss", false),
-                legacyCompatSeeded = json.optBoolean("legacyCompatSeeded", false)
+                legacyCompatSeeded = json.optBoolean("legacyCompatSeeded", false),
+                scheduledDueAtMillis = json.optLong("scheduledDueAtMillis", 0L)
             )
         }
+    }
+
+    internal sealed class EnqueueVerificationResult {
+        object Enqueued : EnqueueVerificationResult()
+        object Reused : EnqueueVerificationResult()
+        data class Failed(val reason: String) : EnqueueVerificationResult()
     }
 
     sealed class StorageState {
@@ -289,7 +308,13 @@ object WakeConfirmOccurrenceStore {
         refireCount: Int,
         wakeConfirmEnabled: Boolean,
         isRecurringSchedule: Boolean,
-        nowMillis: Long = System.currentTimeMillis()
+        nowMillis: Long = System.currentTimeMillis(),
+        delayMinutes: Long = 0L,
+        scheduledDueAtMillis: Long = if (delayMinutes > 0L && nowMillis > 0L) {
+            nowMillis + delayMinutes * 60_000L
+        } else {
+            0L
+        }
     ): CommitResult {
         if (alarmId <= 0L || scheduledAt <= 0L) {
             return CommitResult.Failed("Invalid occurrence key ($alarmId, $scheduledAt)")
@@ -328,17 +353,35 @@ object WakeConfirmOccurrenceStore {
                     // Retry-safe idempotent reuse of pending primary step
                     existing.copy(
                         wakeConfirmEnabled = wakeConfirmEnabled,
-                        oneShotDisabledAllowed = !isRecurringSchedule
+                        oneShotDisabledAllowed = !isRecurringSchedule,
+                        scheduledDueAtMillis = if (existing.scheduledDueAtMillis > 0L) existing.scheduledDueAtMillis else scheduledDueAtMillis
                     )
-                } else if (refireCount > 0 && existing.highestClaimedRefire <= refireCount) {
+                } else if (refireCount > 0 && existing.highestClaimedRefire == refireCount && !existing.enqueueConfirmed && existing.stepToken.isNotBlank()) {
+                    // Retry-safe idempotent reuse of pending refire step
+                    existing.copy(
+                        wakeConfirmEnabled = wakeConfirmEnabled,
+                        oneShotDisabledAllowed = !isRecurringSchedule,
+                        scheduledDueAtMillis = if (existing.scheduledDueAtMillis > 0L) existing.scheduledDueAtMillis else scheduledDueAtMillis
+                    )
+                } else if (
+                    refireCount > 0 &&
+                    (existing.highestClaimedRefire < refireCount ||
+                        (existing.highestClaimedRefire == refireCount && !existing.enqueueConfirmed && existing.stepToken.isBlank()))
+                ) {
                     val newToken = if (refireCount < WakeConfirmWorker.MAX_REFIRES) UUID.randomUUID().toString() else ""
                     existing.copy(
+                        dismissedAt = if (nowMillis > 0L) nowMillis else existing.dismissedAt,
                         wakeConfirmEnabled = wakeConfirmEnabled,
                         oneShotDisabledAllowed = !isRecurringSchedule,
                         highestClaimedRefire = refireCount,
                         nextAuthorizedRefire = refireCount + 1,
                         stepToken = newToken,
-                        enqueueConfirmed = false
+                        enqueueConfirmed = false,
+                        scheduledDueAtMillis = if (existing.highestClaimedRefire == refireCount && existing.scheduledDueAtMillis > 0L) {
+                            existing.scheduledDueAtMillis
+                        } else {
+                            scheduledDueAtMillis
+                        }
                     )
                 } else {
                     return CommitResult.Failed("Stale or regressed dismiss refireCount=$refireCount vs highest=${existing.highestClaimedRefire}")
@@ -360,7 +403,8 @@ object WakeConfirmOccurrenceStore {
                     stepToken = newToken,
                     enqueueConfirmed = false,
                     legacyConfirmedKeyPreexistedAtDismiss = legacyKeyPreexisted,
-                    legacyCompatSeeded = false
+                    legacyCompatSeeded = false,
+                    scheduledDueAtMillis = scheduledDueAtMillis
                 )
             }
 
@@ -872,7 +916,9 @@ object WakeConfirmOccurrenceStore {
             val consumed = rec.copy(
                 highestClaimedRefire = targetRefire,
                 nextAuthorizedRefire = targetRefire + 1,
-                stepToken = ""
+                stepToken = "",
+                enqueueConfirmed = false,
+                scheduledDueAtMillis = 0L
             )
             val nextList = current.toMutableList().apply { set(idx, consumed) }
             commitAndVerify(context, nextList)?.let { fail ->
@@ -1046,17 +1092,124 @@ object WakeConfirmOccurrenceStore {
         return LegacyOccurrenceResolution.Resolved(resolvedScheduledAt, resolvedFireId)
     }
 
+    internal fun occurrenceTag(alarmId: Long, scheduledAt: Long): String =
+        OwnerWorkIdentity.occurrenceUniqueName(alarmId, scheduledAt, SupportingWorkType.WAKE_CONFIRM)
+
+    internal fun resolveOriginalDueAtMillis(
+        rec: Record,
+        alarm: com.sysadmindoc.alarmclock.data.model.Alarm
+    ): Long? {
+        if (rec.scheduledDueAtMillis > 0L) {
+            if (rec.dismissedAt > 0L && rec.scheduledDueAtMillis < rec.dismissedAt) {
+                return null
+            }
+            return rec.scheduledDueAtMillis
+        }
+        if (rec.legacyCompatSeeded || rec.dismissedAt <= 0L) {
+            return null
+        }
+        val delayMs = alarm.wakeConfirmDelayMinutes.coerceAtLeast(1).toLong() * 60_000L
+        return rec.dismissedAt + delayMs
+    }
+
+    private fun workInfoMatchesOccurrence(
+        info: WorkInfo,
+        plan: WakeConfirmationPlan,
+        alarmId: Long,
+        scheduledAt: Long,
+        expectedRequestId: java.util.UUID? = null
+    ): Boolean {
+        if (info.state == WorkInfo.State.CANCELLED) return false
+        if (expectedRequestId == null) {
+            if (info.state.isFinished) return false
+        } else {
+            if (info.id != expectedRequestId && info.state.isFinished) return false
+        }
+        if (!info.tags.contains(plan.tag)) return false
+        if (!info.tags.contains(WakeConfirmWorker::class.java.name)) return false
+        val expectedOccTag = occurrenceTag(alarmId, scheduledAt)
+        val occTags = info.tags.filter { it.startsWith("acx_occ_${SupportingWorkType.WAKE_CONFIRM.id}_") }
+        return occTags.isEmpty() || occTags.contains(expectedOccTag)
+    }
+
+    internal suspend fun enqueueAndVerifyWakeConfirmWork(
+        context: Context,
+        alarmId: Long,
+        scheduledAt: Long,
+        plan: WakeConfirmationPlan,
+        initialDelayMs: Long,
+        policy: ExistingWorkPolicy,
+        reuseExistingIfPresent: Boolean
+    ): EnqueueVerificationResult {
+        check(!Thread.holdsLock(DirectBootStorageLock.lock)) {
+            "WorkManager MUST NOT be accessed while holding DirectBootStorageLock.lock"
+        }
+        return withContext(Dispatchers.IO) {
+            val wm = try {
+                WorkManager.getInstance(context.applicationContext)
+            } catch (e: Exception) {
+                return@withContext EnqueueVerificationResult.Failed("WorkManager.getInstance failed: ${e.message}")
+            }
+
+            if (reuseExistingIfPresent) {
+                val existingInfos = try {
+                    wm.getWorkInfosForUniqueWork(plan.uniqueWorkName).get()
+                } catch (e: Exception) {
+                    return@withContext EnqueueVerificationResult.Failed("WorkManager lookup failed: ${e.message}")
+                }
+                if (existingInfos.any { workInfoMatchesOccurrence(it, plan, alarmId, scheduledAt) }) {
+                    return@withContext EnqueueVerificationResult.Reused
+                }
+            }
+
+            val request = OneTimeWorkRequestBuilder<WakeConfirmWorker>()
+                .setInitialDelay(initialDelayMs.coerceAtLeast(0L), TimeUnit.MILLISECONDS)
+                .setInputData(plan.inputData)
+                .addTag(plan.tag)
+                .addTag(occurrenceTag(alarmId, scheduledAt))
+                .build()
+
+            val opState = try {
+                val operation = wm.enqueueUniqueWork(plan.uniqueWorkName, policy, request)
+                operation.result.get()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return@withContext EnqueueVerificationResult.Failed("WorkManager enqueue operation failed: ${e.message}")
+            }
+
+            if (opState !is Operation.State.SUCCESS) {
+                return@withContext EnqueueVerificationResult.Failed("WorkManager operation non-success state: $opState")
+            }
+
+            val verifiedInfos = try {
+                wm.getWorkInfosForUniqueWork(plan.uniqueWorkName).get()
+            } catch (e: Exception) {
+                return@withContext EnqueueVerificationResult.Failed("WorkManager post-enqueue lookup failed: ${e.message}")
+            }
+
+            if (verifiedInfos.none { workInfoMatchesOccurrence(it, plan, alarmId, scheduledAt, expectedRequestId = request.id) }) {
+                return@withContext EnqueueVerificationResult.Failed(
+                    "WorkInfo identity mismatch for ${plan.uniqueWorkName}"
+                )
+            }
+
+            EnqueueVerificationResult.Enqueued
+        }
+    }
+
     /**
      * Retries WorkManager enqueue for a previously committed DE lineage record whose initial
      * enqueue failed (`enqueueConfirmed == false`), reusing its durable `stepToken`.
      * Inspects existing WorkManager occurrence unique work BEFORE enqueueing so active jobs are reused.
-     * Never calls WorkManager under [DirectBootStorageLock.lock].
+     * Never calls WorkManager under [DirectBootStorageLock.lock] or on the Main thread.
      */
-    fun retryPendingWakeConfirmEnqueue(
+    suspend fun retryPendingWakeConfirmEnqueue(
         context: Context,
         alarm: com.sysadmindoc.alarmclock.data.model.Alarm,
-        scheduledAt: Long
-    ): Boolean {
+        scheduledAt: Long,
+        nowMillis: Long = System.currentTimeMillis()
+    ): Boolean = recoveryMutex.withLock {
         val candidate: Record? = synchronized(DirectBootStorageLock.lock) {
             val st = inspectDeStorageState(context) as? StorageState.Valid ?: return@synchronized null
             if (st.records.any { it.alarmId == alarm.id && it.scheduledAt > scheduledAt }) {
@@ -1064,16 +1217,19 @@ object WakeConfirmOccurrenceStore {
             }
             st.records.firstOrNull { it.alarmId == alarm.id && it.scheduledAt == scheduledAt }
         }
-        val rec = candidate ?: return false
+        val rec = candidate ?: return@withLock false
         if (!rec.parentDismissed || !rec.wakeConfirmEnabled || rec.confirmed || rec.cancelled || rec.enqueueConfirmed) {
-            return false
+            return@withLock false
         }
         if (rec.stepToken.isBlank() ||
             rec.highestClaimedRefire !in 0 until WakeConfirmWorker.MAX_REFIRES ||
             rec.nextAuthorizedRefire !in 1..WakeConfirmWorker.MAX_REFIRES
         ) {
-            return false
+            return@withLock false
         }
+
+        val originalDueAtMs = resolveOriginalDueAtMillis(rec, alarm) ?: return@withLock false
+        val remainingDelayMs = (originalDueAtMs - nowMillis).coerceAtLeast(0L)
 
         val plan = AlarmPostDismissController.wakeConfirmationPlan(
             alarm = alarm,
@@ -1082,31 +1238,21 @@ object WakeConfirmOccurrenceStore {
             refireCount = rec.highestClaimedRefire,
             stepToken = rec.stepToken
         )
-        val wm = WorkManager.getInstance(context.applicationContext)
-        val hasUnfinished = try {
-            wm.getWorkInfosForUniqueWork(plan.uniqueWorkName).get().any { !it.state.isFinished }
-        } catch (_: Exception) {
-            false
+
+        val enqueueRes = enqueueAndVerifyWakeConfirmWork(
+            context = context,
+            alarmId = rec.alarmId,
+            scheduledAt = rec.scheduledAt,
+            plan = plan,
+            initialDelayMs = remainingDelayMs,
+            policy = ExistingWorkPolicy.KEEP,
+            reuseExistingIfPresent = true
+        )
+        if (enqueueRes is EnqueueVerificationResult.Failed) {
+            return@withLock false
         }
-        if (!hasUnfinished) {
-            val request = OneTimeWorkRequestBuilder<WakeConfirmWorker>()
-                .setInitialDelay(plan.delayMinutes, TimeUnit.MINUTES)
-                .setInputData(plan.inputData)
-                .addTag(plan.tag)
-                .build()
-            val enqueued = try {
-                wm.enqueueUniqueWork(
-                    plan.uniqueWorkName,
-                    ExistingWorkPolicy.KEEP,
-                    request
-                )
-                true
-            } catch (_: Exception) {
-                false
-            }
-            if (!enqueued) return false
-        }
-        return markEnqueueConfirmed(context, rec.alarmId, rec.scheduledAt, rec.stepToken) is CommitResult.Committed
+
+        markEnqueueConfirmed(context, rec.alarmId, rec.scheduledAt, rec.stepToken) is CommitResult.Committed
     }
 
     /**
@@ -1115,25 +1261,28 @@ object WakeConfirmOccurrenceStore {
      * [com.sysadmindoc.alarmclock.AlarmClockApp]) with explicit [RecoveryTrigger] distinction.
      *
      * Contracts:
+     * - Serialized via [recoveryMutex] so concurrent App / Boot / Health triggers never duplicate work.
      * - Defers cleanly when CE storage is still locked ([UserManagerCompat.isUserUnlocked] == false).
      * - Verifies Room Dismiss proof and CE/DE confirmation state strictly OUTSIDE [DirectBootStorageLock.lock].
-     * - Never holds DE or Room locks while inspecting/calling WorkManager.
-     * - Reuses existing unfinished occurrence unique work without replacing or duplicating.
-     * - Preserves pending state on enqueue failure (never marks confirmed).
+     * - Never holds DE or Room locks while inspecting/calling WorkManager, and never blocks Main thread.
+     * - Restores remaining delay relative to original due time (0ms if elapsed; fails closed if unknown).
+     * - Reuses existing unfinished occurrence unique work without replacing or altering its schedule.
+     * - Awaits WorkManager [Operation] completion and verifies [WorkInfo] identity before marking confirmed.
      */
     suspend fun recoverPendingEnqueues(
         context: Context,
         alarmRepository: AlarmRepository,
         trigger: RecoveryTrigger,
-        alarmIncidentRepository: AlarmIncidentRepository? = null
-    ): RecoveryResult {
+        alarmIncidentRepository: AlarmIncidentRepository? = null,
+        nowMillis: Long = System.currentTimeMillis()
+    ): RecoveryResult = recoveryMutex.withLock {
         if (!UserManagerCompat.isUserUnlocked(context)) {
-            return RecoveryResult(trigger = trigger)
+            return@withLock RecoveryResult(trigger = trigger)
         }
 
         val pending = getPendingRetryableEnqueues(context)
         if (pending.isEmpty()) {
-            return RecoveryResult(trigger = trigger)
+            return@withLock RecoveryResult(trigger = trigger)
         }
 
         var enqueued = 0
@@ -1212,6 +1361,13 @@ object WakeConfirmOccurrenceStore {
                 continue
             }
 
+            val originalDueAtMs = resolveOriginalDueAtMillis(freshValid, alarm)
+            if (originalDueAtMs == null) {
+                failed++
+                continue
+            }
+            val remainingDelayMs = (originalDueAtMs - nowMillis).coerceAtLeast(0L)
+
             val fireId = freshValid.fireId.ifBlank {
                 AlarmIncidentEvent.fireIdFor(alarm.id, freshValid.scheduledAt)
             }
@@ -1223,86 +1379,63 @@ object WakeConfirmOccurrenceStore {
                 stepToken = freshValid.stepToken
             )
 
-            // WorkManager inspection & enqueue strictly outside DE and Room locks
-            val wm = try {
-                WorkManager.getInstance(context.applicationContext)
-            } catch (_: Exception) {
-                failed++
-                continue
-            }
-
-            val existingInfos = try {
-                wm.getWorkInfosForUniqueWork(plan.uniqueWorkName).get()
-            } catch (_: Exception) {
-                null
-            }
-            if (existingInfos == null) {
-                failed++
-                continue
-            }
-
-            val hasUnfinished = existingInfos.any { !it.state.isFinished }
-            if (hasUnfinished) {
-                val markRes = markEnqueueConfirmed(context, freshValid.alarmId, freshValid.scheduledAt, freshValid.stepToken)
-                if (markRes is CommitResult.Committed) {
-                    reused++
-                    runCatching {
-                        alarmIncidentRepository?.record(
-                            alarmId = freshValid.alarmId,
-                            fireId = fireId,
-                            scheduledAt = freshValid.scheduledAt,
-                            type = AlarmIncidentEvent.TYPE_WAKE_CONFIRM,
-                            status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                            reasonCode = "WAKE_CONFIRM_RECOVERY_REUSED_${trigger.name}",
-                            source = "WakeConfirmRecovery"
-                        )
+            // WorkManager inspection & enqueue strictly outside DE/Room locks and off Main thread
+            when (
+                enqueueAndVerifyWakeConfirmWork(
+                    context = context,
+                    alarmId = freshValid.alarmId,
+                    scheduledAt = freshValid.scheduledAt,
+                    plan = plan,
+                    initialDelayMs = remainingDelayMs,
+                    policy = ExistingWorkPolicy.KEEP,
+                    reuseExistingIfPresent = true
+                )
+            ) {
+                is EnqueueVerificationResult.Reused -> {
+                    val markRes = markEnqueueConfirmed(context, freshValid.alarmId, freshValid.scheduledAt, freshValid.stepToken)
+                    if (markRes is CommitResult.Committed) {
+                        reused++
+                        runCatching {
+                            alarmIncidentRepository?.record(
+                                alarmId = freshValid.alarmId,
+                                fireId = fireId,
+                                scheduledAt = freshValid.scheduledAt,
+                                type = AlarmIncidentEvent.TYPE_WAKE_CONFIRM,
+                                status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                                reasonCode = "WAKE_CONFIRM_RECOVERY_REUSED_${trigger.name}",
+                                source = "WakeConfirmRecovery"
+                            )
+                        }
+                    } else {
+                        failed++
                     }
-                } else {
+                }
+                is EnqueueVerificationResult.Enqueued -> {
+                    val markRes = markEnqueueConfirmed(context, freshValid.alarmId, freshValid.scheduledAt, freshValid.stepToken)
+                    if (markRes is CommitResult.Committed) {
+                        enqueued++
+                        runCatching {
+                            alarmIncidentRepository?.record(
+                                alarmId = freshValid.alarmId,
+                                fireId = fireId,
+                                scheduledAt = freshValid.scheduledAt,
+                                type = AlarmIncidentEvent.TYPE_WAKE_CONFIRM,
+                                status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                                reasonCode = "WAKE_CONFIRM_RECOVERY_ENQUEUED_${trigger.name}",
+                                source = "WakeConfirmRecovery"
+                            )
+                        }
+                    } else {
+                        failed++
+                    }
+                }
+                is EnqueueVerificationResult.Failed -> {
                     failed++
                 }
-                continue
-            }
-
-            val request = OneTimeWorkRequestBuilder<WakeConfirmWorker>()
-                .setInitialDelay(plan.delayMinutes, TimeUnit.MINUTES)
-                .setInputData(plan.inputData)
-                .addTag(plan.tag)
-                .build()
-            val enqueuedOk = try {
-                wm.enqueueUniqueWork(
-                    plan.uniqueWorkName,
-                    ExistingWorkPolicy.KEEP,
-                    request
-                )
-                true
-            } catch (_: Exception) {
-                false
-            }
-            if (!enqueuedOk) {
-                failed++
-                continue
-            }
-
-            val markRes = markEnqueueConfirmed(context, freshValid.alarmId, freshValid.scheduledAt, freshValid.stepToken)
-            if (markRes is CommitResult.Committed) {
-                enqueued++
-                runCatching {
-                    alarmIncidentRepository?.record(
-                        alarmId = freshValid.alarmId,
-                        fireId = fireId,
-                        scheduledAt = freshValid.scheduledAt,
-                        type = AlarmIncidentEvent.TYPE_WAKE_CONFIRM,
-                        status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                        reasonCode = "WAKE_CONFIRM_RECOVERY_ENQUEUED_${trigger.name}",
-                        source = "WakeConfirmRecovery"
-                    )
-                }
-            } else {
-                failed++
             }
         }
 
-        return RecoveryResult(
+        RecoveryResult(
             trigger = trigger,
             inspectedCount = pending.size,
             enqueuedCount = enqueued,

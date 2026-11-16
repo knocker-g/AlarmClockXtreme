@@ -387,7 +387,13 @@ object DirectBootLegacyClaimStore {
                     reason = "ClaimNonce mismatch or null"
                 )
             }
-            if (toState != LegacyClaimState.UNKNOWN && (existing.processSessionToken != processSessionToken || existing.bootCount != bootCount)) {
+            val isCrossSessionCeReconcile =
+                existing.state == LegacyClaimState.UNKNOWN &&
+                    toState == LegacyClaimState.TERMINAL &&
+                    terminalOutcome == LegacyTerminalOutcome.RECONCILED_CE
+            if (toState != LegacyClaimState.UNKNOWN && !isCrossSessionCeReconcile &&
+                (existing.processSessionToken != processSessionToken || existing.bootCount != bootCount)
+            ) {
                 return LegacyClaimWriteResult.RejectedInvalidTransition(
                     from = existing.state,
                     to = toState,
@@ -471,9 +477,19 @@ object DirectBootLegacyClaimStore {
         evidence: com.sysadmindoc.alarmclock.directboot.outputauthority.VerifiedRetirementEvidence,
         evidenceMaxAgeMs: Long = 30_000L
     ): LegacyClaimRetirementResult {
+        if (evidence.key.refireCount != 0) {
+            return LegacyClaimRetirementResult.Rejected("Only primary occurrences (refireCount == 0) may retire with CE evidence")
+        }
+        if (evidence.receiptId.isBlank() || evidence.occurrenceKey.isBlank() || evidence.payloadHash.isBlank()) {
+            return LegacyClaimRetirementResult.Rejected("Incomplete retirement evidence identity/hash")
+        }
+        if (evidence.consumerOutcome !in com.sysadmindoc.alarmclock.directboot.outputauthority.LegacyRetirementProofVerifier.VALID_CONSUMER_OUTCOMES) {
+            return LegacyClaimRetirementResult.Rejected("Ineligible consumerOutcome in evidence: ${evidence.consumerOutcome}")
+        }
         val now = System.currentTimeMillis()
-        if (now - evidence.verifiedAt > evidenceMaxAgeMs) {
-            return LegacyClaimRetirementResult.Rejected("Retirement evidence expired (age=${now - evidence.verifiedAt}ms, max=$evidenceMaxAgeMs)")
+        val ageMs = now - evidence.verifiedAt
+        if (ageMs < 0L || ageMs > evidenceMaxAgeMs) {
+            return LegacyClaimRetirementResult.Rejected("Retirement evidence expired or invalid timestamp (age=${ageMs}ms, max=$evidenceMaxAgeMs)")
         }
         if (evidence.restoreEpoch <= 0L) {
             return LegacyClaimRetirementResult.Rejected("Invalid restoreEpoch in evidence: ${evidence.restoreEpoch}")
@@ -501,27 +517,82 @@ object DirectBootLegacyClaimStore {
                 return LegacyClaimRetirementResult.Rejected("Source mismatch: expected ${existing.source}, found ${evidence.source}")
             }
 
-            // Atomically re-verify V2 absence under DE storageLock right before removal
-            val inCache = when (val cacheState = DirectBootAlarmCache.inspectQueueStorageState(context)) {
-                is QueueStorageState.ValidWithItems ->
-                    cacheState.items.any { it.alarmId == evidence.key.alarmId && it.triggerTime == evidence.key.scheduledAt }
-                else -> false
-            }
-            if (inCache) {
-                return LegacyClaimRetirementResult.Rejected("Occurrence re-appeared in V2 queue prior to retirement commit")
+            // Atomically re-verify V2 absence and store health under DE storageLock right before removal
+            when (val cacheState = DirectBootAlarmCache.inspectQueueStorageState(context)) {
+                is QueueStorageState.Absent,
+                is QueueStorageState.ValidEmpty -> Unit
+                is QueueStorageState.ValidWithItems -> {
+                    if (cacheState.items.any { it.alarmId == evidence.key.alarmId && it.triggerTime == evidence.key.scheduledAt }) {
+                        return LegacyClaimRetirementResult.Rejected("Occurrence re-appeared in V2 queue prior to retirement commit")
+                    }
+                }
+                is QueueStorageState.Corrupt ->
+                    return LegacyClaimRetirementResult.Rejected("V2 queue corrupt prior to retirement commit: ${cacheState.reason}")
+                is QueueStorageState.UnsupportedSchema ->
+                    return LegacyClaimRetirementResult.Rejected("V2 queue unsupported schema prior to retirement commit: ${cacheState.foundVersion}")
             }
 
-            val inOwner = when (val ownerResult = DirectBootDurableOwnerStore.read(context)) {
+            when (val ownerResult = DirectBootDurableOwnerStore.read(context)) {
+                is OwnerReadResult.Absent -> Unit
                 is OwnerReadResult.Success -> {
                     val owner = ownerResult.owner
                     val inClaim = owner.handoverClaim?.let { it.alarmId == evidence.key.alarmId && it.triggerTime == evidence.key.scheduledAt } ?: false
                     val inSession = owner.activeSession?.let { it.alarmId == evidence.key.alarmId && it.triggerTime == evidence.key.scheduledAt } ?: false
-                    inClaim || inSession
+                    if (inClaim || inSession) {
+                        return LegacyClaimRetirementResult.Rejected("Occurrence re-appeared in V2 durable owner prior to retirement commit")
+                    }
                 }
-                else -> false
+                is OwnerReadResult.Corrupt ->
+                    return LegacyClaimRetirementResult.Rejected("V2 durable owner corrupt prior to retirement commit: ${ownerResult.reason}")
+                is OwnerReadResult.UnsupportedSchema ->
+                    return LegacyClaimRetirementResult.Rejected("V2 durable owner unsupported schema prior to retirement commit: ${ownerResult.foundVersion}")
             }
-            if (inOwner) {
-                return LegacyClaimRetirementResult.Rejected("Occurrence re-appeared in V2 durable owner prior to retirement commit")
+
+            when (val ledgerState = DirectBootDeliveryLedger.readUnacknowledgedRecords(context)) {
+                is LedgerStorageState.Absent,
+                is LedgerStorageState.ValidEmpty -> Unit
+                is LedgerStorageState.ValidWithRecords -> {
+                    if (ledgerState.records.any {
+                            it.alarmId == evidence.key.alarmId && it.triggerTime == evidence.key.scheduledAt && it.provenance != "LEGACY_DELIVERY"
+                        }
+                    ) {
+                        return LegacyClaimRetirementResult.Rejected("V2 delivery record re-appeared prior to retirement commit")
+                    }
+                }
+                is LedgerStorageState.Corrupt ->
+                    return LegacyClaimRetirementResult.Rejected("V2 delivery ledger corrupt prior to retirement commit: ${ledgerState.reason}")
+                is LedgerStorageState.UnsupportedSchema ->
+                    return LegacyClaimRetirementResult.Rejected("V2 delivery ledger unsupported schema prior to retirement commit: ${ledgerState.foundVersion}")
+            }
+
+            when (val missedState = DirectBootMissedStore.readUnacknowledgedRecords(context)) {
+                is MissedStoreStorageState.Absent,
+                is MissedStoreStorageState.ValidEmpty -> Unit
+                is MissedStoreStorageState.ValidWithRecords -> {
+                    if (missedState.records.any { it.alarmId == evidence.key.alarmId && it.triggerTime == evidence.key.scheduledAt }) {
+                        return LegacyClaimRetirementResult.Rejected("V2 missed record re-appeared prior to retirement commit")
+                    }
+                }
+                is MissedStoreStorageState.Corrupt ->
+                    return LegacyClaimRetirementResult.Rejected("V2 missed store corrupt prior to retirement commit: ${missedState.reason}")
+                is MissedStoreStorageState.UnsupportedSchema ->
+                    return LegacyClaimRetirementResult.Rejected("V2 missed store unsupported schema prior to retirement commit: ${missedState.foundVersion}")
+                is MissedStoreStorageState.PersistenceUncertain ->
+                    return LegacyClaimRetirementResult.Rejected("V2 missed store uncertain prior to retirement commit: ${missedState.reason}")
+            }
+
+            when (val witnessState = DirectBootFiredWitnessLedger.readWitnesses(context)) {
+                is WitnessLedgerState.Absent,
+                is WitnessLedgerState.ValidEmpty -> Unit
+                is WitnessLedgerState.ValidWithRecords -> {
+                    if (witnessState.records.any { it.alarmId == evidence.key.alarmId && it.triggerTime == evidence.key.scheduledAt }) {
+                        return LegacyClaimRetirementResult.Rejected("V2 witness record re-appeared prior to retirement commit")
+                    }
+                }
+                is WitnessLedgerState.Corrupt ->
+                    return LegacyClaimRetirementResult.Rejected("V2 witness ledger corrupt prior to retirement commit: ${witnessState.reason}")
+                is WitnessLedgerState.UnsupportedSchema ->
+                    return LegacyClaimRetirementResult.Rejected("V2 witness ledger unsupported schema prior to retirement commit: ${witnessState.foundVersion}")
             }
 
             val remaining = currentRecords.filterNot { it.key == evidence.key }
