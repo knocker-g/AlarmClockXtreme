@@ -63,7 +63,7 @@ class OutputResourceArbiterTest {
         val key2 = OutputOccurrenceKey(2L, 2000L, 0)
 
         arbiter.acquirePending(key1, OutputSinkType.ALARM_SERVICE_1001, "nonce-1")
-        val (acquired2, preempted) = arbiter.acquirePending(key2, OutputSinkType.ALARM_SERVICE_1001, "nonce-2")
+        val (acquired2, preempted) = arbiter.acquirePending(key2, OutputSinkType.ALARM_SERVICE_1001, "nonce-2") { true }
 
         assertTrue(acquired2)
         assertNotNull(preempted)
@@ -97,5 +97,46 @@ class OutputResourceArbiterTest {
         // Matching release clears active handle
         assertTrue(arbiter.releaseIfMatches(key, "nonce-1"))
         assertNull(arbiter.activeHandle)
+    }
+
+    // =========================================================================
+    // S5-A1 Safety Corrections: Preemption Stop Confirmation & Stale Handle
+    // =========================================================================
+
+    @Test
+    fun testPreemption_requiresConfirmedStopBeforeAuthorizingNewOwner() {
+        val key1 = OutputOccurrenceKey(1L, 1000L, 0)
+        val key2 = OutputOccurrenceKey(2L, 2000L, 0)
+        val (acq1, _) = arbiter.acquirePending(key1, OutputSinkType.ALARM_SERVICE_1001, "nonce-1")
+        assertTrue(acq1)
+
+        // Preemption where stop confirmation returns false must NOT acquire new owner
+        val (acq2, preempted) = arbiter.acquirePending(
+            key = key2,
+            sink = OutputSinkType.FULLSCREEN_FALLBACK_1001,
+            activeNonce = "nonce-2",
+            stopPreemptedOwner = { handle ->
+                assertEquals(key1, handle.key)
+                false // Stop failed!
+            }
+        )
+        assertFalse("New owner must not be acquired when stop confirmation fails", acq2)
+        assertEquals("Prior owner must remain active handle", key1, arbiter.activeHandle?.key)
+        assertEquals("nonce-1", arbiter.activeHandle?.activeNonce)
+    }
+
+    @Test
+    fun testRequestStop_rejectsStaleHandle() {
+        val key = OutputOccurrenceKey(1L, 1000L, 0)
+        arbiter.acquirePending(key, OutputSinkType.ALARM_SERVICE_1001, "nonce-active")
+
+        val staleHandle = ActiveOutputHandle(
+            key = key,
+            sink = OutputSinkType.ALARM_SERVICE_1001,
+            activeNonce = "nonce-stale"
+        )
+        val stopped = arbiter.requestStop(staleHandle)
+        assertFalse("Stale handle stop request must be rejected", stopped)
+        assertEquals("Active handle must not be cleared by stale stop", key, arbiter.activeHandle?.key)
     }
 }

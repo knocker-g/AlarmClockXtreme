@@ -8,7 +8,9 @@ import com.sysadmindoc.alarmclock.data.local.entity.DirectBootOccurrenceReceipt
 import com.sysadmindoc.alarmclock.directboot.BootProvenance
 import com.sysadmindoc.alarmclock.directboot.DirectBootDurableOwner
 import com.sysadmindoc.alarmclock.directboot.DirectBootDurableOwnerStore
+import com.sysadmindoc.alarmclock.directboot.DirectBootEventConsumerEngine
 import com.sysadmindoc.alarmclock.directboot.DirectBootLegacyClaimStore
+import com.sysadmindoc.alarmclock.directboot.DirectBootStorageLock
 import com.sysadmindoc.alarmclock.directboot.HandoverClaim
 import com.sysadmindoc.alarmclock.directboot.LegacyClaimRetirementResult
 import com.sysadmindoc.alarmclock.directboot.LegacyClaimSource
@@ -20,6 +22,7 @@ import com.sysadmindoc.alarmclock.directboot.OwnerState
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -131,13 +134,25 @@ class SharedOutputAuthorityGateTest {
         val handoverNonce = (reserveRes as OutputAuthorizationResult.Authorized).activeNonce
 
         // First claim: succeeds and rotates nonce
-        val claim1 = gate.claimOutput(context, key, handoverNonce, OutputSinkType.ALARM_SERVICE_1001)
+        val claim1 = gate.claimOutput(
+            context = context,
+            key = key,
+            incomingNonce = handoverNonce,
+            sink = OutputSinkType.ALARM_SERVICE_1001,
+            roomReceiptChecker = { _, _ -> false }
+        )
         assertTrue(claim1 is OutputAuthorizationResult.Authorized)
         val activeNonce = (claim1 as OutputAuthorizationResult.Authorized).activeNonce
         assertTrue(activeNonce.startsWith("active-"))
 
         // Second claim with old handoverNonce (e.g. racing Fallback): rejected!
-        val claim2 = gate.claimOutput(context, key, handoverNonce, OutputSinkType.FULLSCREEN_FALLBACK_1001)
+        val claim2 = gate.claimOutput(
+            context = context,
+            key = key,
+            incomingNonce = handoverNonce,
+            sink = OutputSinkType.FULLSCREEN_FALLBACK_1001,
+            roomReceiptChecker = { _, _ -> false }
+        )
         assertTrue(claim2 is OutputAuthorizationResult.DuplicateRejected || claim2 is OutputAuthorizationResult.StaleOrConflictRejected)
     }
 
@@ -152,7 +167,13 @@ class SharedOutputAuthorityGateTest {
         // Switch gate provenance (simulating unexpected process restart or boot count drift)
         gate.processSessionToken = "proc-different"
 
-        val claim = gate.claimOutput(context, key, handoverNonce, OutputSinkType.ALARM_SERVICE_1001)
+        val claim = gate.claimOutput(
+            context = context,
+            key = key,
+            incomingNonce = handoverNonce,
+            sink = OutputSinkType.ALARM_SERVICE_1001,
+            roomReceiptChecker = { _, _ -> false }
+        )
         assertTrue(claim is OutputAuthorizationResult.UnknownStateBlocked)
 
         val claimState = DirectBootLegacyClaimStore.inspectStorageState(context)
@@ -168,15 +189,34 @@ class SharedOutputAuthorityGateTest {
 
         val res1 = gate.reserveForServiceStart(context, key1, LegacyClaimSource.ALARM_RECEIVER)
         val nonce1 = (res1 as OutputAuthorizationResult.Authorized).activeNonce
-        val claim1 = gate.claimOutput(context, key1, nonce1, OutputSinkType.ALARM_SERVICE_1001)
+        val claim1 = gate.claimOutput(
+            context = context,
+            key = key1,
+            incomingNonce = nonce1,
+            sink = OutputSinkType.ALARM_SERVICE_1001,
+            roomReceiptChecker = { _, _ -> false }
+        )
         assertTrue(claim1 is OutputAuthorizationResult.Authorized)
         assertEquals(key1, gate.arbiter.activeHandle?.key)
 
-        // Candidate 2 arrives
+        // Candidate 2 arrives with confirmed stop
+        var stopCalled = false
         val res2 = gate.reserveForServiceStart(context, key2, LegacyClaimSource.ALARM_RECEIVER)
         val nonce2 = (res2 as OutputAuthorizationResult.Authorized).activeNonce
-        val claim2 = gate.claimOutput(context, key2, nonce2, OutputSinkType.ALARM_SERVICE_1001)
+        val claim2 = gate.claimOutput(
+            context = context,
+            key = key2,
+            incomingNonce = nonce2,
+            sink = OutputSinkType.ALARM_SERVICE_1001,
+            roomReceiptChecker = { _, _ -> false },
+            stopPreemptedOwner = { handle ->
+                assertEquals(key1, handle.key)
+                stopCalled = true
+                true
+            }
+        )
         assertTrue(claim2 is OutputAuthorizationResult.Authorized)
+        assertTrue(stopCalled)
 
         // Occurrence 2 is now active owner in arbiter
         assertEquals(key2, gate.arbiter.activeHandle?.key)
@@ -199,10 +239,22 @@ class SharedOutputAuthorityGateTest {
 
         val res = gate.reserveForServiceStart(context, key, LegacyClaimSource.ALARM_RECEIVER)
         val nonce = (res as OutputAuthorizationResult.Authorized).activeNonce
-        val claim = gate.claimOutput(context, key, nonce, OutputSinkType.ALARM_SERVICE_1001)
+        val claim = gate.claimOutput(
+            context = context,
+            key = key,
+            incomingNonce = nonce,
+            sink = OutputSinkType.ALARM_SERVICE_1001,
+            roomReceiptChecker = { _, _ -> false }
+        )
         val activeNonce = (claim as OutputAuthorizationResult.Authorized).activeNonce
 
-        val obs = gate.observePhysicalOutput(context, key, activeNonce, OutputSinkType.ALARM_SERVICE_1001)
+        val obs = gate.observePhysicalOutput(
+            context = context,
+            key = key,
+            activeNonce = activeNonce,
+            sink = OutputSinkType.ALARM_SERVICE_1001,
+            roomReceiptChecker = { _, _ -> false }
+        )
         assertTrue(obs is OutputAuthorizationResult.Authorized)
 
         val state = DirectBootLegacyClaimStore.inspectStorageState(context)
@@ -217,7 +269,13 @@ class SharedOutputAuthorityGateTest {
 
         val res = gate.reserveForServiceStart(context, key, LegacyClaimSource.ALARM_RECEIVER)
         val nonce = (res as OutputAuthorizationResult.Authorized).activeNonce
-        val claim = gate.claimOutput(context, key, nonce, OutputSinkType.ALARM_SERVICE_1001)
+        val claim = gate.claimOutput(
+            context = context,
+            key = key,
+            incomingNonce = nonce,
+            sink = OutputSinkType.ALARM_SERVICE_1001,
+            roomReceiptChecker = { _, _ -> false }
+        )
         val activeNonce = (claim as OutputAuthorizationResult.Authorized).activeNonce
 
         // Simulate concurrent Room receipt committed right before audio
@@ -251,36 +309,51 @@ class SharedOutputAuthorityGateTest {
 
         val res = gate.reserveForServiceStart(context, key, LegacyClaimSource.ALARM_RECEIVER)
         val nonce = (res as OutputAuthorizationResult.Authorized).activeNonce
-        val claim = gate.claimOutput(context, key, nonce, OutputSinkType.ALARM_SERVICE_1001)
+        val claim = gate.claimOutput(
+            context = context,
+            key = key,
+            incomingNonce = nonce,
+            sink = OutputSinkType.ALARM_SERVICE_1001,
+            roomReceiptChecker = { _, _ -> false }
+        )
         val activeNonce = (claim as OutputAuthorizationResult.Authorized).activeNonce
-        gate.observePhysicalOutput(context, key, activeNonce, OutputSinkType.ALARM_SERVICE_1001)
+        gate.observePhysicalOutput(
+            context = context,
+            key = key,
+            activeNonce = activeNonce,
+            sink = OutputSinkType.ALARM_SERVICE_1001,
+            roomReceiptChecker = { _, _ -> false }
+        )
         gate.completeTerminal(context, key, activeNonce, LegacyTerminalOutcome.CONSUMED_DISMISSED)
 
         // Attempt retirement before Room receipt exists: rejected
         val retireFail = gate.retireClaimWithProof(context, db, key)
         assertTrue(retireFail is LegacyClaimRetirementResult.Rejected)
 
-        // Insert valid Room 38 receipt
+        // Insert valid Room 38 receipt using Canonical Payload Hash V2
+        val completedAt = 8_000_100L
         val receipt = DirectBootOccurrenceReceipt(
             occurrenceKey = "occ_${key.alarmId}_${key.scheduledAt}",
             sourceRecordId = "rec-80",
-            recordType = "NORMAL",
+            recordType = "DELIVERED",
             alarmId = key.alarmId,
             triggerTime = key.scheduledAt,
             generation = 1,
             instanceToken = "tok-80",
             restoreEpoch = 10L,
-            sourcePayloadHash = DirectBootOccurrenceReceipt.calculateCanonicalPayloadHash(
+            sourcePayloadHash = DirectBootEventConsumerEngine.calculateCanonicalPayloadHashV2(
                 sourceRecordId = "rec-80",
-                recordType = "NORMAL",
+                recordType = "DELIVERED",
                 alarmId = key.alarmId,
                 triggerTime = key.scheduledAt,
+                eventTimestamp = completedAt,
                 generation = 1,
                 instanceToken = "tok-80",
-                restoreEpoch = 10L
+                restoreEpoch = 10L,
+                metadataString = ""
             ),
             consumerOutcome = "CONSUMED_DELIVERED",
-            completedAt = System.currentTimeMillis()
+            completedAt = completedAt
         )
         db.directBootOccurrenceReceiptDao().insert(receipt)
 
@@ -288,5 +361,74 @@ class SharedOutputAuthorityGateTest {
         val retireSuccess = gate.retireClaimWithProof(context, db, key)
         assertTrue(retireSuccess is LegacyClaimRetirementResult.Retired)
         assertEquals(0, (retireSuccess as LegacyClaimRetirementResult.Retired).remainingCount)
+    }
+
+    // =========================================================================
+    // S5-A1 Safety Correction GREEN Tests
+    // =========================================================================
+
+    @Test
+    fun testClaimOutput_nullRoomCheckerInCeMode_failsClosed() {
+        gate.isEnabled = true
+        val key = OutputOccurrenceKey(91L, 9_100L, 0)
+        val res = gate.reserveForServiceStart(context, key, LegacyClaimSource.ALARM_RECEIVER)
+        val nonce = (res as OutputAuthorizationResult.Authorized).activeNonce
+
+        // In CE available mode, null roomReceiptChecker must be rejected fail-closed
+        val claim = gate.claimOutput(
+            context = context,
+            key = key,
+            incomingNonce = nonce,
+            sink = OutputSinkType.ALARM_SERVICE_1001,
+            directBootModeOnly = false,
+            roomReceiptChecker = null
+        )
+        assertTrue("Null roomReceiptChecker in CE mode must fail closed", claim is OutputAuthorizationResult.StorageUnverifiableFailClosed)
+    }
+
+    @Test
+    fun testPreemption_unconfirmedStopFailsAuthorization() {
+        gate.isEnabled = true
+        val key1 = OutputOccurrenceKey(92L, 9_200L, 0)
+        val key2 = OutputOccurrenceKey(93L, 9_300L, 0)
+
+        val res1 = gate.reserveForServiceStart(context, key1, LegacyClaimSource.ALARM_RECEIVER)
+        val nonce1 = (res1 as OutputAuthorizationResult.Authorized).activeNonce
+        val claim1 = gate.claimOutput(context, key1, nonce1, OutputSinkType.ALARM_SERVICE_1001, roomReceiptChecker = { _, _ -> false })
+        assertTrue(claim1 is OutputAuthorizationResult.Authorized)
+
+        val res2 = gate.reserveForServiceStart(context, key2, LegacyClaimSource.ALARM_RECEIVER)
+        val nonce2 = (res2 as OutputAuthorizationResult.Authorized).activeNonce
+
+        // Candidate 2 attempts preemption, but stopPreemptedOwner returns false
+        val claim2 = gate.claimOutput(
+            context = context,
+            key = key2,
+            incomingNonce = nonce2,
+            sink = OutputSinkType.FULLSCREEN_FALLBACK_1001,
+            roomReceiptChecker = { _, _ -> false },
+            stopPreemptedOwner = { false }
+        )
+        assertFalse("New owner must not be authorized when stop confirmation fails", claim2 is OutputAuthorizationResult.Authorized)
+        assertEquals("Prior owner must remain active in arbiter", key1, gate.arbiter.activeHandle?.key)
+    }
+
+    @Test
+    fun testBootCount_unobtainableFailsClosed() {
+        gate.isEnabled = true
+        gate.bootCount = null
+        gate.bootCountProvider = { null } // Unobtainable boot count
+
+        val key = OutputOccurrenceKey(94L, 9_400L, 0)
+        val res = gate.reserveForServiceStart(context, key, LegacyClaimSource.ALARM_RECEIVER)
+        assertTrue("Unobtainable boot count must fail closed", res is OutputAuthorizationResult.StorageUnverifiableFailClosed)
+    }
+
+    @Test
+    fun testProcessSessionToken_uniquePerLifetime() {
+        val t1 = SharedOutputAuthorityGate.generateProcessSessionToken()
+        val t2 = SharedOutputAuthorityGate.generateProcessSessionToken()
+        assertNotEquals(t1, t2)
+        assertTrue(t1.startsWith("proc-"))
     }
 }

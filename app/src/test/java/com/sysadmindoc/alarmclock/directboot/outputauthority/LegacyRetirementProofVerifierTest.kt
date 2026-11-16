@@ -111,21 +111,26 @@ class LegacyRetirementProofVerifierTest {
         recordId: String = "rec-1",
         gen: Int = 1,
         token: String = "tok-1",
+        completedAt: Long = 1_000_100L,
+        recordType: String = "DELIVERED",
+        metadataString: String = "",
         hashOverride: String? = null
     ) {
-        val payloadHash = hashOverride ?: DirectBootOccurrenceReceipt.calculateCanonicalPayloadHash(
+        val payloadHash = hashOverride ?: com.sysadmindoc.alarmclock.directboot.DirectBootEventConsumerEngine.calculateCanonicalPayloadHashV2(
             sourceRecordId = recordId,
-            recordType = "NORMAL",
+            recordType = recordType,
             alarmId = alarmId,
             triggerTime = triggerTime,
+            eventTimestamp = completedAt,
             generation = gen,
             instanceToken = token,
-            restoreEpoch = restoreEpoch
+            restoreEpoch = restoreEpoch,
+            metadataString = metadataString
         )
         val receipt = DirectBootOccurrenceReceipt(
             occurrenceKey = "occ_${alarmId}_$triggerTime",
             sourceRecordId = recordId,
-            recordType = "NORMAL",
+            recordType = recordType,
             alarmId = alarmId,
             triggerTime = triggerTime,
             generation = gen,
@@ -133,7 +138,7 @@ class LegacyRetirementProofVerifierTest {
             restoreEpoch = restoreEpoch,
             sourcePayloadHash = payloadHash,
             consumerOutcome = outcome,
-            completedAt = System.currentTimeMillis()
+            completedAt = completedAt
         )
         db.directBootOccurrenceReceiptDao().insert(receipt)
     }
@@ -250,5 +255,40 @@ class LegacyRetirementProofVerifierTest {
         assertEquals("CONSUMED_DELIVERED", evidence.consumerOutcome)
         assertEquals(10L, evidence.restoreEpoch)
         assertNotNull(evidence.payloadHash)
+    }
+
+    @Test
+    fun testVerify_requiresCanonicalPayloadHashV2_andRejectsV1() {
+        val key = OutputOccurrenceKey(101L, 1_000L, 0)
+        seedTerminalClaim(key)
+
+        // Insert receipt with V1 hash
+        val v1Hash = DirectBootOccurrenceReceipt.calculateCanonicalPayloadHash(
+            sourceRecordId = "rec-v1",
+            recordType = "DELIVERED",
+            alarmId = key.alarmId,
+            triggerTime = key.scheduledAt,
+            generation = 1,
+            instanceToken = "tok-v1",
+            restoreEpoch = 10L
+        )
+        val v1Receipt = DirectBootOccurrenceReceipt(
+            occurrenceKey = "occ_${key.alarmId}_${key.scheduledAt}",
+            sourceRecordId = "rec-v1",
+            recordType = "DELIVERED",
+            alarmId = key.alarmId,
+            triggerTime = key.scheduledAt,
+            generation = 1,
+            instanceToken = "tok-v1",
+            restoreEpoch = 10L,
+            sourcePayloadHash = v1Hash,
+            consumerOutcome = "CONSUMED_DELIVERED",
+            completedAt = 1_000_100L
+        )
+        db.directBootOccurrenceReceiptDao().insert(v1Receipt)
+
+        val result = LegacyRetirementProofVerifier.verify(context, db, key)
+        assertTrue("V1 hash must be rejected in favor of V2", result is RetirementVerificationResult.Rejected)
+        assertTrue((result as RetirementVerificationResult.Rejected).reason.contains("Canonical Payload Hash V2 mismatch"))
     }
 }

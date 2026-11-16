@@ -15,6 +15,7 @@ import com.sysadmindoc.alarmclock.directboot.LegacyClaimWriteResult
 import com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome
 import com.sysadmindoc.alarmclock.directboot.OutputOccurrenceKey
 import com.sysadmindoc.alarmclock.directboot.WakeConfirmLineage
+import java.util.UUID
 
 sealed class OutputAuthorizationResult {
     data class Authorized(val activeNonce: String, val key: OutputOccurrenceKey) : OutputAuthorizationResult()
@@ -32,13 +33,22 @@ sealed class OutputAuthorizationResult {
 /**
  * Authoritative production foundation coordinating output authority across Legacy and DirectBoot lanes.
  * Initial state is OFF (isEnabled = false).
+ *
+ * Invariants enforced:
+ * 1. Fail-closed Room 38 verification: In CE available mode, null/failing Room checkers reject fail-closed.
+ * 2. Strict Lock Separation: DE StorageLock is never held while invoking Arbiter, Room I/O, external callbacks, or Binder.
+ * 3. Preemption Stop Confirmation: Preceding output owner must be confirmed stopped before new owner is authorized.
+ * 4. Provenance Protection: Process session token is uniquely bound to process lifetime; bootCount is dynamically resolved.
+ * 5. Retirement Proof Freshness: DirectBootLegacyClaimStore retires claims exclusively via typed, non-expired evidence.
  */
 class SharedOutputAuthorityGate(
     val arbiter: OutputResourceArbiter = OutputResourceArbiter(),
     val verifier: LegacyRetirementProofVerifier = LegacyRetirementProofVerifier,
-    var processSessionToken: String = "proc-${android.os.Process.myPid()}",
-    var bootCount: Long = 1L
+    var processSessionToken: String = generateProcessSessionToken(),
+    var bootCount: Long? = null
 ) {
+    var bootCountProvider: ((Context) -> Long?)? = null
+
     /**
      * Feature flag controlling activation of Shared Output Authority.
      * Default: false (OFF). When false, the gate is inactive and does not alter legacy paths.
@@ -54,6 +64,20 @@ class SharedOutputAuthorityGate(
         return "$prefix-$nonceCounter-${System.currentTimeMillis()}"
     }
 
+    fun resolveBootCount(context: Context): Long? {
+        bootCountProvider?.let { return it(context) }
+        bootCount?.let { return it }
+        return try {
+            val count = android.provider.Settings.Global.getInt(
+                context.contentResolver,
+                android.provider.Settings.Global.BOOT_COUNT
+            )
+            if (count >= 0) count.toLong() else null
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
     fun reserveForServiceStart(
         context: Context,
         key: OutputOccurrenceKey,
@@ -65,6 +89,9 @@ class SharedOutputAuthorityGate(
         if (key.alarmId <= 0L || key.scheduledAt <= 0L || key.refireCount !in 0..3) {
             return OutputAuthorizationResult.StaleOrConflictRejected("Invalid occurrence key: $key")
         }
+
+        val effectiveBootCount = resolveBootCount(context)
+            ?: return OutputAuthorizationResult.StorageUnverifiableFailClosed("Boot count unobtainable")
 
         val deContext = if (context.isDeviceProtectedStorage) context else context.createDeviceProtectedStorageContext()
 
@@ -109,7 +136,7 @@ class SharedOutputAuthorityGate(
                 source = source,
                 claimNonce = handoverNonce,
                 processSessionToken = processSessionToken,
-                bootCount = bootCount,
+                bootCount = effectiveBootCount,
                 state = LegacyClaimState.START_REQUESTED
             )
 
@@ -141,12 +168,21 @@ class SharedOutputAuthorityGate(
         incomingNonce: String,
         sink: OutputSinkType,
         directBootModeOnly: Boolean = false,
-        roomReceiptChecker: ((Long, Long) -> Boolean)? = null
+        roomReceiptChecker: ((Long, Long) -> Boolean)? = null,
+        stopPreemptedOwner: ((ActiveOutputHandle) -> Boolean)? = null
     ): OutputAuthorizationResult {
         if (!isEnabled) return OutputAuthorizationResult.GateDisabled
 
         if (incomingNonce.isBlank()) {
             return OutputAuthorizationResult.StaleOrConflictRejected("Blank claimNonce")
+        }
+
+        val effectiveBootCount = resolveBootCount(context)
+            ?: return OutputAuthorizationResult.StorageUnverifiableFailClosed("Boot count unobtainable")
+
+        // Fail-closed verification: in CE mode, roomReceiptChecker is mandatory
+        if (!directBootModeOnly && roomReceiptChecker == null) {
+            return OutputAuthorizationResult.StorageUnverifiableFailClosed("Room receipt checker required when CE is available")
         }
 
         val deContext = if (context.isDeviceProtectedStorage) context else context.createDeviceProtectedStorageContext()
@@ -170,7 +206,7 @@ class SharedOutputAuthorityGate(
             }
 
             // Provenance check
-            if (existing.processSessionToken != processSessionToken || existing.bootCount != bootCount) {
+            if (existing.processSessionToken != processSessionToken || existing.bootCount != effectiveBootCount) {
                 if (existing.state != LegacyClaimState.TERMINAL) {
                     DirectBootLegacyClaimStore.transition(
                         context = deContext,
@@ -180,7 +216,7 @@ class SharedOutputAuthorityGate(
                         expectedNonce = existing.claimNonce,
                         newNonce = nextNonce("unknown"),
                         processSessionToken = processSessionToken,
-                        bootCount = bootCount
+                        bootCount = effectiveBootCount
                     )
                 }
                 return OutputAuthorizationResult.UnknownStateBlocked("Process/boot provenance mismatch")
@@ -197,7 +233,7 @@ class SharedOutputAuthorityGate(
                         expectedNonce = existing.claimNonce,
                         newNonce = nextNonce("term-v2"),
                         processSessionToken = processSessionToken,
-                        bootCount = bootCount,
+                        bootCount = effectiveBootCount,
                         terminalOutcome = LegacyTerminalOutcome.DUPLICATE_ABORTED
                     )
                 }
@@ -225,7 +261,7 @@ class SharedOutputAuthorityGate(
                 expectedNonce = incomingNonce,
                 newNonce = rotated,
                 processSessionToken = processSessionToken,
-                bootCount = bootCount
+                bootCount = effectiveBootCount
             )
 
             when (tr) {
@@ -243,21 +279,26 @@ class SharedOutputAuthorityGate(
             val receiptExists = try {
                 roomReceiptChecker(key.alarmId, key.scheduledAt)
             } catch (e: Exception) {
-                abortClaiming(deContext, key, activeNonce, LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+                abortClaiming(deContext, key, activeNonce, effectiveBootCount, LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
                 return OutputAuthorizationResult.StorageUnverifiableFailClosed("Room check exception: ${e.message}")
             }
 
             if (receiptExists) {
-                abortClaiming(deContext, key, activeNonce, LegacyTerminalOutcome.DUPLICATE_ABORTED)
+                abortClaiming(deContext, key, activeNonce, effectiveBootCount, LegacyTerminalOutcome.DUPLICATE_ABORTED)
                 return OutputAuthorizationResult.DuplicateRejected("Room receipt already exists")
             }
         }
 
-        // PHASE 3: Arbiter acquisition
-        val (acquired, preempted) = arbiter.acquirePending(key, sink, activeNonce)
+        // PHASE 3: Arbiter acquisition outside DE lock with stop confirmation
+        val (acquired, preempted) = arbiter.acquirePending(
+            key = key,
+            sink = sink,
+            activeNonce = activeNonce,
+            stopPreemptedOwner = stopPreemptedOwner
+        )
         if (!acquired) {
-            abortClaiming(deContext, key, activeNonce, LegacyTerminalOutcome.DUPLICATE_ABORTED)
-            return OutputAuthorizationResult.DuplicateRejected("Occurrence $key already active in OutputResourceArbiter")
+            abortClaiming(deContext, key, activeNonce, effectiveBootCount, LegacyTerminalOutcome.DUPLICATE_ABORTED)
+            return OutputAuthorizationResult.DuplicateRejected("Occurrence $key unconfirmed in OutputResourceArbiter")
         }
 
         if (preempted != null) {
@@ -270,7 +311,7 @@ class SharedOutputAuthorityGate(
                     expectedNonce = preempted.activeNonce,
                     newNonce = nextNonce("preempt"),
                     processSessionToken = processSessionToken,
-                    bootCount = bootCount,
+                    bootCount = effectiveBootCount,
                     terminalOutcome = LegacyTerminalOutcome.CONSUMED_PREEMPTED
                 )
             }
@@ -288,42 +329,63 @@ class SharedOutputAuthorityGate(
     ): OutputAuthorizationResult {
         if (!isEnabled) return OutputAuthorizationResult.GateDisabled
 
+        val effectiveBootCount = resolveBootCount(context)
+            ?: return OutputAuthorizationResult.StorageUnverifiableFailClosed("Boot count unobtainable")
+
         val deContext = if (context.isDeviceProtectedStorage) context else context.createDeviceProtectedStorageContext()
 
-        // Check V2 cross-lane
+        // Cross-lane check against V2
         checkV2CrossLane(deContext, key)?.let {
             arbiter.releaseIfMatches(key, activeNonce)
-            abortClaiming(deContext, key, activeNonce, LegacyTerminalOutcome.DUPLICATE_ABORTED)
+            abortClaiming(deContext, key, activeNonce, effectiveBootCount, LegacyTerminalOutcome.DUPLICATE_ABORTED)
             return it
         }
 
-        // Check Room receipt
-        if (roomReceiptChecker != null && roomReceiptChecker(key.alarmId, key.scheduledAt)) {
-            arbiter.releaseIfMatches(key, activeNonce)
-            abortClaiming(deContext, key, activeNonce, LegacyTerminalOutcome.DUPLICATE_ABORTED)
-            return OutputAuthorizationResult.DuplicateRejected("Room receipt committed prior to physical output")
+        // Room receipt check outside lock
+        if (roomReceiptChecker != null) {
+            val receiptExists = try {
+                roomReceiptChecker(key.alarmId, key.scheduledAt)
+            } catch (e: Exception) {
+                arbiter.releaseIfMatches(key, activeNonce)
+                abortClaiming(deContext, key, activeNonce, effectiveBootCount, LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+                return OutputAuthorizationResult.StorageUnverifiableFailClosed("Room check exception: ${e.message}")
+            }
+            if (receiptExists) {
+                arbiter.releaseIfMatches(key, activeNonce)
+                abortClaiming(deContext, key, activeNonce, effectiveBootCount, LegacyTerminalOutcome.DUPLICATE_ABORTED)
+                return OutputAuthorizationResult.DuplicateRejected("Room receipt committed prior to physical output")
+            }
         }
 
-        synchronized(DirectBootStorageLock.lock) {
-            val tr = DirectBootLegacyClaimStore.transition(
+        // DE transition under DE lock
+        val tr = synchronized(DirectBootStorageLock.lock) {
+            DirectBootLegacyClaimStore.transition(
                 context = deContext,
                 key = key,
                 expectedFrom = LegacyClaimState.OUTPUT_CLAIMING,
                 toState = LegacyClaimState.OUTPUT_OBSERVED,
                 expectedNonce = activeNonce,
-                newNonce = activeNonce, // Preserve activeNonce for terminal dismiss/snooze/preemption
+                newNonce = activeNonce, // Preserve activeNonce
                 processSessionToken = processSessionToken,
-                bootCount = bootCount
+                bootCount = effectiveBootCount
             )
-            return when (tr) {
-                is LegacyClaimWriteResult.Committed -> {
-                    arbiter.confirmObserved(key, activeNonce)
+        }
+
+        // OUTSIDE DE lock: update arbiter and confirm handle
+        return when (tr) {
+            is LegacyClaimWriteResult.Committed -> {
+                val confirmed = arbiter.confirmObserved(key, activeNonce)
+                if (confirmed) {
                     OutputAuthorizationResult.Authorized(activeNonce, key)
-                }
-                else -> {
+                } else {
                     arbiter.releaseIfMatches(key, activeNonce)
-                    OutputAuthorizationResult.StaleOrConflictRejected("observePhysicalOutput failed: $tr")
+                    abortClaiming(deContext, key, activeNonce, effectiveBootCount, LegacyTerminalOutcome.CONSUMED_PREEMPTED)
+                    OutputAuthorizationResult.StaleOrConflictRejected("Arbiter handle modified before physical observation confirmed")
                 }
+            }
+            else -> {
+                arbiter.releaseIfMatches(key, activeNonce)
+                OutputAuthorizationResult.StaleOrConflictRejected("observePhysicalOutput failed: $tr")
             }
         }
     }
@@ -337,10 +399,14 @@ class SharedOutputAuthorityGate(
     ): OutputAuthorizationResult {
         if (!isEnabled) return OutputAuthorizationResult.GateDisabled
 
+        val effectiveBootCount = resolveBootCount(context)
+            ?: return OutputAuthorizationResult.StorageUnverifiableFailClosed("Boot count unobtainable")
+
         val deContext = if (context.isDeviceProtectedStorage) context else context.createDeviceProtectedStorageContext()
 
-        synchronized(DirectBootStorageLock.lock) {
-            val tr = DirectBootLegacyClaimStore.transition(
+        // DE transition under DE lock
+        val tr = synchronized(DirectBootStorageLock.lock) {
+            DirectBootLegacyClaimStore.transition(
                 context = deContext,
                 key = key,
                 expectedFrom = LegacyClaimState.OUTPUT_OBSERVED,
@@ -348,17 +414,18 @@ class SharedOutputAuthorityGate(
                 expectedNonce = activeNonce,
                 newNonce = nextNonce("term"),
                 processSessionToken = processSessionToken,
-                bootCount = bootCount,
+                bootCount = effectiveBootCount,
                 terminalOutcome = outcome,
                 wakeConfirm = wakeConfirm
             )
+        }
 
-            arbiter.releaseIfMatches(key, activeNonce)
+        // OUTSIDE DE lock: release arbiter handle
+        arbiter.releaseIfMatches(key, activeNonce)
 
-            return when (tr) {
-                is LegacyClaimWriteResult.Committed -> OutputAuthorizationResult.Authorized(activeNonce, key)
-                else -> OutputAuthorizationResult.StaleOrConflictRejected("completeTerminal failed: $tr")
-            }
+        return when (tr) {
+            is LegacyClaimWriteResult.Committed -> OutputAuthorizationResult.Authorized(activeNonce, key)
+            else -> OutputAuthorizationResult.StaleOrConflictRejected("completeTerminal failed: $tr")
         }
     }
 
@@ -374,12 +441,9 @@ class SharedOutputAuthorityGate(
                 return LegacyClaimRetirementResult.Rejected("Retirement verification rejected: ${verification.reason}")
         }
 
-        return DirectBootLegacyClaimStore.retireQualifiedTerminal(
+        return DirectBootLegacyClaimStore.retireWithEvidence(
             context = context,
-            key = key,
-            hasCeDurableProof = true,
-            isAbsentFromV2QueueAndOwner = true,
-            ageMsOnly = false
+            evidence = verifiedEvidence
         )
     }
 
@@ -387,6 +451,7 @@ class SharedOutputAuthorityGate(
         context: Context,
         key: OutputOccurrenceKey,
         activeNonce: String,
+        bootCount: Long,
         outcome: LegacyTerminalOutcome
     ) {
         synchronized(DirectBootStorageLock.lock) {
@@ -439,6 +504,14 @@ class SharedOutputAuthorityGate(
     }
 
     companion object {
+        fun generateProcessSessionToken(): String {
+            val pid = android.os.Process.myPid()
+            val time = System.currentTimeMillis()
+            val uuid = UUID.randomUUID().toString().take(8)
+            val sessionToken = "proc-$pid-$time-$uuid"
+            return sessionToken
+        }
+
         @Volatile
         private var instance: SharedOutputAuthorityGate? = null
 

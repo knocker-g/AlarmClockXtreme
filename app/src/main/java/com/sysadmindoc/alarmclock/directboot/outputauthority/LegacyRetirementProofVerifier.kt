@@ -4,10 +4,16 @@ import android.content.Context
 import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 import com.sysadmindoc.alarmclock.data.local.entity.DirectBootOccurrenceReceipt
 import com.sysadmindoc.alarmclock.directboot.DirectBootAlarmCache
+import com.sysadmindoc.alarmclock.directboot.DirectBootDeliveryLedger
 import com.sysadmindoc.alarmclock.directboot.DirectBootDurableOwnerStore
+import com.sysadmindoc.alarmclock.directboot.DirectBootEventConsumerEngine
 import com.sysadmindoc.alarmclock.directboot.DirectBootLegacyClaimStore
+import com.sysadmindoc.alarmclock.directboot.DirectBootMissedStore
+import com.sysadmindoc.alarmclock.directboot.LedgerStorageState
+import com.sysadmindoc.alarmclock.directboot.LegacyClaimSource
 import com.sysadmindoc.alarmclock.directboot.LegacyClaimState
 import com.sysadmindoc.alarmclock.directboot.LegacyClaimStorageState
+import com.sysadmindoc.alarmclock.directboot.MissedStoreStorageState
 import com.sysadmindoc.alarmclock.directboot.OutputOccurrenceKey
 import com.sysadmindoc.alarmclock.directboot.OwnerReadResult
 import com.sysadmindoc.alarmclock.directboot.QueueStorageState
@@ -16,6 +22,8 @@ data class VerifiedRetirementEvidence(
     val key: OutputOccurrenceKey,
     val receiptId: String,
     val occurrenceKey: String,
+    val recordType: String = "DELIVERED",
+    val source: LegacyClaimSource = LegacyClaimSource.ALARM_RECEIVER,
     val payloadHash: String,
     val restoreEpoch: Long,
     val consumerOutcome: String,
@@ -30,7 +38,7 @@ sealed class RetirementVerificationResult {
 /**
  * Authoritative verifier for Legacy Claim retirement.
  * Ensures claims are only retired upon cryptographic, durable proof from Room 38
- * and verifiable absence from DE V2 queues/owners.
+ * using Canonical Payload Hash V2 (ACX_RECEIPT_V2) and verifiable absence from DE V2 queues/owners.
  * Raw boolean retirement without verified evidence is strictly prohibited.
  */
 object LegacyRetirementProofVerifier {
@@ -75,18 +83,38 @@ object LegacyRetirementProofVerifier {
             return RetirementVerificationResult.Rejected("Ineligible consumer outcome '${receipt.consumerOutcome}'; allowed: $VALID_CONSUMER_OUTCOMES")
         }
 
-        // 5. Verify Canonical Payload Hash
-        val expectedHash = DirectBootOccurrenceReceipt.calculateCanonicalPayloadHash(
+        // 5. Verify Length-Prefixed Canonical Payload Hash V2 (ACX_RECEIPT_V2)
+        val metadataString = when (receipt.recordType) {
+            "DELIVERED" -> {
+                val ledger = DirectBootDeliveryLedger.readUnacknowledgedRecords(deContext)
+                if (ledger is LedgerStorageState.ValidWithRecords) {
+                    ledger.records.find { it.recordId == receipt.sourceRecordId }?.provenance ?: ""
+                } else ""
+            }
+            "MISSED" -> {
+                val missed = DirectBootMissedStore.readUnacknowledgedRecords(deContext)
+                if (missed is MissedStoreStorageState.ValidWithRecords) {
+                    missed.records.find { it.recordId == receipt.sourceRecordId }?.classification ?: ""
+                } else ""
+            }
+            else -> ""
+        }
+
+        val expectedHashV2 = DirectBootEventConsumerEngine.calculateCanonicalPayloadHashV2(
             sourceRecordId = receipt.sourceRecordId,
             recordType = receipt.recordType,
             alarmId = receipt.alarmId,
             triggerTime = receipt.triggerTime,
+            eventTimestamp = receipt.completedAt,
             generation = receipt.generation,
             instanceToken = receipt.instanceToken,
-            restoreEpoch = receipt.restoreEpoch
+            restoreEpoch = receipt.restoreEpoch,
+            metadataString = metadataString
         )
-        if (receipt.sourcePayloadHash != expectedHash) {
-            return RetirementVerificationResult.Rejected("Payload hash mismatch: found ${receipt.sourcePayloadHash}, expected $expectedHash")
+        if (receipt.sourcePayloadHash != expectedHashV2) {
+            return RetirementVerificationResult.Rejected(
+                "Payload hash mismatch (Canonical Payload Hash V2 mismatch): found ${receipt.sourcePayloadHash}, expected $expectedHashV2"
+            )
         }
 
         // 6. Verify Absence from V2 Queue (DirectBootAlarmCache)
@@ -126,6 +154,8 @@ object LegacyRetirementProofVerifier {
                 key = key,
                 receiptId = receipt.sourceRecordId,
                 occurrenceKey = receipt.occurrenceKey,
+                recordType = receipt.recordType,
+                source = claimRecord.source,
                 payloadHash = receipt.sourcePayloadHash,
                 restoreEpoch = receipt.restoreEpoch,
                 consumerOutcome = receipt.consumerOutcome
