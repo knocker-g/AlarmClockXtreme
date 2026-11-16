@@ -535,5 +535,24 @@ class DirectBootLegacyClaimStoreTest {
         )
         assertTrue("Boot count mismatch must be rejected", resBootMismatch is LegacyClaimWriteResult.RejectedInvalidTransition)
     }
+
+    @Test
+    fun testRetireWithEvidence_rejectsExpiredEvidence() {
+        val claim = sampleClaim(state = LegacyClaimState.TERMINAL, terminalOutcome = LegacyTerminalOutcome.CONSUMED_DISMISSED)
+        DirectBootLegacyClaimStore.writeInitialClaim(context, claim)
+
+        val expiredEvidence = com.sysadmindoc.alarmclock.directboot.outputauthority.VerifiedRetirementEvidence(
+            key = claim.key,
+            receiptId = "rec-1",
+            occurrenceKey = "occ_${claim.alarmId}_${claim.scheduledAt}",
+            payloadHash = "hash1",
+            restoreEpoch = 10L,
+            consumerOutcome = "CONSUMED_DELIVERED",
+            verifiedAt = System.currentTimeMillis() - 60_000L
+        )
+        val result = DirectBootLegacyClaimStore.retireWithEvidence(context, expiredEvidence, evidenceMaxAgeMs = 10_000L)
+        assertTrue("Expired evidence must be rejected", result is LegacyClaimRetirementResult.Rejected)
+        assertTrue((result as LegacyClaimRetirementResult.Rejected).reason.contains("expired"))
+    }
 }
 
