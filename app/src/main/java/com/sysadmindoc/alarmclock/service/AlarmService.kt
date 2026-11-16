@@ -3669,6 +3669,9 @@ class AlarmService : Service() {
         scheduledAt: Long,
         refireCount: Int = currentWakeConfirmRefireCount
     ) {
+        val dismissNowMs = System.currentTimeMillis()
+        val delayMinutes = alarm.wakeConfirmDelayMinutes.coerceAtLeast(1).toLong()
+        val scheduledDueAtMillis = dismissNowMs + delayMinutes * 60_000L
         val commitResult = withContext(Dispatchers.IO) {
             WakeConfirmOccurrenceStore.commitDismissLineage(
                 context = this@AlarmService,
@@ -3677,7 +3680,10 @@ class AlarmService : Service() {
                 fireId = fireId,
                 refireCount = refireCount,
                 wakeConfirmEnabled = alarm.wakeConfirmEnabled,
-                isRecurringSchedule = alarm.isRecurringSchedule
+                isRecurringSchedule = alarm.isRecurringSchedule,
+                nowMillis = dismissNowMs,
+                delayMinutes = delayMinutes,
+                scheduledDueAtMillis = scheduledDueAtMillis
             )
         }
         if (commitResult !is WakeConfirmOccurrenceStore.CommitResult.Committed) {
@@ -3698,7 +3704,8 @@ class AlarmService : Service() {
         }
 
         val stepToken = commitResult.record.stepToken
-        // Strictly outside DE/Room locks: enqueue occurrence-scoped WorkManager job
+        // Strictly outside DE/Room locks: enqueue occurrence-scoped WorkManager job off Main thread
+        // and verify both Operation completion and WorkInfo identity before confirming DE lineage.
         val plan = AlarmPostDismissController.wakeConfirmationPlan(
             alarm = alarm,
             fireId = fireId,
@@ -3706,24 +3713,23 @@ class AlarmService : Service() {
             refireCount = refireCount,
             stepToken = stepToken
         )
-        val request = OneTimeWorkRequestBuilder<WakeConfirmWorker>()
-            .setInitialDelay(plan.delayMinutes, TimeUnit.MINUTES)
-            .setInputData(plan.inputData)
-            .addTag(plan.tag)
-            .build()
-        val enqueued = try {
-            WorkManager.getInstance(applicationContext)
-                .enqueueUniqueWork(
-                    plan.uniqueWorkName,
-                    ExistingWorkPolicy.REPLACE,
-                    request
-                )
-            true
-        } catch (e: Exception) {
-            Log.w(TAG, "WorkManager enqueue failed for WakeConfirm (${alarm.id}, $scheduledAt); DE lineage retained for retry", e)
-            false
-        }
-        if (!enqueued) {
+        val effectiveDueAtMs = WakeConfirmOccurrenceStore.resolveOriginalDueAtMillis(commitResult.record, alarm)
+            ?: scheduledDueAtMillis
+        val initialDelayMs = (effectiveDueAtMs - System.currentTimeMillis()).coerceAtLeast(0L)
+        val enqueueResult = WakeConfirmOccurrenceStore.enqueueAndVerifyWakeConfirmWork(
+            context = applicationContext,
+            alarmId = alarm.id,
+            scheduledAt = scheduledAt,
+            plan = plan,
+            initialDelayMs = initialDelayMs,
+            policy = ExistingWorkPolicy.REPLACE,
+            reuseExistingIfPresent = false
+        )
+        if (enqueueResult is WakeConfirmOccurrenceStore.EnqueueVerificationResult.Failed) {
+            Log.w(
+                TAG,
+                "WorkManager enqueue failed for WakeConfirm (${alarm.id}, $scheduledAt): ${enqueueResult.reason}; DE lineage retained for retry"
+            )
             recordIncidentAsync(
                 type = AlarmIncidentEvent.TYPE_WAKE_CONFIRM,
                 status = AlarmIncidentEvent.STATUS_FAILED,
@@ -3735,13 +3741,29 @@ class AlarmService : Service() {
             )
             return
         }
-        withContext(Dispatchers.IO) {
+        val confirmResult = withContext(Dispatchers.IO) {
             WakeConfirmOccurrenceStore.markEnqueueConfirmed(
                 context = this@AlarmService,
                 alarmId = alarm.id,
                 scheduledAt = scheduledAt,
                 stepToken = stepToken
             )
+        }
+        if (confirmResult !is WakeConfirmOccurrenceStore.CommitResult.Committed) {
+            Log.w(
+                TAG,
+                "Failed to confirm WakeConfirm DE enqueue for (${alarm.id}, $scheduledAt): $confirmResult"
+            )
+            recordIncidentAsync(
+                type = AlarmIncidentEvent.TYPE_WAKE_CONFIRM,
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "WAKE_CONFIRM_ENQUEUE_CONFIRM_COMMIT_FAILED",
+                source = "AlarmService",
+                alarmId = alarm.id,
+                fireId = fireId,
+                scheduledAt = scheduledAt
+            )
+            return
         }
         recordIncidentAsync(
             type = AlarmIncidentEvent.TYPE_WAKE_CONFIRM,

@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.room.withTransaction
 import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
 import com.sysadmindoc.alarmclock.data.local.entity.DirectBootOccurrenceReceipt
+import com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.nio.charset.StandardCharsets
@@ -102,19 +103,22 @@ object DirectBootEventConsumerEngine {
     /**
      * Main entrypoint to process all unconsumed CE takeover records after device unlock.
      */
+    @JvmOverloads
     suspend fun consumePendingTakeoverRecords(
         context: Context,
         ceContext: Context,
-        database: AlarmDatabase
+        database: AlarmDatabase,
+        authorityGate: SharedOutputAuthorityGate = SharedOutputAuthorityGate.getInstance(ceContext)
     ): ConsumerExecutionResult {
         return consumerMutex.withLock {
-            consumePendingTakeoverRecordsInternal(ceContext, database)
+            consumePendingTakeoverRecordsInternal(ceContext, database, authorityGate)
         }
     }
 
     private suspend fun consumePendingTakeoverRecordsInternal(
         ceContext: Context,
-        database: AlarmDatabase
+        database: AlarmDatabase,
+        authorityGate: SharedOutputAuthorityGate
     ): ConsumerExecutionResult {
         val storageState = DirectBootCeTakeoverStore.inspectStorageState(ceContext)
         val pendingRecords = when (storageState) {
@@ -263,6 +267,25 @@ object DirectBootEventConsumerEngine {
                         is CeSlotReleaseResult.Released,
                         is CeSlotReleaseResult.AlreadyAbsent -> {
                             ceSlotsReleasedCount++
+                            // Step 7: Legacy Claim Retirement Eligibility Verification (when Output Authority is enabled)
+                            if (authorityGate.isEnabled) {
+                                val step7Error = attemptLegacyClaimRetirementStep7(
+                                    deContext = deContext,
+                                    ceContext = ceContext,
+                                    database = database,
+                                    proof = proof,
+                                    authorityGate = authorityGate
+                                )
+                                if (step7Error != null) {
+                                    failures.add(
+                                        RecordRetirementFailure(
+                                            occurrenceKey = record.occurrenceKey,
+                                            stage = "LEGACY_RETIREMENT",
+                                            details = step7Error
+                                        )
+                                    )
+                                }
+                            }
                         }
                         else -> {
                             failures.add(
@@ -298,6 +321,61 @@ object DirectBootEventConsumerEngine {
                 ceSlotsReleasedCount = ceSlotsReleasedCount,
                 failures = failures.toList()
             )
+        }
+    }
+
+    private fun attemptLegacyClaimRetirementStep7(
+        deContext: Context,
+        ceContext: Context,
+        database: AlarmDatabase,
+        proof: VerifiedRoomReceiptProof,
+        authorityGate: SharedOutputAuthorityGate
+    ): String? {
+        val legacyKey = OutputOccurrenceKey(proof.ceRecord.alarmId, proof.ceRecord.triggerTime, 0)
+        val claimState = DirectBootLegacyClaimStore.inspectStorageState(deContext)
+        val existingClaim = when (claimState) {
+            is LegacyClaimStorageState.Absent,
+            is LegacyClaimStorageState.ValidEmpty -> return null
+            is LegacyClaimStorageState.ValidWithRecords ->
+                claimState.records.firstOrNull { it.key == legacyKey } ?: return null
+            is LegacyClaimStorageState.Corrupt -> {
+                val detail = "Legacy claim storage corrupt: ${claimState.reason}"
+                return detail
+            }
+            is LegacyClaimStorageState.UnsupportedSchema -> {
+                val detail = "Legacy claim storage unsupported schema: ${claimState.foundVersion}"
+                return detail
+            }
+        }
+
+        if (existingClaim.state == LegacyClaimState.UNKNOWN) {
+            val reconcileResult = authorityGate.reconcileUnknownWithCeProof(
+                deContext = deContext,
+                ceContext = ceContext,
+                database = database,
+                ceRecord = proof.ceRecord,
+                receipt = proof.receipt
+            )
+            if (reconcileResult !is LegacyClaimWriteResult.Committed) {
+                val detail = "Failed to reconcile UNKNOWN legacy claim $legacyKey: $reconcileResult"
+                return detail
+            }
+        } else if (existingClaim.state != LegacyClaimState.TERMINAL) {
+            val detail = "Legacy claim $legacyKey is in non-terminal state ${existingClaim.state}"
+            return detail
+        }
+
+        return when (
+            val retireResult = authorityGate.retireClaimWithProof(
+                context = deContext,
+                database = database,
+                key = legacyKey,
+                verifiedCeRecord = proof.ceRecord,
+                ceContext = ceContext
+            )
+        ) {
+            is LegacyClaimRetirementResult.Retired -> null
+            is LegacyClaimRetirementResult.Rejected -> retireResult.reason
         }
     }
 

@@ -2,10 +2,19 @@ package com.sysadmindoc.alarmclock.directboot.outputauthority
 
 import android.content.Context
 import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
+import com.sysadmindoc.alarmclock.data.local.entity.DirectBootOccurrenceReceipt
+import com.sysadmindoc.alarmclock.directboot.CeTakeoverRecord
+import com.sysadmindoc.alarmclock.directboot.CeTakeoverStorageState
+import com.sysadmindoc.alarmclock.directboot.DirectBootAlarmCache
+import com.sysadmindoc.alarmclock.directboot.DirectBootCeTakeoverStore
 import com.sysadmindoc.alarmclock.directboot.DirectBootDeliveryLedger
 import com.sysadmindoc.alarmclock.directboot.DirectBootDurableOwnerStore
+import com.sysadmindoc.alarmclock.directboot.DirectBootEventConsumerEngine
+import com.sysadmindoc.alarmclock.directboot.DirectBootFiredWitnessLedger
 import com.sysadmindoc.alarmclock.directboot.DirectBootLegacyClaimStore
+import com.sysadmindoc.alarmclock.directboot.DirectBootMissedStore
 import com.sysadmindoc.alarmclock.directboot.DirectBootStorageLock
+import com.sysadmindoc.alarmclock.directboot.LedgerStorageState
 import com.sysadmindoc.alarmclock.directboot.LegacyClaimRecord
 import com.sysadmindoc.alarmclock.directboot.LegacyClaimRetirementResult
 import com.sysadmindoc.alarmclock.directboot.LegacyClaimSource
@@ -13,8 +22,12 @@ import com.sysadmindoc.alarmclock.directboot.LegacyClaimState
 import com.sysadmindoc.alarmclock.directboot.LegacyClaimStorageState
 import com.sysadmindoc.alarmclock.directboot.LegacyClaimWriteResult
 import com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome
+import com.sysadmindoc.alarmclock.directboot.MissedStoreStorageState
 import com.sysadmindoc.alarmclock.directboot.OutputOccurrenceKey
+import com.sysadmindoc.alarmclock.directboot.OwnerReadResult
+import com.sysadmindoc.alarmclock.directboot.QueueStorageState
 import com.sysadmindoc.alarmclock.directboot.WakeConfirmLineage
+import com.sysadmindoc.alarmclock.directboot.WitnessLedgerState
 import java.util.UUID
 
 sealed class OutputAuthorizationResult {
@@ -509,12 +522,21 @@ class SharedOutputAuthorityGate(
         }
     }
 
+    @JvmOverloads
     fun retireClaimWithProof(
         context: Context,
         database: AlarmDatabase,
-        key: OutputOccurrenceKey
+        key: OutputOccurrenceKey,
+        verifiedCeRecord: CeTakeoverRecord? = null,
+        ceContext: Context? = if (context.isDeviceProtectedStorage) null else context
     ): LegacyClaimRetirementResult {
-        val verification = verifier.verify(context, database, key)
+        val verification = verifier.verify(
+            context = context,
+            database = database,
+            key = key,
+            verifiedCeRecord = verifiedCeRecord,
+            ceContext = ceContext
+        )
         val verifiedEvidence = when (verification) {
             is RetirementVerificationResult.Verified -> verification.evidence
             is RetirementVerificationResult.Rejected ->
@@ -525,6 +547,194 @@ class SharedOutputAuthorityGate(
             context = context,
             evidence = verifiedEvidence
         )
+    }
+
+    /**
+     * Reconciles a pinned [LegacyClaimState.UNKNOWN] primary claim to [LegacyClaimState.TERMINAL]
+     * with [LegacyTerminalOutcome.RECONCILED_CE] ONLY when backed by a verified Room 38 receipt,
+     * valid Canonical Payload Hash V2, released CE slot, and absent V2 DE queues/owners.
+     */
+    fun reconcileUnknownWithCeProof(
+        deContext: Context,
+        ceContext: Context,
+        database: AlarmDatabase,
+        ceRecord: CeTakeoverRecord,
+        receipt: DirectBootOccurrenceReceipt
+    ): LegacyClaimWriteResult {
+        val key = OutputOccurrenceKey(ceRecord.alarmId, ceRecord.triggerTime, 0)
+        if (!isEnabled) {
+            return LegacyClaimWriteResult.RejectedInvalidTransition(
+                from = LegacyClaimState.UNKNOWN,
+                to = LegacyClaimState.TERMINAL,
+                reason = "Output authority gate is disabled"
+            )
+        }
+        val effectiveBootCount = resolveBootCount(ceContext)
+            ?: return LegacyClaimWriteResult.RejectedPersistenceFailed("Boot count unobtainable")
+        if (ceRecord.restoreEpoch <= 0L || receipt.restoreEpoch != ceRecord.restoreEpoch) {
+            return LegacyClaimWriteResult.RejectedInvalidTransition(
+                from = LegacyClaimState.UNKNOWN,
+                to = LegacyClaimState.TERMINAL,
+                reason = "Restore epoch invalid or mismatched: ce=${ceRecord.restoreEpoch}, receipt=${receipt.restoreEpoch}"
+            )
+        }
+        if (receipt.consumerOutcome !in LegacyRetirementProofVerifier.VALID_CONSUMER_OUTCOMES) {
+            return LegacyClaimWriteResult.RejectedInvalidTransition(
+                from = LegacyClaimState.UNKNOWN,
+                to = LegacyClaimState.TERMINAL,
+                reason = "Ineligible consumer outcome: ${receipt.consumerOutcome}"
+            )
+        }
+        if (receipt.occurrenceKey != ceRecord.occurrenceKey ||
+            receipt.sourceRecordId != ceRecord.sourceRecordId ||
+            receipt.recordType != ceRecord.recordType ||
+            receipt.alarmId != ceRecord.alarmId ||
+            receipt.triggerTime != ceRecord.triggerTime ||
+            receipt.generation != ceRecord.generation ||
+            receipt.instanceToken != ceRecord.instanceToken
+        ) {
+            return LegacyClaimWriteResult.RejectedInvalidTransition(
+                from = LegacyClaimState.UNKNOWN,
+                to = LegacyClaimState.TERMINAL,
+                reason = "Receipt/CE record identity mismatch for ${ceRecord.occurrenceKey}"
+            )
+        }
+
+        val metadataString = when (ceRecord) {
+            is CeTakeoverRecord.Delivered -> ceRecord.provenance
+            is CeTakeoverRecord.Missed -> ceRecord.classification
+        }
+        val expectedHash = DirectBootEventConsumerEngine.calculateCanonicalPayloadHashV2(
+            sourceRecordId = receipt.sourceRecordId,
+            recordType = receipt.recordType,
+            alarmId = receipt.alarmId,
+            triggerTime = receipt.triggerTime,
+            eventTimestamp = receipt.completedAt,
+            generation = receipt.generation,
+            instanceToken = receipt.instanceToken,
+            restoreEpoch = receipt.restoreEpoch,
+            metadataString = metadataString
+        )
+        if (receipt.sourcePayloadHash != expectedHash) {
+            return LegacyClaimWriteResult.RejectedInvalidTransition(
+                from = LegacyClaimState.UNKNOWN,
+                to = LegacyClaimState.TERMINAL,
+                reason = "Canonical Payload Hash V2 mismatch for ${ceRecord.occurrenceKey}"
+            )
+        }
+
+        // Verify Room readback outside DE lock
+        val persistedReceipt = try {
+            database.directBootOccurrenceReceiptDao().findByOccurrenceKey(receipt.occurrenceKey)
+        } catch (e: Exception) {
+            return LegacyClaimWriteResult.RejectedPersistenceFailed("Room readback exception: ${e.message}")
+        }
+        if (persistedReceipt != receipt) {
+            return LegacyClaimWriteResult.RejectedInvalidTransition(
+                from = LegacyClaimState.UNKNOWN,
+                to = LegacyClaimState.TERMINAL,
+                reason = "Room 38 receipt readback mismatch"
+            )
+        }
+
+        // Verify CE Takeover Slot is released outside DE lock
+        when (val ceState = DirectBootCeTakeoverStore.inspectStorageState(ceContext)) {
+            is CeTakeoverStorageState.Absent,
+            is CeTakeoverStorageState.ValidEmpty -> Unit
+            is CeTakeoverStorageState.ValidWithRecords -> {
+                if (ceState.records.any { it.alarmId == key.alarmId && it.triggerTime == key.scheduledAt }) {
+                    return LegacyClaimWriteResult.RejectedInvalidTransition(
+                        from = LegacyClaimState.UNKNOWN,
+                        to = LegacyClaimState.TERMINAL,
+                        reason = "CE takeover slot still present for $key"
+                    )
+                }
+            }
+            is CeTakeoverStorageState.CeLocked ->
+                return LegacyClaimWriteResult.RejectedPersistenceFailed("CE locked: ${ceState.reason}")
+            is CeTakeoverStorageState.CeContextRejected ->
+                return LegacyClaimWriteResult.RejectedInvalidTransition(
+                    from = LegacyClaimState.UNKNOWN,
+                    to = LegacyClaimState.TERMINAL,
+                    reason = ceState.reason
+                )
+            is CeTakeoverStorageState.Corrupt ->
+                return LegacyClaimWriteResult.RejectedStorageCorrupt(ceState.reason)
+            is CeTakeoverStorageState.UnsupportedSchema ->
+                return LegacyClaimWriteResult.RejectedUnsupportedSchema(
+                    ceState.foundVersion,
+                    DirectBootCeTakeoverStore.CURRENT_SCHEMA_VERSION
+                )
+        }
+
+        // Verify V2 cross-lane & queue absence outside/before claim transition
+        checkV2CrossLane(deContext, key)?.let {
+            return LegacyClaimWriteResult.RejectedInvalidTransition(
+                from = LegacyClaimState.UNKNOWN,
+                to = LegacyClaimState.TERMINAL,
+                reason = "V2 cross-lane active or unverifiable: $it"
+            )
+        }
+        when (val cacheState = DirectBootAlarmCache.inspectQueueStorageState(deContext)) {
+            is QueueStorageState.Absent,
+            is QueueStorageState.ValidEmpty -> Unit
+            is QueueStorageState.ValidWithItems -> {
+                if (cacheState.items.any { it.alarmId == key.alarmId && it.triggerTime == key.scheduledAt }) {
+                    return LegacyClaimWriteResult.RejectedInvalidTransition(
+                        from = LegacyClaimState.UNKNOWN,
+                        to = LegacyClaimState.TERMINAL,
+                        reason = "Occurrence still in V2 candidate queue"
+                    )
+                }
+            }
+            is QueueStorageState.Corrupt ->
+                return LegacyClaimWriteResult.RejectedStorageCorrupt(cacheState.reason)
+            is QueueStorageState.UnsupportedSchema ->
+                return LegacyClaimWriteResult.RejectedUnsupportedSchema(
+                    cacheState.foundVersion,
+                    com.sysadmindoc.alarmclock.directboot.DirectBootQueueItem.CURRENT_SCHEMA_VERSION
+                )
+        }
+
+        synchronized(DirectBootStorageLock.lock) {
+            val state = DirectBootLegacyClaimStore.inspectStorageState(deContext)
+            val existing = when (state) {
+                is LegacyClaimStorageState.ValidWithRecords -> state.records.firstOrNull { it.key == key }
+                is LegacyClaimStorageState.Corrupt ->
+                    return LegacyClaimWriteResult.RejectedStorageCorrupt(state.reason)
+                is LegacyClaimStorageState.UnsupportedSchema ->
+                    return LegacyClaimWriteResult.RejectedUnsupportedSchema(
+                        state.foundVersion,
+                        DirectBootLegacyClaimStore.CURRENT_SCHEMA_VERSION
+                    )
+                is LegacyClaimStorageState.Absent,
+                is LegacyClaimStorageState.ValidEmpty -> null
+            } ?: return LegacyClaimWriteResult.RejectedInvalidTransition(
+                from = null,
+                to = LegacyClaimState.TERMINAL,
+                reason = "Missing UNKNOWN claim for $key"
+            )
+
+            if (existing.state != LegacyClaimState.UNKNOWN) {
+                return LegacyClaimWriteResult.RejectedInvalidTransition(
+                    from = existing.state,
+                    to = LegacyClaimState.TERMINAL,
+                    reason = "Claim is not in UNKNOWN state (${existing.state})"
+                )
+            }
+
+            return DirectBootLegacyClaimStore.transition(
+                context = deContext,
+                key = key,
+                expectedFrom = LegacyClaimState.UNKNOWN,
+                toState = LegacyClaimState.TERMINAL,
+                expectedNonce = existing.claimNonce,
+                newNonce = nextNonce("reconcile-ce"),
+                processSessionToken = processSessionToken,
+                bootCount = effectiveBootCount,
+                terminalOutcome = LegacyTerminalOutcome.RECONCILED_CE
+            )
+        }
     }
 
     fun abortClaim(
@@ -614,17 +824,17 @@ class SharedOutputAuthorityGate(
     private fun checkV2CrossLane(context: Context, key: OutputOccurrenceKey): OutputAuthorizationResult? {
         val ownerResult = DirectBootDurableOwnerStore.read(context)
         val inOwner = when (ownerResult) {
-            is com.sysadmindoc.alarmclock.directboot.OwnerReadResult.Success -> {
+            is OwnerReadResult.Absent -> false
+            is OwnerReadResult.Success -> {
                 val owner = ownerResult.owner
                 val inClaim = owner.handoverClaim?.let { it.alarmId == key.alarmId && it.triggerTime == key.scheduledAt } ?: false
                 val inSession = owner.activeSession?.let { it.alarmId == key.alarmId && it.triggerTime == key.scheduledAt } ?: false
                 inClaim || inSession
             }
-            is com.sysadmindoc.alarmclock.directboot.OwnerReadResult.Corrupt ->
+            is OwnerReadResult.Corrupt ->
                 return OutputAuthorizationResult.StorageUnverifiableFailClosed("Durable owner corrupt: ${ownerResult.reason}")
-            is com.sysadmindoc.alarmclock.directboot.OwnerReadResult.UnsupportedSchema ->
+            is OwnerReadResult.UnsupportedSchema ->
                 return OutputAuthorizationResult.StorageUnverifiableFailClosed("Durable owner unsupported schema: ${ownerResult.foundVersion}")
-            else -> false
         }
         if (inOwner) {
             return OutputAuthorizationResult.V2LaneOwnedRejected("Occurrence $key is owned by V2 Durable Owner")
@@ -632,14 +842,49 @@ class SharedOutputAuthorityGate(
 
         val ledgerState = DirectBootDeliveryLedger.readUnacknowledgedRecords(context)
         val inLedger = when (ledgerState) {
-            is com.sysadmindoc.alarmclock.directboot.LedgerStorageState.ValidWithRecords ->
+            is LedgerStorageState.Absent,
+            is LedgerStorageState.ValidEmpty -> false
+            is LedgerStorageState.ValidWithRecords ->
                 ledgerState.records.any { it.alarmId == key.alarmId && it.triggerTime == key.scheduledAt && it.provenance != "LEGACY_DELIVERY" }
-            is com.sysadmindoc.alarmclock.directboot.LedgerStorageState.Corrupt ->
-                return OutputAuthorizationResult.StorageUnverifiableFailClosed("Delivery ledger corrupt")
-            else -> false
+            is LedgerStorageState.Corrupt ->
+                return OutputAuthorizationResult.StorageUnverifiableFailClosed("Delivery ledger corrupt: ${ledgerState.reason}")
+            is LedgerStorageState.UnsupportedSchema ->
+                return OutputAuthorizationResult.StorageUnverifiableFailClosed("Delivery ledger unsupported schema: ${ledgerState.foundVersion}")
         }
         if (inLedger) {
             return OutputAuthorizationResult.V2LaneOwnedRejected("Occurrence $key has unacknowledged V2 delivery record")
+        }
+
+        val missedState = DirectBootMissedStore.readUnacknowledgedRecords(context)
+        val inMissed = when (missedState) {
+            is MissedStoreStorageState.Absent,
+            is MissedStoreStorageState.ValidEmpty -> false
+            is MissedStoreStorageState.ValidWithRecords ->
+                missedState.records.any { it.alarmId == key.alarmId && it.triggerTime == key.scheduledAt }
+            is MissedStoreStorageState.Corrupt ->
+                return OutputAuthorizationResult.StorageUnverifiableFailClosed("Missed store corrupt: ${missedState.reason}")
+            is MissedStoreStorageState.UnsupportedSchema ->
+                return OutputAuthorizationResult.StorageUnverifiableFailClosed("Missed store unsupported schema: ${missedState.foundVersion}")
+            is MissedStoreStorageState.PersistenceUncertain ->
+                return OutputAuthorizationResult.StorageUnverifiableFailClosed("Missed store uncertain: ${missedState.reason}")
+        }
+        if (inMissed) {
+            return OutputAuthorizationResult.V2LaneOwnedRejected("Occurrence $key has unacknowledged V2 missed record")
+        }
+
+        val witnessState = DirectBootFiredWitnessLedger.readWitnesses(context)
+        val inWitness = when (witnessState) {
+            is WitnessLedgerState.Absent,
+            is WitnessLedgerState.ValidEmpty -> false
+            is WitnessLedgerState.ValidWithRecords ->
+                witnessState.records.any { it.alarmId == key.alarmId && it.triggerTime == key.scheduledAt }
+            is WitnessLedgerState.Corrupt ->
+                return OutputAuthorizationResult.StorageUnverifiableFailClosed("Witness ledger corrupt: ${witnessState.reason}")
+            is WitnessLedgerState.UnsupportedSchema ->
+                return OutputAuthorizationResult.StorageUnverifiableFailClosed("Witness ledger unsupported schema: ${witnessState.foundVersion}")
+        }
+        if (inWitness) {
+            return OutputAuthorizationResult.V2LaneOwnedRejected("Occurrence $key has unacknowledged V2 witness record")
         }
 
         return null
