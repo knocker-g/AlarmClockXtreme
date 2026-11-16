@@ -26,11 +26,21 @@ import com.sysadmindoc.alarmclock.data.model.Alarm
 object AlarmFullScreenFallback {
     private const val TAG = "AlarmFullScreenFallback"
 
-    private val postedNonces = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private const val MAX_POSTED_NONCES = 100
+    private val reservationLock = Any()
+    private val inFlightReservations = mutableMapOf<com.sysadmindoc.alarmclock.directboot.OutputOccurrenceKey, String>()
+    private val postedNonces = object : LinkedHashMap<String, com.sysadmindoc.alarmclock.directboot.OutputOccurrenceKey>(MAX_POSTED_NONCES, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, com.sysadmindoc.alarmclock.directboot.OutputOccurrenceKey>?): Boolean {
+            return size > MAX_POSTED_NONCES
+        }
+    }
 
     @androidx.annotation.VisibleForTesting
     fun clearForTesting() {
-        postedNonces.clear()
+        synchronized(reservationLock) {
+            inFlightReservations.clear()
+            postedNonces.clear()
+        }
     }
 
     /**
@@ -77,17 +87,32 @@ object AlarmFullScreenFallback {
         ) return false
 
         val gate = authorityGate ?: com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate.getInstance(context)
-        val activeNonce: String?
-        val key = if (gate.isEnabled) {
-            if (claimNonce.isNullOrBlank()) {
-                Log.w(TAG, "Fallback rejected: claimNonce is null or blank when gate is enabled")
+        if (!gate.isEnabled) {
+            return postLegacy(context, alarmId, scheduledAt, fireId, hideLabel, label)
+        }
+
+        if (claimNonce.isNullOrBlank()) {
+            Log.w(TAG, "Fallback rejected: claimNonce is null or blank when gate is enabled")
+            return false
+        }
+
+        val occKey = com.sysadmindoc.alarmclock.directboot.OutputOccurrenceKey(alarmId, scheduledAt, refireCount)
+        val reserved = synchronized(reservationLock) {
+            if (postedNonces.containsKey(claimNonce)) {
+                Log.w(TAG, "Fallback rejected: claimNonce $claimNonce already posted")
                 return false
             }
-            if (postedNonces.contains(claimNonce)) {
-                Log.w(TAG, "Fallback rejected: double-post for claimNonce=$claimNonce")
+            if (inFlightReservations.containsKey(occKey) || inFlightReservations.containsValue(claimNonce)) {
+                Log.w(TAG, "Fallback rejected: in-flight reservation exists for $occKey / $claimNonce")
                 return false
             }
-            val occKey = com.sysadmindoc.alarmclock.directboot.OutputOccurrenceKey(alarmId, scheduledAt, refireCount)
+            inFlightReservations[occKey] = claimNonce
+            true
+        }
+        if (!reserved) return false
+
+        var activeNonce: String? = null
+        return try {
             val auth = gate.claimOutput(
                 context = context,
                 key = occKey,
@@ -100,14 +125,93 @@ object AlarmFullScreenFallback {
                 Log.w(TAG, "Fallback rejected by authority gate: $auth")
                 return false
             }
-            postedNonces.add(claimNonce)
             activeNonce = auth.activeNonce
-            occKey
-        } else {
-            activeNonce = null
-            null
-        }
 
+            val firingIntent = AlarmFireDismissContract.firingActivityIntent(
+                context, alarmId, scheduledAt, fireId
+            )
+            val fullScreenPi = PendingIntent.getActivity(
+                context,
+                alarmId.toInt() + 30000,
+                firingIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val builder = NotificationCompat.Builder(context, AlarmService.CHANNEL_ALARM)
+                .setSmallIcon(R.drawable.ic_alarm)
+                .setContentTitle(context.getString(R.string.notif_alarm_title))
+                .setContentText(label.ifBlank { context.getString(R.string.notif_alarm_title) })
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setFullScreenIntent(fullScreenPi, true)
+                .setContentIntent(fullScreenPi)
+                .setAutoCancel(true)
+                .setOngoing(false)
+            if (hideLabel || label.isBlank()) {
+                val publicVersion = NotificationCompat.Builder(context, AlarmService.CHANNEL_ALARM)
+                    .setSmallIcon(R.drawable.ic_alarm)
+                    .setContentTitle(context.getString(R.string.notif_alarm_title))
+                    .setContentText(context.getString(R.string.notif_alarm_ringing))
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setCategory(NotificationCompat.CATEGORY_ALARM)
+                    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                    .setContentIntent(fullScreenPi)
+                    .setAutoCancel(true)
+                    .setOngoing(false)
+                    .build()
+                builder
+                    .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                    .setPublicVersion(publicVersion)
+            } else {
+                builder.setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            }
+
+            val obs = gate.observePhysicalOutput(
+                context = context,
+                key = occKey,
+                activeNonce = activeNonce,
+                sink = com.sysadmindoc.alarmclock.directboot.outputauthority.OutputSinkType.FULLSCREEN_FALLBACK_1001,
+                roomReceiptChecker = roomReceiptChecker
+            )
+            if (obs !is com.sysadmindoc.alarmclock.directboot.outputauthority.OutputAuthorizationResult.Authorized) {
+                Log.w(TAG, "Fallback observePhysicalOutput failed: $obs")
+                gate.abortClaim(context, occKey, activeNonce, com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+                return false
+            }
+
+            NotificationManagerCompat.from(context)
+                .notify(AlarmService.NOTIFICATION_ID, builder.build())
+
+            synchronized(reservationLock) {
+                postedNonces[claimNonce] = occKey
+            }
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Full-screen fallback failed for $alarmId", e)
+            if (activeNonce != null) {
+                gate.abortClaim(context, occKey, activeNonce, com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT)
+            }
+            false
+        } finally {
+            synchronized(reservationLock) {
+                inFlightReservations.remove(occKey)
+            }
+        }
+    }
+
+    @android.annotation.SuppressLint("MissingPermission")
+    private fun postLegacy(
+        context: Context,
+        alarmId: Long,
+        scheduledAt: Long,
+        fireId: String,
+        hideLabel: Boolean,
+        label: String
+    ): Boolean {
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) return false
         return try {
             val firingIntent = AlarmFireDismissContract.firingActivityIntent(
                 context, alarmId, scheduledAt, fireId
@@ -146,29 +250,11 @@ object AlarmFullScreenFallback {
             } else {
                 builder.setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             }
-            if (key != null && activeNonce != null) {
-                val obs = gate.observePhysicalOutput(
-                    context = context,
-                    key = key,
-                    activeNonce = activeNonce,
-                    sink = com.sysadmindoc.alarmclock.directboot.outputauthority.OutputSinkType.FULLSCREEN_FALLBACK_1001,
-                    roomReceiptChecker = roomReceiptChecker
-                )
-                if (obs !is com.sysadmindoc.alarmclock.directboot.outputauthority.OutputAuthorizationResult.Authorized) {
-                    Log.w(TAG, "Fallback observePhysicalOutput failed: $obs")
-                    if (claimNonce != null) postedNonces.remove(claimNonce)
-                    return false
-                }
-            }
             NotificationManagerCompat.from(context)
                 .notify(AlarmService.NOTIFICATION_ID, builder.build())
             true
         } catch (e: Exception) {
-            Log.e(TAG, "Full-screen fallback failed for $alarmId", e)
-            if (key != null && activeNonce != null) {
-                gate.arbiter.releaseIfMatches(key, activeNonce)
-                if (claimNonce != null) postedNonces.remove(claimNonce)
-            }
+            Log.e(TAG, "Legacy full-screen fallback failed for $alarmId", e)
             false
         }
     }

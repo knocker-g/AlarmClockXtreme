@@ -447,6 +447,45 @@ class SharedOutputAuthorityGate(
         )
     }
 
+    fun abortClaim(
+        context: Context,
+        key: OutputOccurrenceKey,
+        activeNonce: String,
+        outcome: LegacyTerminalOutcome = LegacyTerminalOutcome.REJECTED_NO_OUTPUT
+    ): Boolean {
+        if (!isEnabled) return false
+        val effectiveBootCount = resolveBootCount(context) ?: return false
+        val deContext = if (context.isDeviceProtectedStorage) context else context.createDeviceProtectedStorageContext()
+        arbiter.releaseIfMatches(key, activeNonce)
+        return synchronized(DirectBootStorageLock.lock) {
+            val state = DirectBootLegacyClaimStore.inspectStorageState(deContext)
+            val records = when (state) {
+                is LegacyClaimStorageState.ValidWithRecords -> state.records
+                else -> emptyList()
+            }
+            val existing = records.firstOrNull { it.key == key } ?: return@synchronized false
+            if (existing.claimNonce != activeNonce) {
+                return@synchronized false
+            }
+            if (existing.state == LegacyClaimState.OUTPUT_CLAIMING || existing.state == LegacyClaimState.OUTPUT_OBSERVED) {
+                val tr = DirectBootLegacyClaimStore.transition(
+                    context = deContext,
+                    key = key,
+                    expectedFrom = existing.state,
+                    toState = LegacyClaimState.TERMINAL,
+                    expectedNonce = activeNonce,
+                    newNonce = nextNonce("abort"),
+                    processSessionToken = processSessionToken,
+                    bootCount = effectiveBootCount,
+                    terminalOutcome = outcome
+                )
+                tr is LegacyClaimWriteResult.Committed
+            } else {
+                false
+            }
+        }
+    }
+
     private fun abortClaiming(
         context: Context,
         key: OutputOccurrenceKey,
