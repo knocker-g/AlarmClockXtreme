@@ -467,4 +467,73 @@ class DirectBootLegacyClaimStoreTest {
         val state = DirectBootLegacyClaimStore.inspectStorageState(context)
         assertEquals(1, (state as LegacyClaimStorageState.ValidWithRecords).records.size)
     }
+
+    // =========================================================================
+    // 9. S5-A Nonce and Provenance Strict Enforcement (RED -> GREEN)
+    // =========================================================================
+
+    @Test
+    fun testTransition_rejectsNullOrBlankExpectedNonce() {
+        val claim = sampleClaim(nonce = "nonce-valid")
+        DirectBootLegacyClaimStore.writeInitialClaim(context, claim)
+
+        // Passing null expectedNonce must be rejected fail-closed
+        val resNull = DirectBootLegacyClaimStore.transition(
+            context = context,
+            key = claim.key,
+            expectedFrom = LegacyClaimState.CLAIMED_RECEIVER,
+            toState = LegacyClaimState.START_REQUESTED,
+            expectedNonce = null,
+            newNonce = "nonce-next",
+            processSessionToken = "proc-1",
+            bootCount = 10L
+        )
+        assertTrue("Null expectedNonce must be rejected", resNull is LegacyClaimWriteResult.RejectedInvalidTransition)
+
+        // Passing blank expectedNonce must be rejected fail-closed
+        val resBlank = DirectBootLegacyClaimStore.transition(
+            context = context,
+            key = claim.key,
+            expectedFrom = LegacyClaimState.CLAIMED_RECEIVER,
+            toState = LegacyClaimState.START_REQUESTED,
+            expectedNonce = "   ",
+            newNonce = "nonce-next",
+            processSessionToken = "proc-1",
+            bootCount = 10L
+        )
+        assertTrue("Blank expectedNonce must be rejected", resBlank is LegacyClaimWriteResult.RejectedInvalidTransition)
+    }
+
+    @Test
+    fun testTransition_rejectsProvenanceMismatch_whenNotTransitioningToUnknown() {
+        val claim = sampleClaim(proc = "proc-1", boot = 10L, nonce = "n1")
+        DirectBootLegacyClaimStore.writeInitialClaim(context, claim)
+
+        // Process token mismatch must be rejected
+        val resProcMismatch = DirectBootLegacyClaimStore.transition(
+            context = context,
+            key = claim.key,
+            expectedFrom = LegacyClaimState.CLAIMED_RECEIVER,
+            toState = LegacyClaimState.START_REQUESTED,
+            expectedNonce = "n1",
+            newNonce = "n2",
+            processSessionToken = "proc-2-rogue",
+            bootCount = 10L
+        )
+        assertTrue("Process session token mismatch must be rejected", resProcMismatch is LegacyClaimWriteResult.RejectedInvalidTransition)
+
+        // Boot count mismatch must be rejected
+        val resBootMismatch = DirectBootLegacyClaimStore.transition(
+            context = context,
+            key = claim.key,
+            expectedFrom = LegacyClaimState.CLAIMED_RECEIVER,
+            toState = LegacyClaimState.START_REQUESTED,
+            expectedNonce = "n1",
+            newNonce = "n2",
+            processSessionToken = "proc-1",
+            bootCount = 11L
+        )
+        assertTrue("Boot count mismatch must be rejected", resBootMismatch is LegacyClaimWriteResult.RejectedInvalidTransition)
+    }
 }
+
