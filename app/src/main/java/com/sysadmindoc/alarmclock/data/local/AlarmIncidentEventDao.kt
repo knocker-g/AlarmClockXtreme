@@ -87,6 +87,14 @@ interface AlarmIncidentEventDao {
     )
     suspend fun countDismissedIncidentsByOccurrence(alarmId: Long, scheduledAt: Long): Int
 
+    @Query(
+        "SELECT DISTINCT scheduledAt FROM alarm_incident_events " +
+            "WHERE alarmId = :alarmId AND status = 'SUCCEEDED' " +
+            "AND reasonCode IN ('DISMISSED', 'MAX_SNOOZE_DISMISSED') AND scheduledAt > 0 " +
+            "ORDER BY eventAt DESC LIMIT 5"
+    )
+    suspend fun findRecentDismissedScheduledTimes(alarmId: Long): List<Long>
+
     @Query("DELETE FROM alarm_incident_events")
     suspend fun deleteAll()
 }

@@ -51,6 +51,18 @@ class AlarmHealthWorker @AssistedInject constructor(
             return Result.retry()
         }
 
+        try {
+            WakeConfirmOccurrenceStore.recoverPendingEnqueues(
+                context = applicationContext,
+                alarmRepository = alarmRepository,
+                trigger = WakeConfirmOccurrenceStore.RecoveryTrigger.HEALTH_CHECK
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            android.util.Log.w("AlarmHealthWorker", "Pending WakeConfirm recovery failed", e)
+        }
+
         val hasEnabledAlarms = alarmRepository.getEnabled().isNotEmpty()
         if (!hasEnabledAlarms) {
             cancelWarningNotification()

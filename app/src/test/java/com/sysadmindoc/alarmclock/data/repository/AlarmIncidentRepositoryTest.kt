@@ -281,6 +281,20 @@ class AlarmIncidentRepositoryTest {
                 it.reasonCode in listOf("DISMISSED", "MAX_SNOOZE_DISMISSED")
         }
 
+        override suspend fun findRecentDismissedScheduledTimes(
+            alarmId: Long
+        ): List<Long> = inserted
+            .filter {
+                it.alarmId == alarmId &&
+                    it.status == AlarmIncidentEvent.STATUS_SUCCEEDED &&
+                    it.reasonCode in listOf("DISMISSED", "MAX_SNOOZE_DISMISSED") &&
+                    it.scheduledAt > 0L
+            }
+            .sortedByDescending { it.eventAt }
+            .map { it.scheduledAt }
+            .distinct()
+            .take(5)
+
         override suspend fun deleteOlderThan(beforeMs: Long) {
             deleteOlderThanCalled = true
             deletedBeforeMs = beforeMs
