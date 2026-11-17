@@ -3,8 +3,10 @@ package com.sysadmindoc.alarmclock.directboot
 import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
+import android.os.Build
 import android.text.format.DateFormat
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.util.AlarmTimeFormatter
 import org.json.JSONArray
@@ -45,17 +47,25 @@ object DirectBootAlarmCache {
             timeLabel = formatTriggerTime(context, triggerTime),
             now = now
         )
-        val current = read(context)
-        if (current == null ||
-            !current.isSchedulable(now) ||
-            current.alarmId == snapshot.alarmId ||
-            snapshot.triggerTime < current.triggerTime
-        ) {
-            write(context, snapshot)
+        synchronized(DirectBootStorageLock.lock) {
+            val current = readLocked(context)
+            if (current == null ||
+                !current.isSchedulable(now) ||
+                current.alarmId == snapshot.alarmId ||
+                snapshot.triggerTime < current.triggerTime
+            ) {
+                writeLocked(context, snapshot)
+            }
         }
     }
 
     fun clear(context: Context) {
+        synchronized(DirectBootStorageLock.lock) {
+            clearLocked(context)
+        }
+    }
+
+    private fun clearLocked(context: Context) {
         prefs(context).edit()
             .remove(KEY_SCHEMA_VERSION)
             .remove(KEY_ALARM_ID)
@@ -71,73 +81,220 @@ object DirectBootAlarmCache {
     }
 
     fun removeIfMatches(context: Context, alarmId: Long) {
-        val current = read(context)
-        if (current?.alarmId == alarmId) {
-            cancelScheduledFallback(context, alarmId)
-            clear(context)
+        val matches = synchronized(DirectBootStorageLock.lock) {
+            readLocked(context)?.alarmId == alarmId
+        }
+        if (!matches) return
+
+        cancelScheduledFallbackWithResult(context, alarmId)
+        synchronized(DirectBootStorageLock.lock) {
+            if (readLocked(context)?.alarmId == alarmId) {
+                clearLocked(context)
+            }
         }
     }
 
-    fun scheduleCachedAlarm(context: Context, now: Long = System.currentTimeMillis()): Boolean {
-        val snapshot = read(context)
-        if (snapshot?.isSchedulable(now) != true) {
-            clear(context)
-            return false
+    /**
+     * Legacy compatibility entrypoint. Returns `true` ONLY when OS exact registration
+     * (`setAlarmClock` or post-`SecurityException` `setExactAndAllowWhileIdle`) succeeded and
+     * post-OS recheck confirmed snapshot/witness consistency.
+     */
+    fun scheduleCachedAlarm(context: Context, now: Long = System.currentTimeMillis()): Boolean =
+        scheduleCachedAlarmWithResult(context, now).isArmed
+
+    /**
+     * Authoritative C7-R1 typed fallback registration entrypoint.
+     * Production runtime strictly enforces `V2_OUTPUT = DEFAULT_DENY` (`isV2DeliveryCapable = false`).
+     */
+    fun scheduleCachedAlarmWithResult(
+        context: Context,
+        now: Long = System.currentTimeMillis()
+    ): DirectBootFallbackScheduleResult =
+        scheduleCachedAlarmWithResultInternal(
+            context = context,
+            now = now,
+            v2DeliveryCapable = false
+        )
+
+    @VisibleForTesting
+    internal fun scheduleCachedAlarmWithResultInternal(
+        context: Context,
+        now: Long = System.currentTimeMillis(),
+        v2DeliveryCapable: Boolean = false,
+        alarmManagerProvider: (Context) -> AlarmManager? = { ctx ->
+            ctx.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+        },
+        canScheduleExactAlarms: (AlarmManager) -> Boolean = { am ->
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.S || am.canScheduleExactAlarms()
+        },
+        operationPendingIntentProvider: (Context, DirectBootAlarmSnapshot) -> PendingIntent? = { ctx, snap ->
+            DirectBootAlarmReceiver.pendingIntent(ctx, snap)
+        },
+        showPendingIntentProvider: (Context, DirectBootAlarmSnapshot) -> PendingIntent? = { ctx, snap ->
+            showIntent(ctx, snap)
+        },
+        alarmClockRegistrar: (AlarmManager, AlarmManager.AlarmClockInfo, PendingIntent) -> Unit = { am, info, op ->
+            am.setAlarmClock(info, op)
+        },
+        exactIdleRegistrar: (AlarmManager, Long, PendingIntent) -> Unit = { am, triggerAt, op ->
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, op)
+        },
+        onAfterOsRegistrationBeforeRecheck: (() -> Unit)? = null
+    ): DirectBootFallbackScheduleResult {
+        val protectedContext = protectedContext(context)
+        val preCheck = synchronized(DirectBootStorageLock.lock) {
+            val snapshot = readLocked(protectedContext)
+            evaluatePreOsStateLocked(
+                protectedContext = protectedContext,
+                snapshot = snapshot,
+                now = now,
+                v2DeliveryCapable = v2DeliveryCapable
+            )
         }
 
-        return try {
-            scheduleFallback(context, snapshot)
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to schedule direct-boot fallback alarm", e)
-            false
+        val ready = when (preCheck) {
+            is PreOsDecision.Blocked -> return preCheck.result
+            is PreOsDecision.Ready -> preCheck
+        }
+
+        val osResult = scheduleFallback(
+            context = protectedContext,
+            snapshot = ready.snapshot,
+            v2Diagnostics = ready.v2Diagnostics,
+            alarmManagerProvider = alarmManagerProvider,
+            canScheduleExactAlarms = canScheduleExactAlarms,
+            operationPendingIntentProvider = operationPendingIntentProvider,
+            showPendingIntentProvider = showPendingIntentProvider,
+            alarmClockRegistrar = alarmClockRegistrar,
+            exactIdleRegistrar = exactIdleRegistrar
+        )
+
+        if (!osResult.isArmed) {
+            return osResult
+        }
+
+        onAfterOsRegistrationBeforeRecheck?.invoke()
+
+        // Post-OS recheck under DE lock. Because Legacy A and B with the same alarmId share the exact
+        // same PendingIntent token (data=null, requestCode=alarmId.toInt()), R1 strictly withholds
+        // post-OS cancelScheduledFallback() and reports RegistrationOutcomeUnknown instead.
+        return synchronized(DirectBootStorageLock.lock) {
+            val postSnapshot = readLocked(protectedContext)
+            val firedWitness = hasFiredWitnessLocked(
+                protectedContext,
+                ready.snapshot.alarmId,
+                ready.snapshot.triggerTime
+            )
+            when {
+                firedWitness -> DirectBootFallbackScheduleResult.RegistrationOutcomeUnknown(
+                    alarmId = ready.snapshot.alarmId,
+                    triggerTime = ready.snapshot.triggerTime,
+                    reason = PostOsUnknownReason.FIRED_WITNESS_DURING_REGISTRATION_COMPENSATION_WITHHELD,
+                    observedSnapshot = postSnapshot,
+                    compensationAttempted = false
+                )
+                postSnapshot != ready.snapshot -> DirectBootFallbackScheduleResult.RegistrationOutcomeUnknown(
+                    alarmId = ready.snapshot.alarmId,
+                    triggerTime = ready.snapshot.triggerTime,
+                    reason = PostOsUnknownReason.SNAPSHOT_SUPERSEDED_DURING_REGISTRATION,
+                    observedSnapshot = postSnapshot,
+                    compensationAttempted = false
+                )
+                else -> osResult
+            }
         }
     }
 
     fun cancelScheduledFallback(context: Context, alarmId: Long) {
+        val result = cancelScheduledFallbackWithResult(context, alarmId)
+        if (result is DirectBootFallbackCancelResult.CancelFailedUnknown) {
+            Log.w(TAG, "Direct-Boot fallback cancellation failed (OS state UNKNOWN) for alarm $alarmId", result.cause)
+        }
+    }
+
+    fun cancelScheduledFallbackWithResult(
+        context: Context,
+        alarmId: Long
+    ): DirectBootFallbackCancelResult = cancelScheduledFallbackWithResultInternal(context, alarmId)
+
+    @VisibleForTesting
+    internal fun cancelScheduledFallbackWithResultInternal(
+        context: Context,
+        alarmId: Long,
+        pendingIntentLookup: (Context, Long) -> PendingIntent? = { ctx, id ->
+            DirectBootAlarmReceiver.pendingIntent(
+                context = ctx,
+                snapshot = DirectBootAlarmSnapshot(
+                    alarmId = id,
+                    triggerTime = 1L,
+                    label = "",
+                    timeLabel = "",
+                    playDefaultSound = true,
+                    vibrationEnabled = true,
+                    updatedAt = 0L
+                ),
+                flags = PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+            )
+        },
+        alarmManagerProvider: (Context) -> AlarmManager? = { ctx ->
+            ctx.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+        },
+        alarmCanceller: (AlarmManager, PendingIntent) -> Unit = { am, pi ->
+            am.cancel(pi)
+            pi.cancel()
+        }
+    ): DirectBootFallbackCancelResult {
+        if (alarmId <= 0L) {
+            return DirectBootFallbackCancelResult.NoExistingPendingIntent(alarmId)
+        }
         val protectedContext = protectedContext(context)
-        val pendingIntent = DirectBootAlarmReceiver.pendingIntent(
-            context = protectedContext,
-            snapshot = DirectBootAlarmSnapshot(
-                alarmId = alarmId,
-                triggerTime = 1L,
-                label = "",
-                timeLabel = "",
-                playDefaultSound = true,
-                vibrationEnabled = true,
-                updatedAt = 0L
-            ),
-            flags = PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
-        ) ?: return
-        val alarmManager = protectedContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        alarmManager.cancel(pendingIntent)
-        pendingIntent.cancel()
+        return try {
+            val pendingIntent = pendingIntentLookup(protectedContext, alarmId)
+                ?: return DirectBootFallbackCancelResult.NoExistingPendingIntent(alarmId)
+            val alarmManager = alarmManagerProvider(protectedContext)
+                ?: return DirectBootFallbackCancelResult.CancelFailedUnknown(
+                    alarmId = alarmId,
+                    cause = IllegalStateException("AlarmManager service unavailable")
+                )
+            alarmCanceller(alarmManager, pendingIntent)
+            DirectBootFallbackCancelResult.Cancelled(alarmId)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Failed to cancel direct-boot fallback alarm $alarmId", t)
+            DirectBootFallbackCancelResult.CancelFailedUnknown(alarmId, t)
+        }
     }
 
     fun recordFired(context: Context, alarmId: Long, triggerTime: Long, firedAt: Long) {
-        val edit = prefs(context).edit()
-            .putLong(KEY_FIRED_ALARM_ID, alarmId)
-            .putLong(KEY_FIRED_TRIGGER_TIME, triggerTime)
-            .putLong(KEY_FIRED_AT, firedAt)
-        read(context)?.let { current ->
-            if (current.alarmId == alarmId) {
-                edit
-                    .remove(KEY_SCHEMA_VERSION)
-                    .remove(KEY_ALARM_ID)
-                    .remove(KEY_TRIGGER_TIME)
-                    .remove(KEY_LABEL)
-                    .remove(KEY_TIME_LABEL)
-                    .remove(KEY_PLAY_DEFAULT_SOUND)
-                    .remove(KEY_VIBRATION_ENABLED)
-                    .remove(KEY_UPDATED_AT)
-                    .remove(KEY_TIMEZONE_POLICY)
-                    .remove(KEY_FIXED_TIMEZONE_ID)
+        synchronized(DirectBootStorageLock.lock) {
+            val edit = prefs(context).edit()
+                .putLong(KEY_FIRED_ALARM_ID, alarmId)
+                .putLong(KEY_FIRED_TRIGGER_TIME, triggerTime)
+                .putLong(KEY_FIRED_AT, firedAt)
+            readLocked(context)?.let { current ->
+                if (current.alarmId == alarmId) {
+                    edit
+                        .remove(KEY_SCHEMA_VERSION)
+                        .remove(KEY_ALARM_ID)
+                        .remove(KEY_TRIGGER_TIME)
+                        .remove(KEY_LABEL)
+                        .remove(KEY_TIME_LABEL)
+                        .remove(KEY_PLAY_DEFAULT_SOUND)
+                        .remove(KEY_VIBRATION_ENABLED)
+                        .remove(KEY_UPDATED_AT)
+                        .remove(KEY_TIMEZONE_POLICY)
+                        .remove(KEY_FIXED_TIMEZONE_ID)
+                }
             }
+            edit.commit()
         }
-        edit.apply()
     }
 
-    fun hasFiredWitness(context: Context, alarmId: Long, triggerTime: Long): Boolean {
+    fun hasFiredWitness(context: Context, alarmId: Long, triggerTime: Long): Boolean =
+        synchronized(DirectBootStorageLock.lock) {
+            hasFiredWitnessLocked(context, alarmId, triggerTime)
+        }
+
+    private fun hasFiredWitnessLocked(context: Context, alarmId: Long, triggerTime: Long): Boolean {
         val prefs = prefs(context)
         val firedAlarmId = prefs.getLong(KEY_FIRED_ALARM_ID, -1L)
         val firedTriggerTime = prefs.getLong(KEY_FIRED_TRIGGER_TIME, 0L)
@@ -147,27 +304,34 @@ object DirectBootAlarmCache {
     fun consumeFiredOneShotMarker(context: Context, alarm: Alarm, now: Long): Boolean {
         if (alarm.isRecurringSchedule) return false
 
-        val prefs = prefs(context)
-        val firedAlarmId = prefs.getLong(KEY_FIRED_ALARM_ID, -1L)
-        val firedTriggerTime = prefs.getLong(KEY_FIRED_TRIGGER_TIME, 0L)
-        if (firedAlarmId != alarm.id || firedTriggerTime <= 0L || firedTriggerTime > now) {
-            return false
+        synchronized(DirectBootStorageLock.lock) {
+            val prefs = prefs(context)
+            val firedAlarmId = prefs.getLong(KEY_FIRED_ALARM_ID, -1L)
+            val firedTriggerTime = prefs.getLong(KEY_FIRED_TRIGGER_TIME, 0L)
+            if (firedAlarmId != alarm.id || firedTriggerTime <= 0L || firedTriggerTime > now) {
+                return false
+            }
+
+            val matchesPersistedTrigger = alarm.nextTriggerTime <= 0L ||
+                alarm.nextTriggerTime == firedTriggerTime ||
+                alarm.nextTriggerTime <= now
+            if (!matchesPersistedTrigger) return false
+
+            prefs.edit()
+                .remove(KEY_FIRED_ALARM_ID)
+                .remove(KEY_FIRED_TRIGGER_TIME)
+                .remove(KEY_FIRED_AT)
+                .commit()
+            return true
         }
-
-        val matchesPersistedTrigger = alarm.nextTriggerTime <= 0L ||
-            alarm.nextTriggerTime == firedTriggerTime ||
-            alarm.nextTriggerTime <= now
-        if (!matchesPersistedTrigger) return false
-
-        prefs.edit()
-            .remove(KEY_FIRED_ALARM_ID)
-            .remove(KEY_FIRED_TRIGGER_TIME)
-            .remove(KEY_FIRED_AT)
-            .apply()
-        return true
     }
 
-    fun read(context: Context): DirectBootAlarmSnapshot? {
+    fun read(context: Context): DirectBootAlarmSnapshot? =
+        synchronized(DirectBootStorageLock.lock) {
+            readLocked(context)
+        }
+
+    private fun readLocked(context: Context): DirectBootAlarmSnapshot? {
         val prefs = prefs(context)
         val alarmId = prefs.getLong(KEY_ALARM_ID, -1L)
         val triggerTime = prefs.getLong(KEY_TRIGGER_TIME, 0L)
@@ -666,7 +830,284 @@ object DirectBootAlarmCache {
     // Legacy internal helpers
     // =========================================================================
 
-    private fun write(context: Context, snapshot: DirectBootAlarmSnapshot) {
+    private sealed interface PreOsDecision {
+        data class Ready(
+            val snapshot: DirectBootAlarmSnapshot,
+            val v2Diagnostics: Set<V2DiagnosticFlag>
+        ) : PreOsDecision
+
+        data class Blocked(val result: DirectBootFallbackScheduleResult) : PreOsDecision
+    }
+
+    private fun evaluatePreOsStateLocked(
+        protectedContext: Context,
+        snapshot: DirectBootAlarmSnapshot?,
+        now: Long,
+        v2DeliveryCapable: Boolean
+    ): PreOsDecision {
+        val diagnostics = LinkedHashSet<V2DiagnosticFlag>()
+
+        val queueState = inspectQueueStorageState(protectedContext)
+        val ownerResult = DirectBootDurableOwnerStore.read(protectedContext)
+        val markerResult = DirectBootRegistrationMarker.read(protectedContext)
+
+        val queueMatchesOccurrence = snapshot != null &&
+            queueState is QueueStorageState.ValidWithItems &&
+            queueState.items.any {
+                it.kind == DirectBootQueueItem.KIND_NORMAL &&
+                    it.alarmId == snapshot.alarmId &&
+                    it.triggerTime == snapshot.triggerTime
+            }
+
+        when (queueState) {
+            is QueueStorageState.Absent, is QueueStorageState.ValidEmpty -> Unit
+            is QueueStorageState.ValidWithItems -> {
+                if (queueMatchesOccurrence) {
+                    if (!v2DeliveryCapable) {
+                        diagnostics += V2DiagnosticFlag.QUEUE_MATCHING_OCCURRENCE_WHILE_DEFAULT_DENY
+                    }
+                } else {
+                    diagnostics += V2DiagnosticFlag.QUEUE_UNRELATED_OCCURRENCE
+                }
+            }
+            is QueueStorageState.Corrupt -> diagnostics += V2DiagnosticFlag.QUEUE_CORRUPT
+            is QueueStorageState.UnsupportedSchema -> diagnostics += V2DiagnosticFlag.QUEUE_UNSUPPORTED_SCHEMA
+        }
+
+        when (markerResult) {
+            is MarkerReadResult.Absent -> Unit
+            is MarkerReadResult.Success -> {
+                when (markerResult.marker.mainState) {
+                    RegistrationMainState.IDLE -> Unit
+                    RegistrationMainState.IN_FLIGHT -> {
+                        if (!v2DeliveryCapable) {
+                            diagnostics += V2DiagnosticFlag.MARKER_IN_FLIGHT_WHILE_DEFAULT_DENY
+                        }
+                    }
+                    RegistrationMainState.FAILED_BLOCKED -> {
+                        diagnostics += V2DiagnosticFlag.MARKER_FAILED_BLOCKED
+                    }
+                }
+            }
+            is MarkerReadResult.Corrupt -> diagnostics += V2DiagnosticFlag.MARKER_CORRUPT
+            is MarkerReadResult.UnsupportedSchema -> diagnostics += V2DiagnosticFlag.MARKER_UNSUPPORTED_SCHEMA
+        }
+
+        var ownerMatchingHandover = false
+        var ownerMatchingV2Active = false
+        when (ownerResult) {
+            is OwnerReadResult.Absent -> Unit
+            is OwnerReadResult.Success -> {
+                val owner = ownerResult.owner
+                when (owner.state) {
+                    OwnerState.IDLE -> Unit
+                    OwnerState.HANDOVER_PENDING -> {
+                        val claim = owner.handoverClaim
+                        if (snapshot != null &&
+                            claim != null &&
+                            claim.alarmId == snapshot.alarmId &&
+                            claim.triggerTime == snapshot.triggerTime
+                        ) {
+                            ownerMatchingHandover = true
+                        } else {
+                            diagnostics += V2DiagnosticFlag.OWNER_UNRELATED_OCCURRENCE_ACTIVE
+                        }
+                    }
+                    OwnerState.V2_ACTIVE -> {
+                        val session = owner.activeSession
+                        if (snapshot != null &&
+                            session != null &&
+                            session.alarmId == snapshot.alarmId &&
+                            session.triggerTime == snapshot.triggerTime
+                        ) {
+                            ownerMatchingV2Active = true
+                        } else {
+                            diagnostics += V2DiagnosticFlag.OWNER_UNRELATED_OCCURRENCE_ACTIVE
+                        }
+                    }
+                }
+            }
+            is OwnerReadResult.Corrupt -> if (!v2DeliveryCapable) {
+                diagnostics += V2DiagnosticFlag.OWNER_CORRUPT_WHILE_DEFAULT_DENY
+            }
+            is OwnerReadResult.UnsupportedSchema -> if (!v2DeliveryCapable) {
+                diagnostics += V2DiagnosticFlag.OWNER_UNSUPPORTED_WHILE_DEFAULT_DENY
+            }
+        }
+
+        // Snapshot target validation (strictly non-destructive: NEVER calls clear() on failure/overdue)
+        if (snapshot == null) {
+            return PreOsDecision.Blocked(
+                DirectBootFallbackScheduleResult.NoSchedulableTarget(
+                    reason = NoTargetReason.SNAPSHOT_ABSENT,
+                    v2Diagnostics = diagnostics
+                )
+            )
+        }
+
+        if (snapshot.schemaVersion != DirectBootAlarmSnapshot.CURRENT_SCHEMA_VERSION ||
+            snapshot.alarmId <= 0L ||
+            snapshot.triggerTime <= 0L
+        ) {
+            return PreOsDecision.Blocked(
+                DirectBootFallbackScheduleResult.NoSchedulableTarget(
+                    reason = NoTargetReason.INVALID_SNAPSHOT,
+                    alarmId = snapshot.alarmId,
+                    triggerTime = snapshot.triggerTime,
+                    v2Diagnostics = diagnostics
+                )
+            )
+        }
+
+        if (now <= 0L) {
+            return PreOsDecision.Blocked(
+                DirectBootFallbackScheduleResult.NoSchedulableTarget(
+                    reason = NoTargetReason.INVALID_CLOCK_NOW,
+                    alarmId = snapshot.alarmId,
+                    triggerTime = snapshot.triggerTime,
+                    v2Diagnostics = diagnostics
+                )
+            )
+        }
+
+        if (snapshot.updatedAt > 0L && now < snapshot.updatedAt) {
+            diagnostics += V2DiagnosticFlag.CLOCK_ROLLBACK_DETECTED
+            Log.w(
+                TAG,
+                "Clock rollback observed for alarm ${snapshot.alarmId}: now=$now < updatedAt=${snapshot.updatedAt}"
+            )
+        }
+
+        if (snapshot.triggerTime <= now) {
+            return PreOsDecision.Blocked(
+                DirectBootFallbackScheduleResult.NoSchedulableTarget(
+                    reason = NoTargetReason.TRIGGER_NOT_IN_FUTURE_PRESERVED,
+                    alarmId = snapshot.alarmId,
+                    triggerTime = snapshot.triggerTime,
+                    v2Diagnostics = diagnostics
+                )
+            )
+        }
+
+        if (hasFiredWitnessLocked(protectedContext, snapshot.alarmId, snapshot.triggerTime)) {
+            return PreOsDecision.Blocked(
+                DirectBootFallbackScheduleResult.NoSchedulableTarget(
+                    reason = NoTargetReason.ALREADY_FIRED_WITNESS,
+                    alarmId = snapshot.alarmId,
+                    triggerTime = snapshot.triggerTime,
+                    v2Diagnostics = diagnostics
+                )
+            )
+        }
+
+        // Same-occurrence anomalous DurableOwner always fails closed as UNKNOWN
+        if (ownerMatchingHandover) {
+            return PreOsDecision.Blocked(
+                DirectBootFallbackScheduleResult.AuthorityUnknown(
+                    alarmId = snapshot.alarmId,
+                    triggerTime = snapshot.triggerTime,
+                    reason = AuthorityUnknownReason.DURABLE_OWNER_SAME_OCCURRENCE_HANDOVER_PENDING,
+                    detail = "Same-occurrence DurableOwner HANDOVER_PENDING present"
+                )
+            )
+        }
+        if (ownerMatchingV2Active) {
+            return if (v2DeliveryCapable) {
+                PreOsDecision.Blocked(
+                    DirectBootFallbackScheduleResult.AuthorityRejected(
+                        alarmId = snapshot.alarmId,
+                        triggerTime = snapshot.triggerTime,
+                        detail = "Same-occurrence V2_ACTIVE already owns delivery"
+                    )
+                )
+            } else {
+                PreOsDecision.Blocked(
+                    DirectBootFallbackScheduleResult.AuthorityUnknown(
+                        alarmId = snapshot.alarmId,
+                        triggerTime = snapshot.triggerTime,
+                        reason = AuthorityUnknownReason.DURABLE_OWNER_SAME_OCCURRENCE_V2_ACTIVE,
+                        detail = "Same-occurrence DurableOwner V2_ACTIVE present under DEFAULT_DENY"
+                    )
+                )
+            }
+        }
+
+        // Additional authority checks ONLY when V2 delivery is genuinely capable (unreachable in R1 production)
+        if (v2DeliveryCapable) {
+            when (ownerResult) {
+                is OwnerReadResult.Corrupt -> return PreOsDecision.Blocked(
+                    DirectBootFallbackScheduleResult.AuthorityUnknown(
+                        snapshot.alarmId,
+                        snapshot.triggerTime,
+                        AuthorityUnknownReason.DURABLE_OWNER_CORRUPT_WHILE_V2_CAPABLE,
+                        ownerResult.reason
+                    )
+                )
+                is OwnerReadResult.UnsupportedSchema -> return PreOsDecision.Blocked(
+                    DirectBootFallbackScheduleResult.AuthorityUnknown(
+                        snapshot.alarmId,
+                        snapshot.triggerTime,
+                        AuthorityUnknownReason.DURABLE_OWNER_UNSUPPORTED_WHILE_V2_CAPABLE,
+                        "Unsupported owner schema ${ownerResult.foundVersion}"
+                    )
+                )
+                else -> Unit
+            }
+
+            if (queueState is QueueStorageState.Corrupt || queueState is QueueStorageState.UnsupportedSchema) {
+                return PreOsDecision.Blocked(
+                    DirectBootFallbackScheduleResult.AuthorityUnknown(
+                        snapshot.alarmId,
+                        snapshot.triggerTime,
+                        AuthorityUnknownReason.V2_QUEUE_CORRUPT_OR_UNSUPPORTED_WHILE_V2_CAPABLE,
+                        "V2 queue unverifiable while V2 delivery capable"
+                    )
+                )
+            }
+
+            if (markerResult is MarkerReadResult.Success &&
+                markerResult.marker.mainState == RegistrationMainState.IN_FLIGHT
+            ) {
+                return PreOsDecision.Blocked(
+                    DirectBootFallbackScheduleResult.AuthorityUnknown(
+                        snapshot.alarmId,
+                        snapshot.triggerTime,
+                        AuthorityUnknownReason.V2_MARKER_IN_FLIGHT_WHILE_V2_CAPABLE,
+                        "V2 registration marker IN_FLIGHT"
+                    )
+                )
+            }
+
+            if (queueMatchesOccurrence) {
+                val activeId = (markerResult as? MarkerReadResult.Success)?.marker?.activeIdentity
+                val v2Confirmed = activeId != null &&
+                    activeId.alarmId == snapshot.alarmId &&
+                    activeId.triggerTime == snapshot.triggerTime
+                return if (v2Confirmed) {
+                    PreOsDecision.Blocked(
+                        DirectBootFallbackScheduleResult.AuthorityRejected(
+                            alarmId = snapshot.alarmId,
+                            triggerTime = snapshot.triggerTime,
+                            detail = "Verified V2 activeIdentity owns same occurrence"
+                        )
+                    )
+                } else {
+                    PreOsDecision.Blocked(
+                        DirectBootFallbackScheduleResult.AuthorityUnknown(
+                            alarmId = snapshot.alarmId,
+                            triggerTime = snapshot.triggerTime,
+                            reason = AuthorityUnknownReason.V2_QUEUE_MARKER_MISMATCH_WHILE_V2_CAPABLE,
+                            detail = "V2 queue matches occurrence without confirmed activeIdentity"
+                        )
+                    )
+                }
+            }
+        }
+
+        return PreOsDecision.Ready(snapshot = snapshot, v2Diagnostics = diagnostics)
+    }
+
+    private fun writeLocked(context: Context, snapshot: DirectBootAlarmSnapshot) {
         prefs(context).edit()
             .putInt(KEY_SCHEMA_VERSION, snapshot.schemaVersion)
             .putLong(KEY_ALARM_ID, snapshot.alarmId)
@@ -678,42 +1119,120 @@ object DirectBootAlarmCache {
             .putLong(KEY_UPDATED_AT, snapshot.updatedAt)
             .putString(KEY_TIMEZONE_POLICY, snapshot.timezonePolicy)
             .putString(KEY_FIXED_TIMEZONE_ID, snapshot.fixedTimezoneId)
-            .apply()
+            .commit()
     }
 
-    private fun scheduleFallback(context: Context, snapshot: DirectBootAlarmSnapshot) {
+    @VisibleForTesting
+    internal fun scheduleFallback(
+        context: Context,
+        snapshot: DirectBootAlarmSnapshot,
+        v2Diagnostics: Set<V2DiagnosticFlag> = emptySet(),
+        alarmManagerProvider: (Context) -> AlarmManager? = { ctx ->
+            ctx.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+        },
+        canScheduleExactAlarms: (AlarmManager) -> Boolean = { am ->
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.S || am.canScheduleExactAlarms()
+        },
+        operationPendingIntentProvider: (Context, DirectBootAlarmSnapshot) -> PendingIntent? = { ctx, snap ->
+            DirectBootAlarmReceiver.pendingIntent(ctx, snap)
+        },
+        showPendingIntentProvider: (Context, DirectBootAlarmSnapshot) -> PendingIntent? = { ctx, snap ->
+            showIntent(ctx, snap)
+        },
+        alarmClockRegistrar: (AlarmManager, AlarmManager.AlarmClockInfo, PendingIntent) -> Unit = { am, info, op ->
+            am.setAlarmClock(info, op)
+        },
+        exactIdleRegistrar: (AlarmManager, Long, PendingIntent) -> Unit = { am, triggerAt, op ->
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, op)
+        }
+    ): DirectBootFallbackScheduleResult {
         val protectedContext = protectedContext(context)
-        val alarmManager = protectedContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val operation = DirectBootAlarmReceiver.pendingIntent(protectedContext, snapshot)
-            ?: return
+        val alarmManager = alarmManagerProvider(protectedContext)
+            ?: return DirectBootFallbackScheduleResult.RegistrationFailed(
+                alarmId = snapshot.alarmId,
+                triggerTime = snapshot.triggerTime,
+                stage = FallbackFailureStage.ALARM_MANAGER_UNAVAILABLE,
+                cause = IllegalStateException("AlarmManager service unavailable")
+            )
 
-        try {
-            alarmManager.setAlarmClock(
-                AlarmManager.AlarmClockInfo(snapshot.triggerTime, showIntent(protectedContext)),
+        if (!canScheduleExactAlarms(alarmManager)) {
+            Log.w(TAG, "Exact alarm permission denied during Direct Boot for alarm ${snapshot.alarmId}")
+            return DirectBootFallbackScheduleResult.PermissionDenied(
+                alarmId = snapshot.alarmId,
+                triggerTime = snapshot.triggerTime,
+                reason = "AlarmManager.canScheduleExactAlarms() returned false"
+            )
+        }
+
+        val operation = operationPendingIntentProvider(protectedContext, snapshot)
+            ?: return DirectBootFallbackScheduleResult.PendingIntentUnavailable(
+                alarmId = snapshot.alarmId,
+                triggerTime = snapshot.triggerTime,
+                stage = FallbackFailureStage.OPERATION_INTENT_UNAVAILABLE
+            )
+
+        val showPendingIntent = showPendingIntentProvider(protectedContext, snapshot)
+            ?: return DirectBootFallbackScheduleResult.PendingIntentUnavailable(
+                alarmId = snapshot.alarmId,
+                triggerTime = snapshot.triggerTime,
+                stage = FallbackFailureStage.SHOW_INTENT_UNAVAILABLE
+            )
+
+        return try {
+            alarmClockRegistrar(
+                alarmManager,
+                AlarmManager.AlarmClockInfo(snapshot.triggerTime, showPendingIntent),
                 operation
             )
-        } catch (e: SecurityException) {
-            Log.w(TAG, "setAlarmClock denied during Direct Boot; using exact fallback", e)
+            DirectBootFallbackScheduleResult.ArmedAlarmClock(
+                alarmId = snapshot.alarmId,
+                triggerTime = snapshot.triggerTime,
+                v2Diagnostics = v2Diagnostics
+            )
+        } catch (primarySe: SecurityException) {
+            Log.w(TAG, "setAlarmClock denied during Direct Boot; attempting exact-idle fallback", primarySe)
             try {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    snapshot.triggerTime,
-                    operation
+                exactIdleRegistrar(alarmManager, snapshot.triggerTime, operation)
+                DirectBootFallbackScheduleResult.ArmedExactIdleFallback(
+                    alarmId = snapshot.alarmId,
+                    triggerTime = snapshot.triggerTime,
+                    primarySecurityException = primarySe,
+                    v2Diagnostics = v2Diagnostics
                 )
-            } catch (fallback: Exception) {
-                Log.e(TAG, "Direct-Boot exact fallback also failed", fallback)
+            } catch (fallbackSe: SecurityException) {
+                Log.e(TAG, "Direct-Boot exact-idle fallback blocked by SecurityException", fallbackSe)
+                DirectBootFallbackScheduleResult.SecurityBlocked(
+                    alarmId = snapshot.alarmId,
+                    triggerTime = snapshot.triggerTime,
+                    primaryCause = primarySe,
+                    fallbackCause = fallbackSe
+                )
+            } catch (fallbackEx: Throwable) {
+                Log.e(TAG, "Direct-Boot exact-idle fallback failed", fallbackEx)
+                DirectBootFallbackScheduleResult.RegistrationFailed(
+                    alarmId = snapshot.alarmId,
+                    triggerTime = snapshot.triggerTime,
+                    stage = FallbackFailureStage.EXACT_IDLE_FALLBACK_SET,
+                    cause = fallbackEx,
+                    primarySecurityException = primarySe
+                )
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Direct-Boot alarm registration failed", e)
+        } catch (primaryEx: Throwable) {
+            Log.e(TAG, "Direct-Boot alarm registration failed", primaryEx)
+            DirectBootFallbackScheduleResult.RegistrationFailed(
+                alarmId = snapshot.alarmId,
+                triggerTime = snapshot.triggerTime,
+                stage = FallbackFailureStage.ALARM_CLOCK_SET,
+                cause = primaryEx
+            )
         }
     }
 
-    private fun showIntent(context: Context): PendingIntent {
-        val snapshot = read(context)
+    private fun showIntent(context: Context, snapshot: DirectBootAlarmSnapshot): PendingIntent? {
         val launch = DirectBootAlarmActivity.intent(
             context = context,
-            alarmId = snapshot?.alarmId ?: -1L,
-            timeLabel = snapshot?.timeLabel.orEmpty()
+            alarmId = snapshot.alarmId,
+            timeLabel = snapshot.timeLabel
         )
         return PendingIntent.getActivity(
             context,
@@ -734,6 +1253,175 @@ object DirectBootAlarmCache {
 
     private fun formatTriggerTime(context: Context, triggerTime: Long): String =
         AlarmTimeFormatter.format(triggerTime, DateFormat.is24HourFormat(context))
+}
+
+enum class OsRegistrationState {
+    ARMED_CONFIRMED,
+    NOT_ARMED,
+    UNKNOWN
+}
+
+enum class NoTargetReason {
+    SNAPSHOT_ABSENT,
+    INVALID_SNAPSHOT,
+    INVALID_CLOCK_NOW,
+    TRIGGER_NOT_IN_FUTURE_PRESERVED,
+    ALREADY_FIRED_WITNESS
+}
+
+enum class FallbackFailureStage {
+    ALARM_MANAGER_UNAVAILABLE,
+    OPERATION_INTENT_UNAVAILABLE,
+    SHOW_INTENT_UNAVAILABLE,
+    ALARM_CLOCK_SET,
+    EXACT_IDLE_FALLBACK_SET
+}
+
+enum class AuthorityUnknownReason {
+    DURABLE_OWNER_SAME_OCCURRENCE_HANDOVER_PENDING,
+    DURABLE_OWNER_SAME_OCCURRENCE_V2_ACTIVE,
+    DURABLE_OWNER_CORRUPT_WHILE_V2_CAPABLE,
+    DURABLE_OWNER_UNSUPPORTED_WHILE_V2_CAPABLE,
+    V2_MARKER_IN_FLIGHT_WHILE_V2_CAPABLE,
+    V2_QUEUE_CORRUPT_OR_UNSUPPORTED_WHILE_V2_CAPABLE,
+    V2_QUEUE_MARKER_MISMATCH_WHILE_V2_CAPABLE
+}
+
+enum class PostOsUnknownReason {
+    FIRED_WITNESS_DURING_REGISTRATION_COMPENSATION_WITHHELD,
+    SNAPSHOT_SUPERSEDED_DURING_REGISTRATION
+}
+
+enum class V2DiagnosticFlag {
+    QUEUE_MATCHING_OCCURRENCE_WHILE_DEFAULT_DENY,
+    QUEUE_UNRELATED_OCCURRENCE,
+    QUEUE_CORRUPT,
+    QUEUE_UNSUPPORTED_SCHEMA,
+    MARKER_IN_FLIGHT_WHILE_DEFAULT_DENY,
+    MARKER_FAILED_BLOCKED,
+    MARKER_CORRUPT,
+    MARKER_UNSUPPORTED_SCHEMA,
+    OWNER_UNRELATED_OCCURRENCE_ACTIVE,
+    OWNER_CORRUPT_WHILE_DEFAULT_DENY,
+    OWNER_UNSUPPORTED_WHILE_DEFAULT_DENY,
+    CLOCK_ROLLBACK_DETECTED
+}
+
+sealed interface DirectBootFallbackScheduleResult {
+    val isArmed: Boolean
+        get() = this is ArmedAlarmClock || this is ArmedExactIdleFallback
+    val osState: OsRegistrationState
+    val isRetryEligible: Boolean
+        get() = this is RegistrationFailed
+
+    data class ArmedAlarmClock(
+        val alarmId: Long,
+        val triggerTime: Long,
+        val v2Diagnostics: Set<V2DiagnosticFlag> = emptySet()
+    ) : DirectBootFallbackScheduleResult {
+        override val osState: OsRegistrationState = OsRegistrationState.ARMED_CONFIRMED
+    }
+
+    data class ArmedExactIdleFallback(
+        val alarmId: Long,
+        val triggerTime: Long,
+        val primarySecurityException: SecurityException,
+        val v2Diagnostics: Set<V2DiagnosticFlag> = emptySet()
+    ) : DirectBootFallbackScheduleResult {
+        override val osState: OsRegistrationState = OsRegistrationState.ARMED_CONFIRMED
+    }
+
+    data class PermissionDenied(
+        val alarmId: Long,
+        val triggerTime: Long,
+        val reason: String
+    ) : DirectBootFallbackScheduleResult {
+        override val osState: OsRegistrationState = OsRegistrationState.NOT_ARMED
+    }
+
+    data class PendingIntentUnavailable(
+        val alarmId: Long,
+        val triggerTime: Long,
+        val stage: FallbackFailureStage
+    ) : DirectBootFallbackScheduleResult {
+        override val osState: OsRegistrationState = OsRegistrationState.NOT_ARMED
+    }
+
+    data class SecurityBlocked(
+        val alarmId: Long,
+        val triggerTime: Long,
+        val primaryCause: SecurityException,
+        val fallbackCause: SecurityException
+    ) : DirectBootFallbackScheduleResult {
+        override val osState: OsRegistrationState = OsRegistrationState.NOT_ARMED
+    }
+
+    data class RegistrationFailed(
+        val alarmId: Long,
+        val triggerTime: Long,
+        val stage: FallbackFailureStage,
+        val cause: Throwable?,
+        val primarySecurityException: SecurityException? = null
+    ) : DirectBootFallbackScheduleResult {
+        override val osState: OsRegistrationState = OsRegistrationState.NOT_ARMED
+    }
+
+    data class NoSchedulableTarget(
+        val reason: NoTargetReason,
+        val alarmId: Long? = null,
+        val triggerTime: Long? = null,
+        val v2Diagnostics: Set<V2DiagnosticFlag> = emptySet()
+    ) : DirectBootFallbackScheduleResult {
+        override val osState: OsRegistrationState = OsRegistrationState.NOT_ARMED
+    }
+
+    data class AuthorityUnknown(
+        val alarmId: Long,
+        val triggerTime: Long,
+        val reason: AuthorityUnknownReason,
+        val detail: String
+    ) : DirectBootFallbackScheduleResult {
+        override val osState: OsRegistrationState = OsRegistrationState.UNKNOWN
+    }
+
+    data class AuthorityRejected(
+        val alarmId: Long,
+        val triggerTime: Long,
+        val detail: String
+    ) : DirectBootFallbackScheduleResult {
+        override val osState: OsRegistrationState = OsRegistrationState.NOT_ARMED
+    }
+
+    data class RegistrationOutcomeUnknown(
+        val alarmId: Long,
+        val triggerTime: Long,
+        val reason: PostOsUnknownReason,
+        val observedSnapshot: DirectBootAlarmSnapshot? = null,
+        val compensationAttempted: Boolean = false
+    ) : DirectBootFallbackScheduleResult {
+        override val osState: OsRegistrationState = OsRegistrationState.UNKNOWN
+    }
+}
+
+sealed interface DirectBootFallbackCancelResult {
+    val isCancelledOrAbsent: Boolean
+        get() = this is Cancelled || this is NoExistingPendingIntent
+    val osState: OsRegistrationState
+
+    data class Cancelled(val alarmId: Long) : DirectBootFallbackCancelResult {
+        override val osState: OsRegistrationState = OsRegistrationState.NOT_ARMED
+    }
+
+    data class NoExistingPendingIntent(val alarmId: Long) : DirectBootFallbackCancelResult {
+        override val osState: OsRegistrationState = OsRegistrationState.NOT_ARMED
+    }
+
+    data class CancelFailedUnknown(
+        val alarmId: Long,
+        val cause: Throwable
+    ) : DirectBootFallbackCancelResult {
+        override val osState: OsRegistrationState = OsRegistrationState.UNKNOWN
+    }
 }
 
 enum class QueueStorageClassification {
