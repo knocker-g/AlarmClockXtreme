@@ -1199,16 +1199,20 @@ class AlarmScheduler @Inject constructor(
     ) {
         val slotMutex = mainSlotMutexMap.computeIfAbsent(alarmId) { Mutex() }
         var isCancelAccepted = false
+        var isStaleRejected = false
+        var osCancelFailed = false
         runBlocking {
             slotMutex.withLock {
                 val currentAlarm = repository.getById(alarmId)
                 if (expectedGeneration != null && currentAlarm != null && !currentAlarm.isQuickAlarm && currentAlarm.generation > expectedGeneration) {
                     Log.i("AlarmScheduler", "Aborting stale cancelScheduledEntries for alarm $alarmId: current DB generation ${currentAlarm.generation} > expected $expectedGeneration")
+                    isStaleRejected = true
                     return@withLock
                 }
                 if (targetGen != null) {
                     if (currentAlarm != null && currentAlarm.nextTriggerTime > targetGen.scheduledAt) {
                         Log.i("AlarmScheduler", "Aborting stale cancelScheduledEntries for alarm $alarmId: targetGen $targetGen is older than current DB trigger ${currentAlarm.nextTriggerTime}")
+                        isStaleRejected = true
                         return@withLock
                     }
                 }
@@ -1228,15 +1232,25 @@ class AlarmScheduler @Inject constructor(
                         Log.w("AlarmScheduler", "Owner route active but scheduleAuthorityOwnerProvider is null for alarm $alarmId; aborting cancel")
                         isCancelAccepted = false
                     } else {
-                        applyRawOsCancel(alarmId)
-                        isCancelAccepted = true
+                        val osCancelOk = applyRawOsCancel(alarmId)
+                        osCancelFailed = !osCancelOk
+                        isCancelAccepted = osCancelOk
                     }
                 }
             }
         }
 
-        if (!isCancelAccepted && routeAuthority.isOwnerRouteActive()) {
-            Log.w("AlarmScheduler", "Cancellation unfulfilled or rejected for alarm $alarmId under OWNER_EXCLUSIVE; skipping destructive side effects")
+        if (isStaleRejected || !isCancelAccepted) {
+            when {
+                routeAuthority.isOwnerRouteActive() ->
+                    Log.w("AlarmScheduler", "Cancellation unfulfilled or rejected for alarm $alarmId under OWNER_EXCLUSIVE; skipping destructive side effects")
+                isStaleRejected ->
+                    Log.w("AlarmScheduler", "Stale cancellation rejected for alarm $alarmId under LEGACY_ONLY; withholding DirectBoot and follow-up cleanup")
+                osCancelFailed ->
+                    Log.w("AlarmScheduler", "Main OS cancellation failed (OS state UNKNOWN) for alarm $alarmId under LEGACY_ONLY; withholding DirectBoot and follow-up cleanup")
+                else ->
+                    Log.w("AlarmScheduler", "Cancellation not accepted for alarm $alarmId; withholding DirectBoot and follow-up cleanup")
+            }
             return
         }
 
