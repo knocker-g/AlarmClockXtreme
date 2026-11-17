@@ -116,7 +116,7 @@ class FencedCancellationPlannerTest {
         val accepted = outcome as CancelOutcome.Accepted
         assertTrue(accepted.isAccepted)
         assertTrue(accepted.isCancellationPlanAllowed)
-        assertTrue(accepted.allowsDestructiveCleanup)
+        assertFalse(accepted.allowsDestructiveCleanup)
         // Evaluation/plan acceptance explicitly does NOT mean OS cancellation already completed.
         assertFalse(accepted.isOsCancelCompleted)
         assertEquals(alarmId, accepted.alarmId)
@@ -443,10 +443,10 @@ class FencedCancellationPlannerTest {
 
         outcomes.forEach { outcome ->
             assertFalse("Pure planning outcome must never report OS cancel completed", outcome.isOsCancelCompleted)
+            assertFalse("Pure planning outcome must never allow destructive cleanup", outcome.allowsDestructiveCleanup)
             if (outcome !is CancelOutcome.Accepted) {
                 assertFalse("${outcome::class.simpleName} must not be accepted", outcome.isAccepted)
                 assertFalse("${outcome::class.simpleName} must not allow cancel plan", outcome.isCancellationPlanAllowed)
-                assertFalse("${outcome::class.simpleName} must not allow destructive cleanup", outcome.allowsDestructiveCleanup)
             }
         }
 
@@ -658,5 +658,80 @@ class FencedCancellationPlannerTest {
         assertFalse(FencedCancellationPlanner.shouldRemoveDirectBootSnapshot(fenceA, driftedGenSnapB))
         assertFalse(FencedCancellationPlanner.shouldRemoveDirectBootSnapshot(fenceA, driftedTokenSnapB))
         assertFalse(FencedCancellationPlanner.shouldRemoveDirectBootSnapshot(fenceA, null))
+    }
+
+    @Test
+    fun s1a_t17_purePlanningOutcome_neverAllowsDestructiveCleanupAcrossOsStatesAndRejections() {
+        val baseContext = CancellationEvaluationContext(
+            currentAlarm = normalAlarmSnapshot(),
+            currentAuthority = authoritySnapshot(),
+            currentDirectBootSnapshot = FencedDirectBootSnapshot(
+                alarmId = alarmId,
+                triggerTime = triggerA,
+                updatedAt = capturedAt,
+                generation = 1,
+                revision = 1,
+                instanceToken = "inst-A",
+                restoreEpoch = 10L
+            ),
+            expectedFireIdForCurrentTrigger = "fire-42-A"
+        )
+
+        // 1-3. Accepted + NOT_ATTEMPTED / CANCELLED / NO_EXISTING -> plan accepted, cleanup disallowed
+        listOf(
+            OsCancelProbeState.NOT_ATTEMPTED to true,
+            OsCancelProbeState.CANCELLED to true,
+            OsCancelProbeState.NO_EXISTING to false
+        ).forEach { (osState, expectedMainOsCancel) ->
+            val outcome = FencedCancellationPlanner.evaluate(
+                exactFence(),
+                baseContext.copy(osState = osState)
+            )
+            assertTrue("Expected Accepted for osState=$osState", outcome is CancelOutcome.Accepted)
+            val accepted = outcome as CancelOutcome.Accepted
+            assertTrue(accepted.isAccepted)
+            assertTrue(accepted.isCancellationPlanAllowed)
+            assertFalse("Pure planner must never allow destructive cleanup for osState=$osState", accepted.allowsDestructiveCleanup)
+            assertFalse("Pure planner must never claim OS cancel completed for osState=$osState", accepted.isOsCancelCompleted)
+            assertTrue(accepted.plan.requiresOsVerificationBeforeDestructiveCleanup)
+            assertEquals(expectedMainOsCancel, accepted.plan.shouldCancelMainOsSlot)
+        }
+
+        // 4. FAILED_UNKNOWN -> OsStateUncertain, cleanup disallowed
+        val osUnknown = FencedCancellationPlanner.evaluate(
+            exactFence(),
+            baseContext.copy(osState = OsCancelProbeState.FAILED_UNKNOWN)
+        )
+        assertTrue(osUnknown is CancelOutcome.OsStateUncertain)
+        assertFalse(osUnknown.isCancellationPlanAllowed)
+        assertFalse(osUnknown.allowsDestructiveCleanup)
+        assertFalse(osUnknown.isOsCancelCompleted)
+
+        // 5. StaleRejected -> cleanup disallowed
+        val stale = FencedCancellationPlanner.evaluate(
+            exactFence(generation = 1),
+            baseContext.copy(currentAlarm = normalAlarmSnapshot(generation = 2))
+        )
+        assertTrue(stale is CancelOutcome.StaleRejected)
+        assertFalse(stale.isCancellationPlanAllowed)
+        assertFalse(stale.allowsDestructiveCleanup)
+
+        // 6. IdentityMismatch -> cleanup disallowed
+        val mismatch = FencedCancellationPlanner.evaluate(
+            exactFence(triggerTime = triggerA, targetScheduledAt = null, targetFireId = null),
+            baseContext.copy(currentAlarm = normalAlarmSnapshot(nextTriggerTime = triggerB))
+        )
+        assertTrue(mismatch is CancelOutcome.IdentityMismatch)
+        assertFalse(mismatch.isCancellationPlanAllowed)
+        assertFalse(mismatch.allowsDestructiveCleanup)
+
+        // 7. PersistenceUncertain -> cleanup disallowed
+        val persistenceUncertain = FencedCancellationPlanner.evaluate(
+            exactFence(),
+            baseContext.copy(persistenceState = PersistenceProbeState.UNCERTAIN)
+        )
+        assertTrue(persistenceUncertain is CancelOutcome.PersistenceUncertain)
+        assertFalse(persistenceUncertain.isCancellationPlanAllowed)
+        assertFalse(persistenceUncertain.allowsDestructiveCleanup)
     }
 }

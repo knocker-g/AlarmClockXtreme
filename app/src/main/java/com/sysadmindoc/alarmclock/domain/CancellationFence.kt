@@ -262,8 +262,11 @@ data class FencedCancellationPlan(
 /**
  * Typed cancellation evaluation/planning outcome contract.
  *
- * Explicitly separates plan admission ([Accepted]) from OS cancellation completion:
- * [isOsCancelCompleted] is always `false` in pure planning primitives.
+ * Explicitly separates plan admission ([Accepted]) from OS cancellation completion and
+ * destructive cleanup authorization:
+ * - [isCancellationPlanAllowed] is true only for [Accepted].
+ * - [allowsDestructiveCleanup] is always `false` in pure planning primitives.
+ * - [isOsCancelCompleted] is always `false` in pure planning primitives.
  */
 sealed interface CancelOutcome {
     val alarmId: Long
@@ -275,7 +278,7 @@ sealed interface CancelOutcome {
         get() = this is Accepted
 
     val allowsDestructiveCleanup: Boolean
-        get() = this is Accepted
+        get() = false
 
     val isOsCancelCompleted: Boolean
         get() = false
