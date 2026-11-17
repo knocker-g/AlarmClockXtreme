@@ -81,17 +81,52 @@ object DirectBootAlarmCache {
     }
 
     fun removeIfMatches(context: Context, alarmId: Long) {
-        val matches = synchronized(DirectBootStorageLock.lock) {
-            readLocked(context)?.alarmId == alarmId
-        }
-        if (!matches) return
+        removeIfMatchesWithResult(context, alarmId)
+    }
 
-        cancelScheduledFallbackWithResult(context, alarmId)
+    /**
+     * C7-R1 Slice 0 cancellation persistence & snapshot-drift containment.
+     *
+     * - Preserves V1 Snapshot, Fired Witness, and V2 Stores when OS cancellation returns
+     *   [DirectBootFallbackCancelResult.CancelFailedUnknown].
+     * - After OS cancellation confirms [DirectBootFallbackCancelResult.isCancelledOrAbsent],
+     *   re-reads under [DirectBootStorageLock.lock] and clears ONLY when the full
+     *   [DirectBootAlarmSnapshot] equals the pre-IPC snapshot (not merely matching alarmId).
+     * - Known residual risk (KNO-75 R2 deferred): Legacy PendingIntents for the same alarmId
+     *   share `(data=null, requestCode=alarmId.toInt())`, so cross-IPC A/B OS PendingIntent
+     *   cancellation requires R2 Occurrence Fence + URI-scoped PendingIntent cutover.
+     */
+    fun removeIfMatchesWithResult(
+        context: Context,
+        alarmId: Long
+    ): DirectBootFallbackCancelResult {
+        val protectedContext = protectedContext(context)
+        val preSnapshot = synchronized(DirectBootStorageLock.lock) {
+            readLocked(protectedContext)?.takeIf { it.alarmId == alarmId }
+        } ?: return DirectBootFallbackCancelResult.NoExistingPendingIntent(alarmId)
+
+        val cancelResult = cancelScheduledFallbackWithResult(protectedContext, alarmId)
+        if (cancelResult is DirectBootFallbackCancelResult.CancelFailedUnknown) {
+            Log.w(
+                TAG,
+                "Preserving Direct-Boot snapshot for alarm $alarmId after CancelFailedUnknown (OS state UNKNOWN)",
+                cancelResult.cause
+            )
+            return cancelResult
+        }
+
         synchronized(DirectBootStorageLock.lock) {
-            if (readLocked(context)?.alarmId == alarmId) {
-                clearLocked(context)
+            val postSnapshot = readLocked(protectedContext)
+            if (postSnapshot == preSnapshot) {
+                clearLocked(protectedContext)
+            } else if (postSnapshot != null) {
+                Log.i(
+                    TAG,
+                    "Preserving updated Direct-Boot snapshot for alarm $alarmId after concurrent drift during removal"
+                )
             }
         }
+        return cancelResult
     }
 
     /**
