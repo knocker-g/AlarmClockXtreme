@@ -68,7 +68,10 @@ data class CallerOriginIdentity(
     companion object {
         /**
          * Captures exact-occurrence identity held by a Normal alarm caller before any mutation.
-         * Leaves authority fields `null` if [authority] is unavailable rather than synthesizing them.
+         * Leaves authority fields `null` if [authority] is unavailable or mismatched (`authority.alarmId != alarm.id`).
+         *
+         * Note: Validating `authority.alarmId == alarm.id` proves only that [authority] belongs to the same
+         * alarm ID; it does NOT prove that authority and alarm snapshots were captured at the exact same point in time.
          */
         fun captureNormalExact(
             alarm: Alarm,
@@ -78,28 +81,31 @@ data class CallerOriginIdentity(
             allowZeroedDisabledRoom: Boolean = false,
             allowZeroTriggerPreArm: Boolean = false,
             sourceTag: String = "NORMAL_EXACT_ORIGIN"
-        ): CallerOriginIdentity = CallerOriginIdentity(
-            alarmId = alarm.id,
-            alarmKind = alarm.kind,
-            generation = alarm.generation,
-            revision = alarm.revision,
-            scheduledTriggerMillis = alarm.nextTriggerTime,
-            scheduleAuthorityRevision = authority?.scheduleRevision,
-            definitionRevision = authority?.definitionRevision,
-            instanceToken = authority?.instanceToken,
-            restoreEpoch = authority?.restoreEpoch,
-            operationKind = CallerOperationKind.EXACT_OCCURRENCE,
-            capturedAtMillis = capturedAtMillis,
-            targetScheduledAt = alarm.nextTriggerTime.takeIf { it > 0L },
-            targetFireId = targetFireId,
-            allowZeroedDisabledRoom = allowZeroedDisabledRoom,
-            allowZeroTriggerPreArm = allowZeroTriggerPreArm,
-            sourceTag = sourceTag
-        )
+        ): CallerOriginIdentity {
+            val validAuthority = authority?.takeIf { it.alarmId == alarm.id }
+            return CallerOriginIdentity(
+                alarmId = alarm.id,
+                alarmKind = alarm.kind,
+                generation = alarm.generation,
+                revision = alarm.revision,
+                scheduledTriggerMillis = alarm.nextTriggerTime,
+                scheduleAuthorityRevision = validAuthority?.scheduleRevision,
+                definitionRevision = validAuthority?.definitionRevision,
+                instanceToken = validAuthority?.instanceToken,
+                restoreEpoch = validAuthority?.restoreEpoch,
+                operationKind = CallerOperationKind.EXACT_OCCURRENCE,
+                capturedAtMillis = capturedAtMillis,
+                targetScheduledAt = alarm.nextTriggerTime.takeIf { it > 0L },
+                targetFireId = targetFireId,
+                allowZeroedDisabledRoom = allowZeroedDisabledRoom,
+                allowZeroTriggerPreArm = allowZeroTriggerPreArm,
+                sourceTag = sourceTag
+            )
+        }
 
         /**
          * Captures definition-level DELETE / DISABLE / REPLACE_BEFORE_SAVE identity held by a caller.
-         * Preserves [mutationOrder] explicitly and leaves authority fields `null` if [authority] is absent.
+         * Preserves [mutationOrder] explicitly and leaves authority fields `null` if [authority] is absent or mismatched.
          */
         fun captureNormalDefinition(
             alarm: Alarm,
@@ -108,25 +114,28 @@ data class CallerOriginIdentity(
             mutationOrder: RoomMutationOrder,
             capturedAtMillis: Long,
             sourceTag: String = "NORMAL_DEFINITION_ORIGIN"
-        ): CallerOriginIdentity = CallerOriginIdentity(
-            alarmId = alarm.id,
-            alarmKind = alarm.kind,
-            generation = alarm.generation,
-            revision = alarm.revision,
-            scheduledTriggerMillis = alarm.nextTriggerTime,
-            scheduleAuthorityRevision = authority?.scheduleRevision,
-            definitionRevision = authority?.definitionRevision,
-            instanceToken = authority?.instanceToken,
-            restoreEpoch = authority?.restoreEpoch,
-            operationKind = when (actionKind) {
-                DefinitionActionKind.DELETE -> CallerOperationKind.DELETE
-                DefinitionActionKind.DISABLE -> CallerOperationKind.DISABLE
-                DefinitionActionKind.REPLACE_BEFORE_SAVE -> CallerOperationKind.REPLACE_BEFORE_SAVE
-            },
-            mutationOrder = mutationOrder,
-            capturedAtMillis = capturedAtMillis,
-            sourceTag = sourceTag
-        )
+        ): CallerOriginIdentity {
+            val validAuthority = authority?.takeIf { it.alarmId == alarm.id }
+            return CallerOriginIdentity(
+                alarmId = alarm.id,
+                alarmKind = alarm.kind,
+                generation = alarm.generation,
+                revision = alarm.revision,
+                scheduledTriggerMillis = alarm.nextTriggerTime,
+                scheduleAuthorityRevision = validAuthority?.scheduleRevision,
+                definitionRevision = validAuthority?.definitionRevision,
+                instanceToken = validAuthority?.instanceToken,
+                restoreEpoch = validAuthority?.restoreEpoch,
+                operationKind = when (actionKind) {
+                    DefinitionActionKind.DELETE -> CallerOperationKind.DELETE
+                    DefinitionActionKind.DISABLE -> CallerOperationKind.DISABLE
+                    DefinitionActionKind.REPLACE_BEFORE_SAVE -> CallerOperationKind.REPLACE_BEFORE_SAVE
+                },
+                mutationOrder = mutationOrder,
+                capturedAtMillis = capturedAtMillis,
+                sourceTag = sourceTag
+            )
+        }
 
         /**
          * Captures Quick Alarm identity separately from Normal occurrence lineage.

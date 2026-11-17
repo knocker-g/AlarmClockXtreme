@@ -528,4 +528,61 @@ class CallerOriginFenceConverterTest {
         assertFalse(resPartialGen.isPlannerAccepted)
         assertFalse(resPartialGen.allowsDestructiveCleanup)
     }
+
+    @Test
+    fun b1_13_mismatchedAlarmAndAuthorityIds_refusesAuthorityCaptureAndFailsClosedAsUnqualified() {
+        val alarm = normalAlarm(id = 42L)
+        val mismatchedAuthority = authorityRow(id = 99L, instanceToken = "inst-99")
+
+        val origin = CallerOriginIdentity.captureNormalExact(
+            alarm = alarm,
+            authority = mismatchedAuthority,
+            capturedAtMillis = capturedAt,
+            targetFireId = "fire-42-A"
+        )
+
+        assertNull(origin.instanceToken)
+        assertNull(origin.restoreEpoch)
+        assertNull(origin.scheduleAuthorityRevision)
+        assertNull(origin.definitionRevision)
+
+        val candidate = CallerOriginFenceConverter.toFenceCandidate(origin)
+        assertTrue(candidate is CallerOriginPropagationResult.Unqualified)
+        val unqualified = candidate as CallerOriginPropagationResult.Unqualified
+        assertEquals(CallerOriginUnqualifiedReason.MISSING_AUTHORITY_LINEAGE, unqualified.unqualifiedReason)
+        assertFalse(unqualified.isQualifiedCandidate)
+        assertFalse(unqualified.allowsDestructiveCleanup)
+
+        val evalResult = CallerOriginFenceConverter.evaluateWithPlanner(origin, normalContext(alarm = alarm))
+        assertTrue(evalResult is CallerOriginPropagationResult.Unqualified)
+        assertFalse(evalResult.isQualifiedCandidate)
+        assertFalse(evalResult.isPlannerAccepted)
+        assertFalse(evalResult.allowsDestructiveCleanup)
+    }
+
+    @Test
+    fun b1_14_mismatchedDefinitionAlarmAndAuthorityIds_refusesAuthorityCaptureAndFailsClosedAsUnqualified() {
+        val alarm = normalAlarm(id = 42L)
+        val mismatchedAuthority = authorityRow(id = 99L, instanceToken = "inst-99")
+
+        val origin = CallerOriginIdentity.captureNormalDefinition(
+            alarm = alarm,
+            authority = mismatchedAuthority,
+            actionKind = DefinitionActionKind.DELETE,
+            mutationOrder = RoomMutationOrder.AFTER_CANCEL,
+            capturedAtMillis = capturedAt
+        )
+
+        assertNull(origin.instanceToken)
+        assertNull(origin.restoreEpoch)
+        assertNull(origin.scheduleAuthorityRevision)
+        assertNull(origin.definitionRevision)
+
+        val candidate = CallerOriginFenceConverter.toFenceCandidate(origin)
+        assertTrue(candidate is CallerOriginPropagationResult.Unqualified)
+        val unqualified = candidate as CallerOriginPropagationResult.Unqualified
+        assertEquals(CallerOriginUnqualifiedReason.MISSING_AUTHORITY_LINEAGE, unqualified.unqualifiedReason)
+        assertFalse(unqualified.isQualifiedCandidate)
+        assertFalse(unqualified.allowsDestructiveCleanup)
+    }
 }
