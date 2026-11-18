@@ -39,13 +39,29 @@ class DirectBootDeliveryTransitionEngineTest {
 
     private val baseTime = 1_700_000_000_000L
 
-    private fun getDePrefs(): SharedPreferences = (if (context.isDeviceProtectedStorage) context else context.createDeviceProtectedStorageContext())
+    private fun getDeContext(ctx: Context): Context =
+        if (ctx.isDeviceProtectedStorage) ctx else ctx.createDeviceProtectedStorageContext()
+
+    private fun clearDeStorage(ctx: Context) {
+        val de = getDeContext(ctx)
+        val c1 = de.getSharedPreferences(DirectBootDeliveryLedger.PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().clear().commit()
+        val c2 = de.getSharedPreferences(DirectBootFiredWitnessLedger.PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().clear().commit()
+        val c3 = de.getSharedPreferences(DirectBootCeTakeoverStore.PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().clear().commit()
+        check(c1 && c2 && c3) {
+            "DirectBoot DE storage cleanup failed: c1=$c1, c2=$c2, c3=$c3"
+        }
+    }
+
+    private fun getDePrefs(): SharedPreferences = getDeContext(context)
         .getSharedPreferences(DirectBootDeliveryLedger.PREFS_NAME, Context.MODE_PRIVATE)
 
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
-        getDePrefs().edit().clear().commit()
+        clearDeStorage(context)
 
         database = Room.inMemoryDatabaseBuilder(context, AlarmDatabase::class.java)
             .allowMainThreadQueries()
@@ -68,7 +84,7 @@ class DirectBootDeliveryTransitionEngineTest {
 
     @After
     fun tearDown() {
-        getDePrefs().edit().clear().commit()
+        clearDeStorage(context)
         database.close()
     }
 
