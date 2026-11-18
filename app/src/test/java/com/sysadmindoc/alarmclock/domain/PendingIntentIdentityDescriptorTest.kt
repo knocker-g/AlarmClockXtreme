@@ -6,8 +6,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Pure Unit Tests for [PendingIntentIdentityComparator] validating S1-C2 Final Integration OS Key matching,
- * occurrence lineage comparison, 3-axis truth tables, identity flags semantics, and non-execution safety invariants.
+ * Pure Unit Tests for [PendingIntentIdentityComparator] validating S1-C2 Correction A3 OS Key matching,
+ * occurrence lineage comparison, 3-axis truth tables, identity flags semantics, URI canonical encoding with AOSP Uri.encode parity, and non-execution safety invariants.
  */
 class PendingIntentIdentityDescriptorTest {
 
@@ -39,16 +39,15 @@ class PendingIntentIdentityDescriptorTest {
         issueToken: String = "token-v1",
         requestCode: Int = 80001,
         creatorPackage: String = "com.sysadmindoc.alarmclock",
-        creatorUserScope: Int = 0,
         targetComponent: String = "com.sysadmindoc.alarmclock.receiver.AlarmReceiver",
         action: String? = "com.sysadmindoc.alarmclock.ALARM_FIRE",
         operationType: PendingIntentOperationType = PendingIntentOperationType.BROADCAST,
-        flags: Int = 0,
+        flags: Int = PendingIntentIdentityComparator.FLAG_IMMUTABLE,
         customDataUri: String? = null
     ): PendingIntentIdentityDescriptor = PendingIntentIdentityDescriptor(
         operationType = operationType,
         creatorPackage = creatorPackage,
-        creatorUserScope = creatorUserScope,
+        creatorUserScope = 0,
         targetComponent = targetComponent,
         intentAction = action,
         intentDataUri = customDataUri ?: "alarmclock://alarm/issue?alarmId=$alarmId&token=$issueToken",
@@ -695,7 +694,7 @@ class PendingIntentIdentityDescriptorTest {
         assertTrue("V2 Factory proof with complete matching parameters MUST evaluate to ExactCandidate", safety is CrossIdentitySafety.ExactCandidate)
     }
 
-    // --- 5. NEW A4 Semantic Safety Closure Tests ---
+    // --- 5. A4 Semantic Safety Closure Tests ---
 
     @Test
     fun test47_v2UriWithDuplicateQueryParamsFailsToUnsafeAlias() {
@@ -794,5 +793,143 @@ class PendingIntentIdentityDescriptorTest {
         assertFalse(safetyUnsafe.allowsDestructiveCleanup)
         assertFalse(safetyUnsafe.isOsCancelCompleted)
         assertFalse(safetyUnsafe.executesCancellation)
+    }
+
+    // --- 6. C2 Correction Resume Hardening Tests (C2-1..C2-5) ---
+
+    @Test
+    fun test56_bothSidesRestoreEpochZeroPreservesValidLineage() {
+        val linA = createLineage(restoreEpoch = 0L)
+        val linB = createLineage(restoreEpoch = 0L)
+
+        val linResult = PendingIntentIdentityComparator.compareLineages(linA, linB)
+        assertEquals("restoreEpoch = 0L is a valid non-restored epoch witness, returning SAME", OccurrenceComparison.SAME, linResult)
+    }
+
+    @Test
+    fun test57_bothSidesRestoreEpochNullEvaluatesToEvidenceIncomplete() {
+        val osV2 = createV2Descriptor()
+        val linA = createLineage(restoreEpoch = null)
+        val linB = createLineage(restoreEpoch = null)
+
+        val safety = PendingIntentIdentityComparator.evaluateSafety(osV2, osV2, linA, linB)
+        assertTrue("Missing restoreEpoch witness MUST evaluate to EvidenceIncomplete", safety is CrossIdentitySafety.EvidenceIncomplete)
+    }
+
+    @Test
+    fun test58_directBootV2FactoryFailsToExactCandidate() {
+        val osDirectBoot = createV2Descriptor(
+            requestCode = 91701,
+            targetComponent = "com.sysadmindoc.alarmclock.directboot.DirectBootAlarmReceiver",
+            customDataUri = "acx-directboot://normal/alarm/issue?alarmId=42&token=token-v1"
+        )
+        val lin = createLineage()
+
+        val safety = PendingIntentIdentityComparator.evaluateSafety(osDirectBoot, osDirectBoot, lin, lin)
+        assertFalse("Direct Boot V2 descriptor MUST NOT evaluate to ExactCandidate under MAIN V2 Factory rules", safety is CrossIdentitySafety.ExactCandidate)
+    }
+
+    @Test
+    fun test59_flagsZeroLacksFlagImmutableFailsToExactCandidate() {
+        val osNoImmutable = createV2Descriptor(flags = 0)
+        val lin = createLineage()
+
+        val safety = PendingIntentIdentityComparator.evaluateSafety(osNoImmutable, osNoImmutable, lin, lin)
+        assertFalse("V2 descriptor with flags=0 (lacking FLAG_IMMUTABLE) MUST NOT evaluate to ExactCandidate", safety is CrossIdentitySafety.ExactCandidate)
+    }
+
+    @Test
+    fun test60_uriEncodedTokenSpaceMatchesLineageRawTokenSpace() {
+        val osEncodedSpace = createV2Descriptor(customDataUri = "alarmclock://alarm/issue?alarmId=42&token=token%20v1")
+        val linSpace = createLineage(issueToken = "token v1")
+
+        val safety = PendingIntentIdentityComparator.evaluateSafety(osEncodedSpace, osEncodedSpace, linSpace, linSpace)
+        assertTrue("Uri.encode space %20 in Data URI matches raw space in lineage issueToken", safety is CrossIdentitySafety.ExactCandidate)
+    }
+
+    @Test
+    fun test61_legacySameOsKeyDifferentOccurrenceRejectsDestructiveCancel() {
+        val osLegacyA = createV1Descriptor(alarmId = 42L)
+        val osLegacyB = createV1Descriptor(alarmId = 42L)
+        val linA = createLineage(alarmId = 42L, scheduledTriggerMillis = 1000L)
+        val linB = createLineage(alarmId = 42L, scheduledTriggerMillis = 2000L)
+
+        val safety = PendingIntentIdentityComparator.evaluateSafety(osLegacyA, osLegacyB, linA, linB)
+        assertTrue(safety is CrossIdentitySafety.UnsafeAlias)
+        assertFalse(safety.allowsDestructiveCleanup)
+        assertFalse(safety.executesCancellation)
+    }
+
+    // --- 7. A2 Canonical Contract Tests (A1 .. A6) ---
+
+    @Test
+    fun test62_A1_uriTokenPercent20MatchesLineageSpace() {
+        val osA = createV2Descriptor(customDataUri = "alarmclock://alarm/issue?alarmId=42&token=token%20v1")
+        val linA = createLineage(issueToken = "token v1")
+
+        val safety = PendingIntentIdentityComparator.evaluateSafety(osA, osA, linA, linA)
+        assertTrue("Canonical percent-encoding %20 MUST match raw space 'token v1'", safety is CrossIdentitySafety.ExactCandidate)
+    }
+
+    @Test
+    fun test63_A2_uriTokenPercent20DoesNotMatchLiteralPercent20Lineage() {
+        val osA = createV2Descriptor(customDataUri = "alarmclock://alarm/issue?alarmId=42&token=token%20v1")
+        val linA = createLineage(issueToken = "token%20v1") // Literal percent 20 in token
+
+        val safety = PendingIntentIdentityComparator.evaluateSafety(osA, osA, linA, linA)
+        assertFalse("URI token%20v1 MUST NOT match literal issueToken token%20v1; canonical encoding requires token%2520v1", safety is CrossIdentitySafety.ExactCandidate)
+        assertTrue(safety is CrossIdentitySafety.UnsafeAlias)
+    }
+
+    @Test
+    fun test64_A3_uriTokenPercent2520MatchesLiteralPercent20Lineage() {
+        val osA = createV2Descriptor(customDataUri = "alarmclock://alarm/issue?alarmId=42&token=token%2520v1")
+        val linA = createLineage(issueToken = "token%20v1")
+
+        val safety = PendingIntentIdentityComparator.evaluateSafety(osA, osA, linA, linA)
+        assertTrue("URI token%2520v1 MUST match canonical encoding of literal token%20v1", safety is CrossIdentitySafety.ExactCandidate)
+    }
+
+    @Test
+    fun test65_A4_utf8MultibyteUnicodeTokenRoundtrip() {
+        val unicodeToken = "token-アラーム"
+        val encodedUnicode = PendingIntentIdentityComparator.encodePercentUtf8(unicodeToken)
+        val osA = createV2Descriptor(customDataUri = "alarmclock://alarm/issue?alarmId=42&token=$encodedUnicode")
+        val linA = createLineage(issueToken = unicodeToken)
+
+        val safety = PendingIntentIdentityComparator.evaluateSafety(osA, osA, linA, linA)
+        assertTrue("Canonical UTF-8 percent encoding of Unicode token MUST match lineage", safety is CrossIdentitySafety.ExactCandidate)
+    }
+
+    @Test
+    fun test66_A5_malformedPercentEncodingFailsClosed() {
+        val osA = createV2Descriptor(customDataUri = "alarmclock://alarm/issue?alarmId=42&token=token%2Gv1")
+        val linA = createLineage(issueToken = "token%2Gv1")
+
+        val safety = PendingIntentIdentityComparator.evaluateSafety(osA, osA, linA, linA)
+        assertFalse("Malformed percent encoding MUST NOT evaluate to ExactCandidate", safety is CrossIdentitySafety.ExactCandidate)
+    }
+
+    @Test
+    fun test67_A6_doubleEncodingOrAmbiguousAliasProhibitedFromExactCandidate() {
+        val osA = createV2Descriptor(customDataUri = "alarmclock://alarm/issue?alarmId=42&token=token%252520v1")
+        val linA = createLineage(issueToken = "token v1")
+
+        val safety = PendingIntentIdentityComparator.evaluateSafety(osA, osA, linA, linA)
+        assertFalse("Double-encoded or ambiguous URI token MUST NOT evaluate to ExactCandidate", safety is CrossIdentitySafety.ExactCandidate)
+    }
+
+    // --- 8. A3 Android Uri.encode Parity Test (A8) ---
+
+    @Test
+    fun test68_A8_androidUriEncodeUnreservedCharsParity() {
+        // Android Uri.encode("wake!up'alarm(1)*test~one.two_three-four") leaves -_!.~'()* unencoded
+        val tokenWithSpecialChars = "wake!up'alarm(1)*test~one.two_three-four"
+        val androidUriEncodedDataUri = "alarmclock://alarm/issue?alarmId=42&token=$tokenWithSpecialChars"
+        val osA = createV2Descriptor(customDataUri = androidUriEncodedDataUri)
+        val linA = createLineage(issueToken = tokenWithSpecialChars)
+
+        val safety = PendingIntentIdentityComparator.evaluateSafety(osA, osA, linA, linA)
+        assertTrue("Tokens with -_!.~'()* encoded via Android Uri.encode MUST match lineage in ExactCandidate", safety is CrossIdentitySafety.ExactCandidate)
     }
 }

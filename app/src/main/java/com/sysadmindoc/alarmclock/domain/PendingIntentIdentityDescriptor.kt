@@ -1,7 +1,7 @@
 package com.sysadmindoc.alarmclock.domain
 
 /**
- * Pure Kotlin enumerations and data classes for S1-C2 Final Integration OS Key and Lineage comparison.
+ * Pure Kotlin enumerations and data classes for S1-C2 Correction A3 OS Key and Lineage comparison.
  * Zero Android Context, AlarmManager, PendingIntent, Intent, Room, or WorkManager dependencies.
  */
 
@@ -130,6 +130,49 @@ object PendingIntentIdentityComparator {
 
     private val ALLOWED_V2_QUERY_PARAMS = setOf("alarmId", "token")
 
+    private fun isUnreservedChar(c: Char): Boolean {
+        return (c in 'a'..'z') || (c in 'A'..'Z') || (c in '0'..'9') ||
+            c == '-' || c == '_' || c == '.' || c == '~' ||
+            c == '!' || c == '\'' || c == '(' || c == ')' || c == '*'
+    }
+
+    fun encodePercentUtf8(s: String): String {
+        val bytes = s.toByteArray(Charsets.UTF_8)
+        val sb = StringBuilder()
+        for (b in bytes) {
+            val ch = b.toInt().toChar()
+            if (b in 33..126 && isUnreservedChar(ch)) {
+                sb.append(ch)
+            } else {
+                sb.append(String.format("%%%02X", b.toInt() and 0xFF))
+            }
+        }
+        return sb.toString()
+    }
+
+    fun decodePercentUtf8(s: String): String? {
+        val byteList = mutableListOf<Byte>()
+        var i = 0
+        while (i < s.length) {
+            val c = s[i]
+            if (c == '%') {
+                if (i + 2 >= s.length) return null
+                val hex = s.substring(i + 1, i + 3)
+                val byteVal = hex.toIntOrNull(16) ?: return null
+                byteList.add(byteVal.toByte())
+                i += 3
+            } else {
+                byteList.add(c.code.toByte())
+                i++
+            }
+        }
+        return try {
+            String(byteList.toByteArray(), Charsets.UTF_8)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     fun isValidPercentEncoding(s: String): Boolean {
         var i = 0
         while (i < s.length) {
@@ -237,8 +280,11 @@ object PendingIntentIdentityComparator {
             return OccurrenceComparison.DIFFERENT
         }
 
-        // Step 3: Check for missing instance/issue token witnesses
-        if (a.issueToken.isNullOrBlank() || b.issueToken.isNullOrBlank() || a.instanceToken.isNullOrBlank() || b.instanceToken.isNullOrBlank()) {
+        // Step 3: Check for missing instance/issue token witnesses or missing restoreEpoch
+        if (a.issueToken.isNullOrBlank() || b.issueToken.isNullOrBlank() ||
+            a.instanceToken.isNullOrBlank() || b.instanceToken.isNullOrBlank() ||
+            a.restoreEpoch == null || b.restoreEpoch == null
+        ) {
             return OccurrenceComparison.UNKNOWN
         }
 
@@ -279,13 +325,15 @@ object PendingIntentIdentityComparator {
             )
         }
 
+        // Positive MAIN Tokenized V2 Factory Proof check (requires FLAG_IMMUTABLE witness)
         val isV2FactoryCompliantA = osKeyA.isPositiveTokenizedV2 &&
             osKeyA.operationType == PendingIntentOperationType.BROADCAST &&
             osKeyA.creatorPackage == "com.sysadmindoc.alarmclock" &&
             osKeyA.creatorUserScope == 0 &&
             osKeyA.targetComponent == "com.sysadmindoc.alarmclock.receiver.AlarmReceiver" &&
             osKeyA.intentAction == "com.sysadmindoc.alarmclock.ALARM_FIRE" &&
-            osKeyA.requestCode == 80001
+            osKeyA.requestCode == 80001 &&
+            (osKeyA.flags and FLAG_IMMUTABLE) != 0
 
         val isV2FactoryCompliantB = osKeyB.isPositiveTokenizedV2 &&
             osKeyB.operationType == PendingIntentOperationType.BROADCAST &&
@@ -293,14 +341,18 @@ object PendingIntentIdentityComparator {
             osKeyB.creatorUserScope == 0 &&
             osKeyB.targetComponent == "com.sysadmindoc.alarmclock.receiver.AlarmReceiver" &&
             osKeyB.intentAction == "com.sysadmindoc.alarmclock.ALARM_FIRE" &&
-            osKeyB.requestCode == 80001
+            osKeyB.requestCode == 80001 &&
+            (osKeyB.flags and FLAG_IMMUTABLE) != 0
 
         val uriAlarmIdA = osKeyA.intentDataUri?.let { extractQueryParam(it, "alarmId")?.toLongOrNull() }
         val uriTokenA = osKeyA.intentDataUri?.let { extractQueryParam(it, "token") }
 
+        val tokenMatchesCanonical = uriTokenA != null && lineageA.issueToken != null &&
+            uriTokenA == encodePercentUtf8(lineageA.issueToken)
+
         if (!isV2FactoryCompliantA || !isV2FactoryCompliantB ||
             uriAlarmIdA != lineageA.alarmId ||
-            uriTokenA != lineageA.issueToken ||
+            !tokenMatchesCanonical ||
             osKeyA.computedIsLegacyV1Alias ||
             osKeyB.computedIsLegacyV1Alias
         ) {
