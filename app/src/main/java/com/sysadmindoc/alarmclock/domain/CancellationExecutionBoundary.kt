@@ -1,5 +1,7 @@
 package com.sysadmindoc.alarmclock.domain
 
+import com.sysadmindoc.alarmclock.data.model.Alarm
+
 /**
  * Enumeration of all 8 cancellation side-effect targets in AlarmClockXtreme.
  */
@@ -161,7 +163,21 @@ object CancellationExecutionBoundary {
             return BoundaryEvaluationReport(alarmId = alarmId, decisions = incompleteMap)
         }
 
-        // 2. Check Planner Outcome: If not Accepted, fail-closed all targets with exact rejection reason
+        // 2. Check Identity Consistency across CallerOriginIdentity, CancellationFence, and CancelOutcome
+        val mismatch = verifyCrossEntityIdentity(context.callerIdentity, context.cancellationFence, context.plannerOutcome)
+        if (mismatch != null) {
+            val (reason, detail) = mismatch
+            val blockedMap = SideEffectTarget.values().associateWith { target ->
+                PureEffectDecision.Blocked(
+                    target = target,
+                    reason = reason,
+                    detail = detail
+                )
+            }
+            return BoundaryEvaluationReport(alarmId = alarmId, decisions = blockedMap)
+        }
+
+        // 3. Check Planner Outcome: If not Accepted, fail-closed all targets with exact rejection reason
         if (context.plannerOutcome !is CancelOutcome.Accepted) {
             val (reason, detail) = when (val outcome = context.plannerOutcome) {
                 is CancelOutcome.NoOpAbsent -> outcome.reason to outcome.detail
@@ -182,12 +198,60 @@ object CancellationExecutionBoundary {
             return BoundaryEvaluationReport(alarmId = alarmId, decisions = blockedMap)
         }
 
-        // 3. Evaluate each of the 8 side effects independently
+        // 4. Evaluate each of the 8 side effects independently
         val decisions = SideEffectTarget.values().associateWith { target ->
             evaluateTarget(target, context)
         }
 
         return BoundaryEvaluationReport(alarmId = alarmId, decisions = decisions)
+    }
+
+    private fun verifyCrossEntityIdentity(
+        caller: CallerOriginIdentity,
+        fence: CancellationFence,
+        outcome: CancelOutcome
+    ): Pair<CancellationRejectionReason, String>? {
+        if (caller.alarmId != fence.alarmId || caller.alarmId != outcome.alarmId) {
+            return CancellationRejectionReason.MISSING_OR_INVALID_ALARM_ID to "Alarm ID mismatch between CallerOriginIdentity, CancellationFence, and CancelOutcome"
+        }
+        val fenceKind = when (fence) {
+            is CancellationFence.ExactOccurrence -> fence.kind
+            is CancellationFence.DefinitionDeleteOrDisable -> fence.kind
+            is CancellationFence.QuickOccurrence -> fence.kind
+            is CancellationFence.OrphanToken -> Alarm.KIND_NORMAL
+        }
+        if (caller.alarmKind != fenceKind) {
+            return CancellationRejectionReason.KIND_MISMATCH to "Kind mismatch between CallerOriginIdentity and CancellationFence"
+        }
+        if (fence is CancellationFence.ExactOccurrence) {
+            if (caller.generation != fence.expectedGeneration) {
+                return CancellationRejectionReason.GENERATION_MISMATCH to "Generation mismatch between CallerOriginIdentity and CancellationFence"
+            }
+            if (caller.revision != fence.expectedRevision) {
+                return CancellationRejectionReason.REVISION_MISMATCH to "Revision mismatch between CallerOriginIdentity and CancellationFence"
+            }
+            if (caller.scheduledTriggerMillis != fence.expectedTriggerTime) {
+                return CancellationRejectionReason.TRIGGER_TIME_MISMATCH to "Trigger time mismatch between CallerOriginIdentity and CancellationFence"
+            }
+            if (caller.instanceToken != fence.expectedInstanceToken) {
+                return CancellationRejectionReason.INSTANCE_TOKEN_MISMATCH to "InstanceToken mismatch between CallerOriginIdentity and CancellationFence"
+            }
+            if (caller.restoreEpoch != fence.expectedRestoreEpoch) {
+                return CancellationRejectionReason.RESTORE_EPOCH_MISMATCH to "RestoreEpoch mismatch between CallerOriginIdentity and CancellationFence"
+            }
+            if (caller.scheduleAuthorityRevision != fence.expectedScheduleRevision) {
+                return CancellationRejectionReason.SCHEDULE_REVISION_MISMATCH to "ScheduleRevision mismatch between CallerOriginIdentity and CancellationFence"
+            }
+            if (caller.definitionRevision != fence.expectedDefinitionRevision) {
+                return CancellationRejectionReason.DEFINITION_REVISION_MISMATCH to "DefinitionRevision mismatch between CallerOriginIdentity and CancellationFence"
+            }
+        }
+        if (outcome is CancelOutcome.Accepted) {
+            if (caller.alarmId != outcome.plan.alarmId || caller.alarmKind != outcome.plan.fenceKind) {
+                return CancellationRejectionReason.TARGET_WITNESS_MISMATCH to "Target witness mismatch between CallerOriginIdentity and FencedCancellationPlan"
+            }
+        }
+        return null
     }
 
     private fun evaluateTarget(
@@ -200,6 +264,14 @@ object CancellationExecutionBoundary {
                 target = target,
                 reason = CancellationRejectionReason.STALE_GENERATION,
                 detail = "Successor occurrence exists in storage"
+            )
+        }
+
+        if (context.successorExclusionStatus == SuccessorExclusionStatus.UNKNOWN) {
+            return PureEffectDecision.EvidenceIncomplete(
+                target = target,
+                missingWitness = "SUCCESSOR_EXCLUSION_UNVERIFIED",
+                detail = "Successor occurrence exclusion status is unknown"
             )
         }
 
@@ -242,7 +314,7 @@ object CancellationExecutionBoundary {
                 } else {
                     PureEffectDecision.CandidateForFutureVerification(
                         target = target,
-                        verifiedWitnesses = listOf("QUALIFIED_CALLER", "ACCEPTED_PLAN", "PROVEN_OS_IDENTITY")
+                        verifiedWitnesses = listOf("QUALIFIED_CALLER", "CROSS_ENTITY_IDENTITY_VERIFIED", "PROVEN_OS_IDENTITY", "MUTEX_EXCLUSION")
                     )
                 }
             }
@@ -270,7 +342,7 @@ object CancellationExecutionBoundary {
                 ) {
                     PureEffectDecision.CandidateForFutureVerification(
                         target = target,
-                        verifiedWitnesses = listOf("QUALIFIED_CALLER", "ACCEPTED_PLAN", "DE_LINEAGE_MATCH", "MUTEX_EXCLUSION")
+                        verifiedWitnesses = listOf("QUALIFIED_CALLER", "DE_LINEAGE_MATCH", "MUTEX_EXCLUSION", "PROVEN_OS_STATE")
                     )
                 } else {
                     PureEffectDecision.EvidenceIncomplete(
@@ -286,7 +358,7 @@ object CancellationExecutionBoundary {
             SideEffectTarget.FIRE_WATCHDOG_WORKER -> {
                 PureEffectDecision.CandidateForFutureVerification(
                     target = target,
-                    verifiedWitnesses = listOf("QUALIFIED_CALLER", "ACCEPTED_PLAN")
+                    verifiedWitnesses = listOf("QUALIFIED_CALLER", "ACCEPTED_PLAN", "MUTEX_EXCLUSION")
                 )
             }
 
@@ -295,7 +367,7 @@ object CancellationExecutionBoundary {
                 if (!context.includeFollowUpWorkers) {
                     PureEffectDecision.Blocked(
                         target = target,
-                        reason = CancellationRejectionReason.KIND_MISMATCH,
+                        reason = CancellationRejectionReason.AUTHORITY_LIFECYCLE_OR_OPERATION_MISMATCH,
                         detail = "Follow-up workers not included in cancellation scope"
                     )
                 } else {
@@ -307,10 +379,18 @@ object CancellationExecutionBoundary {
             }
 
             SideEffectTarget.ISSUED_OCCURRENCE_TOKEN -> {
-                PureEffectDecision.CandidateForFutureVerification(
-                    target = target,
-                    verifiedWitnesses = listOf("QUALIFIED_CALLER", "ACCEPTED_PLAN", "TOKEN_MATCH")
-                )
+                if (context.callerIdentity?.instanceToken == null || context.cancellationFence?.let { (it as? CancellationFence.ExactOccurrence)?.expectedInstanceToken } == null) {
+                    PureEffectDecision.EvidenceIncomplete(
+                        target = target,
+                        missingWitness = "INSTANCE_TOKEN_MISSING",
+                        detail = "Issued occurrence token is missing or unverified"
+                    )
+                } else {
+                    PureEffectDecision.CandidateForFutureVerification(
+                        target = target,
+                        verifiedWitnesses = listOf("QUALIFIED_CALLER", "TOKEN_MATCH", "MUTEX_EXCLUSION")
+                    )
+                }
             }
         }
     }

@@ -8,8 +8,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Unit tests for [CancellationExecutionBoundary] verifying all 20 Safety Cases
- * and mandatory non-executable invariants.
+ * Unit tests for [CancellationExecutionBoundary] verifying all 20 Safety Cases,
+ * mandatory non-executable invariants, and Pure Evidence Integrity contracts.
  */
 class CancellationExecutionBoundaryTest {
 
@@ -91,7 +91,7 @@ class CancellationExecutionBoundaryTest {
             plannerOutcome = plan,
             pendingIntentLookup = PendingIntentLookupStatus.LOOKUP_FOUND,
             osCancelInvocation = OsCancelInvocationStatus.INVOCATION_COMPLETED,
-            osCancelProof = OsCancelProofStatus.PROVEN_NO_EXISTING,
+            osCancelProof = OsCancelProofStatus.PROVEN_CANCELLED,
             deLineageStatus = DeLineageStatus.VERIFIED_MATCH,
             successorExclusionStatus = SuccessorExclusionStatus.EXCLUDED_IN_MUTEX,
             isLegacyRed04Unresolved = false,
@@ -225,6 +225,7 @@ class CancellationExecutionBoundaryTest {
             osCancelInvocation = OsCancelInvocationStatus.INVOCATION_FAILED,
             osCancelProof = OsCancelProofStatus.UNCERTAIN,
             deLineageStatus = DeLineageStatus.VERIFIED_MATCH,
+            successorExclusionStatus = SuccessorExclusionStatus.EXCLUDED_IN_MUTEX,
             isLegacyRed04Unresolved = false
         )
 
@@ -294,6 +295,7 @@ class CancellationExecutionBoundaryTest {
             callerIdentity = caller,
             cancellationFence = fence,
             plannerOutcome = plan,
+            successorExclusionStatus = SuccessorExclusionStatus.EXCLUDED_IN_MUTEX,
             isLegacyRed04Unresolved = true
         )
 
@@ -315,6 +317,7 @@ class CancellationExecutionBoundaryTest {
             callerIdentity = caller,
             cancellationFence = fence,
             plannerOutcome = plan,
+            successorExclusionStatus = SuccessorExclusionStatus.EXCLUDED_IN_MUTEX,
             deLineageStatus = DeLineageStatus.LINEAGE_MISSING
         )
 
@@ -336,6 +339,7 @@ class CancellationExecutionBoundaryTest {
             callerIdentity = caller,
             cancellationFence = fence,
             plannerOutcome = plan,
+            successorExclusionStatus = SuccessorExclusionStatus.EXCLUDED_IN_MUTEX,
             includeFollowUpWorkers = false
         )
 
@@ -343,11 +347,11 @@ class CancellationExecutionBoundaryTest {
 
         val guardianDecision = report.decisions[SideEffectTarget.GUARDIAN_WORKER]
         assertTrue(guardianDecision is PureEffectDecision.Blocked)
-        assertEquals(CancellationRejectionReason.KIND_MISMATCH, (guardianDecision as PureEffectDecision.Blocked).reason)
+        assertEquals(CancellationRejectionReason.AUTHORITY_LIFECYCLE_OR_OPERATION_MISMATCH, (guardianDecision as PureEffectDecision.Blocked).reason)
 
         val wakeConfirmDecision = report.decisions[SideEffectTarget.WAKE_CONFIRM_WORKER_AND_STORE]
         assertTrue(wakeConfirmDecision is PureEffectDecision.Blocked)
-        assertEquals(CancellationRejectionReason.KIND_MISMATCH, (wakeConfirmDecision as PureEffectDecision.Blocked).reason)
+        assertEquals(CancellationRejectionReason.AUTHORITY_LIFECYCLE_OR_OPERATION_MISMATCH, (wakeConfirmDecision as PureEffectDecision.Blocked).reason)
     }
 
     // --- Safety Case 11 ---
@@ -415,6 +419,7 @@ class CancellationExecutionBoundaryTest {
             plannerOutcome = plan,
             osCancelInvocation = OsCancelInvocationStatus.INVOCATION_COMPLETED,
             osCancelProof = OsCancelProofStatus.UNPROVEN_IDENTITY,
+            successorExclusionStatus = SuccessorExclusionStatus.EXCLUDED_IN_MUTEX,
             isLegacyRed04Unresolved = false
         )
 
@@ -437,6 +442,7 @@ class CancellationExecutionBoundaryTest {
             cancellationFence = fence,
             plannerOutcome = plan,
             pendingIntentLookup = PendingIntentLookupStatus.LOOKUP_NULL,
+            successorExclusionStatus = SuccessorExclusionStatus.EXCLUDED_IN_MUTEX,
             isLegacyRed04Unresolved = false
         )
 
@@ -503,6 +509,7 @@ class CancellationExecutionBoundaryTest {
             callerIdentity = caller,
             cancellationFence = fence,
             plannerOutcome = plan,
+            successorExclusionStatus = SuccessorExclusionStatus.EXCLUDED_IN_MUTEX,
             isLegacyRed04Unresolved = true
         )
 
@@ -546,6 +553,7 @@ class CancellationExecutionBoundaryTest {
             callerIdentity = caller,
             cancellationFence = fence,
             plannerOutcome = plan,
+            successorExclusionStatus = SuccessorExclusionStatus.EXCLUDED_IN_MUTEX,
             deLineageStatus = DeLineageStatus.LINEAGE_MISSING
         )
 
@@ -561,7 +569,6 @@ class CancellationExecutionBoundaryTest {
     fun safetyCase20_completeCallerOriginButUnknownEffectIdentity() {
         val caller = createQualifiedCaller()
         val fence = createAcceptedFence(caller)
-        val plan = createAcceptedPlan(fence)
 
         val context = BoundaryEvaluationContext(
             callerIdentity = caller,
@@ -576,5 +583,201 @@ class CancellationExecutionBoundaryTest {
             assertTrue(decision is PureEffectDecision.EvidenceIncomplete)
             assertEquals("PLANNER_OUTCOME_MISSING", (decision as PureEffectDecision.EvidenceIncomplete).missingWitness)
         }
+    }
+
+    // --- NEW RED Integrity Tests (Evidence Correction Phase) ---
+
+    @Test
+    fun red01_callerA_fenceB_mismatchedIdentity() {
+        val callerA = createQualifiedCaller(alarmId = 42L)
+        val callerB = createQualifiedCaller(alarmId = 99L)
+        val fenceB = createAcceptedFence(callerB)
+        val planB = createAcceptedPlan(fenceB)
+
+        val context = BoundaryEvaluationContext(
+            callerIdentity = callerA,
+            cancellationFence = fenceB,
+            plannerOutcome = planB
+        )
+
+        val report = CancellationExecutionBoundary.evaluate(context)
+
+        SideEffectTarget.values().forEach { target ->
+            val decision = report.decisions[target]
+            assertTrue("Decision for $target must be Blocked due to cross-entity mismatch", decision is PureEffectDecision.Blocked)
+            val blocked = decision as PureEffectDecision.Blocked
+            assertEquals(CancellationRejectionReason.MISSING_OR_INVALID_ALARM_ID, blocked.reason)
+        }
+    }
+
+    @Test
+    fun red02_callerA_planB_mismatchedPlan() {
+        val callerA = createQualifiedCaller(alarmId = 42L)
+        val fenceA = createAcceptedFence(callerA)
+        // planB has same alarmId = 42L but mismatched fenceKind = "QUICK"
+        val planB = CancelOutcome.Accepted(
+            alarmId = 42L,
+            plan = FencedCancellationPlan(
+                alarmId = 42L,
+                fenceKind = Alarm.KIND_QUICK,
+                shouldCancelMainOsSlot = true,
+                shouldAttemptDirectBootRemoval = true,
+                directBootTargetTriggerTime = 1000L,
+                shouldCancelFollowUpWork = true,
+                revokeIssuedOccurrenceToken = "token",
+                callerRoomMutationPermittedAfterOsCancel = true
+            )
+        )
+
+        val context = BoundaryEvaluationContext(
+            callerIdentity = callerA,
+            cancellationFence = fenceA,
+            plannerOutcome = planB
+        )
+
+        val report = CancellationExecutionBoundary.evaluate(context)
+
+        SideEffectTarget.values().forEach { target ->
+            val decision = report.decisions[target]
+            assertTrue("Decision for $target must be Blocked due to cross-entity plan mismatch", decision is PureEffectDecision.Blocked)
+            val blocked = decision as PureEffectDecision.Blocked
+            assertEquals(CancellationRejectionReason.TARGET_WITNESS_MISMATCH, blocked.reason)
+        }
+    }
+
+    @Test
+    fun red03_unqualifiedLegacyCaller() {
+        val alarm = createValidAlarm(id = 42L)
+        // Missing ScheduleAuthority -> Unqualified
+        val unqualifiedIdentity = CallerOriginIdentity.captureNormalExact(alarm, null, 1000L)
+        assertFalse(unqualifiedIdentity.instanceToken != null)
+
+        val fence = CancellationFence.ExactOccurrence(
+            alarmId = 42L,
+            expectedGeneration = 1,
+            expectedRevision = 1,
+            expectedTriggerTime = 1_700_000_000_000L
+        )
+
+        val context = BoundaryEvaluationContext(
+            callerIdentity = unqualifiedIdentity,
+            cancellationFence = fence,
+            plannerOutcome = null
+        )
+
+        val report = CancellationExecutionBoundary.evaluate(context)
+
+        SideEffectTarget.values().forEach { target ->
+            val decision = report.decisions[target]
+            assertTrue("Unqualified legacy caller must return EvidenceIncomplete or Blocked", decision is PureEffectDecision.EvidenceIncomplete || decision is PureEffectDecision.Blocked)
+        }
+    }
+
+    @Test
+    fun red06_successorUnknownReturnsEvidenceIncomplete() {
+        val caller = createQualifiedCaller()
+        val fence = createAcceptedFence(caller)
+        val plan = createAcceptedPlan(fence)
+
+        val context = BoundaryEvaluationContext(
+            callerIdentity = caller,
+            cancellationFence = fence,
+            plannerOutcome = plan,
+            successorExclusionStatus = SuccessorExclusionStatus.UNKNOWN
+        )
+
+        val report = CancellationExecutionBoundary.evaluate(context)
+
+        SideEffectTarget.values().forEach { target ->
+            val decision = report.decisions[target]
+            assertTrue("Successor UNKNOWN must return EvidenceIncomplete", decision is PureEffectDecision.EvidenceIncomplete)
+            assertEquals("SUCCESSOR_EXCLUSION_UNVERIFIED", (decision as PureEffectDecision.EvidenceIncomplete).missingWitness)
+        }
+    }
+
+    @Test
+    fun red08_workerSharedUniqueNameUnprovenIdentity() {
+        val caller = createQualifiedCaller()
+        val fence = createAcceptedFence(caller)
+        val plan = createAcceptedPlan(fence)
+
+        val context = BoundaryEvaluationContext(
+            callerIdentity = caller,
+            cancellationFence = fence,
+            plannerOutcome = plan,
+            successorExclusionStatus = SuccessorExclusionStatus.EXCLUDED_IN_MUTEX,
+            includeFollowUpWorkers = true
+        )
+
+        val report = CancellationExecutionBoundary.evaluate(context)
+
+        val hueDecision = report.decisions[SideEffectTarget.HUE_SUNRISE_WORKER]
+        assertTrue(hueDecision is PureEffectDecision.CandidateForFutureVerification)
+        val candidate = hueDecision as PureEffectDecision.CandidateForFutureVerification
+        assertFalse("Shared UniqueName cannot claim PROVEN_WORKER_OCCURRENCE_IDENTITY", candidate.verifiedWitnesses.contains("PROVEN_WORKER_OCCURRENCE_IDENTITY"))
+    }
+
+    @Test
+    fun red09_issuedOccurrenceTokenUnverified() {
+        val callerWithoutToken = createQualifiedCaller().copy(instanceToken = null)
+        val fenceWithoutToken = createAcceptedFence(createQualifiedCaller()).copy(expectedInstanceToken = null)
+        val plan = createAcceptedPlan(createAcceptedFence(createQualifiedCaller()))
+
+        val context = BoundaryEvaluationContext(
+            callerIdentity = callerWithoutToken,
+            cancellationFence = fenceWithoutToken,
+            plannerOutcome = plan,
+            successorExclusionStatus = SuccessorExclusionStatus.EXCLUDED_IN_MUTEX
+        )
+
+        val report = CancellationExecutionBoundary.evaluate(context)
+
+        val tokenDecision = report.decisions[SideEffectTarget.ISSUED_OCCURRENCE_TOKEN]
+        assertTrue("Unverified instanceToken must return EvidenceIncomplete", tokenDecision is PureEffectDecision.EvidenceIncomplete)
+        assertEquals("INSTANCE_TOKEN_MISSING", (tokenDecision as PureEffectDecision.EvidenceIncomplete).missingWitness)
+    }
+
+    @Test
+    fun red10_legacyRed04UnresolvedFalseAloneDoesNotPromoteToCandidate() {
+        val caller = createQualifiedCaller()
+        val fence = createAcceptedFence(caller)
+        val plan = createAcceptedPlan(fence)
+
+        // isLegacyRed04Unresolved = false, BUT osCancelProof = UNPROVEN_IDENTITY
+        val context = BoundaryEvaluationContext(
+            callerIdentity = caller,
+            cancellationFence = fence,
+            plannerOutcome = plan,
+            successorExclusionStatus = SuccessorExclusionStatus.EXCLUDED_IN_MUTEX,
+            isLegacyRed04Unresolved = false,
+            osCancelProof = OsCancelProofStatus.UNPROVEN_IDENTITY
+        )
+
+        val report = CancellationExecutionBoundary.evaluate(context)
+
+        val osDecision = report.decisions[SideEffectTarget.MAIN_OS_PENDING_INTENT]
+        assertTrue("UNPROVEN_IDENTITY must NOT be promoted to Candidate even if red04 is false", osDecision is PureEffectDecision.Blocked)
+        assertEquals(CancellationRejectionReason.TARGET_WITNESS_MISMATCH, (osDecision as PureEffectDecision.Blocked).reason)
+    }
+
+    @Test
+    fun red11_includeFollowUpWorkersFalseReasonCode() {
+        val caller = createQualifiedCaller()
+        val fence = createAcceptedFence(caller)
+        val plan = createAcceptedPlan(fence)
+
+        val context = BoundaryEvaluationContext(
+            callerIdentity = caller,
+            cancellationFence = fence,
+            plannerOutcome = plan,
+            successorExclusionStatus = SuccessorExclusionStatus.EXCLUDED_IN_MUTEX,
+            includeFollowUpWorkers = false
+        )
+
+        val report = CancellationExecutionBoundary.evaluate(context)
+
+        val guardianDecision = report.decisions[SideEffectTarget.GUARDIAN_WORKER]
+        assertTrue(guardianDecision is PureEffectDecision.Blocked)
+        assertEquals(CancellationRejectionReason.AUTHORITY_LIFECYCLE_OR_OPERATION_MISMATCH, (guardianDecision as PureEffectDecision.Blocked).reason)
     }
 }
