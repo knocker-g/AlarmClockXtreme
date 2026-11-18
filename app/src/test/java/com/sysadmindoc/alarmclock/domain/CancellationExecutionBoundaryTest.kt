@@ -715,6 +715,7 @@ class CancellationExecutionBoundaryTest {
         assertTrue(hueDecision is PureEffectDecision.CandidateForFutureVerification)
         val candidate = hueDecision as PureEffectDecision.CandidateForFutureVerification
         assertFalse("Shared UniqueName cannot claim PROVEN_WORKER_OCCURRENCE_IDENTITY", candidate.verifiedWitnesses.contains("PROVEN_WORKER_OCCURRENCE_IDENTITY"))
+        assertTrue("Shared UniqueName must explicitly log SHARED_WORKER_NAME_TARGET_IDENTITY_UNPROVEN", candidate.verifiedWitnesses.contains("SHARED_WORKER_NAME_TARGET_IDENTITY_UNPROVEN"))
     }
 
     @Test
@@ -734,7 +735,7 @@ class CancellationExecutionBoundaryTest {
 
         val tokenDecision = report.decisions[SideEffectTarget.ISSUED_OCCURRENCE_TOKEN]
         assertTrue("Unverified instanceToken must return EvidenceIncomplete", tokenDecision is PureEffectDecision.EvidenceIncomplete)
-        assertEquals("INSTANCE_TOKEN_MISSING", (tokenDecision as PureEffectDecision.EvidenceIncomplete).missingWitness)
+        assertEquals("CALLER_ORIGIN_UNQUALIFIED", (tokenDecision as PureEffectDecision.EvidenceIncomplete).missingWitness)
     }
 
     @Test

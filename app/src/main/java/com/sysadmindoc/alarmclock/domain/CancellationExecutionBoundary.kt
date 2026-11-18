@@ -163,7 +163,20 @@ object CancellationExecutionBoundary {
             return BoundaryEvaluationReport(alarmId = alarmId, decisions = incompleteMap)
         }
 
-        // 2. Check Identity Consistency across CallerOriginIdentity, CancellationFence, and CancelOutcome
+        // 2. Pre-check: CallerOriginIdentity must be a qualified candidate via S1-B1 converter
+        val fenceCandidate = CallerOriginFenceConverter.toFenceCandidate(context.callerIdentity)
+        if (!fenceCandidate.isQualifiedCandidate) {
+            val incompleteMap = SideEffectTarget.values().associateWith { target ->
+                PureEffectDecision.EvidenceIncomplete(
+                    target = target,
+                    missingWitness = "CALLER_ORIGIN_UNQUALIFIED",
+                    detail = "CallerOriginIdentity is not a qualified candidate"
+                )
+            }
+            return BoundaryEvaluationReport(alarmId = alarmId, decisions = incompleteMap)
+        }
+
+        // 3. Check Identity Consistency across CallerOriginIdentity, CancellationFence, and CancelOutcome
         val mismatch = verifyCrossEntityIdentity(context.callerIdentity, context.cancellationFence, context.plannerOutcome)
         if (mismatch != null) {
             val (reason, detail) = mismatch
@@ -177,7 +190,7 @@ object CancellationExecutionBoundary {
             return BoundaryEvaluationReport(alarmId = alarmId, decisions = blockedMap)
         }
 
-        // 3. Check Planner Outcome: If not Accepted, fail-closed all targets with exact rejection reason
+        // 4. Check Planner Outcome: If not Accepted, fail-closed all targets with exact rejection reason
         if (context.plannerOutcome !is CancelOutcome.Accepted) {
             val (reason, detail) = when (val outcome = context.plannerOutcome) {
                 is CancelOutcome.NoOpAbsent -> outcome.reason to outcome.detail
@@ -198,7 +211,7 @@ object CancellationExecutionBoundary {
             return BoundaryEvaluationReport(alarmId = alarmId, decisions = blockedMap)
         }
 
-        // 4. Evaluate each of the 8 side effects independently
+        // 5. Evaluate each of the 8 side effects independently
         val decisions = SideEffectTarget.values().associateWith { target ->
             evaluateTarget(target, context)
         }
@@ -314,7 +327,7 @@ object CancellationExecutionBoundary {
                 } else {
                     PureEffectDecision.CandidateForFutureVerification(
                         target = target,
-                        verifiedWitnesses = listOf("QUALIFIED_CALLER", "CROSS_ENTITY_IDENTITY_VERIFIED", "PROVEN_OS_IDENTITY", "MUTEX_EXCLUSION")
+                        verifiedWitnesses = listOf("CALLER_QUALIFIED", "CROSS_ENTITY_IDENTITY_VERIFIED", "OBSERVED_OS_CANCEL_INPUT", "OBSERVED_MUTEX_SNAPSHOT")
                     )
                 }
             }
@@ -342,7 +355,7 @@ object CancellationExecutionBoundary {
                 ) {
                     PureEffectDecision.CandidateForFutureVerification(
                         target = target,
-                        verifiedWitnesses = listOf("QUALIFIED_CALLER", "DE_LINEAGE_MATCH", "MUTEX_EXCLUSION", "PROVEN_OS_STATE")
+                        verifiedWitnesses = listOf("CALLER_QUALIFIED", "OBSERVED_DE_LINEAGE", "OBSERVED_MUTEX_SNAPSHOT", "OBSERVED_OS_STATE")
                     )
                 } else {
                     PureEffectDecision.EvidenceIncomplete(
@@ -353,12 +366,24 @@ object CancellationExecutionBoundary {
                 }
             }
 
-            SideEffectTarget.SMART_ALARM_PENDING_INTENT,
-            SideEffectTarget.HUE_SUNRISE_WORKER,
+            SideEffectTarget.SMART_ALARM_PENDING_INTENT -> {
+                PureEffectDecision.CandidateForFutureVerification(
+                    target = target,
+                    verifiedWitnesses = listOf("CALLER_QUALIFIED", "PLAN_ADMISSION_ACCEPTED", "OBSERVED_MUTEX_SNAPSHOT", "SHARED_ALARM_ID_TARGET_IDENTITY_UNPROVEN")
+                )
+            }
+
+            SideEffectTarget.HUE_SUNRISE_WORKER -> {
+                PureEffectDecision.CandidateForFutureVerification(
+                    target = target,
+                    verifiedWitnesses = listOf("CALLER_QUALIFIED", "PLAN_ADMISSION_ACCEPTED", "OBSERVED_MUTEX_SNAPSHOT", "SHARED_WORKER_NAME_TARGET_IDENTITY_UNPROVEN")
+                )
+            }
+
             SideEffectTarget.FIRE_WATCHDOG_WORKER -> {
                 PureEffectDecision.CandidateForFutureVerification(
                     target = target,
-                    verifiedWitnesses = listOf("QUALIFIED_CALLER", "ACCEPTED_PLAN", "MUTEX_EXCLUSION")
+                    verifiedWitnesses = listOf("CALLER_QUALIFIED", "PLAN_ADMISSION_ACCEPTED", "OBSERVED_MUTEX_SNAPSHOT", "SHARED_WORKER_NAME_TARGET_IDENTITY_UNPROVEN")
                 )
             }
 
@@ -373,7 +398,7 @@ object CancellationExecutionBoundary {
                 } else {
                     PureEffectDecision.CandidateForFutureVerification(
                         target = target,
-                        verifiedWitnesses = listOf("QUALIFIED_CALLER", "ACCEPTED_PLAN", "FOLLOW_UP_INCLUDED")
+                        verifiedWitnesses = listOf("CALLER_QUALIFIED", "PLAN_ADMISSION_ACCEPTED", "FOLLOW_UP_INCLUDED", "SHARED_WORKER_NAME_TARGET_IDENTITY_UNPROVEN")
                     )
                 }
             }
@@ -388,7 +413,7 @@ object CancellationExecutionBoundary {
                 } else {
                     PureEffectDecision.CandidateForFutureVerification(
                         target = target,
-                        verifiedWitnesses = listOf("QUALIFIED_CALLER", "TOKEN_MATCH", "MUTEX_EXCLUSION")
+                        verifiedWitnesses = listOf("CALLER_QUALIFIED", "PLAN_ADMISSION_ACCEPTED", "OBSERVED_CALLER_FENCE_TOKEN_MATCH", "DAO_TARGET_ROW_WITNESS_UNPROVEN")
                     )
                 }
             }
