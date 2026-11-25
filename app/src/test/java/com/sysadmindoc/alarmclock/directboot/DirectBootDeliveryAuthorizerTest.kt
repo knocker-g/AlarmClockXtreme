@@ -78,6 +78,11 @@ class DirectBootDeliveryAuthorizerTest {
 
     @After
     fun tearDown() {
+        DirectBootAlarmReceiver.resetSeamsForTesting()
+        com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate.getInstance(context).apply {
+            isEnabled = false
+            arbiter.clearForTesting()
+        }
         prefs.edit().clear().commit()
     }
 
@@ -1314,4 +1319,112 @@ class DirectBootDeliveryAuthorizerTest {
         assertEquals(unsupportedRaw, prefs.getString(DirectBootDurableOwnerStore.KEY_DIRECT_BOOT_DURABLE_OWNER, null))
         assertEquals(prefsBefore, prefs.all.toMap())
     }
+
+    // =========================================================================
+    // KNO-75 G4-STEP6-P23 RED: Post-Reboot Ticketless OS Delivery & Tamper Rejection
+    // =========================================================================
+
+    private class CapturingServiceContext(base: Context) : android.content.ContextWrapper(base) {
+        val startedServices = mutableListOf<android.content.Intent>()
+        override fun startForegroundService(service: android.content.Intent?): android.content.ComponentName {
+            if (service != null) startedServices.add(service)
+            return android.content.ComponentName(packageName, DirectBootAlarmService::class.java.name)
+        }
+    }
+
+    @Test
+    fun p2_04_receiverTicketlessOsDelivery_preQualifiesIssuesTicketAndCommitsHandoverPending() {
+        val triggerPast = System.currentTimeMillis() - 5_000L
+        val item = DirectBootQueueItem(
+            kind = DirectBootQueueItem.KIND_NORMAL,
+            alarmId = 710L,
+            triggerTime = triggerPast,
+            generation = 1,
+            instanceToken = "tok_os_reboot_710",
+            restoreEpoch = 2L
+        )
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(item), now = triggerPast - 10_000L))
+        DirectBootAlarmReceiver.resetSeamsForTesting()
+        val gate = com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate.getInstance(context).apply {
+            isEnabled = true
+        }
+        DirectBootAlarmReceiver.outputAuthorityGateSeam = gate
+        DirectBootAlarmReceiver.v2DeliveryCapableProvider = { true }
+
+        val identity = DirectBootV2NormalIntentIdentity.fromQueueItem(item)
+        val osIntent = identity.createIntent(context)
+        assertFalse("OS AlarmManager intent must not carry pre-issued ticket", osIntent.hasExtra(DirectBootDeliveryAuthorizer.EXTRA_TICKET_ID))
+
+        val captureCtx = CapturingServiceContext(context)
+        DirectBootAlarmReceiver().onReceive(captureCtx, osIntent)
+
+        assertEquals("Ticketless OS delivery matching Queue head MUST start DirectBootAlarmService", 1, captureCtx.startedServices.size)
+        assertEquals(0, DirectBootAlarmCache.readQueue(context, now = triggerPast).size)
+        assertTrue(DirectBootDeliveryLedger.readUnacknowledgedRecords(context) is LedgerStorageState.ValidWithRecords)
+        val ownerRead = DirectBootDurableOwnerStore.read(context)
+        assertTrue("Receiver commit MUST write HANDOVER_PENDING", ownerRead is OwnerReadResult.Success)
+        assertEquals(OwnerState.HANDOVER_PENDING, (ownerRead as OwnerReadResult.Success).owner.state)
+        assertEquals(710L, ownerRead.owner.handoverClaim?.alarmId)
+    }
+
+    @Test
+    fun p2_05_receiverExplicitBlankTamperedOrReplayedTicket_rejectedFailClosed() {
+        val triggerPast = System.currentTimeMillis() - 5_000L
+        val item = DirectBootQueueItem(
+            kind = DirectBootQueueItem.KIND_NORMAL,
+            alarmId = 711L,
+            triggerTime = triggerPast,
+            generation = 1,
+            instanceToken = "tok_tamper_711",
+            restoreEpoch = 2L
+        )
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(item), now = triggerPast - 10_000L))
+        DirectBootAlarmReceiver.resetSeamsForTesting()
+        val gate = com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate.getInstance(context).apply {
+            isEnabled = true
+        }
+        DirectBootAlarmReceiver.outputAuthorityGateSeam = gate
+        DirectBootAlarmReceiver.v2DeliveryCapableProvider = { true }
+
+        val identity = DirectBootV2NormalIntentIdentity.fromQueueItem(item)
+        val captureCtx = CapturingServiceContext(context)
+
+        // 1. Explicit blank ticket extra
+        val blankTicketIntent = identity.createIntent(context).apply {
+            putExtra(DirectBootDeliveryAuthorizer.EXTRA_TICKET_ID, "")
+        }
+        DirectBootAlarmReceiver().onReceive(captureCtx, blankTicketIntent)
+        assertEquals("Explicit blank EXTRA_TICKET_ID MUST be rejected", 0, captureCtx.startedServices.size)
+
+        // 2. Tampered / unknown ticket ID
+        val tamperedTicketIntent = identity.createIntent(context).apply {
+            putExtra(DirectBootDeliveryAuthorizer.EXTRA_TICKET_ID, "ticket_forged_12345")
+        }
+        DirectBootAlarmReceiver().onReceive(captureCtx, tamperedTicketIntent)
+        assertEquals("Tampered EXTRA_TICKET_ID MUST be rejected", 0, captureCtx.startedServices.size)
+
+        // 3. Replayed ticket (consumed once on shared authorizer, replayed second time)
+        val sharedAuth = DirectBootDeliveryAuthorizer()
+        val now = System.currentTimeMillis()
+        val issued = (sharedAuth.issueTicket(identity, nowEpochMs = now) as TicketIssueResult.Success).ticket
+        DirectBootAlarmReceiver.serviceAdapterSeam = { ctx ->
+            DirectBootServiceDeliveryAdapter(ctx, sharedAuth, clock = { now })
+        }
+        try {
+            val validIntent = identity.createIntent(context).apply {
+                putExtra(DirectBootDeliveryAuthorizer.EXTRA_TICKET_ID, issued.ticketId)
+            }
+            // First consumes ticket & pops queue
+            DirectBootAlarmReceiver().onReceive(captureCtx, validIntent)
+            assertEquals(1, captureCtx.startedServices.size)
+
+            // Re-seed same item & replay consumed ticket -> MUST reject
+            assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(item), now = triggerPast - 10_000L))
+            DirectBootAlarmReceiver().onReceive(captureCtx, validIntent)
+            assertEquals("Replayed ticket MUST be rejected fail-closed", 1, captureCtx.startedServices.size)
+        } finally {
+            DirectBootAlarmReceiver.resetSeamsForTesting()
+        }
+    }
 }
+

@@ -53,6 +53,8 @@ class HueSunriseWorker @AssistedInject constructor(
          */
         const val KEY_RAMP_START = "ramp_start"
         const val KEY_RAMP_END = "ramp_end"
+        const val KEY_EXPECTED_GENERATION = "expected_generation"
+        const val KEY_EXPECTED_RESTORE_EPOCH = "expected_restore_epoch"
 
         private val JSON = "application/json".toMediaType()
         private const val WARM_CT = 500       // ~2000K warm white (Hue range 153-500)
@@ -60,132 +62,46 @@ class HueSunriseWorker @AssistedInject constructor(
         fun uniqueName(alarmId: Long): String = "hue_sunrise_$alarmId"
     }
 
+    private suspend fun isOccurrenceStillValid(
+        alarmId: Long,
+        expectedGeneration: Int,
+        expectedRestoreEpoch: Long,
+        expectedRampEnd: Long
+    ): Boolean {
+        val currentAlarm = repository.getById(alarmId) ?: return false
+        if (!currentAlarm.isEnabled || !currentAlarm.hueEnabled) return false
+        if (expectedGeneration > 0 && !currentAlarm.isQuickAlarm && currentAlarm.generation != expectedGeneration) {
+            return false
+        }
+        if (expectedRampEnd > 0L && currentAlarm.nextTriggerTime != expectedRampEnd) {
+            return false
+        }
+        if (expectedRestoreEpoch > 0L) {
+            val currentEpoch = try {
+                repository.database.scheduleAuthorityDao().getMetaById(1)?.restoreEpoch
+            } catch (_: Throwable) {
+                null
+            }
+            if (currentEpoch == null || currentEpoch <= 0L || currentEpoch != expectedRestoreEpoch) {
+                return false
+            }
+        }
+        return true
+    }
 
     override suspend fun doWork(): Result {
-        // WorkManager's ten-minute clock starts here, not after the bridge
-        // probe, so the hand-over budget has to be measured from here too.
-        val runStartedAt = System.currentTimeMillis()
-        val alarmId = inputData.getLong(KEY_ALARM_ID, -1)
-        if (alarmId < 0) return Result.failure()
-
-        val alarm = repository.getById(alarmId) ?: return Result.failure()
-        if (!alarm.hueEnabled) return Result.success()
-
-        val settings = preferencesManager.getCurrentSettings()
-        val bridgeIp = HueBridgeClient.sanitiseHost(settings.hueBridgeIp) ?: run {
-            // A public hostname is refused because the TLS trust here is
-            // trust-on-first-use. Say so in the log rather than stopping
-            // silently; the Hue settings group shows the same inline.
-            android.util.Log.w(
-                "HueSunriseWorker",
-                "Hue bridge host is not a local address, skipping sunrise"
-            )
-            return Result.failure()
-        }
-        val apiKey = HueBridgeClient.sanitiseToken(settings.hueApiKey)
-            ?: return Result.failure()
-        val lightIds = settings.hueLightIds
-            .split(",")
-            .map { HueBridgeClient.sanitiseToken(it.trim()) }
-            .filterNotNull()
-        if (lightIds.isEmpty()) return Result.failure()
-
-        val v2Probe = hueBridgeClient.probeV2(
-            bridgeHost = bridgeIp,
-            apiKey = apiKey,
-            resourcePath = "light/${lightIds.first()}",
-            pinnedFingerprint = settings.hueBridgeCertFingerprint
+        // KNO-75 Step 6 / KNO-76: Personal edition retires Hue Sunrise runtime.
+        // Fail closed at worker ingress for any pre-upgrade queued work or APPEND
+        // continuation without probing the bridge, building TOFU clients, mutating
+        // HueTrustStore, posting notifications, enqueueing APPEND continuations,
+        // or requesting retries. Unconditional HueSunriseNotifications.cancel is
+        // skipped because notificationId = 800_000 + (alarmId % 100_000) can
+        // collide across alarmIds (e.g., 42 vs 100_042) with no per-alarmId tag.
+        val alarmId = inputData.getLong(KEY_ALARM_ID, -1L)
+        android.util.Log.i(
+            "HueSunriseWorker",
+            "HueSunriseWorker retired in Personal edition; ignoring work for alarmId=$alarmId"
         )
-        val effectivePin = when (v2Probe) {
-            is HueV2ProbeResult.Reachable -> when (
-                val pin = hueTrustStore.rememberFirstUse(v2Probe.observedFingerprint)
-            ) {
-                is HuePinResult.Accepted -> pin.fingerprint
-                is HuePinResult.Changed,
-                HuePinResult.Invalid -> return Result.failure()
-            }
-            is HueV2ProbeResult.CertificateChanged -> return Result.failure()
-            is HueV2ProbeResult.Failed -> null
-        }
-        // HTTPS only. targetSdk 36 blocks cleartext and no network security
-        // config permits it, so a bridge that fails the v2 probe is simply
-        // unreachable; the old v1 fallback could not have connected either.
-        val v2Client = effectivePin?.let { hueBridgeClient.buildTofuClient(it).client }
-            ?: return Result.failure()
-
-        val segmentStart = System.currentTimeMillis()
-        val rampStart = inputData.getLong(KEY_RAMP_START, 0L).takeIf { it > 0L } ?: segmentStart
-        val rampEnd = inputData.getLong(KEY_RAMP_END, 0L).takeIf { it > 0L }
-            ?: (rampStart + alarm.huePreWakeMinutes * 60_000L)
-
-        // A run that starts after the alarm has nothing useful to do. Touching
-        // the lights here would snap them to full brightness hours later.
-        if (HueSunriseRampPlan.isComplete(rampEnd, segmentStart)) {
-            HueSunriseNotifications.cancel(applicationContext, alarm.id)
-            return Result.success()
-        }
-
-        // Resume at the brightness the wall clock calls for. A first run starts
-        // at 1; a continuation, or a run WorkManager deferred, picks up where
-        // the ramp actually is instead of replaying it.
-        val openingBrightness =
-            HueSunriseRampPlan.brightnessAt(rampStart, rampEnd, segmentStart)
-        if (lightIds.any { id ->
-                !putLightStateV2(
-                    v2Client, bridgeIp, apiKey, id,
-                    on = true, bri = openingBrightness, ct = WARM_CT
-                )
-            }
-        ) {
-            return Result.failure()
-        }
-
-        HueSunriseNotifications.post(applicationContext, alarm.id, rampStart, rampEnd, segmentStart)
-        // Hand over before WorkManager's ten-minute execution limit stops us.
-        val handOverAt = HueSunriseRampPlan.segmentEndsAt(rampEnd, runStartedAt)
-        var handingOver = false
-        try {
-            while (true) {
-                val now = System.currentTimeMillis()
-                if (HueSunriseRampPlan.isComplete(rampEnd, now)) break
-                if (handOverAt != null && now >= handOverAt) {
-                    handingOver = true
-                    break
-                }
-                val nextAt = HueSunriseRampPlan.nextStepAt(rampStart, rampEnd, now) ?: break
-                // Never sleep past the hand-over point: with a long pre-wake a
-                // single step is minutes long, and waking only at step
-                // boundaries would push the run past WorkManager's limit.
-                val wakeAt = if (handOverAt != null) minOf(nextAt, handOverAt) else nextAt
-                delay((wakeAt - now).coerceAtLeast(0L))
-                if (handOverAt != null && System.currentTimeMillis() >= handOverAt) {
-                    handingOver = true
-                    break
-                }
-                val bri = HueSunriseRampPlan.brightnessAt(
-                    rampStart, rampEnd, System.currentTimeMillis()
-                )
-                if (lightIds.any { id ->
-                        !putLightStateV2(
-                            v2Client, bridgeIp, apiKey, id,
-                            on = true, bri = bri, ct = WARM_CT
-                        )
-                    }
-                ) {
-                    return Result.failure()
-                }
-                HueSunriseNotifications.post(
-                    context = applicationContext,
-                    alarmId = alarm.id,
-                    startWallClockMillis = rampStart,
-                    endWallClockMillis = rampEnd
-                )
-            }
-        } finally {
-            // The next segment re-posts it; anything else means the ramp is over.
-            if (!handingOver) HueSunriseNotifications.cancel(applicationContext, alarm.id)
-        }
-        if (handingOver) enqueueContinuation(alarm.id, rampStart, rampEnd)
         return Result.success()
     }
 
@@ -193,15 +109,25 @@ class HueSunriseWorker @AssistedInject constructor(
      * Queues the next segment of the same ramp under the same unique name, so a
      * cancel or a reschedule still tears the whole chain down.
      */
-    private fun enqueueContinuation(alarmId: Long, rampStart: Long, rampEnd: Long) {
+    private fun enqueueContinuation(
+        alarmId: Long,
+        rampStart: Long,
+        rampEnd: Long,
+        expectedGeneration: Int,
+        expectedRestoreEpoch: Long
+    ) {
+        val dataBuilder = androidx.work.Data.Builder()
+            .putLong(KEY_ALARM_ID, alarmId)
+            .putLong(KEY_RAMP_START, rampStart)
+            .putLong(KEY_RAMP_END, rampEnd)
+        if (expectedGeneration > 0) {
+            dataBuilder.putInt(KEY_EXPECTED_GENERATION, expectedGeneration)
+        }
+        if (expectedRestoreEpoch > 0L) {
+            dataBuilder.putLong(KEY_EXPECTED_RESTORE_EPOCH, expectedRestoreEpoch)
+        }
         val request = androidx.work.OneTimeWorkRequestBuilder<HueSunriseWorker>()
-            .setInputData(
-                androidx.work.Data.Builder()
-                    .putLong(KEY_ALARM_ID, alarmId)
-                    .putLong(KEY_RAMP_START, rampStart)
-                    .putLong(KEY_RAMP_END, rampEnd)
-                    .build()
-            )
+            .setInputData(dataBuilder.build())
             .build()
         // APPEND, not APPEND_OR_REPLACE: if the chain was cancelled while this
         // segment was finishing, the continuation must stay cancelled rather

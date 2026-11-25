@@ -35,8 +35,87 @@ class BootRescheduleWorker @AssistedInject constructor(
     private val quickAlarmScheduler: com.sysadmindoc.alarmclock.domain.QuickAlarmScheduler? = null,
     private val holidayReconcileCoordinator: com.sysadmindoc.alarmclock.data.repository.HolidayReconcileCoordinator? = null,
     private val upcomingCoordinator: com.sysadmindoc.alarmclock.domain.projection.UpcomingScheduleReconcileCoordinator? = null,
-    private val alarmRepository: AlarmRepository? = null
+    private val alarmRepository: AlarmRepository? = null,
+    private val directBootNormalProjectorProvider: javax.inject.Provider<com.sysadmindoc.alarmclock.directboot.DirectBootNormalProjector>? = null
 ) : CoroutineWorker(context, workerParams) {
+
+    @androidx.annotation.VisibleForTesting
+    internal var lastDirectBootProjectionOutcome: AlarmScheduler.DirectBootProjectionHookOutcome? = null
+
+    @androidx.annotation.VisibleForTesting
+    internal var onDirectBootProjectionOutcome: ((AlarmScheduler.DirectBootProjectionHookOutcome) -> Unit)? = null
+
+    @androidx.annotation.VisibleForTesting
+    internal var v2RegistrationCapableProvider: () -> Boolean = { false }
+
+    @androidx.annotation.VisibleForTesting
+    internal var testDirectBootReconcilerHook: ((Context) -> com.sysadmindoc.alarmclock.directboot.ReconcilerResult)? = null
+
+    @androidx.annotation.VisibleForTesting
+    internal var lastDirectBootReconcileResult: com.sysadmindoc.alarmclock.directboot.ReconcilerResult? = null
+
+    private suspend fun runDirectBootProjectionHook(
+        sourceAction: String
+    ): AlarmScheduler.DirectBootProjectionHookOutcome {
+        val reason = if (sourceAction.isBlank()) "BOOT_RESCHEDULE" else "BOOT_RESCHEDULE_$sourceAction"
+        val outcome: AlarmScheduler.DirectBootProjectionHookOutcome = if (!routeAuthority.isOwnerRouteActive()) {
+            lastDirectBootReconcileResult = null
+            AlarmScheduler.DirectBootProjectionHookOutcome.SkippedLegacyOnly
+        } else {
+            val projector = directBootNormalProjectorProvider?.get()
+            if (projector == null) {
+                Log.w(TAG, "DirectBootNormalProjector unavailable during $reason under active owner route")
+                lastDirectBootReconcileResult = null
+                AlarmScheduler.DirectBootProjectionHookOutcome.ProjectorUnavailable
+            } else {
+                try {
+                    when (val result = projector.project()) {
+                        is com.sysadmindoc.alarmclock.directboot.DirectBootNormalProjectionResult.Success -> {
+                            if (v2RegistrationCapableProvider()) {
+                                val recResult = testDirectBootReconcilerHook?.invoke(applicationContext)
+                                    ?: com.sysadmindoc.alarmclock.directboot.DirectBootRegistrationReconciler
+                                        .getInstance(applicationContext)
+                                        .reconcile(
+                                            com.sysadmindoc.alarmclock.directboot.RegistrationRequest(
+                                                requestId = "P1_$reason",
+                                                reason = reason
+                                            )
+                                        )
+                                lastDirectBootReconcileResult = recResult
+                            } else {
+                                lastDirectBootReconcileResult = null
+                            }
+                            AlarmScheduler.DirectBootProjectionHookOutcome.Succeeded(result)
+                        }
+                        is com.sysadmindoc.alarmclock.directboot.DirectBootNormalProjectionResult.CoordinatorBlocked,
+                        is com.sysadmindoc.alarmclock.directboot.DirectBootNormalProjectionResult.FingerprintMismatch -> {
+                            lastDirectBootReconcileResult = null
+                            Log.i(TAG, "DirectBoot projection blocked during $reason: $result")
+                            AlarmScheduler.DirectBootProjectionHookOutcome.Blocked(result)
+                        }
+                        is com.sysadmindoc.alarmclock.directboot.DirectBootNormalProjectionResult.DeWriteRejected,
+                        is com.sysadmindoc.alarmclock.directboot.DirectBootNormalProjectionResult.PreWriteFailure,
+                        is com.sysadmindoc.alarmclock.directboot.DirectBootNormalProjectionResult.DeCommitFailed,
+                        is com.sysadmindoc.alarmclock.directboot.DirectBootNormalProjectionResult.CancellationAfterWrite,
+                        is com.sysadmindoc.alarmclock.directboot.DirectBootNormalProjectionResult.AmbiguousOutcome -> {
+                            lastDirectBootReconcileResult = null
+                            Log.e(TAG, "DirectBoot projection failed during $reason: $result")
+                            AlarmScheduler.DirectBootProjectionHookOutcome.Failed(result)
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    lastDirectBootReconcileResult = null
+                    Log.e(TAG, "DirectBoot projection threw during $reason", e)
+                    AlarmScheduler.DirectBootProjectionHookOutcome.Failed(result = null, cause = e)
+                }
+            }
+        }
+        lastDirectBootProjectionOutcome = outcome
+        onDirectBootProjectionOutcome?.invoke(outcome)
+        return outcome
+    }
 
     override suspend fun doWork(): Result {
         val sourceAction = inputData.getString(KEY_SOURCE_ACTION).orEmpty()
@@ -44,21 +123,47 @@ class BootRescheduleWorker @AssistedInject constructor(
 
         return try {
             upcomingCoordinator?.invalidateAll(com.sysadmindoc.alarmclock.domain.projection.InvalidationReason.SYSTEM_RECOVERY)
-            if (routeAuthority.isOwnerRouteActive()) {
-                scheduleAuthorityReconciler?.reconcileBootAuthorities()
-            }
             quickAlarmScheduler?.reconcileQuickAlarms(
                 entrySource = com.sysadmindoc.alarmclock.domain.ReconcileEntrySource.SYSTEM_RECOVERY
             )
-            val batchResult = alarmScheduler.rescheduleAllInBatches(
-                forceRecalculate = forceRecalculate,
-                batchSize = RESCHEDULE_BATCH_SIZE
-            )
-            Log.i(
-                TAG,
-                "Rescheduled ${batchResult.totalProcessed} enabled alarms after $sourceAction " +
-                    "(armed: ${batchResult.armedCount}, blocked: ${batchResult.blockedCount}, failed: ${batchResult.failedCount}, noArm: ${batchResult.noArmCount})"
-            )
+            val batchResult = if (routeAuthority.isOwnerRouteActive() && scheduleAuthorityReconciler != null) {
+                val reconciledCount = scheduleAuthorityReconciler.reconcileBootAuthorities()
+                Log.i(TAG, "Owner route single-pass boot reconciliation completed ($reconciledCount authorities)")
+                com.sysadmindoc.alarmclock.domain.ScheduleOutcome.BatchResult(
+                    armedCount = reconciledCount,
+                    blockedCount = 0,
+                    failedCount = 0,
+                    noArmCount = 0,
+                    outcomes = emptyMap()
+                )
+            } else {
+                alarmScheduler.rescheduleAllInBatches(
+                    forceRecalculate = forceRecalculate,
+                    batchSize = RESCHEDULE_BATCH_SIZE
+                ).also {
+                    Log.i(
+                        TAG,
+                        "Rescheduled ${it.totalProcessed} enabled alarms after $sourceAction " +
+                            "(armed: ${it.armedCount}, blocked: ${it.blockedCount}, failed: ${it.failedCount}, noArm: ${it.noArmCount})"
+                    )
+                }
+            }
+
+            runDirectBootProjectionHook(sourceAction)
+
+            try {
+                if (androidx.core.os.UserManagerCompat.isUserUnlocked(applicationContext)) {
+                    val deContext = applicationContext.createDeviceProtectedStorageContext()
+                    if (com.sysadmindoc.alarmclock.directboot.DirectBootUnlockReceiver.hasPendingTakeoverRecords(deContext, applicationContext)) {
+                        val recoveryRes = com.sysadmindoc.alarmclock.directboot.DirectBootUnlockReceiver.runUnlockedRecovery(applicationContext)
+                        Log.i(TAG, "BootRescheduleWorker executed DirectBoot takeover recovery: $recoveryRes")
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "DirectBoot takeover recovery failed in BootRescheduleWorker", e)
+            }
 
             val reconcileResult = holidayReconcileCoordinator?.reconcile(isMaterialChange = false)
 

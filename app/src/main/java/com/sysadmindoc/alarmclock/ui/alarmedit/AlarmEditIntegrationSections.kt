@@ -187,50 +187,8 @@ internal fun LazyListScope.alarmEditIntegrationSections(
         )
     }
 
-    // Philips Hue Sunrise
-    SettingsSection(editorPage, AlarmEditorSection.HUE) {
-        SettingsRow(
-            label = stringResource(R.string.alarm_edit_hue_sunrise),
-            trailing = {
-                Switch(
-                    checked = state.hueEnabled,
-                    onCheckedChange = { viewModel.updateHue(it) },
-                    colors = appSwitchColors()
-                )
-            }
-        )
-        if (state.hueEnabled) {
-            var showHueMenu by remember { mutableStateOf(false) }
-            SettingsRow(label = stringResource(R.string.alarm_edit_hue_start)) {
-                Box {
-                    SettingsValueButton(
-                        label = stringResource(R.string.alarm_edit_minutes_before_short, state.huePreWakeMinutes),
-                        onClick = { showHueMenu = true }
-                    )
-                    DropdownMenu(
-                        expanded = showHueMenu,
-                        onDismissRequest = { showHueMenu = false }
-                    ) {
-                        listOf(10, 15, 20, 30, 45, 60, 90).forEach { mins ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        pluralStringResource(R.plurals.alarm_edit_minutes_before, mins, mins),
-                                        color = if (mins == state.huePreWakeMinutes) MaterialTheme.colorScheme.primary else TextPrimary
-                                    )
-                                },
-                                onClick = { viewModel.updateHue(true, mins); showHueMenu = false }
-                            )
-                        }
-                    }
-                }
-            }
-            SettingsHint(
-                stringResource(R.string.alarm_edit_hue_hint),
-                tone = HintTone.Warning
-            )
-        }
-    }
+    // Philips Hue Sunrise UI is hidden in Personal edition (KNO-75 Step 6 / KNO-76);
+    // persisted hueEnabled/huePreWakeMinutes values remain non-destructively preserved in DB.
 
     // v1.2.0: Sound Source
     SettingsSection(editorPage, AlarmEditorSection.RADIO) {

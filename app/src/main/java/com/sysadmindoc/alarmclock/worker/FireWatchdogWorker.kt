@@ -48,9 +48,40 @@ class FireWatchdogWorker @AssistedInject constructor(
         val alarmId = inputData.getLong(KEY_ALARM_ID, -1L)
         if (alarmId == -1L) return Result.success()
         val scheduledAt = inputData.getLong(KEY_SCHEDULED_AT, 0L)
+        val expectedGeneration = inputData.getInt(KEY_EXPECTED_GENERATION, 0)
+        val expectedRestoreEpoch = inputData.getLong(KEY_EXPECTED_RESTORE_EPOCH, 0L)
         val fireId = AlarmIncidentEvent.fireIdFor(alarmId, scheduledAt)
 
         val alarm = alarmRepository.getById(alarmId)
+        if (expectedGeneration > 0 && alarm != null && !alarm.isQuickAlarm && alarm.generation != expectedGeneration) {
+            recordIncident(
+                alarmId = alarmId,
+                fireId = fireId,
+                scheduledAt = scheduledAt,
+                type = AlarmIncidentEvent.TYPE_SCHEDULE,
+                status = AlarmIncidentEvent.STATUS_SKIPPED,
+                reasonCode = "FIRE_WATCHDOG_STALE_GENERATION"
+            )
+            return Result.success()
+        }
+        if (expectedRestoreEpoch > 0L) {
+            val currentEpoch = try {
+                alarmRepository.database.scheduleAuthorityDao().getMetaById(1)?.restoreEpoch
+            } catch (_: Throwable) {
+                null
+            }
+            if (currentEpoch == null || currentEpoch <= 0L || currentEpoch != expectedRestoreEpoch) {
+                recordIncident(
+                    alarmId = alarmId,
+                    fireId = fireId,
+                    scheduledAt = scheduledAt,
+                    type = AlarmIncidentEvent.TYPE_SCHEDULE,
+                    status = AlarmIncidentEvent.STATUS_SKIPPED,
+                    reasonCode = "FIRE_WATCHDOG_STALE_RESTORE_EPOCH"
+                )
+                return Result.success()
+            }
+        }
         val repeatMissedEnabled = preferencesManager.getCurrentSettings().repeatMissedAlarms
         val deliveryCount = alarmIncidentRepository.occurrenceDeliveryCount(alarmId, scheduledAt)
 
@@ -214,6 +245,8 @@ class FireWatchdogWorker @AssistedInject constructor(
     companion object {
         const val KEY_ALARM_ID = "alarm_id"
         const val KEY_SCHEDULED_AT = "scheduled_at"
+        const val KEY_EXPECTED_GENERATION = "expected_generation"
+        const val KEY_EXPECTED_RESTORE_EPOCH = "expected_restore_epoch"
         const val SOURCE = "FireWatchdogWorker"
 
         fun uniqueName(alarmId: Long): String = "fire_watchdog_$alarmId"

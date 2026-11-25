@@ -12,11 +12,15 @@ import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
+import com.sysadmindoc.alarmclock.domain.MainSlotApplier
+import com.sysadmindoc.alarmclock.domain.ScheduleAuthorityOwner
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.spyk
 import io.mockk.verify
+import javax.inject.Provider
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -61,6 +65,12 @@ class SmartWakeHandoffTest {
         every { preferencesManager.getCachedSettings() } returns AppSettings()
         coEvery { preferencesManager.getCurrentSettings() } returns AppSettings()
 
+        val owner = ScheduleAuthorityOwner(
+            authorityDao = db.scheduleAuthorityDao(),
+            mainSlotApplier = MainSlotApplier { true },
+            exactPermissionChecker = { true }
+        )
+
         scheduler = spyk(
             AlarmScheduler(
                 context = context,
@@ -69,7 +79,8 @@ class SmartWakeHandoffTest {
                 preferencesManager = preferencesManager,
                 holidayRepository = mockk(relaxed = true),
                 alarmIncidentRepository = incidentRepo,
-                weatherRepository = mockk(relaxed = true)
+                weatherRepository = mockk(relaxed = true),
+                scheduleAuthorityOwnerProvider = Provider { owner }
             )
         )
     }
@@ -150,23 +161,53 @@ class SmartWakeHandoffTest {
 
         alarmRepo.save(Alarm(id = alarmId, hour = 7, minute = 0, isEnabled = true, nextTriggerTime = targetTime))
 
+        // Production default (LEGACY_ONLY) must fail closed on tokenized OS set
+        assertFalse(
+            "LEGACY_ONLY fail-closed MUST reject applyTokenizedOsSet",
+            scheduler.applyTokenizedOsSet(alarmId, targetTime, tokenC)
+        )
+        assertEquals(null, db.issuedOccurrenceDao().getSlotCurrentToken(alarmId))
+
+        // Explicit test Owner Route fixture exercises tokenized OS set + expectedIssueToken fence
+        val owner = ScheduleAuthorityOwner(
+            authorityDao = db.scheduleAuthorityDao(),
+            mainSlotApplier = MainSlotApplier { true },
+            exactPermissionChecker = { true }
+        )
+        val ownerRouteAuthority = mockk<com.sysadmindoc.alarmclock.domain.ProductionSchedulingRouteAuthority> {
+            every { isOwnerRouteActive() } returns true
+        }
+        val ownerScheduler = spyk(
+            AlarmScheduler(
+                context = context,
+                repository = alarmRepo,
+                calculator = calculator,
+                preferencesManager = preferencesManager,
+                holidayRepository = mockk(relaxed = true),
+                alarmIncidentRepository = incidentRepo,
+                weatherRepository = mockk(relaxed = true),
+                scheduleAuthorityOwnerProvider = Provider { owner },
+                routeAuthority = ownerRouteAuthority
+            )
+        )
+
         // Schedule token C (Generation 1)
-        scheduler.applyTokenizedOsSet(alarmId, targetTime, tokenC)
+        assertTrue(ownerScheduler.applyTokenizedOsSet(alarmId, targetTime, tokenC))
 
         // Reschedule token D (Generation 2) for same targetTime
-        scheduler.applyTokenizedOsSet(alarmId, targetTime, tokenD)
+        assertTrue(ownerScheduler.applyTokenizedOsSet(alarmId, targetTime, tokenD))
         assertEquals(tokenD, db.issuedOccurrenceDao().getSlotCurrentToken(alarmId))
 
         // Stale command C attempts to cancel with expectedIssueToken = tokenC
-        val cancelledStaleC = scheduler.cancelMainScheduledAlarm(alarmId, targetTime, expectedIssueToken = tokenC)
+        val cancelledStaleC = ownerScheduler.cancelMainScheduledAlarm(alarmId, targetTime, expectedIssueToken = tokenC)
         assertFalse("Stale SmartWake command C MUST be rejected when active slot token is tokenD", cancelledStaleC)
 
         // Tokenless command attempts to cancel tokenized alarm -> fails closed
-        val cancelledTokenless = scheduler.cancelMainScheduledAlarm(alarmId, targetTime, expectedIssueToken = null)
+        val cancelledTokenless = ownerScheduler.cancelMainScheduledAlarm(alarmId, targetTime, expectedIssueToken = null)
         assertFalse("Tokenless SmartWake command MUST be rejected when active slot token is tokenD", cancelledTokenless)
 
         // Active command D attempts to cancel with expectedIssueToken = tokenD
-        val cancelledActiveD = scheduler.cancelMainScheduledAlarm(alarmId, targetTime, expectedIssueToken = tokenD)
+        val cancelledActiveD = ownerScheduler.cancelMainScheduledAlarm(alarmId, targetTime, expectedIssueToken = tokenD)
         assertTrue("Active SmartWake command D MUST succeed when expectedIssueToken matches active slot token", cancelledActiveD)
     }
 
@@ -205,5 +246,112 @@ class SmartWakeHandoffTest {
         // STATUS_SUCCEEDED constitutes positive delivery proof
         val succeededProof = incidentRepo.occurrenceDeliveryCount(alarmId, scheduledAt)
         assertEquals("STATUS_SUCCEEDED notification MUST constitute positive delivery proof", 1, succeededProof)
+    }
+
+    @Test
+    fun `T1_SmartWake - cancelMainScheduledAlarm under normal-state cross-thread L1 contention succeeds without drop`() = runBlocking {
+        val alarmId = 106L
+        val targetTime = System.currentTimeMillis() + 3600_000L
+        val alarm = Alarm(
+            id = alarmId,
+            hour = 7,
+            minute = 0,
+            isEnabled = true,
+            nextTriggerTime = targetTime
+        )
+        alarmRepo.save(alarm)
+        assertTrue(scheduler.scheduleAt(alarm, targetTime, requestWidgetUpdate = false).isArmed)
+
+        val shadowAm = org.robolectric.Shadows.shadowOf(
+            context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        )
+        assertTrue(
+            "T1_SmartWake: ScheduledAlarm for alarmId=$alarmId MUST exist in AlarmManager before cancel",
+            shadowAm.scheduledAlarms.any {
+                org.robolectric.Shadows.shadowOf(it.operation).savedIntent.getLongExtra(
+                    AlarmScheduler.EXTRA_ALARM_ID,
+                    -1L
+                ) == alarmId
+            }
+        )
+
+        val mutex = com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator.recoveryMutexFor(context)
+        val lockAcquired = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val holderJob = launch(kotlinx.coroutines.Dispatchers.Default) {
+            mutex.lock()
+            try {
+                lockAcquired.complete(Unit)
+                kotlinx.coroutines.delay(120L)
+            } finally {
+                mutex.unlock()
+            }
+        }
+        lockAcquired.await()
+
+        val cancelled = scheduler.cancelMainScheduledAlarm(alarmId, targetTime)
+        holderJob.join()
+
+        assertTrue(
+            "T1_SmartWake: cancelMainScheduledAlarm MUST wait for normal-state L1 holder instead of dropping",
+            cancelled
+        )
+        assertTrue(
+            "T1_SmartWake: PendingIntent for alarmId=$alarmId in AlarmManager MUST be cancelled after L1 release",
+            shadowAm.scheduledAlarms.none {
+                org.robolectric.Shadows.shadowOf(it.operation).savedIntent.getLongExtra(
+                    AlarmScheduler.EXTRA_ALARM_ID,
+                    -1L
+                ) == alarmId
+            }
+        )
+        val remainingPi = android.app.PendingIntent.getBroadcast(
+            context,
+            alarmId.toInt(),
+            android.content.Intent(context, com.sysadmindoc.alarmclock.receiver.AlarmReceiver::class.java).apply {
+                action = "com.sysadmindoc.alarmclock.ALARM_FIRE"
+            },
+            android.app.PendingIntent.FLAG_NO_CREATE or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+        org.junit.Assert.assertNull(
+            "T1_SmartWake: Broadcast PendingIntent for alarmId=$alarmId MUST be cancelled",
+            remainingPi
+        )
+    }
+
+    @Test
+    fun `T2_SmartWake - cancelMainScheduledAlarm fails closed with zero OS cancel during PHASE_PREPARED`() = runBlocking {
+        val alarmId = 107L
+        val targetTime = System.currentTimeMillis() + 3600_000L
+        val alarm = Alarm(
+            id = alarmId,
+            hour = 7,
+            minute = 0,
+            isEnabled = true,
+            nextTriggerTime = targetTime
+        )
+        alarmRepo.save(alarm)
+        assertTrue(scheduler.scheduleAt(alarm, targetTime, requestWidgetUpdate = false).isArmed)
+
+        val spyAlarmManager = mockk<AlarmManager>(relaxed = true)
+        scheduler.testAlarmManager = spyAlarmManager
+
+        val restoreCoordinator = com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator(
+            context = context,
+            database = db,
+            preferencesManager = preferencesManager,
+            alarmScheduler = scheduler,
+            moshi = com.squareup.moshi.Moshi.Builder().build()
+        )
+        restoreCoordinator.prepareTransaction(AppSettings(), listOf(alarm), emptyList())
+
+        try {
+            val cancelled = scheduler.cancelMainScheduledAlarm(alarmId, targetTime)
+            assertFalse("T2_SmartWake: MUST fail closed during PHASE_PREPARED", cancelled)
+            verify(exactly = 0) { spyAlarmManager.cancel(any<android.app.PendingIntent>()) }
+        } finally {
+            scheduler.testAlarmManager = null
+            java.io.File(context.filesDir, com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator.JOURNAL_FILENAME).delete()
+            java.io.File(context.filesDir, "${com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator.JOURNAL_FILENAME}.bak").delete()
+        }
     }
 }

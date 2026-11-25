@@ -402,7 +402,8 @@ class AlarmListViewModel @Inject constructor(
         var skippedCount = 0
         val preparedAlarms = mutableListOf<Alarm>()
         val alarmsToSchedule = mutableListOf<Alarm>()
-        val alarmIdsToCancel = mutableListOf<Long>()
+        var scheduleBlockedCount = 0
+        var scheduleFailedCount = 0
 
         for (alarm in groupMembers) {
             // Guard against disabling active FIRING/SNOOZED session
@@ -417,32 +418,26 @@ class AlarmListViewModel @Inject constructor(
                     isEnabled = targetEnabled,
                     nextTriggerTime = nextTrigger
                 )
-                preparedAlarms.add(updated)
                 if (targetEnabled) {
+                    preparedAlarms.add(updated)
                     alarmsToSchedule.add(updated)
+                    changedCount++
                 } else {
-                    alarmIdsToCancel.add(alarm.id)
+                    if (scheduler.cancelSuspending(alarm.id)) {
+                        preparedAlarms.add(updated)
+                        changedCount++
+                    } else {
+                        scheduleFailedCount++
+                    }
                 }
-                changedCount++
             }
         }
-
-        var scheduleBlockedCount = 0
-        var scheduleFailedCount = 0
 
         if (preparedAlarms.isNotEmpty()) {
             // 3. Transactional DB update for eligible member definitions
             repository.updateAlarmsEnabledTransaction(preparedAlarms)
 
             // 4. Reconcile OS schedules after DB commit against current DB truth
-            alarmIdsToCancel.forEach { id ->
-                val current = repository.getById(id)
-                if (current == null || !current.isEnabled) {
-                    scheduler.cancel(id)
-                } else {
-                    scheduler.schedule(current)
-                }
-            }
             alarmsToSchedule.forEach { alarm ->
                 val current = repository.getById(alarm.id)
                 if (current != null && current.isEnabled) {
@@ -453,7 +448,7 @@ class AlarmListViewModel @Inject constructor(
                         else -> {}
                     }
                 } else if (current != null) {
-                    scheduler.cancel(current.id)
+                    scheduler.cancelSuspending(current.id)
                 }
             }
             scheduler.syncBedtimeDndRule()
@@ -474,10 +469,16 @@ class AlarmListViewModel @Inject constructor(
                 }
             }
         } else {
-            if (skippedCount > 0) {
-                context.getString(R.string.alarmlist_group_disabled_with_skipped, changedCount, skippedCount)
-            } else {
-                context.resources.getQuantityString(R.plurals.alarmlist_group_disabled, changedCount, changedCount, localizedGroupName)
+            when {
+                scheduleFailedCount > 0 -> {
+                    context.getString(R.string.alarm_edit_save_error_generic)
+                }
+                skippedCount > 0 -> {
+                    context.getString(R.string.alarmlist_group_disabled_with_skipped, changedCount, skippedCount)
+                }
+                else -> {
+                    context.resources.getQuantityString(R.plurals.alarmlist_group_disabled, changedCount, changedCount, localizedGroupName)
+                }
             }
         }
         emitFeedback(message)
@@ -571,15 +572,27 @@ class AlarmListViewModel @Inject constructor(
             mutationMutex.withLock {
                 val activeId = preferencesManager.getCurrentSettings().activeAlarmId
                 val ids = _selectedIds.value.toList().filter { it != activeId }
+                var deletedCount = 0
+                var failedCount = 0
                 ids.forEach { id ->
-                    scheduler.cancel(id)
-                    repository.getById(id)?.let { repository.delete(it) }
+                    if (scheduler.cancelSuspending(id)) {
+                        repository.getById(id)?.let {
+                            repository.delete(it)
+                            deletedCount++
+                        }
+                    } else {
+                        failedCount++
+                    }
                 }
-                scheduler.syncBedtimeDndRule()
+                if (deletedCount > 0) {
+                    scheduler.syncBedtimeDndRule()
+                }
                 clearSelection()
-                if (ids.isNotEmpty()) {
+                if (failedCount > 0) {
+                    emitFeedback(context.getString(R.string.alarm_edit_save_error_generic))
+                } else if (deletedCount > 0) {
                     emitFeedback(
-                        context.resources.getQuantityString(R.plurals.feedback_multialarm_deleted, ids.size, ids.size)
+                        context.resources.getQuantityString(R.plurals.feedback_multialarm_deleted, deletedCount, deletedCount)
                     )
                 }
             }
@@ -626,15 +639,25 @@ class AlarmListViewModel @Inject constructor(
             mutationMutex.withLock {
                 val activeId = preferencesManager.getCurrentSettings().activeAlarmId
                 val ids = _selectedIds.value.toList().filter { it != activeId }
+                var disabledCount = 0
+                var failedCount = 0
                 ids.forEach { id ->
-                    repository.setEnabled(id, enabled = false, nextTrigger = 0)
-                    scheduler.cancel(id)
+                    if (scheduler.cancelSuspending(id)) {
+                        repository.setEnabled(id, enabled = false, nextTrigger = 0)
+                        disabledCount++
+                    } else {
+                        failedCount++
+                    }
                 }
-                scheduler.syncBedtimeDndRule()
+                if (disabledCount > 0) {
+                    scheduler.syncBedtimeDndRule()
+                }
                 clearSelection()
-                if (ids.isNotEmpty()) {
+                if (failedCount > 0) {
+                    emitFeedback(context.getString(R.string.alarm_edit_save_error_generic))
+                } else if (disabledCount > 0) {
                     emitFeedback(
-                        context.resources.getQuantityString(R.plurals.feedback_multialarm_paused, ids.size, ids.size)
+                        context.resources.getQuantityString(R.plurals.feedback_multialarm_paused, disabledCount, disabledCount)
                     )
                 }
             }
@@ -702,17 +725,22 @@ class AlarmListViewModel @Inject constructor(
                     return@withLock
                 }
                 val current = repository.getById(alarm.id) ?: return@withLock
-                disableAlarm(current)
-                emitFeedback(context.getString(R.string.feedback_cancellation_lock_overridden_paused))
+                if (disableAlarm(current)) {
+                    emitFeedback(context.getString(R.string.feedback_cancellation_lock_overridden_paused))
+                }
             }
         }
     }
 
-    private suspend fun disableAlarm(alarm: Alarm) {
+    private suspend fun disableAlarm(alarm: Alarm): Boolean {
+        if (!scheduler.cancelSuspending(alarm.id)) {
+            emitFeedback(context.getString(R.string.alarm_edit_save_error_generic))
+            return false
+        }
         repository.setEnabled(alarm.id, enabled = false, nextTrigger = 0)
-        scheduler.cancel(alarm.id)
         scheduler.syncBedtimeDndRule()
         emitFeedback(context.getString(R.string.feedback_alarm_paused))
+        return true
     }
 
     fun deleteAlarm(alarm: Alarm) {
@@ -728,7 +756,10 @@ class AlarmListViewModel @Inject constructor(
                     return@withLock
                 }
                 val current = repository.getById(alarm.id) ?: return@withLock
-                scheduler.cancel(current.id)
+                if (!scheduler.cancelSuspending(current.id)) {
+                    emitFeedback(context.getString(R.string.alarm_edit_save_error_generic))
+                    return@withLock
+                }
                 repository.delete(current)
                 scheduler.syncBedtimeDndRule()
                 _undoAlarm.value = current

@@ -32,6 +32,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
@@ -67,11 +68,14 @@ import java.util.TimeZone
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33], qualifiers = "en")
+@Config(sdk = [33], qualifiers = "en", application = android.app.Application::class)
 class AlarmEditScheduleUiTest {
 
     @get:Rule
     val composeTestRule = createComposeRule()
+
+    @get:Rule
+    val tempFolder = org.junit.rules.TemporaryFolder()
 
     private val context: Context get() = ApplicationProvider.getApplicationContext()
     private lateinit var scheduler: AlarmScheduler
@@ -382,6 +386,7 @@ class AlarmEditScheduleUiTest {
         assertTrue("Persisted smartAlarmEnabled must be preserved", savedAlarm.smartAlarmEnabled)
         assertEquals(20, savedAlarm.smartAlarmWindowMinutes)
 
+        viewModel.viewModelScope.cancel()
         org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
     }
 
@@ -525,5 +530,358 @@ class AlarmEditScheduleUiTest {
         val discardTitle = context.getString(R.string.alarm_edit_discard_title)
         composeTestRule.onNodeWithText(discardTitle).assertDoesNotExist()
         assertTrue("Clean draft must navigate directly to upcoming timeline", upcomingNavigated)
+    }
+
+    @Test
+    fun test14_savingDisabledExistingAlarm_whenCancelSuspendingFails_withholdsOnCompleteAndSetsSaveError() = runBlocking {
+        val initialAlarm = Alarm(
+            id = 12L,
+            hour = 7,
+            minute = 30,
+            isEnabled = false,
+            repeatDays = emptySet()
+        )
+        val mockRepo = mockk<AlarmRepository>(relaxed = true)
+        val mockDb = mockk<com.sysadmindoc.alarmclock.data.local.AlarmDatabase>(relaxed = true)
+        val mockExceptionDao = mockk<com.sysadmindoc.alarmclock.data.local.ScheduleExceptionDao>(relaxed = true)
+        val mockIntentDao = mockk<com.sysadmindoc.alarmclock.data.local.DurableOperationIntentDao>(relaxed = true)
+        val mockAuthorityDao = mockk<com.sysadmindoc.alarmclock.data.local.ScheduleAuthorityDao>(relaxed = true)
+        every { mockRepo.database } returns mockDb
+        every { mockRepo.durableOperationIntentDao() } returns mockIntentDao
+        every { mockDb.scheduleExceptionDao() } returns mockExceptionDao
+        every { mockDb.scheduleAuthorityDao() } returns mockAuthorityDao
+        coEvery { mockExceptionDao.getExceptionsForAlarmGeneration(any(), any()) } returns emptyList()
+        coEvery { mockRepo.getById(12L) } returns initialAlarm
+        coEvery { mockRepo.updateDisabledWithLegacyV1CancelWitness(any()) } returns
+            AlarmRepository.LegacyV1CancelWitnessPersistResult.Committed(
+                witnessToken = "legacy-v1-cancel:12:1:test",
+                updatedAlarm = initialAlarm
+            )
+        every { mockRepo.observeGroups() } returns flowOf(emptyList())
+
+        val failingScheduler = mockk<AlarmScheduler>(relaxed = true)
+        coEvery { failingScheduler.cancelSuspending(12L) } returns false
+
+        val savedStateHandle = SavedStateHandle(mapOf("alarmId" to 12L))
+        val viewModel = AlarmEditViewModel(
+            savedStateHandle = savedStateHandle,
+            context = context,
+            repository = mockRepo,
+            scheduler = failingScheduler,
+            calculator = NextAlarmCalculator(),
+            preferencesManager = preferencesManager
+        )
+        viewModel.uiState.first { it.isEditing }
+
+        try {
+            var completed = false
+            viewModel.save(onComplete = { completed = true })
+            val errorState = withTimeoutOrNull(1500L) {
+                viewModel.uiState.first { !it.isSaving && it.saveError != null }
+            }
+
+            assertFalse("onComplete MUST NOT be called when cancelSuspending fails", completed)
+            assertNotNull("saveError MUST be set when cancelSuspending fails", errorState)
+            assertEquals(context.getString(R.string.alarm_edit_save_error_generic), errorState?.saveError)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    private fun openEditFileDb(name: String): com.sysadmindoc.alarmclock.data.local.AlarmDatabase =
+        androidx.room.Room.databaseBuilder(
+            context,
+            com.sysadmindoc.alarmclock.data.local.AlarmDatabase::class.java,
+            tempFolder.newFile(name).absolutePath
+        )
+            .addCallback(com.sysadmindoc.alarmclock.data.local.AlarmDatabase.DATABASE_CALLBACK)
+            .allowMainThreadQueries()
+            .build()
+
+    private fun reopenEditFileDb(file: java.io.File): com.sysadmindoc.alarmclock.data.local.AlarmDatabase =
+        androidx.room.Room.databaseBuilder(
+            context,
+            com.sysadmindoc.alarmclock.data.local.AlarmDatabase::class.java,
+            file.absolutePath
+        )
+            .addCallback(com.sysadmindoc.alarmclock.data.local.AlarmDatabase.DATABASE_CALLBACK)
+            .allowMainThreadQueries()
+            .build()
+
+    private fun newEditRepo(db: com.sysadmindoc.alarmclock.data.local.AlarmDatabase): AlarmRepository =
+        AlarmRepository(database = db, dao = db.alarmDao(), groupDao = db.alarmGroupDao())
+
+    private fun newEditScheduler(repo: AlarmRepository): AlarmScheduler =
+        AlarmScheduler(
+            context = context,
+            repository = repo,
+            calculator = NextAlarmCalculator(),
+            preferencesManager = preferencesManager,
+            holidayRepository = mockk(relaxed = true),
+            alarmIncidentRepository = com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository(repo.database.alarmIncidentEventDao(), context),
+            weatherRepository = mockk(relaxed = true)
+        )
+
+    private fun armLegacyPiForEdit(alarmId: Long, triggerTime: Long) {
+        val realAm = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+        val fireIntent = android.content.Intent(context, com.sysadmindoc.alarmclock.receiver.AlarmReceiver::class.java).apply {
+            action = "com.sysadmindoc.alarmclock.ALARM_FIRE"
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, triggerTime)
+        }
+        val pi = android.app.PendingIntent.getBroadcast(
+            context,
+            alarmId.toInt(),
+            fireIntent,
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+        realAm.setAlarmClock(android.app.AlarmManager.AlarmClockInfo(triggerTime, pi), pi)
+    }
+
+    @Test
+    fun test15_W1_edit_crashBeforeWitnessRollsBackAuthorityAndWithholdsOnComplete() = runBlocking {
+        org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(true)
+        androidx.work.testing.WorkManagerTestInitHelper.initializeTestWorkManager(context)
+        val dbFile = tempFolder.newFile("edit-w1.db")
+        val db1 = reopenEditFileDb(dbFile)
+        val triggerTime = System.currentTimeMillis() + 3_600_000L
+        val realAm = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+        val shadowAm = org.robolectric.Shadows.shadowOf(realAm)
+        val alarmId: Long
+        try {
+            val repo1 = newEditRepo(db1)
+            alarmId = repo1.save(
+                Alarm(hour = 7, minute = 30, isEnabled = false, repeatDays = emptySet(), nextTriggerTime = 0L)
+            )
+            // Seed authority with LIVE so repository.update transitions lifecycle -> DISABLED
+            val auth = db1.scheduleAuthorityDao().getAuthorityByAlarmId(alarmId)!!
+            db1.scheduleAuthorityDao().insertAuthority(auth.copy(lifecycle = "LIVE", desiredOperation = "SET"))
+            armLegacyPiForEdit(alarmId, triggerTime)
+
+            db1.openHelper.writableDatabase.execSQL(
+                "CREATE TRIGGER test_abort_edit_w1 BEFORE INSERT ON durable_operation_intent BEGIN SELECT RAISE(ABORT, 'W1 crash before witness'); END;"
+            )
+            val realSched = newEditScheduler(repo1)
+            val viewModel = AlarmEditViewModel(
+                savedStateHandle = SavedStateHandle(mapOf("alarmId" to alarmId)),
+                context = context,
+                repository = repo1,
+                scheduler = realSched,
+                calculator = NextAlarmCalculator(),
+                preferencesManager = preferencesManager
+            )
+            viewModel.uiState.first { it.isEditing }
+            try {
+                var completed = false
+                viewModel.save(onComplete = { completed = true })
+                val errorState = withTimeoutOrNull(1500L) {
+                    viewModel.uiState.first { !it.isSaving && it.saveError != null }
+                }
+                assertFalse("W1(edit): onComplete MUST NOT be called when witness insert aborts", completed)
+                assertNotNull("W1(edit): saveError MUST be set", errorState)
+                assertEquals(
+                    "W1(edit): ScheduleAuthority lifecycle MUST be rolled back to LIVE",
+                    "LIVE",
+                    db1.scheduleAuthorityDao().getAuthorityByAlarmId(alarmId)?.lifecycle
+                )
+                assertEquals("W1(edit): OS PI MUST NOT be cancelled", 1, shadowAm.scheduledAlarms.size)
+            } finally {
+                viewModel.viewModelScope.cancel()
+            }
+        } finally {
+            db1.close()
+        }
+    }
+
+    @Test
+    fun test16_W4_edit_postOsCancelSettlementFailureEnqueuesRecoveryAndFreshSchedulerSettlesWitness() = runBlocking {
+        org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(true)
+        androidx.work.testing.WorkManagerTestInitHelper.initializeTestWorkManager(context)
+        val dbFile = tempFolder.newFile("edit-w4.db")
+        val db1 = reopenEditFileDb(dbFile)
+        val triggerTime = System.currentTimeMillis() + 3_600_000L
+        val realAm = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+        val shadowAm = org.robolectric.Shadows.shadowOf(realAm)
+        val alarmId: Long
+        try {
+            val repo1 = newEditRepo(db1)
+            alarmId = repo1.save(
+                Alarm(hour = 7, minute = 30, isEnabled = false, repeatDays = emptySet(), nextTriggerTime = 0L)
+            )
+            armLegacyPiForEdit(alarmId, triggerTime)
+
+            db1.openHelper.writableDatabase.execSQL(
+                "CREATE TRIGGER test_abort_edit_w4 BEFORE UPDATE ON durable_operation_intent BEGIN SELECT RAISE(ABORT, 'W4 edit settlement fail'); END;"
+            )
+            val realSched = newEditScheduler(repo1)
+            val viewModel = AlarmEditViewModel(
+                savedStateHandle = SavedStateHandle(mapOf("alarmId" to alarmId)),
+                context = context,
+                repository = repo1,
+                scheduler = realSched,
+                calculator = NextAlarmCalculator(),
+                preferencesManager = preferencesManager
+            )
+            viewModel.uiState.first { it.isEditing }
+            try {
+                val done = kotlinx.coroutines.CompletableDeferred<Boolean>()
+                viewModel.save(onComplete = { done.complete(true) })
+                withTimeoutOrNull(1500L) {
+                    viewModel.uiState.first { !it.isSaving }
+                }
+                assertEquals("W4(edit): OS PI MUST be cancelled", 0, shadowAm.scheduledAlarms.size)
+                assertEquals(
+                    "W4(edit): Witness MUST remain PENDING",
+                    1,
+                    db1.durableOperationIntentDao().getUnresolvedCancellationIntents().count { it.alarmId == alarmId }
+                )
+                val workInfos = androidx.work.WorkManager.getInstance(context)
+                    .getWorkInfosForUniqueWork(com.sysadmindoc.alarmclock.worker.BootRescheduleWorker.WORK_NAME)
+                    .get()
+                assertTrue("W4(edit): BootRescheduleWorker MUST be enqueued on settlement failure", workInfos.isNotEmpty())
+            } finally {
+                viewModel.viewModelScope.cancel()
+            }
+            db1.openHelper.writableDatabase.execSQL("DROP TRIGGER IF EXISTS test_abort_edit_w4;")
+        } finally {
+            db1.close()
+        }
+
+        val db2 = reopenEditFileDb(dbFile)
+        try {
+            val sched2 = newEditScheduler(newEditRepo(db2))
+            val batch = sched2.rescheduleAllInBatches()
+            assertEquals(0, batch.failedCount)
+            assertTrue(
+                "W4(edit): Fresh scheduler MUST settle witness to COMPLETED",
+                db2.durableOperationIntentDao().getUnresolvedCancellationIntents().none { it.alarmId == alarmId }
+            )
+        } finally {
+            db2.close()
+        }
+    }
+
+    @Test
+    fun test17_W5_edit_concurrentNewGenerationRejectsStaleDraftAndProtectsNewOsPendingIntent() = runBlocking {
+        org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(true)
+        androidx.work.testing.WorkManagerTestInitHelper.initializeTestWorkManager(context)
+        val dbFile = tempFolder.newFile("edit-w5.db")
+        val db1 = reopenEditFileDb(dbFile)
+        val triggerTime = System.currentTimeMillis() + 3_600_000L
+        val realAm = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+        val shadowAm = org.robolectric.Shadows.shadowOf(realAm)
+        val alarmId: Long
+        try {
+            val repo1 = newEditRepo(db1)
+            alarmId = repo1.save(
+                Alarm(hour = 7, minute = 30, isEnabled = false, repeatDays = emptySet(), nextTriggerTime = 0L)
+            )
+            val realSched = newEditScheduler(repo1)
+            val viewModel = AlarmEditViewModel(
+                savedStateHandle = SavedStateHandle(mapOf("alarmId" to alarmId)),
+                context = context,
+                repository = repo1,
+                scheduler = realSched,
+                calculator = NextAlarmCalculator(),
+                preferencesManager = preferencesManager
+            )
+            viewModel.uiState.first { it.isEditing }
+
+            // Concurrent session bumps alarm to generation 2 and arms OS PI
+            val loaded = repo1.getById(alarmId)!!
+            repo1.update(loaded.copy(hour = 9, minute = 0, isEnabled = true, nextTriggerTime = triggerTime))
+            assertTrue(realSched.scheduleAt(repo1.getById(alarmId)!!, triggerTime, requestWidgetUpdate = false).isArmed)
+            assertEquals(1, shadowAm.scheduledAlarms.size)
+
+            try {
+                var completed = false
+                viewModel.save(onComplete = { completed = true })
+                val errorState = withTimeoutOrNull(1500L) {
+                    viewModel.uiState.first { !it.isSaving && it.saveError != null }
+                }
+                assertFalse("W5(edit): stale draft MUST NOT complete", completed)
+                assertNotNull("W5(edit): stale error MUST be set", errorState)
+                assertEquals(2, repo1.getById(alarmId)!!.generation)
+                assertTrue(db1.durableOperationIntentDao().getIntentsByAlarmId(alarmId).isEmpty())
+                assertEquals("W5(edit): gen2 OS PI MUST remain armed", 1, shadowAm.scheduledAlarms.size)
+            } finally {
+                viewModel.viewModelScope.cancel()
+            }
+        } finally {
+            db1.close()
+        }
+    }
+
+    @Test
+    fun test18_W6_edit_existingUnresolvedRev2IntentBlocksDisabledEditWithoutAbortingRev2OrCancellingOs() = runBlocking {
+        org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(true)
+        androidx.work.testing.WorkManagerTestInitHelper.initializeTestWorkManager(context)
+        val dbFile = tempFolder.newFile("edit-w6.db")
+        val db1 = reopenEditFileDb(dbFile)
+        val triggerTime = System.currentTimeMillis() + 3_600_000L
+        val realAm = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+        val shadowAm = org.robolectric.Shadows.shadowOf(realAm)
+        val alarmId: Long
+        try {
+            val repo1 = newEditRepo(db1)
+            alarmId = repo1.save(
+                Alarm(hour = 7, minute = 30, isEnabled = false, repeatDays = emptySet(), nextTriggerTime = 0L)
+            )
+            val auth = db1.scheduleAuthorityDao().getAuthorityByAlarmId(alarmId)!!
+            db1.scheduleAuthorityDao().insertAuthority(auth.copy(lifecycle = "LIVE", desiredOperation = "SET"))
+            armLegacyPiForEdit(alarmId, triggerTime)
+
+            db1.durableOperationIntentDao().insertValidatedIntent(
+                com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent(
+                    operationToken = "rev2-edit-$alarmId",
+                    alarmId = alarmId,
+                    operationEpoch = 100L,
+                    incarnationId = "fire-rev2-edit-$alarmId",
+                    operationKind = "CANCEL",
+                    expectedOwnerToken = auth.instanceToken,
+                    expectedScheduleRevision = auth.scheduleRevision,
+                    expectedRestoreEpoch = auth.restoreEpoch,
+                    phase = com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent.PHASE_PENDING,
+                    intentRevision = 2L,
+                    originalFireId = "fire-rev2-edit-$alarmId",
+                    originalScheduledAt = triggerTime
+                )
+            )
+
+            val realSched = newEditScheduler(repo1)
+            val viewModel = AlarmEditViewModel(
+                savedStateHandle = SavedStateHandle(mapOf("alarmId" to alarmId)),
+                context = context,
+                repository = repo1,
+                scheduler = realSched,
+                calculator = NextAlarmCalculator(),
+                preferencesManager = preferencesManager
+            )
+            viewModel.uiState.first { it.isEditing }
+            try {
+                var completed = false
+                viewModel.save(onComplete = { completed = true })
+                val errorState = withTimeoutOrNull(1500L) {
+                    viewModel.uiState.first { !it.isSaving && it.saveError != null }
+                }
+                assertFalse("W6(edit): onComplete MUST NOT be called when unresolved Rev2 intent exists", completed)
+                assertNotNull("W6(edit): saveError MUST be set", errorState)
+                assertEquals(
+                    "W6(edit): Existing Rev2 intent MUST stay PENDING",
+                    com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent.PHASE_PENDING,
+                    db1.durableOperationIntentDao().getIntentByToken("rev2-edit-$alarmId")?.phase
+                )
+                assertEquals(
+                    "W6(edit): ScheduleAuthority lifecycle MUST stay LIVE",
+                    "LIVE",
+                    db1.scheduleAuthorityDao().getAuthorityByAlarmId(alarmId)?.lifecycle
+                )
+                assertEquals("W6(edit): OS PI MUST NOT be cancelled", 1, shadowAm.scheduledAlarms.size)
+            } finally {
+                viewModel.viewModelScope.cancel()
+            }
+        } finally {
+            db1.close()
+        }
     }
 }

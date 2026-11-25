@@ -1193,5 +1193,104 @@ class P3RuntimeIntegrationTest {
             result
         )
     }
+
+    /**
+     * T7: Holiday suppression OS cancel failure must return PendingRetry,
+     * preserve nextTriggerTime in Room DB, and withhold completedAlarmIds.
+     */
+    @Test
+    fun testT7_holidaySuppressionOsCancelFailure_returnsPendingRetryAndPreservesNextTrigger() = runTest {
+        val zone = ZoneId.of("UTC")
+        val nowMs = LocalDate.of(2026, 1, 4).atTime(8, 0).atZone(zone).toInstant().toEpochMilli()
+        val holidayDate = LocalDate.of(2026, 1, 5)
+        val initialTriggerMs = holidayDate.atTime(8, 0).atZone(zone).toInstant().toEpochMilli()
+
+        // Include alarm with base repeatDays = emptySet and no holidays -> targetTrigger == 0L (holiday suppressed)
+        val suppressedAlarm = Alarm(
+            id = 307L,
+            generation = 2,
+            revision = 1,
+            hour = 8,
+            minute = 0,
+            repeatDays = emptySet(),
+            scheduleKind = Alarm.SCHEDULE_KIND_REPEATING,
+            holidayPolicy = Alarm.HOLIDAY_POLICY_INCLUDE,
+            nextTriggerTime = initialTriggerMs
+        )
+
+        var dbAlarm = suppressedAlarm
+        coEvery { repository.getEnabledNormalAlarms() } returns listOf(dbAlarm)
+        coEvery { repository.getById(307L) } answers { dbAlarm }
+        coEvery { repository.updateNextTrigger(307L, any()) } answers {
+            dbAlarm = dbAlarm.copy(nextTriggerTime = secondArg<Long>())
+        }
+
+        // Write active PHASE_PREPARED journal so cancelScheduledEntriesSuspending fails closed (false)
+        val journalFile = java.io.File(
+            context.filesDir,
+            com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator.JOURNAL_FILENAME
+        )
+        val snapshotJson = """{"settings":{},"alarms":[],"groups":[],"manualOverrides":{}}"""
+        val formatVersion = com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator.CURRENT_FORMAT_VERSION
+        val phase = com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator.PHASE_PREPARED
+        val checksum = java.security.MessageDigest.getInstance("SHA-256")
+            .digest("$formatVersion:$phase:$snapshotJson".toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        journalFile.writeText(
+            org.json.JSONObject().apply {
+                put("formatVersion", formatVersion)
+                put("transactionId", java.util.UUID.randomUUID().toString())
+                put("phase", phase)
+                put("createdAt", nowMs)
+                put("snapshotJson", snapshotJson)
+                put("checksum", checksum)
+            }.toString()
+        )
+
+        try {
+            coEvery { holidayRepository.captureAuthorityWindow(any(), any()) } returns CapturedHolidayAuthorityWindow(
+                startDate = LocalDate.of(2026, 1, 1),
+                endDateInclusive = LocalDate.of(2026, 1, 31),
+                configuredCountry = null,
+                providerSnapshot = null,
+                capturedAtMillis = nowMs
+            )
+
+            val stateStore = InMemoryHolidayReconcileStateStore()
+            val coordinator = HolidayReconcileCoordinator(
+                context = context,
+                holidayRepository = holidayRepository,
+                alarmRepository = repository,
+                alarmScheduler = scheduler,
+                stateStore = stateStore
+            )
+
+            val result = coordinator.reconcile(
+                isMaterialChange = true,
+                evaluationEpochMs = nowMs,
+                evaluationZoneId = zone
+            )
+
+            assertTrue(
+                "T7: Holiday suppression OS cancel failure MUST return PendingRetry instead of Success",
+                result is HolidayReconcileResult.PendingRetry
+            )
+            assertEquals(
+                "T7: DB nextTriggerTime MUST NOT be zeroed when OS cancel fails or is blocked",
+                initialTriggerMs,
+                dbAlarm.nextTriggerTime
+            )
+            assertFalse(
+                "T7: alarmId MUST NOT be added to completedAlarmIds when OS cancel failed",
+                stateStore.state.completedAlarmIds.contains(307L)
+            )
+        } finally {
+            journalFile.delete()
+            java.io.File(
+                context.filesDir,
+                "${com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator.JOURNAL_FILENAME}.bak"
+            ).delete()
+        }
+    }
 }
 

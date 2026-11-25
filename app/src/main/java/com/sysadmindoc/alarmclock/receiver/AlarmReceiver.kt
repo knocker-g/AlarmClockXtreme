@@ -52,6 +52,12 @@ class AlarmReceiver : BroadcastReceiver() {
 
         val fireId = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID)
             ?: AlarmIncidentEvent.fireIdFor(alarmId, scheduledAt)
+        val incomingRestoreEpoch = intent.getLongExtra(AlarmScheduler.EXTRA_RESTORE_EPOCH, 0L)
+        val incomingIsQuick: Boolean? = if (intent.hasExtra(AlarmScheduler.EXTRA_QUICK_ALARM)) {
+            intent.getBooleanExtra(AlarmScheduler.EXTRA_QUICK_ALARM, false)
+        } else {
+            null
+        }
 
         val gate = outputAuthorityGateSeam ?: com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate.getInstance(context)
         var claimNonce: String? = null
@@ -95,7 +101,14 @@ class AlarmReceiver : BroadcastReceiver() {
             )
         )
 
-        val serviceIntent = AlarmFireDismissContract.startServiceIntent(context, alarmId, scheduledAt, fireId).apply {
+        val serviceIntent = AlarmFireDismissContract.startServiceIntent(
+            context = context,
+            alarmId = alarmId,
+            scheduledAt = scheduledAt,
+            fireId = fireId,
+            restoreEpoch = incomingRestoreEpoch,
+            isQuickAlarm = incomingIsQuick
+        ).apply {
             if (claimNonce != null) {
                 putExtra(AlarmService.EXTRA_CLAIM_NONCE, claimNonce)
             }
@@ -159,6 +172,68 @@ class AlarmReceiver : BroadcastReceiver() {
                         return@launch
                     }
 
+                    val diskState = com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator.readVerifiedDiskState(context)
+                    val currentAlarm = alarmRepo.getById(alarmId)?.sanitized()
+                    val metaEpoch = try {
+                        alarmRepo.database.scheduleAuthorityDao().getMetaById(1)?.restoreEpoch ?: 0L
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (_: Throwable) {
+                        0L
+                    }
+                    val staleFireReason = when {
+                        diskState is com.sysadmindoc.alarmclock.data.backup.JournalDiskState.InvalidOrBlocked ||
+                            (diskState is com.sysadmindoc.alarmclock.data.backup.JournalDiskState.Verified &&
+                                diskState.phase == com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator.PHASE_PREPARED) ->
+                            "RESTORE_PREPARED_FENCE"
+                        currentAlarm != null && incomingIsQuick != null && incomingIsQuick != currentAlarm.isQuickAlarm ->
+                            "ALARM_KIND_MISMATCH"
+                        incomingRestoreEpoch > 0L && metaEpoch > 0L && incomingRestoreEpoch != metaEpoch ->
+                            "STALE_RESTORE_EPOCH"
+                        incomingRestoreEpoch <= 0L &&
+                            currentAlarm != null &&
+                            !currentAlarm.isQuickAlarm &&
+                            diskState !is com.sysadmindoc.alarmclock.data.backup.JournalDiskState.Absent &&
+                            currentAlarm.nextTriggerTime > 0L &&
+                            scheduledAt > 0L &&
+                            currentAlarm.nextTriggerTime != scheduledAt ->
+                            "STALE_TRIGGER_DURING_PENDING_JOURNAL"
+                        else -> null
+                    }
+
+                    if (staleFireReason != null) {
+                        Log.w("AlarmReceiver", "Rejecting stale fallback for alarm $alarmId @ $scheduledAt: $staleFireReason")
+                        if (occKey != null && claimNonce != null) {
+                            abortHandled = true
+                            val aborted = gate.abortClaim(
+                                context,
+                                occKey,
+                                claimNonce,
+                                com.sysadmindoc.alarmclock.directboot.LegacyTerminalOutcome.REJECTED_NO_OUTPUT
+                            )
+                            if (!aborted) {
+                                Log.e("AlarmReceiver", "abortClaim failed after stale fire rejection for alarm $alarmId")
+                                incidents += ReceiverAlarmIncident(
+                                    alarmId = alarmId,
+                                    fireId = fireId,
+                                    scheduledAt = scheduledAt,
+                                    type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                                    status = AlarmIncidentEvent.STATUS_FAILED,
+                                    reasonCode = "AUTHORITY_ABORT_CLAIM_FAILED",
+                                    source = "AlarmReceiver"
+                                )
+                            }
+                        }
+                        incidents += ReceiverAlarmIncident(
+                            alarmId = alarmId,
+                            fireId = fireId,
+                            scheduledAt = scheduledAt,
+                            type = AlarmIncidentEvent.TYPE_NOTIFICATION,
+                            status = AlarmIncidentEvent.STATUS_FAILED,
+                            reasonCode = "STALE_FIRE_REJECTED_$staleFireReason",
+                            source = "AlarmReceiver"
+                        )
+                    } else {
                     val issueToken = intent.getStringExtra(AlarmScheduler.EXTRA_ISSUE_TOKEN).orEmpty()
                     val issuedDao = testIssuedOccurrenceDao ?: alarmRepo.issuedOccurrenceDao()
                     val hasActivatedTokenizedOccurrence = issuedDao.countActivatedOccurrencesForAlarm(alarmId) > 0
@@ -175,7 +250,7 @@ class AlarmReceiver : BroadcastReceiver() {
                         // Admissible ONLY IF alarm has NEVER activated a tokenized occurrence (!hasActivatedTokenizedOccurrence).
                         // Once hasActivatedTokenizedOccurrence == true, tokenless broadcasts are STRICTLY REJECTED!
                         if (!hasActivatedTokenizedOccurrence) {
-                            val alarm = alarmRepo.getById(alarmId)
+                            val alarm = currentAlarm
                             val deliveryCount = incidentRepo.occurrenceDeliveryCount(alarmId, scheduledAt)
                             alarm != null && alarm.isEnabled && scheduledAt > 0L && deliveryCount == 0
                         } else {
@@ -334,6 +409,7 @@ class AlarmReceiver : BroadcastReceiver() {
                                 )
                             }
                         }
+                    }
                     }
 
                     // Record all incidents directly using suspend repository API before pending.finish()

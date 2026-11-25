@@ -189,9 +189,12 @@ class DurableSkipClaimAdapter(
             }
 
             // Abort any prior unresolved intent for this alarm before producing new reconcile
+            // Rev2 / unknown-revision CANCEL intents are strictly isolated from generic PHASE_ABORTED
             val unresolved = durableDao.getUnresolvedIntentsByAlarmId(alarmId)
             for (pending in unresolved) {
-                durableDao.updateIntentPhase(pending.operationToken, com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent.PHASE_ABORTED)
+                if (!DurableCancelIntentValidator.isNonLegacyCancelIntent(pending)) {
+                    durableDao.updateIntentPhase(pending.operationToken, com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent.PHASE_ABORTED)
+                }
             }
 
             // 6. Produce Reconcile

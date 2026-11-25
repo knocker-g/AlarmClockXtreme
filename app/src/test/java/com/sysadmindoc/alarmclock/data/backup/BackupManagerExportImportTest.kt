@@ -30,6 +30,7 @@ class BackupManagerExportImportTest {
     private lateinit var repository: AlarmRepository
     private lateinit var preferencesManager: PreferencesManager
     private lateinit var scheduler: AlarmScheduler
+    private lateinit var restoreJournalCoordinator: RestoreJournalCoordinator
     private lateinit var backupManager: BackupManager
     private val backupAdapter = Moshi.Builder().build().adapter(BackupData::class.java)
 
@@ -39,7 +40,7 @@ class BackupManagerExportImportTest {
         repository = mockk(relaxed = true)
         preferencesManager = mockk(relaxed = true)
         scheduler = mockk(relaxed = true)
-        val restoreJournalCoordinator: RestoreJournalCoordinator = mockk(relaxed = true)
+        restoreJournalCoordinator = mockk(relaxed = true)
         val database: com.sysadmindoc.alarmclock.data.local.AlarmDatabase = mockk(relaxed = true)
         backupManager = BackupManager(
             context = context,
@@ -358,7 +359,15 @@ class BackupManagerExportImportTest {
                 eq(true)
             )
         }
-        coVerify { scheduler.rescheduleAllInBatches() }
+        coVerify {
+            restoreJournalCoordinator.recordPreparedTransientTargets(
+                normalIds = listOf(7L),
+                quickIds = emptyList()
+            )
+            restoreJournalCoordinator.markCommitted()
+            restoreJournalCoordinator.checkAndRecover()
+        }
+        coVerify(exactly = 0) { scheduler.schedule(any()) }
     }
 
     private fun morningAlarm(): Alarm = Alarm(

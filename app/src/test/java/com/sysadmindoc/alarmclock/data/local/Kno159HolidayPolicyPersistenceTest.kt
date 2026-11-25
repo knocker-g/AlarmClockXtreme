@@ -1073,10 +1073,11 @@ class Kno159HolidayPolicyPersistenceTest {
             BackupImportOptions(mode = BackupImportMode.Replace, importSettings = false)
         )
         assertTrue(commitResult.isSuccess)
-        assertTrue(journalFile.exists())
-        val outcome = restoreJournalCoordinator.checkAndRecover()
-        assertEquals(RecoveryOutcome.RECOVERED_NEW, outcome)
-        assertFalse(journalFile.exists())
+        assertFalse(
+            "Step 7 delegates to checkAndRecover() and deletes journal upon RECOVERED_NEW",
+            journalFile.exists()
+        )
+        assertEquals(RecoveryOutcome.NONE, restoreJournalCoordinator.checkAndRecover())
 
         val restoredInclude = alarmRepo.getById(oldIncludeId)!!
         val restoredIncludeAuth = alarmRepo.getAuthorityByAlarmId(oldIncludeId)!!
@@ -1240,5 +1241,63 @@ class Kno159HolidayPolicyPersistenceTest {
         val routeAuthority = ProductionSchedulingRouteAuthority()
         assertEquals(ProductionSchedulingRoute.LEGACY_ONLY, routeAuthority.currentRoute)
         assertFalse(routeAuthority.isOwnerRouteActive())
+    }
+
+    @Test
+    fun testN_b2cStep7HolidayPendingRetryRetainsCommittedJournalAndRetryCompletesCleanly() = runBlocking {
+        alarmRepo.save(
+            Alarm(
+                hour = 8,
+                minute = 0,
+                label = "Holiday Policy Alarm",
+                repeatDays = emptySet(),
+                holidayPolicy = Alarm.HOLIDAY_POLICY_INCLUDE
+            )
+        )
+        val exportJson = backupManager.export()
+
+        val mockHolidayCoordinator = mockk<com.sysadmindoc.alarmclock.data.repository.HolidayReconcileCoordinator>(relaxed = true)
+        io.mockk.every { mockHolidayCoordinator.clockMillis } returns { System.currentTimeMillis() }
+        coEvery { mockHolidayCoordinator.reconcile(any(), any(), any(), any()) } returns
+            com.sysadmindoc.alarmclock.data.repository.HolidayReconcileResult.PendingRetry(pendingCount = 1, failureCause = null)
+
+        val coordinatorWithHoliday = RestoreJournalCoordinator(
+            context = context,
+            database = db,
+            preferencesManager = preferencesManager,
+            alarmScheduler = alarmScheduler,
+            moshi = moshi,
+            holidayReconcileCoordinator = mockHolidayCoordinator
+        )
+        val managerWithHoliday = BackupManager(
+            context = context,
+            repository = alarmRepo,
+            preferencesManager = preferencesManager,
+            scheduler = alarmScheduler,
+            restoreJournalCoordinator = coordinatorWithHoliday,
+            database = db,
+            holidayReconcileCoordinator = mockHolidayCoordinator
+        )
+
+        val firstImport = managerWithHoliday.importFromUriStringForTest(
+            exportJson,
+            BackupImportOptions(mode = BackupImportMode.Replace, importSettings = false)
+        )
+        assertTrue("Committed import with deferred holiday reconcile remains committed", firstImport.isSuccess)
+        assertTrue("PHASE_COMMITTED journal MUST be retained when HolidayReconcileCoordinator returns PendingRetry", journalFile.exists())
+
+        // Subsequent restore MUST fail closed while journal is unresolved
+        val blockedSecondImport = managerWithHoliday.importFromUriStringForTest(
+            exportJson,
+            BackupImportOptions(mode = BackupImportMode.Replace, importSettings = false)
+        )
+        assertTrue("Subsequent restore MUST fail closed while unresolved journal exists", blockedSecondImport.isFailure)
+
+        // Once Holiday reconcile succeeds, recovery deletes journal
+        coEvery { mockHolidayCoordinator.reconcile(any(), any(), any(), any()) } returns
+            com.sysadmindoc.alarmclock.data.repository.HolidayReconcileResult.Success(reconciledCount = 1, isNoOp = false)
+        val retryOutcome = coordinatorWithHoliday.checkAndRecover()
+        assertEquals(RecoveryOutcome.RECOVERED_NEW, retryOutcome)
+        assertFalse("Journal must be deleted after Holiday reconcile succeeds", journalFile.exists())
     }
 }

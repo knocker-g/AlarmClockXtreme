@@ -36,12 +36,7 @@ class DirectBootRealReceiverEntrypointTest {
     private val baseTime = 1_700_000_000_000L
 
     private fun clearDeStorage() {
-        val dePrefs = deContext.getSharedPreferences(DirectBootDeliveryLedger.PREFS_NAME, Context.MODE_PRIVATE)
-        dePrefs.edit()
-            .remove(DirectBootDeliveryLedger.KEY_DELIVERY_LEDGER_PAYLOAD)
-            .remove(DirectBootMissedStore.KEY_MISSED_STORE_PAYLOAD)
-            .remove(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD)
-            .commit()
+        DirectBootServiceTestFixture.clearAllDirectBootPrefs(deContext)
     }
 
     @Before
@@ -432,17 +427,74 @@ class DirectBootRealReceiverEntrypointTest {
             instanceToken = "tok_default_701",
             restoreEpoch = 1L
         )
+        val identity = DirectBootV2NormalIntentIdentity.fromQueueItem(queueItem)
+
+        // 1. Direct V2 Service ACTION_START without HANDOVER_PENDING / DeliveryLedger MUST remain DEFAULT_DENY
+        val directSvcIntent = identity.createIntent(ceContext).apply {
+            setClass(ceContext, DirectBootAlarmService::class.java)
+            action = DirectBootAlarmService.ACTION_START
+        }
+        val directSvcController = org.robolectric.Robolectric.buildService(DirectBootAlarmService::class.java, directSvcIntent)
+        val directSvc = directSvcController.create().startCommand(0, 0).get()
+        try {
+            val effects = DirectBootServiceTestFixture.captureEffects(directSvc)
+            assertFalse("Direct V2 Service start without HANDOVER_PENDING MUST deny audio", effects.mediaPlayerPlaying)
+            assertTrue("Direct V2 Service start without HANDOVER_PENDING MUST stopSelf()", effects.stoppedBySelf)
+        } finally {
+            directSvcController.destroy()
+        }
+
+        // 2. Unqueued ticketless V2 ingress at Receiver MUST fail closed without starting Service
+        val unqueuedCtx = RecordingServiceContext(ceContext)
+        DirectBootAlarmReceiver().onReceive(unqueuedCtx, identity.createIntent(ceContext))
+        assertEquals("Unqueued ticketless V2 ingress MUST NOT start Service", 0, unqueuedCtx.startedServiceIntents.size)
+        assertTrue(DirectBootDeliveryLedger.readUnacknowledgedRecords(deContext) is LedgerStorageState.Absent)
+        assertTrue(DirectBootDurableOwnerStore.read(deContext) is OwnerReadResult.Absent)
+
+        // 3. P2 OS AlarmManager ticketless ingress for queued head item
         assertTrue(DirectBootAlarmCache.writeQueue(deContext, listOf(queueItem), now = baseTime))
 
-        val identity = DirectBootV2NormalIntentIdentity.fromQueueItem(queueItem)
-        val defaultV2Intent = identity.createIntent(ceContext)
-
-        val recordingCtx = RecordingServiceContext(ceContext)
-        DirectBootAlarmReceiver().onReceive(recordingCtx, defaultV2Intent)
-
-        assertEquals("Default V2 ingress without authorized ticket MUST NOT produce Service output", 0, recordingCtx.startedServiceIntents.size)
-        assertEquals(1, DirectBootAlarmCache.readQueue(deContext, now = baseTime).size)
+        // 3a. Under DEFAULT_DENY (v2DeliveryCapable = false / Flag OFF), even queued head item fails closed
+        val defaultDenyCtx = RecordingServiceContext(ceContext)
+        DirectBootAlarmReceiver().onReceive(defaultDenyCtx, identity.createIntent(ceContext))
+        assertEquals("Under DEFAULT_DENY, queued V2 ingress MUST NOT start Service", 0, defaultDenyCtx.startedServiceIntents.size)
+        assertEquals("Under DEFAULT_DENY, queue MUST remain intact", 1, DirectBootAlarmCache.readQueue(deContext, now = 0L).size)
         assertTrue(DirectBootDeliveryLedger.readUnacknowledgedRecords(deContext) is LedgerStorageState.Absent)
+        assertTrue(DirectBootDurableOwnerStore.read(deContext) is OwnerReadResult.Absent)
+
+        // 3b. When capability is explicitly authorized and gate enabled, OS AlarmManager ticketless ingress qualifies via
+        // preQualify -> Eligible -> same-process issueTicket -> adaptDelivery -> HANDOVER_PENDING
+        val gate = com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate.getInstance(ceContext).apply {
+            isEnabled = true
+        }
+        DirectBootAlarmReceiver.outputAuthorityGateSeam = gate
+        DirectBootAlarmReceiver.v2DeliveryCapableProvider = { true }
+        val recordingCtx = RecordingServiceContext(ceContext)
+        try {
+            DirectBootAlarmReceiver().onReceive(recordingCtx, identity.createIntent(ceContext))
+
+            assertEquals("Qualified OS ticketless V2 ingress MUST start Service once", 1, recordingCtx.startedServiceIntents.size)
+            assertEquals(0, DirectBootAlarmCache.readQueue(deContext, now = 0L).size)
+            val ledgerState = DirectBootDeliveryLedger.readUnacknowledgedRecords(deContext)
+            assertTrue(ledgerState is LedgerStorageState.ValidWithRecords && ledgerState.records.size == 1)
+            val ownerRead = DirectBootDurableOwnerStore.read(deContext)
+            assertTrue(ownerRead is OwnerReadResult.Success && ownerRead.owner.state == OwnerState.HANDOVER_PENDING)
+
+            // 4. Duplicate ticketless delivery and explicit blank ticket MUST fail closed
+            val dupCtx = RecordingServiceContext(ceContext)
+            DirectBootAlarmReceiver().onReceive(dupCtx, identity.createIntent(ceContext))
+            assertEquals("Duplicate ticketless V2 ingress MUST NOT start Service", 0, dupCtx.startedServiceIntents.size)
+
+            val blankTicketIntent = identity.createIntent(ceContext).apply {
+                putExtra(DirectBootDeliveryAuthorizer.EXTRA_TICKET_ID, "")
+            }
+            val blankTicketCtx = RecordingServiceContext(ceContext)
+            DirectBootAlarmReceiver().onReceive(blankTicketCtx, blankTicketIntent)
+            assertEquals("Explicit blank ticket MUST NOT mint ticket or start Service", 0, blankTicketCtx.startedServiceIntents.size)
+        } finally {
+            DirectBootAlarmReceiver.resetSeamsForTesting()
+            gate.isEnabled = false
+        }
     }
 
     @Test

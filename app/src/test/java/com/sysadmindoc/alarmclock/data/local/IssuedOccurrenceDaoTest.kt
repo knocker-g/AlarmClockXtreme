@@ -3,8 +3,12 @@ package com.sysadmindoc.alarmclock.data.local
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent
 import com.sysadmindoc.alarmclock.data.local.entity.IssueSlot
 import com.sysadmindoc.alarmclock.data.local.entity.IssuedOccurrence
+import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
+import com.sysadmindoc.alarmclock.data.model.Alarm
+import com.sysadmindoc.alarmclock.domain.evaluator.DurableCancelIntentValidator
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -750,5 +754,552 @@ class IssuedOccurrenceDaoTest {
             expiresAt = System.currentTimeMillis() + 15000L
         )
         assertEquals("Previous token A CANNOT claim fallback lease after B activation", 0, leaseAStale)
+    }
+
+    // --- NEW C4-B1 Targeted Room CAS Tests ---
+
+    @Test
+    fun `casUpdateNonCurrentOccurrence_case1_preservesCurrentOwnerA`() = runBlocking {
+        val alarmId = 42L
+        val occA = dao.reserveIssuedOccurrence("token-A", alarmId, 1000L, "fire-A")
+        assertNotNull(occA)
+        dao.activateIssuedOccurrence("token-A")
+        assertEquals("token-A", dao.getSlotCurrentToken(alarmId))
+
+        val occB = dao.reserveIssuedOccurrence("token-B", alarmId, 2000L, "fire-B")
+        assertNotNull(occB)
+        assertEquals(IssuedOccurrence.STATUS_PREPARED, dao.getOccurrence("token-B")!!.status)
+        assertEquals("token-A", dao.getSlotCurrentToken(alarmId))
+
+        val updatedRows = dao.casUpdateNonCurrentOccurrenceStatus(
+            issueToken = "token-B",
+            expectedStatus = IssuedOccurrence.STATUS_PREPARED,
+            newStatus = IssuedOccurrence.STATUS_REVOKED,
+            alarmId = alarmId,
+            expectedSlotGenId = dao.getSlot(alarmId)!!.generationId,
+            expectedOwnerToken = "token-A"
+        )
+
+        assertEquals("Targeted CAS on non-current B must update 1 row", 1, updatedRows)
+        assertEquals(IssuedOccurrence.STATUS_REVOKED, dao.getOccurrence("token-B")!!.status)
+        assertEquals("Current slot owner MUST remain token-A", "token-A", dao.getSlotCurrentToken(alarmId))
+        assertEquals("Slot owner A status MUST remain ISSUED", IssuedOccurrence.STATUS_ISSUED, dao.getOccurrence("token-A")!!.status)
+    }
+
+    @Test
+    fun `casUpdateNonCurrentOccurrence_case2_successorC_preventsStaleCas`() = runBlocking {
+        val alarmId = 42L
+        dao.reserveIssuedOccurrence("token-A", alarmId, 1000L, "fire-A")
+        dao.activateIssuedOccurrence("token-A")
+
+        dao.reserveIssuedOccurrence("token-B", alarmId, 2000L, "fire-B")
+        val slotGenIdBeforeC = dao.getSlot(alarmId)!!.generationId
+
+        dao.reserveIssuedOccurrence("token-C", alarmId, 3000L, "fire-C")
+        dao.activateIssuedOccurrence("token-C")
+        assertEquals("token-C", dao.getSlotCurrentToken(alarmId))
+
+        val updatedRows = dao.casUpdateNonCurrentOccurrenceStatus(
+            issueToken = "token-B",
+            expectedStatus = IssuedOccurrence.STATUS_PREPARED,
+            newStatus = IssuedOccurrence.STATUS_REVOKED,
+            alarmId = alarmId,
+            expectedSlotGenId = slotGenIdBeforeC,
+            expectedOwnerToken = "token-A"
+        )
+
+        assertEquals("Stale owner expectedOwnerToken must return 0 updated rows", 0, updatedRows)
+        assertEquals("Successor C MUST remain current slot owner token-C", "token-C", dao.getSlotCurrentToken(alarmId))
+        assertEquals("Successor C status MUST remain ISSUED", IssuedOccurrence.STATUS_ISSUED, dao.getOccurrence("token-C")!!.status)
+    }
+
+    @Test
+    fun `casUpdateNonCurrentOccurrence_case3_issueTokenMismatch_returnsZero`() = runBlocking {
+        val alarmId = 42L
+        dao.reserveIssuedOccurrence("token-A", alarmId, 1000L, "fire-A")
+        dao.activateIssuedOccurrence("token-A")
+        dao.reserveIssuedOccurrence("token-B", alarmId, 2000L, "fire-B")
+
+        val updatedRows = dao.casUpdateNonCurrentOccurrenceStatus(
+            issueToken = "token-WRONG",
+            expectedStatus = IssuedOccurrence.STATUS_PREPARED,
+            newStatus = IssuedOccurrence.STATUS_REVOKED,
+            alarmId = alarmId,
+            expectedSlotGenId = dao.getSlot(alarmId)!!.generationId,
+            expectedOwnerToken = "token-A"
+        )
+
+        assertEquals("Mismatched issueToken must return 0 updated rows", 0, updatedRows)
+        assertEquals(IssuedOccurrence.STATUS_PREPARED, dao.getOccurrence("token-B")!!.status)
+    }
+
+    @Test
+    fun `casUpdateNonCurrentOccurrence_case4_expectedStatusMismatch_returnsZero`() = runBlocking {
+        val alarmId = 42L
+        dao.reserveIssuedOccurrence("token-A", alarmId, 1000L, "fire-A")
+        dao.activateIssuedOccurrence("token-A")
+        dao.reserveIssuedOccurrence("token-B", alarmId, 2000L, "fire-B")
+
+        val updatedRows = dao.casUpdateNonCurrentOccurrenceStatus(
+            issueToken = "token-B",
+            expectedStatus = IssuedOccurrence.STATUS_ISSUED,
+            newStatus = IssuedOccurrence.STATUS_REVOKED,
+            alarmId = alarmId,
+            expectedSlotGenId = dao.getSlot(alarmId)!!.generationId,
+            expectedOwnerToken = "token-A"
+        )
+
+        assertEquals("Mismatched expectedStatus must return 0 updated rows", 0, updatedRows)
+        assertEquals(IssuedOccurrence.STATUS_PREPARED, dao.getOccurrence("token-B")!!.status)
+    }
+
+    @Test
+    fun `casUpdateNonCurrentOccurrence_case5_idempotency_duplicateCall_returnsZero`() = runBlocking {
+        val alarmId = 42L
+        dao.reserveIssuedOccurrence("token-A", alarmId, 1000L, "fire-A")
+        dao.activateIssuedOccurrence("token-A")
+        dao.reserveIssuedOccurrence("token-B", alarmId, 2000L, "fire-B")
+
+        val firstRun = dao.casUpdateNonCurrentOccurrenceStatus(
+            issueToken = "token-B",
+            expectedStatus = IssuedOccurrence.STATUS_PREPARED,
+            newStatus = IssuedOccurrence.STATUS_REVOKED,
+            alarmId = alarmId,
+            expectedSlotGenId = dao.getSlot(alarmId)!!.generationId,
+            expectedOwnerToken = "token-A"
+        )
+        assertEquals(1, firstRun)
+        assertEquals(IssuedOccurrence.STATUS_REVOKED, dao.getOccurrence("token-B")!!.status)
+
+        val secondRun = dao.casUpdateNonCurrentOccurrenceStatus(
+            issueToken = "token-B",
+            expectedStatus = IssuedOccurrence.STATUS_PREPARED,
+            newStatus = IssuedOccurrence.STATUS_REVOKED,
+            alarmId = alarmId,
+            expectedSlotGenId = dao.getSlot(alarmId)!!.generationId,
+            expectedOwnerToken = "token-A"
+        )
+        assertEquals("Duplicate CAS execution MUST return 0 updated rows", 0, secondRun)
+        assertEquals(IssuedOccurrence.STATUS_REVOKED, dao.getOccurrence("token-B")!!.status)
+    }
+
+    @Test
+    fun `casUpdateNonCurrentOccurrence_case6_cReserved_staleGeneration_preventsCas`() = runBlocking {
+        val alarmId = 42L
+        // 1. Reserve A and activate A -> currentIssueToken = token-A, generationId = 2L
+        dao.reserveIssuedOccurrence("token-A", alarmId, 1000L, "fire-A")
+        dao.activateIssuedOccurrence("token-A")
+        assertEquals("token-A", dao.getSlotCurrentToken(alarmId))
+
+        // 2. Reserve B -> B is PREPARED, slot generationId becomes 3L, currentIssueToken remains token-A
+        dao.reserveIssuedOccurrence("token-B", alarmId, 2000L, "fire-B")
+        val preCSlotGenId = dao.getSlot(alarmId)!!.generationId // 3L
+
+        // 3. Reserve C (before B's cancellation CAS runs) -> C is PREPARED, slot generationId advances to 4L! currentIssueToken is still token-A
+        dao.reserveIssuedOccurrence("token-C", alarmId, 3000L, "fire-C")
+        val postCSlotGenId = dao.getSlot(alarmId)!!.generationId // 4L
+        assertEquals(4L, postCSlotGenId)
+        assertEquals("token-A", dao.getSlotCurrentToken(alarmId)) // Owner is still A!
+
+        // 4. Perform CAS update for B using STALE pre-C generationId (3L vs current 4L)
+        val staleGenCasResult = dao.casUpdateNonCurrentOccurrenceStatus(
+            issueToken = "token-B",
+            expectedStatus = IssuedOccurrence.STATUS_PREPARED,
+            newStatus = IssuedOccurrence.STATUS_REVOKED,
+            alarmId = alarmId,
+            expectedSlotGenId = preCSlotGenId, // Stale generationId = 3L (current slot genId is 4L)
+            expectedOwnerToken = "token-A"
+        )
+
+        // 5. Assert: Stale generation CAS MUST return 0 updated rows! Occurrence B remains PREPARED, Slot owner remains token-A
+        assertEquals("CAS with stale expectedSlotGenId MUST return 0 updated rows", 0, staleGenCasResult)
+        assertEquals("Occurrence B status MUST remain PREPARED when CAS fails due to stale slot generation", IssuedOccurrence.STATUS_PREPARED, dao.getOccurrence("token-B")!!.status)
+        assertEquals("Slot owner A MUST remain token-A", "token-A", dao.getSlotCurrentToken(alarmId))
+    }
+
+    @Test
+    fun `casUpdateNonCurrentOccurrence_case7_currentOwnerA_cannotBeMutatedByNonCurrentCas`() = runBlocking {
+        val alarmId = 42L
+        // 1. Reserve A and activate A -> A is Current Owner in ISSUED status
+        dao.reserveIssuedOccurrence("token-A", alarmId, 1000L, "fire-A")
+        dao.activateIssuedOccurrence("token-A")
+        assertEquals("token-A", dao.getSlotCurrentToken(alarmId))
+        assertEquals(IssuedOccurrence.STATUS_ISSUED, dao.getOccurrence("token-A")!!.status)
+
+        // 2. Attempt non-current CAS targeting Current Owner A itself!
+        val updatedRows = dao.casUpdateNonCurrentOccurrenceStatus(
+            issueToken = "token-A", // Target is Current Owner A!
+            expectedStatus = IssuedOccurrence.STATUS_PREPARED,
+            newStatus = IssuedOccurrence.STATUS_REVOKED,
+            alarmId = alarmId,
+            expectedSlotGenId = dao.getSlot(alarmId)!!.generationId,
+            expectedOwnerToken = "token-A"
+        )
+
+        // 3. Assert: Non-current CAS MUST reject mutating Current Owner A! Returns 0 updated rows
+        assertEquals("Non-current CAS MUST NOT mutate Current Owner A! Expected 0 rows", 0, updatedRows)
+        assertEquals("Current Owner A status MUST remain ISSUED", IssuedOccurrence.STATUS_ISSUED, dao.getOccurrence("token-A")!!.status)
+        assertEquals("Current slot owner MUST remain token-A", "token-A", dao.getSlotCurrentToken(alarmId))
+    }
+
+    @Test
+    fun `casUpdateNonCurrentOccurrence_case8_invalidStatusTransition_returnsZero`() = runBlocking {
+        val alarmId = 42L
+        dao.reserveIssuedOccurrence("token-A", alarmId, 1000L, "fire-A")
+        dao.activateIssuedOccurrence("token-A")
+        dao.reserveIssuedOccurrence("token-B", alarmId, 2000L, "fire-B")
+
+        // Attempt prohibited transition PREPARED -> ISSUED via non-current CAS
+        val updatedRows = dao.casUpdateNonCurrentOccurrenceStatus(
+            issueToken = "token-B",
+            expectedStatus = IssuedOccurrence.STATUS_PREPARED,
+            newStatus = IssuedOccurrence.STATUS_ISSUED, // Disallowed transition for non-current CAS!
+            alarmId = alarmId,
+            expectedSlotGenId = dao.getSlot(alarmId)!!.generationId,
+            expectedOwnerToken = "token-A"
+        )
+
+        assertEquals("Prohibited transition PREPARED -> ISSUED MUST return 0 updated rows", 0, updatedRows)
+        assertEquals("Occurrence B status MUST remain PREPARED", IssuedOccurrence.STATUS_PREPARED, dao.getOccurrence("token-B")!!.status)
+    }
+
+    // --- NEW C4-B3-P2D Authentic PREPARED Issuance Tests ---
+
+    @Test
+    fun `reserveIssuedOccurrenceWithAuthority_positive_withRealDbAuthorityAndAlarm`() = runBlocking {
+        val alarmId = 42L
+        db.alarmDao().insert(Alarm(id = alarmId, generation = 1, isEnabled = true))
+        db.scheduleAuthorityDao().insertAuthority(
+            ScheduleAuthority(
+                alarmId = alarmId,
+                instanceToken = "auth-42-v1",
+                definitionRevision = 10L,
+                scheduleRevision = 100L,
+                lifecycle = "ARMED",
+                desiredOperation = "SCHEDULE",
+                desiredTriggerMillis = 2000L,
+                reconcileState = "SYNCHRONIZED",
+                restoreEpoch = 1L,
+                actionKey = "action-key-42"
+            )
+        )
+
+        dao.reserveIssuedOccurrence("token-A", alarmId, 1000L, "fire-A")
+        dao.activateIssuedOccurrence("token-A")
+
+        // Reserve Occurrence B using authentic reserveIssuedOccurrenceWithAuthority API
+        val occB = dao.reserveIssuedOccurrenceWithAuthority(
+            issueToken = "issue-B-authentic",
+            alarmId = alarmId,
+            scheduledAt = 2000L,
+            fireId = "fire-B",
+            authorityInstanceToken = "auth-42-v1",
+            restoreEpoch = 1L,
+            scheduleRevision = 100L,
+            definitionRevision = 10L,
+            alarmGeneration = 1
+        )
+
+        assertNotNull(occB)
+        assertEquals("issue-B-authentic", occB!!.issueToken)
+        assertEquals(IssuedOccurrence.STATUS_PREPARED, occB.status)
+        assertEquals("auth-42-v1", occB.authorityInstanceToken)
+        assertEquals(1L, occB.restoreEpoch)
+        assertEquals(100L, occB.scheduleRevision)
+        assertEquals(10L, occB.definitionRevision)
+        assertEquals(1, occB.alarmGeneration)
+
+        // Slot currentIssueToken MUST remain token-A (Occurrence B is NON-CURRENT!)
+        val slot = dao.getSlot(alarmId)
+        assertNotNull(slot)
+        assertEquals("token-A", slot!!.currentIssueToken)
+        assertEquals(3L, slot.generationId)
+
+        // Construct B-Specific CANCEL intent & verify Production Validator positive binding
+        val validBIntent = DurableOperationIntent(
+            operationToken = "issue-B-authentic",
+            alarmId = alarmId,
+            operationEpoch = System.currentTimeMillis(),
+            incarnationId = "fire-B",
+            operationKind = "CANCEL",
+            expectedOwnerToken = "auth-42-v1",
+            expectedScheduleRevision = 100L,
+            expectedRestoreEpoch = 1L,
+            phase = DurableOperationIntent.PHASE_PENDING,
+            intentRevision = 2L,
+            originalFireId = "fire-B",
+            originalScheduledAt = 2000L
+        )
+
+        val bindingValid = DurableCancelIntentValidator.verifyBSpecificCancelBinding(validBIntent, occB, slot)
+        assertTrue("Production Validator MUST accept authentic non-current PREPARED Occurrence B", bindingValid)
+    }
+
+    @Test
+    fun `reserveIssuedOccurrenceWithAuthority_missingAuthority_rollsBackTransaction`() = runBlocking {
+        val alarmId = 77L
+        db.alarmDao().insert(Alarm(id = alarmId, generation = 1, isEnabled = true))
+        // ScheduleAuthority is MISSING from DB!
+
+        val occB = dao.reserveIssuedOccurrenceWithAuthority(
+            issueToken = "issue-missing-auth",
+            alarmId = alarmId,
+            scheduledAt = 2000L,
+            fireId = "fire-77",
+            authorityInstanceToken = "auth-77",
+            restoreEpoch = 1L,
+            scheduleRevision = 10L,
+            definitionRevision = 1L,
+            alarmGeneration = 1
+        )
+
+        assertNull("Reservation MUST fail and return null when ScheduleAuthority is missing from DB", occB)
+        assertNull("Occurrence row MUST be rolled back and absent from DB", dao.getOccurrence("issue-missing-auth"))
+    }
+
+    @Test
+    fun `reserveIssuedOccurrenceWithAuthority_tokenMismatch_rollsBackTransaction`() = runBlocking {
+        val alarmId = 88L
+        db.alarmDao().insert(Alarm(id = alarmId, generation = 1, isEnabled = true))
+        db.scheduleAuthorityDao().insertAuthority(
+            ScheduleAuthority(
+                alarmId = alarmId,
+                instanceToken = "auth-88-v1",
+                definitionRevision = 1L,
+                scheduleRevision = 10L,
+                lifecycle = "ARMED",
+                desiredOperation = "SCHEDULE",
+                desiredTriggerMillis = 2000L,
+                reconcileState = "SYNCHRONIZED",
+                restoreEpoch = 1L,
+                actionKey = "action-key-88"
+            )
+        )
+
+        // Pass mismatched authorityInstanceToken ("auth-WRONG")
+        val occB = dao.reserveIssuedOccurrenceWithAuthority(
+            issueToken = "issue-wrong-token",
+            alarmId = alarmId,
+            scheduledAt = 2000L,
+            fireId = "fire-88",
+            authorityInstanceToken = "auth-WRONG",
+            restoreEpoch = 1L,
+            scheduleRevision = 10L,
+            definitionRevision = 1L,
+            alarmGeneration = 1
+        )
+
+        assertNull("Reservation MUST fail and return null when authorityInstanceToken mismatches DB truth", occB)
+        assertNull("Occurrence row MUST be rolled back", dao.getOccurrence("issue-wrong-token"))
+    }
+
+    @Test
+    fun `reserveIssuedOccurrenceWithAuthority_restoreEpochMismatch_rollsBackTransaction`() = runBlocking {
+        val alarmId = 99L
+        db.alarmDao().insert(Alarm(id = alarmId, generation = 1, isEnabled = true))
+        db.scheduleAuthorityDao().insertAuthority(
+            ScheduleAuthority(
+                alarmId = alarmId,
+                instanceToken = "auth-99-v1",
+                definitionRevision = 1L,
+                scheduleRevision = 10L,
+                lifecycle = "ARMED",
+                desiredOperation = "SCHEDULE",
+                desiredTriggerMillis = 2000L,
+                reconcileState = "SYNCHRONIZED",
+                restoreEpoch = 1L,
+                actionKey = "action-key-99"
+            )
+        )
+
+        // Pass mismatched restoreEpoch (99L vs DB 1L)
+        val occB = dao.reserveIssuedOccurrenceWithAuthority(
+            issueToken = "issue-wrong-epoch",
+            alarmId = alarmId,
+            scheduledAt = 2000L,
+            fireId = "fire-99",
+            authorityInstanceToken = "auth-99-v1",
+            restoreEpoch = 99L,
+            scheduleRevision = 10L,
+            definitionRevision = 1L,
+            alarmGeneration = 1
+        )
+
+        assertNull("Reservation MUST fail when restoreEpoch mismatches DB truth", occB)
+        assertNull(dao.getOccurrence("issue-wrong-epoch"))
+    }
+
+    // --- NEW C2B2-A V1 & V2 Stale Pre-Restore Occurrence Query & CAS Tests ---
+
+    @Test
+    fun `V1 - getActiveStaleRestoreOccurrences returns only PREPARED, ISSUED, ADMITTED strictly below currentRestoreEpoch`() = runBlocking {
+        // Stale epoch 100 rows across active and terminal statuses
+        dao.insertOccurrence(
+            IssuedOccurrence(
+                issueToken = "stale-prepared",
+                alarmId = 10L,
+                scheduledAt = 1000L,
+                fireId = "f1",
+                generationId = 1L,
+                status = IssuedOccurrence.STATUS_PREPARED,
+                restoreEpoch = 100L,
+                createdAt = 1L,
+                updatedAt = 1L
+            )
+        )
+        dao.insertOccurrence(
+            IssuedOccurrence(
+                issueToken = "stale-issued",
+                alarmId = 11L,
+                scheduledAt = 2000L,
+                fireId = "f2",
+                generationId = 1L,
+                status = IssuedOccurrence.STATUS_ISSUED,
+                restoreEpoch = 99L,
+                createdAt = 1L,
+                updatedAt = 1L
+            )
+        )
+        dao.insertOccurrence(
+            IssuedOccurrence(
+                issueToken = "stale-admitted",
+                alarmId = 12L,
+                scheduledAt = 3000L,
+                fireId = "f3",
+                generationId = 1L,
+                status = IssuedOccurrence.STATUS_ADMITTED,
+                restoreEpoch = 100L,
+                createdAt = 1L,
+                updatedAt = 1L
+            )
+        )
+        dao.insertOccurrence(
+            IssuedOccurrence(
+                issueToken = "stale-revoked",
+                alarmId = 13L,
+                scheduledAt = 4000L,
+                fireId = "f4",
+                generationId = 1L,
+                status = IssuedOccurrence.STATUS_REVOKED,
+                restoreEpoch = 100L,
+                createdAt = 1L,
+                updatedAt = 1L
+            )
+        )
+        dao.insertOccurrence(
+            IssuedOccurrence(
+                issueToken = "stale-set-failed",
+                alarmId = 14L,
+                scheduledAt = 5000L,
+                fireId = "f5",
+                generationId = 1L,
+                status = IssuedOccurrence.STATUS_SET_FAILED,
+                restoreEpoch = 100L,
+                createdAt = 1L,
+                updatedAt = 1L
+            )
+        )
+        // Current epoch 101 and future epoch 102 active rows MUST NOT be returned
+        dao.insertOccurrence(
+            IssuedOccurrence(
+                issueToken = "current-issued",
+                alarmId = 15L,
+                scheduledAt = 6000L,
+                fireId = "f6",
+                generationId = 1L,
+                status = IssuedOccurrence.STATUS_ISSUED,
+                restoreEpoch = 101L,
+                createdAt = 1L,
+                updatedAt = 1L
+            )
+        )
+        dao.insertOccurrence(
+            IssuedOccurrence(
+                issueToken = "future-prepared",
+                alarmId = 16L,
+                scheduledAt = 7000L,
+                fireId = "f7",
+                generationId = 1L,
+                status = IssuedOccurrence.STATUS_PREPARED,
+                restoreEpoch = 102L,
+                createdAt = 1L,
+                updatedAt = 1L
+            )
+        )
+
+        val stale = dao.getActiveStaleRestoreOccurrences(currentRestoreEpoch = 101L)
+        assertEquals(
+            setOf("stale-prepared", "stale-issued", "stale-admitted"),
+            stale.map { it.issueToken }.toSet()
+        )
+    }
+
+    @Test
+    fun `V2 - casRevokeStalePreRestoreOccurrence revokes only exact issueToken, expectedStatus, and restoreEpoch below currentRestoreEpoch`() = runBlocking {
+        dao.insertOccurrence(
+            IssuedOccurrence(
+                issueToken = "exact-stale-token",
+                alarmId = 20L,
+                scheduledAt = 1000L,
+                fireId = "f20",
+                generationId = 1L,
+                status = IssuedOccurrence.STATUS_ISSUED,
+                restoreEpoch = 100L,
+                createdAt = 1L,
+                updatedAt = 1L
+            )
+        )
+        dao.insertOccurrence(
+            IssuedOccurrence(
+                issueToken = "current-epoch-token",
+                alarmId = 20L,
+                scheduledAt = 2000L,
+                fireId = "f20b",
+                generationId = 2L,
+                status = IssuedOccurrence.STATUS_ISSUED,
+                restoreEpoch = 101L,
+                createdAt = 1L,
+                updatedAt = 1L
+            )
+        )
+
+        // Mismatched expectedStatus MUST update 0 rows
+        assertEquals(
+            0,
+            dao.casRevokeStalePreRestoreOccurrence(
+                issueToken = "exact-stale-token",
+                expectedStatus = IssuedOccurrence.STATUS_PREPARED,
+                currentRestoreEpoch = 101L,
+                updatedAt = 5000L
+            )
+        )
+        assertEquals(IssuedOccurrence.STATUS_ISSUED, dao.getOccurrence("exact-stale-token")!!.status)
+
+        // Current epoch occurrence MUST NEVER be revoked (0 rows)
+        assertEquals(
+            0,
+            dao.casRevokeStalePreRestoreOccurrence(
+                issueToken = "current-epoch-token",
+                expectedStatus = IssuedOccurrence.STATUS_ISSUED,
+                currentRestoreEpoch = 101L,
+                updatedAt = 5000L
+            )
+        )
+        assertEquals(IssuedOccurrence.STATUS_ISSUED, dao.getOccurrence("current-epoch-token")!!.status)
+
+        // Exact match revokes strictly the target stale occurrence
+        assertEquals(
+            1,
+            dao.casRevokeStalePreRestoreOccurrence(
+                issueToken = "exact-stale-token",
+                expectedStatus = IssuedOccurrence.STATUS_ISSUED,
+                currentRestoreEpoch = 101L,
+                updatedAt = 5000L
+            )
+        )
+        val revoked = dao.getOccurrence("exact-stale-token")!!
+        assertEquals(IssuedOccurrence.STATUS_REVOKED, revoked.status)
+        assertEquals(5000L, revoked.updatedAt)
+        assertEquals(IssuedOccurrence.STATUS_ISSUED, dao.getOccurrence("current-epoch-token")!!.status)
     }
 }

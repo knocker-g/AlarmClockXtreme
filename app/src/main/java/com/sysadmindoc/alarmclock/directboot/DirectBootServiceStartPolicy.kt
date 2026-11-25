@@ -14,6 +14,7 @@ internal enum class ServiceStartDecision {
     DUPLICATE_KEEP_OLD,
     UNKNOWN_KEEP_OLD,
     PREPARED_NEEDS_OWNER,
+    V2_DURABLE_OWNER_AUTHORIZED,
     LEGACY_COMPATIBILITY_PENDING
 }
 
@@ -43,6 +44,7 @@ internal enum class ServiceStartReason {
     OWNER_UNVERIFIABLE,
     CROSS_LANE_OWNER_REQUIRED,
     NEEDS_DURABLE_OWNER,
+    VERIFIED_DURABLE_OWNER,
     LEGACY_V1_COMPATIBLE
 }
 
@@ -485,14 +487,32 @@ internal object DirectBootServiceStartPolicy {
                 activeAudioConfirmed = liveAudio,
                 historicalWitnessMatched = false
             )
-            DurableOwnerObservation.UNAVAILABLE_NO_DURABLE_OWNER,
-            DurableOwnerObservation.VERIFIED_OWNER_MATCH -> ServiceStartDecisionResult(
+            DurableOwnerObservation.UNAVAILABLE_NO_DURABLE_OWNER -> ServiceStartDecisionResult(
                 decision = ServiceStartDecision.PREPARED_NEEDS_OWNER,
                 reason = ServiceStartReason.NEEDS_DURABLE_OWNER,
                 lane = CandidateLane.V2_QUALIFIED,
                 activeAudioConfirmed = liveAudio,
                 historicalWitnessMatched = false
             )
+            DurableOwnerObservation.VERIFIED_OWNER_MATCH -> {
+                if (storage.deliveryLedgerStatus != LedgerObservationStatus.PRESENT_RECORDED) {
+                    ServiceStartDecisionResult(
+                        decision = ServiceStartDecision.REJECT_KEEP_OLD,
+                        reason = ServiceStartReason.NOT_QUEUE_HEAD,
+                        lane = CandidateLane.V2_QUALIFIED,
+                        activeAudioConfirmed = liveAudio,
+                        historicalWitnessMatched = false
+                    )
+                } else {
+                    ServiceStartDecisionResult(
+                        decision = ServiceStartDecision.V2_DURABLE_OWNER_AUTHORIZED,
+                        reason = ServiceStartReason.VERIFIED_DURABLE_OWNER,
+                        lane = CandidateLane.V2_QUALIFIED,
+                        activeAudioConfirmed = liveAudio,
+                        historicalWitnessMatched = false
+                    )
+                }
+            }
         }
     }
 

@@ -55,6 +55,18 @@ class DurableReconcileRecoveryCoordinator(
 
             val alarmId = intent.alarmId
 
+            // Isolate Rev2 / unknown-revision CANCEL intents from generic recovery abortion
+            if (DurableCancelIntentValidator.isNonLegacyCancelIntent(intent)) {
+                return@withTransaction DurableRecoveryResult(
+                    outcome = DurableRecoveryOutcome.NEEDS_EVIDENCE_DEFERRED,
+                    alarmId = alarmId,
+                    intentToken = intentToken,
+                    adjudicationDecision = null,
+                    updatedIntent = intent,
+                    decisionReason = "NON_LEGACY_CANCEL_REVISION_ISOLATED_${intent.intentRevision}"
+                )
+            }
+
             // 2. Check if intent is already resolved
             if (!DurableOperationIntent.isUnresolvedPhase(intent.phase)) {
                 return@withTransaction DurableRecoveryResult(

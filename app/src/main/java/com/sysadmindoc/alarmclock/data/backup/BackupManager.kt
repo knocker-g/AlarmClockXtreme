@@ -923,6 +923,7 @@ class BackupManager @Inject constructor(
         options: BackupImportOptions = BackupImportOptions()
     ): Result<Int> {
         var journalPrepared = false
+        var journalCommitted = false
         var stagedCount = 0
         return try {
             val backup = adapter.fromJson(json)
@@ -972,6 +973,13 @@ class BackupManager @Inject constructor(
                 return Result.failure(IllegalStateException("Cannot restore backup while an alarm session is active"))
             }
 
+            // 2b. Unresolved Journal Gate (fail closed if prior restore/rollback is still pending)
+            if (restoreJournalCoordinator.hasUnresolvedJournal()) {
+                return Result.failure(
+                    IllegalStateException("Cannot start restore while an unresolved restore journal is pending recovery")
+                )
+            }
+
             // 3. Snapshot OLD Truth & Prepare Journal
             val oldAlarms = repository.getAll()
             val oldGroups = database.alarmGroupDao().getAll()
@@ -988,9 +996,40 @@ class BackupManager @Inject constructor(
             )
             journalPrepared = true
 
-            // 4. Atomic Room Commit
+            // 4. Atomic Room Commit (capture Replace candidate IDs before & all committed IDs immediately after)
             val isReplace = options.mode == BackupImportMode.Replace
-            repository.restoreAlarmsTransaction(stagedAlarms, isReplace)
+            if (isReplace) {
+                val preCommitNormalIds = stagedAlarms.filter { !it.isQuickAlarm && it.id > 0L }.map { it.id }
+                val preCommitQuickIds = stagedAlarms.filter { it.isQuickAlarm && it.id > 0L }.map { it.id }
+                if (preCommitNormalIds.isNotEmpty() || preCommitQuickIds.isNotEmpty()) {
+                    restoreJournalCoordinator.recordPreparedTransientTargets(
+                        normalIds = preCommitNormalIds,
+                        quickIds = preCommitQuickIds
+                    )
+                }
+            }
+            val savedIds = repository.restoreAlarmsTransaction(stagedAlarms, isReplace)
+            val postCommitNormalIds = mutableListOf<Long>()
+            val postCommitQuickIds = mutableListOf<Long>()
+            stagedAlarms.forEachIndexed { index, alarm ->
+                val candidateId = savedIds.getOrNull(index)?.takeIf { it > 0L } ?: alarm.id.takeIf { it > 0L }
+                if (candidateId != null) {
+                    val persistedIsQuick = database.alarmDao().getById(candidateId)?.isQuickAlarm ?: alarm.isQuickAlarm
+                    if (persistedIsQuick) postCommitQuickIds.add(candidateId) else postCommitNormalIds.add(candidateId)
+                }
+            }
+            if (savedIds.size > stagedAlarms.size) {
+                savedIds.drop(stagedAlarms.size).filter { it > 0L }.forEach { extraId ->
+                    val persistedIsQuick = database.alarmDao().getById(extraId)?.isQuickAlarm == true
+                    if (persistedIsQuick) postCommitQuickIds.add(extraId) else postCommitNormalIds.add(extraId)
+                }
+            }
+            if (postCommitNormalIds.isNotEmpty() || postCommitQuickIds.isNotEmpty()) {
+                restoreJournalCoordinator.recordPreparedTransientTargets(
+                    normalIds = postCommitNormalIds,
+                    quickIds = postCommitQuickIds
+                )
+            }
 
             // 5. NEW Settings Write
             if (options.importSettings) {
@@ -1025,22 +1064,33 @@ class BackupManager @Inject constructor(
 
             // 6. Mark COMMITTED
             restoreJournalCoordinator.markCommitted()
+            journalCommitted = true
 
-            // 7. Post-Commit Reconcile
-            runCatching {
-                scheduler.rescheduleAllInBatches()
-            }
-            runCatching {
-                holidayReconcileCoordinator?.reconcile(
-                    isMaterialChange = true,
-                    previousClassifier = null,
-                    evaluationEpochMs = System.currentTimeMillis(),
-                    evaluationZoneId = java.time.ZoneId.systemDefault()
+            // 7. Post-Commit OS Cleanup, Reconcile & Journal Delete Gate
+            val recoveryOutcome = restoreJournalCoordinator.checkAndRecover()
+            when (recoveryOutcome) {
+                RecoveryOutcome.RECOVERED_NEW,
+                RecoveryOutcome.PENDING_RETRY -> Result.success(stagedCount)
+                RecoveryOutcome.RESTORED_OLD -> Result.failure(
+                    IllegalStateException("Post-commit recovery unexpectedly rolled back to OLD state")
                 )
+                RecoveryOutcome.NONE -> {
+                    if (restoreJournalCoordinator.hasUnresolvedJournal()) {
+                        Result.failure(
+                            IllegalStateException("Post-commit recovery returned NONE with unresolved journal")
+                        )
+                    } else {
+                        Result.success(stagedCount)
+                    }
+                }
             }
-
-            Result.success(stagedCount)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
+            if (journalCommitted) {
+                android.util.Log.e("BackupManager", "Post-commit recovery failed after durable COMMITTED", e)
+                return Result.failure(e)
+            }
             if (journalPrepared) {
                 val rollbackResult = runCatching { restoreJournalCoordinator.checkAndRecover() }
                 if (rollbackResult.isFailure) {

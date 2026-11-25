@@ -139,6 +139,13 @@ class NormalAlarmPostFireAtomicRecoveryTest {
         )
         db.alarmDao().insert(alarm)
         db.scheduleAuthorityDao().insertAuthority(authorityState)
+        db.scheduleAuthorityDao().insertMeta(
+            com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta(
+                id = 1,
+                restoreEpoch = authorityState.restoreEpoch,
+                bootstrapState = "INITIALIZED"
+            )
+        )
 
         val slot = IssueSlot(
             alarmId = alarmId,

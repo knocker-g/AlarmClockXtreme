@@ -541,6 +541,9 @@ class AlarmService : Service() {
                         }
                         // Cancel any prior auto-silence/fade jobs before starting new alarm
                         val preemptedGen = currentGeneration()
+                        if (preemptedGen != null && preemptedGen.isValid && !preemptedGen.matches(startGen)) {
+                            cancelGuardianWork(preemptedGen.alarmId, preemptedGen.scheduledAt)
+                        }
                         autoSilenceJob?.cancel()
                         volumeJob?.cancel()
                         stopAlarmPlayback(preemptedGen)
@@ -560,6 +563,12 @@ class AlarmService : Service() {
                             EXTRA_WAKE_CONFIRM_REFIRE_COUNT, 0
                         )
                         currentClaimNonce = intent.getStringExtra(EXTRA_CLAIM_NONCE)
+                        val incomingRestoreEpoch = intent.getLongExtra(AlarmScheduler.EXTRA_RESTORE_EPOCH, 0L)
+                        val incomingIsQuick: Boolean? = if (intent.hasExtra(AlarmScheduler.EXTRA_QUICK_ALARM)) {
+                            intent.getBooleanExtra(AlarmScheduler.EXTRA_QUICK_ALARM, false)
+                        } else {
+                            null
+                        }
                         recordIncidentAsync(
                             type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
                             status = AlarmIncidentEvent.STATUS_RECEIVED,
@@ -570,7 +579,7 @@ class AlarmService : Service() {
                         startForegroundWithPlaceholder()
                         serviceScope.launch(Dispatchers.Main.immediate) {
                             try {
-                                startAlarm(startGen)
+                                startAlarm(startGen, incomingRestoreEpoch, incomingIsQuick)
                             } finally {
                                 testStartAlarmCompletionLatch?.complete(Unit)
                             }
@@ -957,7 +966,40 @@ class AlarmService : Service() {
         }
     }
 
-    private suspend fun startAlarm(startGen: AlarmGeneration) {
+    private suspend fun stopServiceForStaleFireRejection(startGen: AlarmGeneration, reason: String) {
+        recordIncident(
+            type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+            status = AlarmIncidentEvent.STATUS_FAILED,
+            reasonCode = "STALE_FIRE_REJECTED_$reason",
+            source = "AlarmService",
+            alarmId = startGen.alarmId,
+            fireId = startGen.fireId,
+            scheduledAt = startGen.scheduledAt
+        )
+        val current = currentGeneration()
+        if (current != null && current.matches(startGen)) {
+            clearAlarmRuntimeState(startGen.alarmId)
+            currentWakeConfirmRefireCount = 0
+            currentActiveNonce = null
+            currentClaimNonce = null
+            updateActiveAlarm(null, targetGen = startGen)
+            releaseAlarmMediaSession()
+            stopAlarmPlayback(startGen)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+            stopSelf()
+        }
+    }
+
+    private suspend fun startAlarm(
+        startGen: AlarmGeneration,
+        incomingRestoreEpoch: Long = 0L,
+        incomingIsQuick: Boolean? = null
+    ) {
         val alarmId = startGen.alarmId
         if (currentGeneration()?.matches(startGen) != true) {
             Log.i(TAG, "Aborting startAlarm for $startGen: generation no longer current")
@@ -1039,6 +1081,46 @@ class AlarmService : Service() {
                     releaseAlarmMediaSession()
                     stopSelf()
                 }
+                return
+            }
+        }
+
+        if (currentWakeConfirmRefireCount == 0) {
+            val staleFireReason = withContext(Dispatchers.IO) {
+                val diskState = com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator.readVerifiedDiskState(this@AlarmService)
+                val metaEpoch = try {
+                    repository.database.scheduleAuthorityDao().getMetaById(1)?.restoreEpoch ?: 0L
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (_: Throwable) {
+                    0L
+                }
+                when {
+                    diskState is com.sysadmindoc.alarmclock.data.backup.JournalDiskState.InvalidOrBlocked ||
+                        (diskState is com.sysadmindoc.alarmclock.data.backup.JournalDiskState.Verified &&
+                            diskState.phase == com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator.PHASE_PREPARED) ->
+                        "RESTORE_PREPARED_FENCE"
+                    incomingIsQuick != null && incomingIsQuick != alarm.isQuickAlarm ->
+                        "ALARM_KIND_MISMATCH"
+                    incomingRestoreEpoch > 0L && metaEpoch > 0L && incomingRestoreEpoch != metaEpoch ->
+                        "STALE_RESTORE_EPOCH"
+                    incomingRestoreEpoch <= 0L &&
+                        !alarm.isQuickAlarm &&
+                        diskState !is com.sysadmindoc.alarmclock.data.backup.JournalDiskState.Absent &&
+                        alarm.nextTriggerTime > 0L &&
+                        startGen.scheduledAt > 0L &&
+                        alarm.nextTriggerTime != startGen.scheduledAt ->
+                        "STALE_TRIGGER_DURING_PENDING_JOURNAL"
+                    else -> null
+                }
+            }
+            if (currentGeneration()?.matches(startGen) != true) {
+                Log.i(TAG, "Aborting startAlarm after stale fire check for $startGen: generation no longer current")
+                return
+            }
+            if (staleFireReason != null) {
+                Log.w(TAG, "Rejecting stale startAlarm for $startGen: $staleFireReason")
+                stopServiceForStaleFireRejection(startGen, staleFireReason)
                 return
             }
         }
@@ -1281,6 +1363,7 @@ class AlarmService : Service() {
                 }
                 if (currentGeneration()?.matches(startGen) == true) {
                     val refireAtSilence = currentWakeConfirmRefireCount
+                    cancelGuardianWork(startGen.alarmId, startGen.scheduledAt)
                     clearAlarmRuntimeState(alarmId)
                     currentWakeConfirmRefireCount = 0
                     currentSnoozeCount = 0
@@ -1345,25 +1428,68 @@ class AlarmService : Service() {
             startFlashlightStrobe(plan)
         }
 
-        // v1.2.0: Guardian Angel — schedule emergency contact call if not dismissed.
+        // v1.2.0: Guardian Angel — schedule emergency contact SMS if not dismissed.
         // Floor at 30 s so a misconfigured 0-second delay can't fire the guardian
         // before the user has any reasonable chance to interact with the alarm.
         if (alarm.guardianEnabled && alarm.guardianPhone.isNotBlank()) {
-            val guardianDelay = alarm.guardianDelaySec.coerceAtLeast(30).toLong()
-            val guardianData = workDataOf(
-                "alarm_id" to alarm.id,
-                "guardian_phone" to alarm.guardianPhone,
-                "alarm_label" to alarm.label
-            )
-            val guardianRequest = OneTimeWorkRequestBuilder<com.sysadmindoc.alarmclock.worker.GuardianWorker>()
-                .setInitialDelay(guardianDelay, TimeUnit.SECONDS)
-                .setInputData(guardianData)
-                .build()
-            WorkManager.getInstance(applicationContext).enqueueUniqueWork(
-                "guardian_${alarm.id}",
-                ExistingWorkPolicy.REPLACE,
-                guardianRequest
-            )
+            val sanitisedGuardianPhone =
+                com.sysadmindoc.alarmclock.worker.GuardianEscalationPolicy.sanitisePhone(
+                    alarm.guardianPhone.trim()
+                )
+            val restoreEpoch = withContext(Dispatchers.IO) {
+                try {
+                    repository.database.scheduleAuthorityDao().getMetaById(1)?.restoreEpoch ?: 0L
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Throwable) {
+                    0L
+                }
+            }
+            val stillCurrent = currentGeneration()?.matches(startGen) == true
+            val validGeneration = alarm.isQuickAlarm || alarm.generation > 0
+            if (stillCurrent &&
+                startGen.isValid &&
+                restoreEpoch > 0L &&
+                validGeneration &&
+                sanitisedGuardianPhone != null
+            ) {
+                val guardianDelay = alarm.guardianDelaySec.coerceAtLeast(30).toLong()
+                val guardianData = workDataOf(
+                    com.sysadmindoc.alarmclock.worker.GuardianWorker.KEY_ALARM_ID to alarm.id,
+                    com.sysadmindoc.alarmclock.worker.GuardianWorker.KEY_SCHEDULED_AT to startGen.scheduledAt,
+                    com.sysadmindoc.alarmclock.worker.GuardianWorker.KEY_ALARM_FIRE_ID to startGen.fireId,
+                    com.sysadmindoc.alarmclock.worker.GuardianWorker.KEY_EXPECTED_GENERATION to (
+                        if (!alarm.isQuickAlarm && alarm.generation > 0) alarm.generation else 0
+                        ),
+                    com.sysadmindoc.alarmclock.worker.GuardianWorker.KEY_EXPECTED_RESTORE_EPOCH to restoreEpoch,
+                    com.sysadmindoc.alarmclock.worker.GuardianWorker.KEY_GUARDIAN_PHONE to sanitisedGuardianPhone,
+                    com.sysadmindoc.alarmclock.worker.GuardianWorker.KEY_ALARM_LABEL to alarm.label
+                )
+                val guardianRequest = OneTimeWorkRequestBuilder<com.sysadmindoc.alarmclock.worker.GuardianWorker>()
+                    .setInitialDelay(guardianDelay, TimeUnit.SECONDS)
+                    .setInputData(guardianData)
+                    .addTag(com.sysadmindoc.alarmclock.worker.GuardianWorker.alarmTag(alarm.id))
+                    .build()
+                WorkManager.getInstance(applicationContext).enqueueUniqueWork(
+                    OwnerWorkIdentity.occurrenceUniqueName(
+                        alarm.id,
+                        startGen.scheduledAt,
+                        SupportingWorkType.GUARDIAN
+                    ),
+                    ExistingWorkPolicy.KEEP,
+                    guardianRequest
+                )
+            } else if (stillCurrent) {
+                recordIncidentAsync(
+                    type = com.sysadmindoc.alarmclock.worker.GuardianWorker.INCIDENT_TYPE_GUARDIAN,
+                    status = AlarmIncidentEvent.STATUS_SKIPPED,
+                    reasonCode = "GUARDIAN_ENQUEUE_UNPROVABLE_IDENTITY",
+                    source = "AlarmService",
+                    alarmId = alarm.id,
+                    fireId = startGen.fireId,
+                    scheduledAt = startGen.scheduledAt
+                )
+            }
         }
     }
 
@@ -2929,6 +3055,7 @@ class AlarmService : Service() {
                     currentActiveNonce = null
                     currentClaimNonce = null
                 }
+                cancelGuardianWork(acceptedGen.alarmId, acceptedGen.scheduledAt)
                 clearAlarmRuntimeState(alarmId)
                 currentWakeConfirmRefireCount = 0
                 currentSnoozeCount = 0
@@ -3083,9 +3210,7 @@ class AlarmService : Service() {
                         return@withContext
                     }
 
-                    if (alarm.guardianEnabled) {
-                        WorkManager.getInstance(applicationContext).cancelUniqueWork("guardian_${alarm.id}")
-                    }
+                    cancelGuardianWork(acceptedGen.alarmId, acceptedGen.scheduledAt)
                     val refireAtSnooze = currentWakeConfirmRefireCount
                     currentWakeConfirmRefireCount = 0
                     if (acceptedGen.alarmId > 0L && acceptedGen.scheduledAt > 0L) {
@@ -3239,6 +3364,7 @@ class AlarmService : Service() {
                     fireId = acceptedGen.fireId,
                     scheduledAt = acceptedGen.scheduledAt
                 )
+                cancelGuardianWork(acceptedGen.alarmId, acceptedGen.scheduledAt)
                 clearAlarmRuntimeState(alarmId)
                 currentWakeConfirmRefireCount = 0
                 currentSnoozeCount = 0
@@ -3370,8 +3496,6 @@ class AlarmService : Service() {
                     currentClaimNonce = null
                 }
 
-                // v1.2.0: Cancel guardian if active (alarm was dismissed in time)
-                WorkManager.getInstance(applicationContext).cancelUniqueWork("guardian_${alarm.id}")
             } else {
                 recordIncident(
                     type = AlarmIncidentEvent.TYPE_USER_ACTION,
@@ -3380,6 +3504,7 @@ class AlarmService : Service() {
                     source = "AlarmService",
                     alarmId = alarmId
                 )
+                cancelGuardianWork(acceptedGen.alarmId, acceptedGen.scheduledAt)
                 clearAlarmRuntimeState(alarmId)
                 currentWakeConfirmRefireCount = 0
                 currentSnoozeCount = 0
@@ -3852,6 +3977,7 @@ class AlarmService : Service() {
                 source = "AlarmService"
             )
             withContext(Dispatchers.Main.immediate) {
+                cancelGuardianWork(alarmId, scheduledAt)
                 clearAlarmRuntimeState(alarmId)
                 alarmScheduler.handleAlarmFired(alarmId, scheduledAt)
             }
@@ -3954,6 +4080,66 @@ class AlarmService : Service() {
 
     private fun clearAlarmRuntimeState(alarmId: Long) =
         AlarmRuntimeState.clear(this, alarmId)
+
+    /**
+     * Occurrence-scoped Guardian cancellation. Cancels the occurrence-bound
+     * unique work (when [scheduledAt] > 0) and any pre-containment legacy
+     * `"guardian_$alarmId"` work, without using tag-wide sweeps so a newer
+     * valid occurrence on the same [alarmId] is never cancelled.
+     */
+    private fun cancelGuardianWork(alarmId: Long, scheduledAt: Long) {
+        if (alarmId <= 0L) return
+        val wm = try {
+            WorkManager.getInstance(applicationContext)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to obtain WorkManager for Guardian cancel (alarmId=$alarmId, scheduledAt=$scheduledAt)", e)
+            recordIncidentAsync(
+                type = com.sysadmindoc.alarmclock.worker.GuardianWorker.INCIDENT_TYPE_GUARDIAN,
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "GUARDIAN_CANCEL_WORKMANAGER_UNAVAILABLE",
+                source = "AlarmService",
+                alarmId = alarmId,
+                scheduledAt = scheduledAt.coerceAtLeast(0L)
+            )
+            return
+        }
+        if (scheduledAt > 0L) {
+            try {
+                wm.cancelUniqueWork(
+                    OwnerWorkIdentity.occurrenceUniqueName(
+                        alarmId,
+                        scheduledAt,
+                        SupportingWorkType.GUARDIAN
+                    )
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to cancel occurrence Guardian work for alarmId=$alarmId scheduledAt=$scheduledAt", e)
+                recordIncidentAsync(
+                    type = com.sysadmindoc.alarmclock.worker.GuardianWorker.INCIDENT_TYPE_GUARDIAN,
+                    status = AlarmIncidentEvent.STATUS_FAILED,
+                    reasonCode = "GUARDIAN_OCCURRENCE_CANCEL_FAILED_${e.javaClass.simpleName}",
+                    source = "AlarmService",
+                    alarmId = alarmId,
+                    scheduledAt = scheduledAt
+                )
+            }
+        }
+        try {
+            wm.cancelUniqueWork(
+                OwnerWorkIdentity.legacyUniqueName(alarmId, SupportingWorkType.GUARDIAN)
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to cancel legacy Guardian work for alarmId=$alarmId", e)
+            recordIncidentAsync(
+                type = com.sysadmindoc.alarmclock.worker.GuardianWorker.INCIDENT_TYPE_GUARDIAN,
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "GUARDIAN_LEGACY_CANCEL_FAILED_${e.javaClass.simpleName}",
+                source = "AlarmService",
+                alarmId = alarmId,
+                scheduledAt = scheduledAt.coerceAtLeast(0L)
+            )
+        }
+    }
 
     private fun showMissedNotification(alarm: Alarm, autoSilenceMinutes: Long = DEFAULT_AUTO_SILENCE_MINUTES) {
         val nm = getSystemService(NotificationManager::class.java)

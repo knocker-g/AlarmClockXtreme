@@ -258,6 +258,7 @@ class ProducerOutcomeAdoptionTest {
 
         val mockScheduler = mockk<AlarmScheduler>(relaxed = true)
         coEvery { mockScheduler.schedule(any()) } returns ScheduleOutcome.Armed(initialId, 1000L)
+        coEvery { mockScheduler.cancelSuspending(any()) } returns true
 
         val viewModel = AlarmListViewModel(
             context = context,
@@ -268,22 +269,56 @@ class ProducerOutcomeAdoptionTest {
             eventRepository = eventRepo
         )
 
-        // Delete alarm first
-        viewModel.deleteAlarm(alarm)
-        // Await canonical ViewModel state ensuring delete completed and undo state is ready
-        withTimeout(2000L) {
-            viewModel.uiState.first { it.undoAlarm?.id == initialId }
-        }
-        assertNull("Alarm MUST be deleted from DB", alarmRepo.getById(initialId))
+        try {
+            // Delete alarm first
+            viewModel.deleteAlarm(alarm)
+            // Await canonical ViewModel state ensuring delete completed and undo state is ready
+            withTimeout(2000L) {
+                viewModel.uiState.first { it.undoAlarm?.id == initialId }
+            }
+            assertNull("Alarm MUST be deleted from DB", alarmRepo.getById(initialId))
 
-        // Undo delete
-        viewModel.undoDelete()
-        // Await committed Room truth through Flow
-        val restoredAlarms = withTimeout(2000L) {
-            alarmRepo.observeAll().first { it.isNotEmpty() }
-        }
+            // Undo delete
+            viewModel.undoDelete()
+            // Await committed Room truth through Flow
+            val restoredAlarms = withTimeout(2000L) {
+                alarmRepo.observeAll().first { it.isNotEmpty() }
+            }
 
-        assertEquals("Alarm MUST be restored in DB", 1, restoredAlarms.size)
-        assertTrue("Restored alarm MUST be enabled", restoredAlarms[0].isEnabled)
+            assertEquals("Alarm MUST be restored in DB", 1, restoredAlarms.size)
+            assertTrue("Restored alarm MUST be enabled", restoredAlarms[0].isEnabled)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `deleteAlarm aborts DB deletion and withholds undo state when cancelSuspending returns false`() = runBlocking {
+        val initialId = alarmRepo.save(Alarm(hour = 9, minute = 15, isEnabled = true))
+        val alarm = alarmRepo.getById(initialId)!!
+
+        val mockScheduler = mockk<AlarmScheduler>(relaxed = true)
+        coEvery { mockScheduler.cancelSuspending(initialId) } returns false
+
+        val viewModel = AlarmListViewModel(
+            context = context,
+            repository = alarmRepo,
+            scheduler = mockScheduler,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            eventRepository = eventRepo
+        )
+
+        try {
+            viewModel.deleteAlarm(alarm)
+            withTimeout(2000L) {
+                viewModel.feedbackEvents.first()
+            }
+
+            assertNotNull("Alarm MUST remain in DB when cancelSuspending returns false", alarmRepo.getById(initialId))
+            assertNull("undoAlarm MUST NOT be exposed when delete is aborted", viewModel.uiState.value.undoAlarm)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
     }
 }

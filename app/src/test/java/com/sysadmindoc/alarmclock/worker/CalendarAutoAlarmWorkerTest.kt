@@ -48,6 +48,7 @@ class CalendarAutoAlarmWorkerTest {
     fun setUp() {
         repository = mockk(relaxed = true)
         scheduler = mockk(relaxed = true)
+        coEvery { scheduler.cancelSuspending(any()) } returns true
         preferencesManager = mockk()
     }
 
@@ -62,8 +63,8 @@ class CalendarAutoAlarmWorkerTest {
         coVerify(exactly = 1) { repository.delete(match { it.id == 2L }) }
         coVerify(exactly = 1) { repository.delete(match { it.id == 3L }) }
         coVerify(exactly = 0) { repository.delete(match { it.id == 1L }) }
-        verify { scheduler.cancel(2L) }
-        verify { scheduler.cancel(3L) }
+        coVerify { scheduler.cancelSuspending(2L) }
+        coVerify { scheduler.cancelSuspending(3L) }
     }
 
     @Test
@@ -76,7 +77,7 @@ class CalendarAutoAlarmWorkerTest {
         // Disabled, not deleted: the row carries whatever sound and time the
         // user set on it, and turning the feature back on should get those back.
         coVerify { repository.setEnabled(1L, enabled = false, nextTrigger = 0) }
-        verify { scheduler.cancel(1L) }
+        coVerify { scheduler.cancelSuspending(1L) }
         coVerify(exactly = 0) { repository.delete(match { it.id == 1L }) }
     }
 
@@ -90,7 +91,7 @@ class CalendarAutoAlarmWorkerTest {
         worker().doWork()
 
         coVerify(exactly = 0) { repository.delete(theirs) }
-        verify(exactly = 0) { scheduler.cancel(9L) }
+        coVerify(exactly = 0) { scheduler.cancelSuspending(9L) }
         coVerify(exactly = 0) { repository.setEnabled(9L, any(), any()) }
     }
 
@@ -121,6 +122,90 @@ class CalendarAutoAlarmWorkerTest {
         // cleanup does not run either.
         coVerify(exactly = 0) { repository.delete(any()) }
         coVerify(exactly = 0) { repository.setEnabled(any(), any(), any()) }
+    }
+
+    @Test
+    fun `turning feature off does not disable auto-alarm and returns retry when cancelSuspending returns false`() = runBlocking {
+        settings(enabled = false)
+        coEvery { repository.getAll() } returns listOf(auto(id = 1L))
+        coEvery { scheduler.cancelSuspending(1L) } returns false
+
+        val result = worker().doWork()
+
+        assertEquals(Result.retry(), result)
+        coVerify(exactly = 0) { repository.setEnabled(1L, enabled = false, nextTrigger = any()) }
+    }
+
+    @Test
+    fun `event-free tomorrow does not disable auto-alarm and returns retry when cancelSuspending returns false`() = runBlocking {
+        settings(enabled = true)
+        shadowOf(context as Application).grantPermissions(Manifest.permission.READ_CALENDAR)
+        coEvery { repository.getAll() } returns listOf(auto(id = 1L))
+        coEvery { scheduler.cancelSuspending(1L) } returns false
+
+        val result = worker().doWork()
+
+        assertEquals(Result.retry(), result)
+        coVerify(exactly = 0) { repository.setEnabled(1L, enabled = false, nextTrigger = any()) }
+    }
+
+    @Test
+    fun `stray cleanup does not delete stray row and returns retry when cancelSuspending returns false`() = runBlocking {
+        settings(enabled = false)
+        coEvery { repository.getAll() } returns listOf(auto(id = 1L).copy(isEnabled = false), auto(id = 2L))
+        coEvery { scheduler.cancelSuspending(2L) } returns false
+
+        val result = worker().doWork()
+
+        assertEquals(Result.retry(), result)
+        coVerify(exactly = 0) { repository.delete(match { it.id == 2L }) }
+    }
+
+    @Test
+    fun `tomorrow event re-arm aborts save and schedule and returns retry when cancelSuspending returns false`() = runBlocking {
+        settings(enabled = true)
+        shadowOf(context as Application).grantPermissions(Manifest.permission.READ_CALENDAR)
+        val tomorrowStartMs = java.time.LocalDate.now().plusDays(1)
+            .atTime(9, 0)
+            .atZone(java.time.ZoneId.systemDefault())
+            .toInstant()
+            .toEpochMilli()
+        val cursor = android.database.MatrixCursor(
+            arrayOf(
+                android.provider.CalendarContract.Instances.BEGIN,
+                android.provider.CalendarContract.Instances.TITLE,
+                android.provider.CalendarContract.Instances.ALL_DAY,
+                android.provider.CalendarContract.Instances.EVENT_LOCATION
+            )
+        ).apply {
+            addRow(arrayOf(tomorrowStartMs, "Standup", 0, ""))
+        }
+        val fakeProvider = object : android.content.ContentProvider() {
+            override fun onCreate() = true
+            override fun query(
+                uri: android.net.Uri,
+                projection: Array<out String>?,
+                selection: String?,
+                selectionArgs: Array<out String>?,
+                sortOrder: String?
+            ): android.database.Cursor = cursor
+            override fun getType(uri: android.net.Uri): String? = null
+            override fun insert(uri: android.net.Uri, values: android.content.ContentValues?): android.net.Uri? = null
+            override fun delete(uri: android.net.Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
+            override fun update(uri: android.net.Uri, values: android.content.ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int = 0
+        }
+        org.robolectric.shadows.ShadowContentResolver.registerProviderInternal(
+            android.provider.CalendarContract.AUTHORITY,
+            fakeProvider
+        )
+        coEvery { repository.getAll() } returns listOf(auto(id = 1L))
+        coEvery { scheduler.cancelSuspending(1L) } returns false
+
+        val result = worker().doWork()
+
+        assertEquals(Result.retry(), result)
+        coVerify(exactly = 0) { repository.save(any()) }
+        coVerify(exactly = 0) { scheduler.schedule(any(), any(), any()) }
     }
 
     private fun settings(enabled: Boolean) {

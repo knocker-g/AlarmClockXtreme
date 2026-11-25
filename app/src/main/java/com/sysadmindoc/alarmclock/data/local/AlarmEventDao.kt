@@ -81,6 +81,13 @@ interface AlarmEventDao {
     suspend fun countDismissedByOccurrence(alarmId: Long, scheduledAt: Long): Int
 
     @Query(
+        "SELECT COUNT(*) FROM alarm_events " +
+            "WHERE alarmId = :alarmId AND scheduledTime = :scheduledAt " +
+            "AND action IN ('DISMISSED', 'SNOOZED', 'MISSED', 'SKIPPED')"
+    )
+    suspend fun countTerminalByOccurrence(alarmId: Long, scheduledAt: Long): Int
+
+    @Query(
         "SELECT DISTINCT scheduledTime FROM alarm_events " +
             "WHERE alarmId = :alarmId AND action = 'DISMISSED' AND scheduledTime > 0 " +
             "ORDER BY firedAt DESC LIMIT 5"

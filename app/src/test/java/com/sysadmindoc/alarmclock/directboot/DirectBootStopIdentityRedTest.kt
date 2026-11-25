@@ -8,6 +8,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -341,5 +342,79 @@ class DirectBootStopIdentityRedTest {
         val result = service.onStartCommand(stopLegacy, 0, 2)
         assertEquals(android.app.Service.START_NOT_STICKY, result)
         assertTrue("Legacy V1 STOP MUST stop active V1 service", shadowOf(service).isStoppedBySelf)
+    }
+
+    @Test
+    fun a5_s7_legacyV1Alarm_mismatchedTriggerStopAndCrossLaneV2Stop_rejected() {
+        val v1Trigger = baseTime + 40_000L
+        DirectBootServiceTestFixture.seedActiveState(
+            service = service,
+            context = context,
+            alarmId = 401L,
+            triggerTime = v1Trigger,
+            generation = 0,
+            instanceToken = "",
+            restoreEpoch = 0L
+        )
+
+        // Case 1: ACTION_STOP with explicit mismatched EXTRA_TRIGGER_TIME MUST be rejected
+        val mismatchedTrigStop = Intent(context, DirectBootAlarmService::class.java).apply {
+            action = DirectBootAlarmService.ACTION_STOP
+            putExtra(DirectBootAlarmReceiver.EXTRA_ALARM_ID, 401L)
+            putExtra(DirectBootAlarmReceiver.EXTRA_TRIGGER_TIME, v1Trigger + 60_000L)
+        }
+        service.onStartCommand(mismatchedTrigStop, 0, 2)
+        assertFalse(
+            "Legacy V1 STOP with mismatched triggerTime MUST NOT stop active V1 service",
+            shadowOf(service).isStoppedBySelf
+        )
+        assertEquals(401L, DirectBootServiceTestFixture.currentAlarmId(service))
+
+        // Case 2: Cross-lane V2-scoped ACTION_STOP targeting active V1 alarm MUST be rejected
+        val crossLaneStop = Intent(context, DirectBootAlarmService::class.java).apply {
+            action = DirectBootAlarmService.ACTION_STOP
+            putExtra(DirectBootAlarmReceiver.EXTRA_ALARM_ID, 401L)
+            putExtra(DirectBootAlarmReceiver.EXTRA_TRIGGER_TIME, v1Trigger)
+            putExtra(DirectBootV2NormalIntentIdentity.EXTRA_GENERATION, 1)
+            putExtra(DirectBootV2NormalIntentIdentity.EXTRA_INSTANCE_TOKEN, "tok-v2-cross")
+            putExtra(DirectBootV2NormalIntentIdentity.EXTRA_RESTORE_EPOCH, 2L)
+        }
+        service.onStartCommand(crossLaneStop, 0, 3)
+        assertFalse(
+            "Cross-lane V2-scoped STOP MUST NOT stop active V1 service",
+            shadowOf(service).isStoppedBySelf
+        )
+        assertEquals(401L, DirectBootServiceTestFixture.currentAlarmId(service))
+    }
+
+    @Test
+    fun b_c7_01_sharedOutputAuthorityGateEnabled_missingClaimNonce_failsClosed() {
+        val gate = com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate.getInstance(context)
+        val previousEnabled = gate.isEnabled
+        gate.isEnabled = true
+        try {
+            val startLegacyWithoutNonce = Intent(context, DirectBootAlarmService::class.java).apply {
+                action = DirectBootAlarmService.ACTION_START
+                putExtra(DirectBootAlarmReceiver.EXTRA_ALARM_ID, 402L)
+                putExtra(DirectBootAlarmReceiver.EXTRA_TRIGGER_TIME, baseTime + 50_000L)
+                putExtra(DirectBootV2NormalIntentIdentity.EXTRA_GENERATION, 0)
+                putExtra(DirectBootV2NormalIntentIdentity.EXTRA_INSTANCE_TOKEN, "")
+                putExtra(DirectBootV2NormalIntentIdentity.EXTRA_RESTORE_EPOCH, 0L)
+            }
+            service.onStartCommand(startLegacyWithoutNonce, 0, 1)
+            assertEquals(
+                "When SharedOutputAuthorityGate is enabled, DirectBootAlarmService MUST reject ACTION_START without claimNonce",
+                -1L,
+                DirectBootServiceTestFixture.currentAlarmId(service)
+            )
+            assertNull(
+                "When SharedOutputAuthorityGate rejects ACTION_START, arbiter activeHandle MUST stay null",
+                gate.arbiter.activeHandle
+            )
+        } finally {
+            gate.isEnabled = previousEnabled
+            gate.arbiter.clearForTesting()
+            DirectBootLegacyClaimStore.prefs(context).edit().clear().commit()
+        }
     }
 }

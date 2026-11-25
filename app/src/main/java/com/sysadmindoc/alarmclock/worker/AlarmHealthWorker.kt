@@ -12,6 +12,7 @@ import android.os.PowerManager
 import androidx.annotation.StringRes
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.core.os.UserManagerCompat
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
@@ -21,6 +22,8 @@ import androidx.work.WorkerParameters
 import com.sysadmindoc.alarmclock.MainActivity
 import com.sysadmindoc.alarmclock.R
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
+import com.sysadmindoc.alarmclock.directboot.DirectBootEventConsumerEngine
+import com.sysadmindoc.alarmclock.directboot.DirectBootUnlockReceiver
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.domain.ScheduleAuthorityReconciler
 import com.sysadmindoc.alarmclock.service.AlarmService
@@ -63,6 +66,35 @@ class AlarmHealthWorker @AssistedInject constructor(
             android.util.Log.w("AlarmHealthWorker", "Pending WakeConfirm recovery failed", e)
         }
 
+        try {
+            if (UserManagerCompat.isUserUnlocked(applicationContext)) {
+                val deContext = applicationContext.createDeviceProtectedStorageContext()
+                if (DirectBootUnlockReceiver.hasPendingTakeoverRecords(deContext, applicationContext)) {
+                    val recoveryResult = DirectBootUnlockReceiver.runUnlockedRecovery(applicationContext)
+                    android.util.Log.i("AlarmHealthWorker", "DirectBoot takeover recovery executed: $recoveryResult")
+                    if (recoveryResult is DirectBootEventConsumerEngine.ConsumerExecutionResult.IncompleteRetirement ||
+                        DirectBootUnlockReceiver.hasPendingTakeoverRecords(deContext, applicationContext)
+                    ) {
+                        if (runAttemptCount < MAX_ATTEMPTS) {
+                            return Result.retry()
+                        } else {
+                            android.util.Log.w(
+                                "AlarmHealthWorker",
+                                "DirectBoot takeover recovery reached MAX_ATTEMPTS ($MAX_ATTEMPTS); settling to preserve evidence for periodic sweep"
+                            )
+                        }
+                    }
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            android.util.Log.w("AlarmHealthWorker", "DirectBoot takeover recovery attempt failed", e)
+            if (runAttemptCount < MAX_ATTEMPTS) {
+                return Result.retry()
+            }
+        }
+
         val hasEnabledAlarms = alarmRepository.getEnabled().isNotEmpty()
         if (!hasEnabledAlarms) {
             cancelWarningNotification()
@@ -82,7 +114,8 @@ class AlarmHealthWorker @AssistedInject constructor(
             alarmManager?.canScheduleExactAlarms() != false
         } else true
 
-        if (exactAlarmsAllowed) {
+        val skipReschedule = inputData.getBoolean(KEY_SKIP_RESCHEDULE, false)
+        if (exactAlarmsAllowed && !skipReschedule) {
             try {
                 alarmScheduler.rescheduleAllInBatches(forceRecalculate = false)
             } catch (e: Exception) {
@@ -169,12 +202,21 @@ class AlarmHealthWorker @AssistedInject constructor(
         // collided with a running timer's notification at timer id 2001).
         const val NOTIFICATION_ID = 6_503
         const val IMMEDIATE_WORK_NAME = "alarm_health_check_now"
+        const val KEY_SKIP_RESCHEDULE = "skip_reschedule"
+        const val MAX_ATTEMPTS = 3
 
         fun enqueueImmediate(context: Context) {
+            val request = OneTimeWorkRequestBuilder<AlarmHealthWorker>()
+                .setInputData(
+                    androidx.work.Data.Builder()
+                        .putBoolean(KEY_SKIP_RESCHEDULE, true)
+                        .build()
+                )
+                .build()
             WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
                 IMMEDIATE_WORK_NAME,
                 ExistingWorkPolicy.REPLACE,
-                OneTimeWorkRequestBuilder<AlarmHealthWorker>().build()
+                request
             )
         }
     }

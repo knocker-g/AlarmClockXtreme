@@ -78,6 +78,9 @@ class ScheduleAuthorityReconcilerTest {
             .addCallback(AlarmDatabase.DATABASE_CALLBACK)
             .build()
         authorityDao = database.scheduleAuthorityDao()
+        runBlocking {
+            authorityDao.insertMeta(ScheduleAuthorityMeta(id = 1, restoreEpoch = 100L, bootstrapState = "INITIALIZED"))
+        }
         alarmRepository = mockk()
         calculator = mockk()
         localReader = mockk()

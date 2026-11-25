@@ -148,6 +148,11 @@ class AlarmClockApp : Application(), Configuration.Provider {
             healthCheck
         )
 
+        val deContext = createDeviceProtectedStorageContext()
+        if (com.sysadmindoc.alarmclock.directboot.DirectBootUnlockReceiver.hasPendingTakeoverRecords(deContext, this)) {
+            AlarmHealthWorker.enqueueImmediate(this)
+        }
+
         // v1.10.6: Keep the first-meeting auto-alarm responsive without
         // running periodic calendar reads when the feature is disabled.
         appScope.launch {

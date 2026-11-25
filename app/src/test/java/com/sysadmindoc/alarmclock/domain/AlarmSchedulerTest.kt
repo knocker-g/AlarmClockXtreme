@@ -27,6 +27,7 @@ import io.mockk.verify
 import java.time.DayOfWeek
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -644,6 +645,11 @@ class AlarmSchedulerTest {
         )
 
         val mockDao = mockk<com.sysadmindoc.alarmclock.data.local.ScheduleAuthorityDao>(relaxed = true)
+        coEvery { mockDao.getMetaById(1) } returns com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta(
+            id = 1,
+            restoreEpoch = 100L,
+            bootstrapState = "COMPLETED"
+        )
         coEvery { mockDao.getAuthorityByAlarmId(alarmId) } answers { currentAuth }
         coEvery { mockDao.casClaimAuthority(any(), any(), any(), any(), any(), any(), any(), any()) } answers {
             val expRev = arg<Long>(3)
@@ -678,15 +684,26 @@ class AlarmSchedulerTest {
             currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
         }
         coEvery { repository.casUpdateNextTriggerInitialWithAuthority(any(), any(), any(), any(), any(), any()) } answers {
-            val newTrigger = secondArg<Long>()
-            currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
-            1
+            val expRev = arg<Long>(2)
+            if (currentAuth.scheduleRevision == expRev) {
+                val newTrigger = secondArg<Long>()
+                currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
+                1
+            } else {
+                0
+            }
         }
         coEvery { repository.casUpdateNextTriggerWithStrictAuthority(any(), any(), any(), any(), any(), any(), any()) } returns 1
         coEvery { repository.casUpdateNextTrigger(any(), any(), any()) } returns 1
 
         val fakeOsSlot = mutableListOf<String>()
+        val barrierB = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val barrierEnteredB = kotlinx.coroutines.CompletableDeferred<Unit>()
         val realMainSlotApplier = MainSlotApplier { auth ->
+            if (auth.desiredTriggerMillis == triggerTimeB) {
+                barrierEnteredB.complete(Unit)
+                barrierB.await()
+            }
             fakeOsSlot.add("${auth.desiredOperation}_${auth.desiredTriggerMillis}")
             true
         }
@@ -718,17 +735,22 @@ class AlarmSchedulerTest {
         val capturedRevisionA = originAuthA!!.scheduleRevision
         assertEquals(1L, capturedRevisionA)
 
-        // Pause operation A before Owner admission via test barrier
-        val barrierA = kotlinx.coroutines.CompletableDeferred<Unit>()
-        val barrierEnteredA = kotlinx.coroutines.CompletableDeferred<Unit>()
-        schedulerWithOwner.testOnPreOsRegistrationBarrier = { id, trigger ->
-            if (id == alarmId && trigger == triggerTimeA) {
-                barrierEnteredA.complete(Unit)
-                barrierA.await()
-            }
+        // Step 2: Operation B originates, captures origin-bound revision 1L, and acquires L2 slot lock first
+        val originAuthB = repository.getAuthorityByAlarmId(alarmId)
+        val capturedRevisionB = originAuthB!!.scheduleRevision
+        var resB: OwnerResult? = null
+        val jobB = launch {
+            resB = realOwner.executeOperation(
+                alarmId = alarmId,
+                desiredOperation = "SET",
+                desiredTriggerMillis = triggerTimeB,
+                actionKey = "act-B",
+                expectedRevision = capturedRevisionB
+            )
         }
+        barrierEnteredB.await()
 
-        // Launch operation A on background coroutine
+        // Launch stale Operation A concurrently while B holds shared L2 slot lock -> A MUST serialize on L2
         var resultA: ScheduleOutcome? = null
         val jobA = launch {
             resultA = schedulerWithOwner.scheduleAt(
@@ -740,29 +762,22 @@ class AlarmSchedulerTest {
                 expectedDefinitionRevision = originAuthA.definitionRevision
             )
         }
+        runCurrent()
+        assertFalse("Operation A MUST wait on shared L2 slot lock while B holds it", jobA.isCompleted)
 
-        barrierEnteredA.await() // Wait for A to enter barrier
-
-        // Step 2: Operation B originates, captures origin-bound revision 1L, and executes SET(B) -> advances DB to 2L
-        val originAuthB = repository.getAuthorityByAlarmId(alarmId)
-        val capturedRevisionB = originAuthB!!.scheduleRevision
-        val resB = realOwner.executeOperation(
-            alarmId = alarmId,
-            desiredOperation = "SET",
-            desiredTriggerMillis = triggerTimeB,
-            actionKey = "act-B",
-            expectedRevision = capturedRevisionB
-        )
-        assertTrue("Operation B MUST succeed and advance scheduleRevision to 2L", resB is OwnerResult.OsAccepted)
-
-        // Unblock A
-        barrierA.complete(Unit)
+        // Unblock B -> advances DB to 2L, then A enters L2 and is rejected
+        barrierB.complete(Unit)
         advanceUntilIdle()
+        jobB.join()
         jobA.join()
 
-        // Step 3: Assert A is REJECTED
+        assertTrue("Operation B MUST succeed and advance scheduleRevision to 2L", resB is OwnerResult.OsAccepted)
+
+        // Step 3: Assert A is REJECTED by both Scheduler and direct Owner invocation
         assertNotNull(resultA)
         assertFalse("Stale operation A MUST be rejected when B became current", resultA!!.isArmed)
+        val directStaleA = realOwner.executeOperation(alarmId, "SET", triggerTimeA, "act-A-stale", expectedRevision = capturedRevisionA)
+        assertTrue("Direct stale Owner call for A MUST return Superseded", directStaleA is OwnerResult.Superseded)
 
         // Step 4: Verify Room DB authority and fake OS slot remain B (90000L)
         val finalAuth = repository.getAuthorityByAlarmId(alarmId)
@@ -786,6 +801,13 @@ class AlarmSchedulerTest {
         ).allowMainThreadQueries().build()
 
         val realDao = roomDb.scheduleAuthorityDao()
+        realDao.insertMeta(
+            com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta(
+                id = 1,
+                restoreEpoch = 100L,
+                bootstrapState = "INITIALIZED"
+            )
+        )
 
         // Insert initial ScheduleAuthority row into actual Room SQLite table
         realDao.insertAuthority(
@@ -804,7 +826,13 @@ class AlarmSchedulerTest {
         )
 
         val fakeOsSlot = mutableListOf<String>()
+        val barrierB = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val barrierEnteredB = kotlinx.coroutines.CompletableDeferred<Unit>()
         val realMainSlotApplier = MainSlotApplier { auth ->
+            if (auth.desiredTriggerMillis == triggerTimeB) {
+                barrierEnteredB.complete(Unit)
+                barrierB.await()
+            }
             fakeOsSlot.add("${auth.desiredOperation}_${auth.desiredTriggerMillis}")
             true
         }
@@ -830,10 +858,15 @@ class AlarmSchedulerTest {
             val newTrigger = secondArg<Long>()
             currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
         }
-        coEvery { repository.casUpdateNextTriggerInitialWithAuthority(any(), any(), any(), any(), any(), any()) } answers {
-            val newTrigger = secondArg<Long>()
-            currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
-            1
+        coEvery { repository.casUpdateNextTriggerInitialWithAuthority(any(), any(), any(), any(), any(), any()) } coAnswers {
+            val expRev = arg<Long>(2)
+            if (realDao.getAuthorityByAlarmId(alarmId)?.scheduleRevision == expRev) {
+                val newTrigger = secondArg<Long>()
+                currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
+                1
+            } else {
+                0
+            }
         }
         coEvery { repository.casUpdateNextTriggerWithStrictAuthority(any(), any(), any(), any(), any(), any(), any()) } returns 1
         coEvery { repository.casUpdateNextTrigger(any(), any(), any()) } returns 1
@@ -856,17 +889,23 @@ class AlarmSchedulerTest {
         val capturedRevisionA = originAuthA!!.scheduleRevision
         assertEquals(1L, capturedRevisionA)
 
-        // Pause operation A before Owner admission via barrier
-        val barrierA = kotlinx.coroutines.CompletableDeferred<Unit>()
-        val barrierEnteredA = kotlinx.coroutines.CompletableDeferred<Unit>()
-        schedulerWithOwner.testOnPreOsRegistrationBarrier = { id, trigger ->
-            if (id == alarmId && trigger == triggerTimeA) {
-                barrierEnteredA.complete(Unit)
-                barrierA.await()
-            }
+        // Step 2: Operation B originates, captures revision 1L from real Room DB, and enters L2 slot lock first
+        val originAuthB = realDao.getAuthorityByAlarmId(alarmId)
+        val capturedRevisionB = originAuthB!!.scheduleRevision
+        currentAlarm = currentAlarm.copy(nextTriggerTime = triggerTimeB)
+        var resB: OwnerResult? = null
+        val jobB = launch {
+            resB = realOwner.executeOperation(
+                alarmId = alarmId,
+                desiredOperation = "SET",
+                desiredTriggerMillis = triggerTimeB,
+                actionKey = "act-B",
+                expectedRevision = capturedRevisionB
+            )
         }
+        barrierEnteredB.await()
 
-        // Launch operation A on background coroutine
+        // Launch stale Operation A concurrently while B holds shared L2 slot lock
         var resultA: ScheduleOutcome? = null
         val jobA = launch {
             resultA = schedulerWithOwner.scheduleAt(
@@ -878,30 +917,22 @@ class AlarmSchedulerTest {
                 expectedDefinitionRevision = originAuthA.definitionRevision
             )
         }
+        runCurrent()
+        assertFalse("Operation A MUST wait on shared L2 slot lock while B holds it", jobA.isCompleted)
 
-        barrierEnteredA.await() // Wait for A to reach barrier
-
-        // Step 2: Operation B originates, captures revision 1L from real Room DB, and executes SET(B) -> advances real Room DB to 2L
-        val originAuthB = realDao.getAuthorityByAlarmId(alarmId)
-        val capturedRevisionB = originAuthB!!.scheduleRevision
-        currentAlarm = currentAlarm.copy(nextTriggerTime = triggerTimeB)
-        val resB = realOwner.executeOperation(
-            alarmId = alarmId,
-            desiredOperation = "SET",
-            desiredTriggerMillis = triggerTimeB,
-            actionKey = "act-B",
-            expectedRevision = capturedRevisionB
-        )
-        assertTrue("Operation B MUST succeed in real Room DB and advance scheduleRevision to 2L", resB is OwnerResult.OsAccepted)
-
-        // Unblock A
-        barrierA.complete(Unit)
+        // Unblock B -> settles rev 2L in real Room DB, then A enters L2 and is rejected
+        barrierB.complete(Unit)
         advanceUntilIdle()
+        jobB.join()
         jobA.join()
 
-        // Step 3: Assert A is REJECTED by real Room DAO CAS
+        assertTrue("Operation B MUST succeed in real Room DB and advance scheduleRevision to 2L", resB is OwnerResult.OsAccepted)
+
+        // Step 3: Assert A is REJECTED by both Scheduler and real Room DAO CAS
         assertNotNull(resultA)
-        assertFalse("Stale operation A MUST be rejected by real Room DAO CAS when B became current", resultA!!.isArmed)
+        assertFalse("Stale operation A MUST be rejected when B became current", resultA!!.isArmed)
+        val directStaleA = realOwner.executeOperation(alarmId, "SET", triggerTimeA, "act-A-stale", expectedRevision = capturedRevisionA)
+        assertTrue("Stale operation A MUST be rejected by real Room DAO CAS", directStaleA is OwnerResult.Superseded)
 
         // Step 4: Verify real Room DB authority and fake OS slot remain B (triggerTimeB) and currentAlarm nextTriggerTime is preserved
         val finalAuth = realDao.getAuthorityByAlarmId(alarmId)
@@ -928,6 +959,13 @@ class AlarmSchedulerTest {
         ).allowMainThreadQueries().build()
 
         val realDao = roomDb.scheduleAuthorityDao()
+        realDao.insertMeta(
+            com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta(
+                id = 1,
+                restoreEpoch = 100L,
+                bootstrapState = "INITIALIZED"
+            )
+        )
 
         // Insert initial ScheduleAuthority row into actual Room SQLite table
         realDao.insertAuthority(
@@ -946,7 +984,13 @@ class AlarmSchedulerTest {
         )
 
         val fakeOsSlot = mutableListOf<String>()
+        val barrierB = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val barrierEnteredB = kotlinx.coroutines.CompletableDeferred<Unit>()
         val realMainSlotApplier = MainSlotApplier { auth ->
+            if (auth.desiredTriggerMillis == triggerTimeB) {
+                barrierEnteredB.complete(Unit)
+                barrierB.await()
+            }
             fakeOsSlot.add("${auth.desiredOperation}_${auth.desiredTriggerMillis}")
             true
         }
@@ -970,10 +1014,15 @@ class AlarmSchedulerTest {
             val newTrigger = secondArg<Long>()
             currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
         }
-        coEvery { repository.casUpdateNextTriggerInitialWithAuthority(any(), any(), any(), any(), any(), any()) } answers {
-            val newTrigger = secondArg<Long>()
-            currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
-            1
+        coEvery { repository.casUpdateNextTriggerInitialWithAuthority(any(), any(), any(), any(), any(), any()) } coAnswers {
+            val expRev = arg<Long>(2)
+            if (realDao.getAuthorityByAlarmId(alarmId)?.scheduleRevision == expRev) {
+                val newTrigger = secondArg<Long>()
+                currentAlarm = currentAlarm.copy(nextTriggerTime = newTrigger)
+                1
+            } else {
+                0
+            }
         }
         coEvery { repository.casUpdateNextTriggerWithStrictAuthority(any(), any(), any(), any(), any(), any(), any()) } returns 1
         coEvery { repository.casUpdateNextTrigger(any(), any(), any()) } returns 1
@@ -996,15 +1045,21 @@ class AlarmSchedulerTest {
         val capturedRevisionA = originAuthA!!.scheduleRevision
         assertEquals(1L, capturedRevisionA)
 
-        // Pause operation A before OS registration via barrier
-        val barrierA = kotlinx.coroutines.CompletableDeferred<Unit>()
-        val barrierEnteredA = kotlinx.coroutines.CompletableDeferred<Unit>()
-        schedulerWithOwner.testOnPreOsRegistrationBarrier = { id, trigger ->
-            if (id == alarmId && trigger == triggerTimeA) {
-                barrierEnteredA.complete(Unit)
-                barrierA.await()
-            }
+        // Step 2: Operation B (earlier trigger 20s) originates, captures revision 1L, and enters L2 slot lock first
+        val originAuthB = realDao.getAuthorityByAlarmId(alarmId)
+        val capturedRevisionB = originAuthB!!.scheduleRevision
+        currentAlarm = currentAlarm.copy(nextTriggerTime = triggerTimeB)
+        var resB: OwnerResult? = null
+        val jobB = launch {
+            resB = realOwner.executeOperation(
+                alarmId = alarmId,
+                desiredOperation = "SET",
+                desiredTriggerMillis = triggerTimeB,
+                actionKey = "act-B-earlier",
+                expectedRevision = capturedRevisionB
+            )
         }
+        barrierEnteredB.await()
 
         var resultA: ScheduleOutcome? = null
         val jobA = launch {
@@ -1017,30 +1072,22 @@ class AlarmSchedulerTest {
                 expectedDefinitionRevision = originAuthA.definitionRevision
             )
         }
+        runCurrent()
+        assertFalse("Operation A MUST wait on shared L2 slot lock while B holds it", jobA.isCompleted)
 
-        barrierEnteredA.await() // Wait for A to reach barrier
-
-        // Step 2: Operation B (earlier trigger 20s) originates, captures revision 1L, and executes SET(B) -> advances real Room DB to 2L
-        val originAuthB = realDao.getAuthorityByAlarmId(alarmId)
-        val capturedRevisionB = originAuthB!!.scheduleRevision
-        currentAlarm = currentAlarm.copy(nextTriggerTime = triggerTimeB)
-        val resB = realOwner.executeOperation(
-            alarmId = alarmId,
-            desiredOperation = "SET",
-            desiredTriggerMillis = triggerTimeB,
-            actionKey = "act-B-earlier",
-            expectedRevision = capturedRevisionB
-        )
-        assertTrue("Operation B (earlier trigger) MUST succeed in real Room DB and advance scheduleRevision to 2L", resB is OwnerResult.OsAccepted)
-
-        // Unblock A
-        barrierA.complete(Unit)
+        // Unblock B -> settles rev 2L in real Room DB, then A enters L2 and is rejected
+        barrierB.complete(Unit)
         advanceUntilIdle()
+        jobB.join()
         jobA.join()
+
+        assertTrue("Operation B (earlier trigger) MUST succeed in real Room DB and advance scheduleRevision to 2L", resB is OwnerResult.OsAccepted)
 
         // Step 3: Assert A is REJECTED
         assertNotNull(resultA)
         assertFalse("Stale operation A MUST be rejected when B became current", resultA!!.isArmed)
+        val directStaleA = realOwner.executeOperation(alarmId, "SET", triggerTimeA, "act-A-stale-earlier", expectedRevision = capturedRevisionA)
+        assertTrue("Stale operation A MUST be rejected by real Room DAO CAS", directStaleA is OwnerResult.Superseded)
 
         // Step 4: Verify real Room DB authority and fake OS slot remain B's earlier trigger (triggerTimeB) and scheduleRevision 2L
         val finalAuth = realDao.getAuthorityByAlarmId(alarmId)
@@ -1404,6 +1451,712 @@ class AlarmSchedulerTest {
 
         assertTrue("scheduleAt MUST succeed under LEGACY_ONLY route without expectedRevision", legacyScheduled.isArmed)
         coVerify { repository.updateNextTrigger(alarmId, triggerTime) }
+    }
+
+    @Test
+    fun `RED-C41-01 - snooze rejects concurrent ScheduleAuthority update under LEGACY_ONLY`() = runTest {
+        val alarmId = 951L
+        val now = System.currentTimeMillis()
+        val triggerTime = now + 600_000L
+        val snoozeAtMillis = now + 900_000L
+
+        val roomDb = androidx.room.Room.inMemoryDatabaseBuilder(
+            context,
+            com.sysadmindoc.alarmclock.data.local.AlarmDatabase::class.java
+        ).allowMainThreadQueries().build()
+
+        try {
+            val realDao = roomDb.scheduleAuthorityDao()
+            realDao.insertMeta(
+                com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta(
+                    id = 1,
+                    restoreEpoch = 100L,
+                    bootstrapState = "INITIALIZED"
+                )
+            )
+            val realRepo = AlarmRepository(
+                dao = roomDb.alarmDao(),
+                groupDao = roomDb.alarmGroupDao(),
+                database = roomDb
+            )
+            val savedId = realRepo.save(
+                Alarm(
+                    hour = 7,
+                    minute = 30,
+                    label = "Snooze Race",
+                    isEnabled = true,
+                    repeatDays = setOf(DayOfWeek.MONDAY),
+                    nextTriggerTime = triggerTime
+                )
+            )
+            val seededAuth = realDao.getAuthorityByAlarmId(savedId)!!
+            val realAm = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+            val shadowAm = org.robolectric.Shadows.shadowOf(realAm)
+            shadowAm.scheduledAlarms.clear()
+
+            val legacyRoute = mockk<ProductionSchedulingRouteAuthority>()
+            every { legacyRoute.isOwnerRouteActive() } returns false
+
+            val localScheduler = AlarmScheduler(
+                context = context,
+                repository = realRepo,
+                calculator = calculator,
+                preferencesManager = preferencesManager,
+                holidayRepository = holidayRepository,
+                alarmIncidentRepository = incidentRepository,
+                weatherRepository = weatherRepository,
+                routeAuthority = legacyRoute
+            )
+
+            // Part A: scheduleSnooze hits concurrent ScheduleAuthority mutation at pre-OS barrier
+            localScheduler.testOnPreOsRegistrationBarrier = { id, _ ->
+                if (id == savedId) {
+                    val current = realDao.getAuthorityByAlarmId(savedId)!!
+                    realDao.insertAuthority(
+                        current.copy(
+                            scheduleRevision = current.scheduleRevision + 1L,
+                            instanceToken = "tok-snooze-edited"
+                        )
+                    )
+                }
+            }
+
+            val alarmBeforeSnooze = realRepo.getById(savedId)!!
+            val snoozeOutcome = localScheduler.scheduleSnooze(alarmBeforeSnooze, customMinutes = 10)
+            assertFalse(
+                "RED-C41-01A: scheduleSnooze MUST reject concurrent ScheduleAuthority change under LEGACY_ONLY",
+                snoozeOutcome.isArmed
+            )
+            assertTrue(snoozeOutcome is ScheduleOutcome.RegistrationFailed)
+            assertEquals("OS AlarmManager MUST remain unarmed after snooze authority race", 0, shadowAm.scheduledAlarms.size)
+
+            // Part B: scheduleSnoozeAt receives stale expectedRevision = 1L while DB is already at rev 2L
+            localScheduler.testOnPreOsRegistrationBarrier = null
+            val staleAtOutcome = localScheduler.scheduleSnoozeAt(
+                alarm = alarmBeforeSnooze,
+                snoozeAtMillis = snoozeAtMillis,
+                expectedRevision = seededAuth.scheduleRevision
+            )
+            assertFalse(
+                "RED-C41-01B: scheduleSnoozeAt MUST reject stale expectedRevision under LEGACY_ONLY",
+                staleAtOutcome.isArmed
+            )
+            assertTrue(staleAtOutcome is ScheduleOutcome.RegistrationFailed)
+            assertEquals("OS AlarmManager MUST remain unarmed on stale scheduleSnoozeAt", 0, shadowAm.scheduledAlarms.size)
+        } finally {
+            roomDb.close()
+        }
+    }
+
+    @Test
+    fun `RED-C41-02 - reconcileRegistration rejects concurrent ScheduleAuthority update under LEGACY_ONLY`() = runTest {
+        val alarmId = 952L
+        val now = System.currentTimeMillis()
+        val triggerTime = now + 600_000L
+        val targetTrigger = now + 1_200_000L
+
+        val roomDb = androidx.room.Room.inMemoryDatabaseBuilder(
+            context,
+            com.sysadmindoc.alarmclock.data.local.AlarmDatabase::class.java
+        ).allowMainThreadQueries().build()
+
+        try {
+            val realDao = roomDb.scheduleAuthorityDao()
+            realDao.insertMeta(
+                com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta(
+                    id = 1,
+                    restoreEpoch = 100L,
+                    bootstrapState = "INITIALIZED"
+                )
+            )
+            val realRepo = AlarmRepository(
+                dao = roomDb.alarmDao(),
+                groupDao = roomDb.alarmGroupDao(),
+                database = roomDb
+            )
+            val savedId = realRepo.save(
+                Alarm(
+                    hour = 8,
+                    minute = 0,
+                    label = "Reconcile Race",
+                    isEnabled = true,
+                    repeatDays = setOf(DayOfWeek.TUESDAY),
+                    nextTriggerTime = triggerTime
+                )
+            )
+            val realAm = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+            val shadowAm = org.robolectric.Shadows.shadowOf(realAm)
+            shadowAm.scheduledAlarms.clear()
+
+            val legacyRoute = mockk<ProductionSchedulingRouteAuthority>()
+            every { legacyRoute.isOwnerRouteActive() } returns false
+
+            val localScheduler = AlarmScheduler(
+                context = context,
+                repository = realRepo,
+                calculator = calculator,
+                preferencesManager = preferencesManager,
+                holidayRepository = holidayRepository,
+                alarmIncidentRepository = incidentRepository,
+                weatherRepository = weatherRepository,
+                routeAuthority = legacyRoute
+            )
+
+            localScheduler.testOnPreOsRegistrationBarrier = { id, _ ->
+                if (id == savedId) {
+                    val current = realDao.getAuthorityByAlarmId(savedId)!!
+                    realDao.insertAuthority(
+                        current.copy(
+                            scheduleRevision = current.scheduleRevision + 1L,
+                            instanceToken = "tok-reconcile-edited"
+                        )
+                    )
+                }
+            }
+
+            val originAlarm = realRepo.getById(savedId)!!
+            val outcome = localScheduler.reconcileRegistration(originAlarm, targetTrigger, isOsConfirmed = false)
+            assertFalse(
+                "RED-C41-02: reconcileRegistration MUST reject concurrent ScheduleAuthority change under LEGACY_ONLY",
+                outcome.isArmed
+            )
+            assertTrue(outcome is ScheduleOutcome.RegistrationFailed)
+            assertEquals("OS AlarmManager MUST remain unarmed after reconcile authority race", 0, shadowAm.scheduledAlarms.size)
+            assertEquals("nextTriggerTime MUST be rolled back to origin trigger", triggerTime, realRepo.getById(savedId)?.nextTriggerTime)
+        } finally {
+            roomDb.close()
+        }
+    }
+
+    @Test
+    fun `RED-C41-03 - scheduleAt fails closed on missing ScheduleAuthorityMeta epoch and on LEGACY_ONLY revision or missing authority mismatch`() = runTest {
+        val now = System.currentTimeMillis()
+        val triggerTime = now + 600_000L
+
+        val roomDb = androidx.room.Room.inMemoryDatabaseBuilder(
+            context,
+            com.sysadmindoc.alarmclock.data.local.AlarmDatabase::class.java
+        ).allowMainThreadQueries().build()
+
+        try {
+            val realDao = roomDb.scheduleAuthorityDao()
+            val realRepo = AlarmRepository(
+                dao = roomDb.alarmDao(),
+                groupDao = roomDb.alarmGroupDao(),
+                database = roomDb
+            )
+            val realAm = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+            val shadowAm = org.robolectric.Shadows.shadowOf(realAm)
+            shadowAm.scheduledAlarms.clear()
+
+            val legacyRoute = mockk<ProductionSchedulingRouteAuthority>()
+            every { legacyRoute.isOwnerRouteActive() } returns false
+
+            val localScheduler = AlarmScheduler(
+                context = context,
+                repository = realRepo,
+                calculator = calculator,
+                preferencesManager = preferencesManager,
+                holidayRepository = holidayRepository,
+                alarmIncidentRepository = incidentRepository,
+                weatherRepository = weatherRepository,
+                routeAuthority = legacyRoute
+            )
+
+            // Subcase A: ScheduleAuthorityMeta is ABSENT (null), caller explicitly passed expectedRestoreEpoch = 100L
+            val alarmA = enabledAlarm(id = 953L).copy(nextTriggerTime = triggerTime)
+            roomDb.alarmDao().insert(alarmA)
+            val missingMetaOutcome = localScheduler.scheduleAt(
+                alarm = alarmA,
+                triggerTime = triggerTime,
+                requestWidgetUpdate = false,
+                expectedRestoreEpoch = 100L
+            )
+            assertFalse(
+                "RED-C41-03A: caller-supplied expectedRestoreEpoch MUST NOT be dropped when ScheduleAuthorityMeta is missing",
+                missingMetaOutcome.isArmed
+            )
+            assertTrue(missingMetaOutcome is ScheduleOutcome.RegistrationFailed)
+            assertEquals(0, shadowAm.scheduledAlarms.size)
+
+            // Subcase B: Meta exists (100L), ScheduleAuthority.scheduleRevision advanced 1 -> 2 with same instanceToken & restoreEpoch under LEGACY_ONLY
+            realDao.insertMeta(
+                com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta(
+                    id = 1,
+                    restoreEpoch = 100L,
+                    bootstrapState = "INITIALIZED"
+                )
+            )
+            val savedBId = realRepo.save(
+                Alarm(
+                    id = 0L,
+                    hour = 9,
+                    minute = 0,
+                    label = "Rev Mismatch",
+                    isEnabled = true,
+                    repeatDays = setOf(DayOfWeek.WEDNESDAY),
+                    nextTriggerTime = triggerTime
+                )
+            )
+            val originAuthB = realDao.getAuthorityByAlarmId(savedBId)!!
+            realDao.insertAuthority(
+                originAuthB.copy(scheduleRevision = originAuthB.scheduleRevision + 1L)
+            )
+            val alarmB = realRepo.getById(savedBId)!!
+            val revMismatchOutcome = localScheduler.scheduleAt(
+                alarm = alarmB,
+                triggerTime = triggerTime,
+                requestWidgetUpdate = false,
+                expectedRevision = originAuthB.scheduleRevision,
+                expectedInstanceToken = originAuthB.instanceToken,
+                expectedRestoreEpoch = originAuthB.restoreEpoch,
+                expectedDefinitionRevision = originAuthB.definitionRevision
+            )
+            assertFalse(
+                "RED-C41-03B: LEGACY_ONLY scheduleAt MUST reject stale expectedRevision even when token and epoch match",
+                revMismatchOutcome.isArmed
+            )
+            assertTrue(revMismatchOutcome is ScheduleOutcome.RegistrationFailed)
+            assertEquals(0, shadowAm.scheduledAlarms.size)
+
+            // Subcase C: ScheduleAuthority row deleted while caller supplied expectedInstanceToken -> fail closed
+            realDao.deleteAuthorityByAlarmId(savedBId)
+            val deletedAuthOutcome = localScheduler.scheduleAt(
+                alarm = alarmB,
+                triggerTime = triggerTime,
+                requestWidgetUpdate = false,
+                expectedRevision = originAuthB.scheduleRevision,
+                expectedInstanceToken = originAuthB.instanceToken,
+                expectedRestoreEpoch = originAuthB.restoreEpoch,
+                expectedDefinitionRevision = originAuthB.definitionRevision
+            )
+            assertFalse(
+                "RED-C41-03C: LEGACY_ONLY scheduleAt MUST reject missing ScheduleAuthority when caller passed expectedInstanceToken",
+                deletedAuthOutcome.isArmed
+            )
+            assertTrue(deletedAuthOutcome is ScheduleOutcome.RegistrationFailed)
+            assertEquals(0, shadowAm.scheduledAlarms.size)
+        } finally {
+            roomDb.close()
+        }
+    }
+
+    @Test
+    fun `P1A legacyOnly route leaves DE Queue untouched and keeps V1 scheduling intact`() = runTest {
+        val now = System.currentTimeMillis()
+        val triggerTime = now + 600_000L
+        DirectBootAlarmCache.clear(context)
+        DirectBootAlarmCache.clearQueue(context)
+        val dePrefs = context.createDeviceProtectedStorageContext()
+            .getSharedPreferences("direct_boot_next_alarm", Context.MODE_PRIVATE)
+        dePrefs.edit().clear().commit()
+
+        val roomDb = androidx.room.Room.inMemoryDatabaseBuilder(
+            context,
+            com.sysadmindoc.alarmclock.data.local.AlarmDatabase::class.java
+        ).allowMainThreadQueries().build()
+
+        try {
+            roomDb.scheduleAuthorityDao().insertMeta(
+                com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta(
+                    id = 1,
+                    restoreEpoch = 1L,
+                    bootstrapState = "ENFORCED"
+                )
+            )
+            val alarm = enabledAlarm(id = 960L).copy(nextTriggerTime = triggerTime, generation = 1, revision = 1)
+            roomDb.alarmDao().insert(alarm)
+            roomDb.scheduleAuthorityDao().insertAuthority(
+                com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority(
+                    alarmId = 960L,
+                    instanceToken = "tok-p1-legacy-960",
+                    definitionRevision = ScheduleAuthorityBootstrapAdapter.computeDefinitionRevision(alarm),
+                    scheduleRevision = 1L,
+                    lifecycle = "LIVE",
+                    desiredOperation = "SET",
+                    desiredTriggerMillis = triggerTime,
+                    reconcileState = "SETTLED",
+                    restoreEpoch = 1L,
+                    actionKey = "act-960"
+                )
+            )
+
+            val realRepo = AlarmRepository(
+                dao = roomDb.alarmDao(),
+                groupDao = roomDb.alarmGroupDao(),
+                database = roomDb
+            )
+            every { calculator.calculate(any<Alarm>()) } returns triggerTime
+            every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
+
+            val snapshotReader = com.sysadmindoc.alarmclock.directboot.DirectBootNormalSnapshotReader(roomDb) { true }
+            val coordinator = com.sysadmindoc.alarmclock.directboot.DirectBootNormalProjectionCoordinator(snapshotReader)
+            val projector = com.sysadmindoc.alarmclock.directboot.DirectBootNormalProjector(
+                context = context,
+                database = roomDb,
+                coordinator = coordinator
+            )
+
+            val localScheduler = AlarmScheduler(
+                context = context,
+                repository = realRepo,
+                calculator = calculator,
+                preferencesManager = preferencesManager,
+                holidayRepository = holidayRepository,
+                alarmIncidentRepository = incidentRepository,
+                weatherRepository = weatherRepository,
+                routeAuthority = ProductionSchedulingRouteAuthority(), // LEGACY_ONLY
+                directBootNormalProjectorProvider = javax.inject.Provider { projector }
+            )
+
+            val outcome = localScheduler.schedule(alarm, requestWidgetUpdate = false)
+            assertTrue("V1 scheduling must remain Armed, was $outcome", outcome is ScheduleOutcome.Armed)
+            assertEquals(
+                AlarmScheduler.DirectBootProjectionHookOutcome.SkippedLegacyOnly,
+                localScheduler.lastDirectBootProjectionOutcome
+            )
+            assertEquals(
+                com.sysadmindoc.alarmclock.directboot.QueueStorageState.Absent,
+                DirectBootAlarmCache.inspectQueueStorageState(context)
+            )
+            assertEquals(null, DirectBootAlarmCache.getRawQueuePayload(context))
+            assertEquals(960L, DirectBootAlarmCache.read(context)?.alarmId)
+        } finally {
+            DirectBootAlarmCache.clear(context)
+            DirectBootAlarmCache.clearQueue(context)
+            dePrefs.edit().clear().commit()
+            roomDb.close()
+        }
+    }
+
+    @Test
+    fun `P1A ownerExclusive enforced fixture projects on schedule cancel and batch reschedule and blocks on nonEnforced`() = runTest {
+        val now = System.currentTimeMillis()
+        val triggerTime = now + 600_000L
+        DirectBootAlarmCache.clear(context)
+        DirectBootAlarmCache.clearQueue(context)
+        val dePrefs = context.createDeviceProtectedStorageContext()
+            .getSharedPreferences("direct_boot_next_alarm", Context.MODE_PRIVATE)
+        dePrefs.edit().clear().commit()
+
+        val roomDb = androidx.room.Room.inMemoryDatabaseBuilder(
+            context,
+            com.sysadmindoc.alarmclock.data.local.AlarmDatabase::class.java
+        ).allowMainThreadQueries().build()
+
+        try {
+            val authDao = roomDb.scheduleAuthorityDao()
+            authDao.insertMeta(
+                com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta(
+                    id = 1,
+                    restoreEpoch = 1L,
+                    bootstrapState = "ENFORCED"
+                )
+            )
+            val alarm = enabledAlarm(id = 961L).copy(nextTriggerTime = triggerTime, generation = 1, revision = 1)
+            roomDb.alarmDao().insert(alarm)
+            val auth = com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority(
+                alarmId = 961L,
+                instanceToken = "tok-p1-owner-961",
+                definitionRevision = ScheduleAuthorityBootstrapAdapter.computeDefinitionRevision(alarm),
+                scheduleRevision = 1L,
+                lifecycle = "LIVE",
+                desiredOperation = "SET",
+                desiredTriggerMillis = triggerTime,
+                reconcileState = "SETTLED",
+                restoreEpoch = 1L,
+                actionKey = "act-961"
+            )
+            authDao.insertAuthority(auth)
+
+            val realRepo = AlarmRepository(
+                dao = roomDb.alarmDao(),
+                groupDao = roomDb.alarmGroupDao(),
+                database = roomDb
+            )
+            every { calculator.calculate(any<Alarm>()) } returns triggerTime
+            every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
+
+            val mockOwner = mockk<ScheduleAuthorityOwner>(relaxed = true)
+            coEvery {
+                mockOwner.executeOperation(eq(961L), eq("SET"), eq(triggerTime), any(), any())
+            } returns OwnerResult.OsAccepted(1L, "act-sched-961")
+            coEvery {
+                mockOwner.executeOperation(eq(961L), eq("CANCEL"), isNull<Long>(), any(), any())
+            } returns OwnerResult.OsAccepted(2L, "act-cancel-961")
+
+            val ownerRoute = mockk<ProductionSchedulingRouteAuthority>()
+            every { ownerRoute.isOwnerRouteActive() } returns true
+
+            val snapshotReader = com.sysadmindoc.alarmclock.directboot.DirectBootNormalSnapshotReader(roomDb) { true }
+            val coordinator = com.sysadmindoc.alarmclock.directboot.DirectBootNormalProjectionCoordinator(snapshotReader)
+            val projector = com.sysadmindoc.alarmclock.directboot.DirectBootNormalProjector(
+                context = context,
+                database = roomDb,
+                coordinator = coordinator
+            )
+
+            val localScheduler = AlarmScheduler(
+                context = context,
+                repository = realRepo,
+                calculator = calculator,
+                preferencesManager = preferencesManager,
+                holidayRepository = holidayRepository,
+                alarmIncidentRepository = incidentRepository,
+                weatherRepository = weatherRepository,
+                scheduleAuthorityOwnerProvider = { mockOwner },
+                routeAuthority = ownerRoute,
+                directBootNormalProjectorProvider = javax.inject.Provider { projector }
+            )
+
+            // 1. Schedule projects Normal candidate to DE Queue under DEFAULT_DENY (no reconciler called)
+            val schedOutcome = localScheduler.schedule(alarm, requestWidgetUpdate = false)
+            assertTrue("Expected Armed, was $schedOutcome", schedOutcome is ScheduleOutcome.Armed)
+            assertTrue(localScheduler.lastDirectBootProjectionOutcome is AlarmScheduler.DirectBootProjectionHookOutcome.Succeeded)
+            assertEquals(listOf(961L), DirectBootAlarmCache.readQueue(context, now = now).map { it.alarmId })
+            assertEquals(null, localScheduler.lastDirectBootReconcileResult)
+
+            // 2. Cancel updates DE Queue to exclude cancelled alarm
+            roomDb.alarmDao().update(alarm.copy(isEnabled = false, nextTriggerTime = 0L))
+            authDao.insertAuthority(auth.copy(desiredOperation = "CANCEL", desiredTriggerMillis = null))
+            val cancelOk = localScheduler.cancelSuspending(961L)
+            assertTrue(cancelOk)
+            assertTrue(localScheduler.lastDirectBootProjectionOutcome is AlarmScheduler.DirectBootProjectionHookOutcome.Succeeded)
+            assertTrue(DirectBootAlarmCache.readQueue(context, now = now).isEmpty())
+
+            // 3. Batch reschedule projects once after batch
+            roomDb.alarmDao().update(alarm.copy(isEnabled = true, nextTriggerTime = triggerTime))
+            authDao.insertAuthority(auth.copy(desiredOperation = "SET", desiredTriggerMillis = triggerTime))
+            val batchOutcome = localScheduler.rescheduleAllInBatches(forceRecalculate = false, batchSize = 10)
+            assertEquals(1, batchOutcome.armedCount)
+            assertTrue(localScheduler.lastDirectBootProjectionOutcome is AlarmScheduler.DirectBootProjectionHookOutcome.Succeeded)
+            assertEquals(listOf(961L), DirectBootAlarmCache.readQueue(context, now = now).map { it.alarmId })
+
+            // 4. Non-ENFORCED (INITIALIZED) blocks projection without modifying DE Queue
+            DirectBootAlarmCache.clearQueue(context)
+            authDao.insertMeta(
+                com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta(
+                    id = 1,
+                    restoreEpoch = 1L,
+                    bootstrapState = "INITIALIZED"
+                )
+            )
+            localScheduler.schedule(alarm, requestWidgetUpdate = false)
+            assertTrue(localScheduler.lastDirectBootProjectionOutcome is AlarmScheduler.DirectBootProjectionHookOutcome.Blocked)
+            assertEquals(
+                com.sysadmindoc.alarmclock.directboot.QueueStorageState.Absent,
+                DirectBootAlarmCache.inspectQueueStorageState(context)
+            )
+            assertEquals(null, DirectBootAlarmCache.getRawQueuePayload(context))
+        } finally {
+            DirectBootAlarmCache.clear(context)
+            DirectBootAlarmCache.clearQueue(context)
+            dePrefs.edit().clear().commit()
+            roomDb.close()
+        }
+    }
+
+    @Test
+    fun `P1A projection failure surfaces Failed outcome without breaking V1 ScheduleOutcome Armed`() = runTest {
+        val now = System.currentTimeMillis()
+        val triggerTime = now + 600_000L
+        DirectBootAlarmCache.clear(context)
+        DirectBootAlarmCache.clearQueue(context)
+        val dePrefs = context.createDeviceProtectedStorageContext()
+            .getSharedPreferences("direct_boot_next_alarm", Context.MODE_PRIVATE)
+        dePrefs.edit().clear().commit()
+
+        val roomDb = androidx.room.Room.inMemoryDatabaseBuilder(
+            context,
+            com.sysadmindoc.alarmclock.data.local.AlarmDatabase::class.java
+        ).allowMainThreadQueries().build()
+
+        try {
+            roomDb.scheduleAuthorityDao().insertMeta(
+                com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta(
+                    id = 1,
+                    restoreEpoch = 1L,
+                    bootstrapState = "ENFORCED"
+                )
+            )
+            val alarm = enabledAlarm(id = 962L).copy(nextTriggerTime = triggerTime, generation = 1, revision = 1)
+            roomDb.alarmDao().insert(alarm)
+            roomDb.scheduleAuthorityDao().insertAuthority(
+                com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority(
+                    alarmId = 962L,
+                    instanceToken = "tok-p1-fail-962",
+                    definitionRevision = ScheduleAuthorityBootstrapAdapter.computeDefinitionRevision(alarm),
+                    scheduleRevision = 1L,
+                    lifecycle = "LIVE",
+                    desiredOperation = "SET",
+                    desiredTriggerMillis = triggerTime,
+                    reconcileState = "SETTLED",
+                    restoreEpoch = 1L,
+                    actionKey = "act-962"
+                )
+            )
+
+            // Corrupt DeliveryLedger so projection fails fail-closed
+            dePrefs.edit().putString(
+                com.sysadmindoc.alarmclock.directboot.DirectBootDeliveryLedger.KEY_DELIVERY_LEDGER_PAYLOAD,
+                "{corrupt_ledger"
+            ).commit()
+
+            val realRepo = AlarmRepository(
+                dao = roomDb.alarmDao(),
+                groupDao = roomDb.alarmGroupDao(),
+                database = roomDb
+            )
+            every { calculator.calculate(any<Alarm>()) } returns triggerTime
+            every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
+
+            val mockOwner = mockk<ScheduleAuthorityOwner>(relaxed = true)
+            coEvery {
+                mockOwner.executeOperation(eq(962L), eq("SET"), eq(triggerTime), any(), any())
+            } returns OwnerResult.OsAccepted(1L, "act-sched-962")
+
+            val ownerRoute = mockk<ProductionSchedulingRouteAuthority>()
+            every { ownerRoute.isOwnerRouteActive() } returns true
+
+            val snapshotReader = com.sysadmindoc.alarmclock.directboot.DirectBootNormalSnapshotReader(roomDb) { true }
+            val coordinator = com.sysadmindoc.alarmclock.directboot.DirectBootNormalProjectionCoordinator(snapshotReader)
+            val projector = com.sysadmindoc.alarmclock.directboot.DirectBootNormalProjector(
+                context = context,
+                database = roomDb,
+                coordinator = coordinator
+            )
+
+            val localScheduler = AlarmScheduler(
+                context = context,
+                repository = realRepo,
+                calculator = calculator,
+                preferencesManager = preferencesManager,
+                holidayRepository = holidayRepository,
+                alarmIncidentRepository = incidentRepository,
+                weatherRepository = weatherRepository,
+                scheduleAuthorityOwnerProvider = { mockOwner },
+                routeAuthority = ownerRoute,
+                directBootNormalProjectorProvider = javax.inject.Provider { projector }
+            )
+
+            val outcome = localScheduler.schedule(alarm, requestWidgetUpdate = false)
+            assertTrue("V1/OS ScheduleOutcome must still be Armed, was $outcome", outcome is ScheduleOutcome.Armed)
+            val projOutcome = localScheduler.lastDirectBootProjectionOutcome
+            assertTrue("Projection failure must NOT be hidden as Succeeded, was $projOutcome", projOutcome is AlarmScheduler.DirectBootProjectionHookOutcome.Failed)
+            assertTrue((projOutcome as AlarmScheduler.DirectBootProjectionHookOutcome.Failed).result is com.sysadmindoc.alarmclock.directboot.DirectBootNormalProjectionResult.DeWriteRejected)
+        } finally {
+            DirectBootAlarmCache.clear(context)
+            DirectBootAlarmCache.clearQueue(context)
+            dePrefs.edit().clear().commit()
+            roomDb.close()
+        }
+    }
+
+    @Test
+    fun `P1C defaultDeny blocks V2 OS registration and reconciler runs strictly after projector when isolated seam enabled`() = runTest {
+        val now = System.currentTimeMillis()
+        val triggerTime = now + 600_000L
+        DirectBootAlarmCache.clear(context)
+        DirectBootAlarmCache.clearQueue(context)
+        val dePrefs = context.createDeviceProtectedStorageContext()
+            .getSharedPreferences("direct_boot_next_alarm", Context.MODE_PRIVATE)
+        dePrefs.edit().clear().commit()
+
+        val roomDb = androidx.room.Room.inMemoryDatabaseBuilder(
+            context,
+            com.sysadmindoc.alarmclock.data.local.AlarmDatabase::class.java
+        ).allowMainThreadQueries().build()
+
+        try {
+            roomDb.scheduleAuthorityDao().insertMeta(
+                com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta(
+                    id = 1,
+                    restoreEpoch = 1L,
+                    bootstrapState = "ENFORCED"
+                )
+            )
+            val alarm = enabledAlarm(id = 963L).copy(nextTriggerTime = triggerTime, generation = 1, revision = 1)
+            roomDb.alarmDao().insert(alarm)
+            roomDb.scheduleAuthorityDao().insertAuthority(
+                com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority(
+                    alarmId = 963L,
+                    instanceToken = "tok-p1c-963",
+                    definitionRevision = ScheduleAuthorityBootstrapAdapter.computeDefinitionRevision(alarm),
+                    scheduleRevision = 1L,
+                    lifecycle = "LIVE",
+                    desiredOperation = "SET",
+                    desiredTriggerMillis = triggerTime,
+                    reconcileState = "SETTLED",
+                    restoreEpoch = 1L,
+                    actionKey = "act-963"
+                )
+            )
+
+            val realRepo = AlarmRepository(
+                dao = roomDb.alarmDao(),
+                groupDao = roomDb.alarmGroupDao(),
+                database = roomDb
+            )
+            every { calculator.calculate(any<Alarm>()) } returns triggerTime
+            every { calculator.calculate(any<Alarm>(), any()) } returns triggerTime
+
+            val mockOwner = mockk<ScheduleAuthorityOwner>(relaxed = true)
+            coEvery {
+                mockOwner.executeOperation(eq(963L), eq("SET"), eq(triggerTime), any(), any())
+            } returns OwnerResult.OsAccepted(1L, "act-sched-963")
+
+            val ownerRoute = mockk<ProductionSchedulingRouteAuthority>()
+            every { ownerRoute.isOwnerRouteActive() } returns true
+
+            val snapshotReader = com.sysadmindoc.alarmclock.directboot.DirectBootNormalSnapshotReader(roomDb) { true }
+            val coordinator = com.sysadmindoc.alarmclock.directboot.DirectBootNormalProjectionCoordinator(snapshotReader)
+            val projector = com.sysadmindoc.alarmclock.directboot.DirectBootNormalProjector(
+                context = context,
+                database = roomDb,
+                coordinator = coordinator
+            )
+
+            val localScheduler = AlarmScheduler(
+                context = context,
+                repository = realRepo,
+                calculator = calculator,
+                preferencesManager = preferencesManager,
+                holidayRepository = holidayRepository,
+                alarmIncidentRepository = incidentRepository,
+                weatherRepository = weatherRepository,
+                scheduleAuthorityOwnerProvider = { mockOwner },
+                routeAuthority = ownerRoute,
+                directBootNormalProjectorProvider = javax.inject.Provider { projector }
+            )
+
+            // Part 1: Production DEFAULT_DENY (v2RegistrationCapableProvider defaults to false)
+            var reconcilerInvocations = 0
+            val events = mutableListOf<String>()
+            localScheduler.testDirectBootReconcilerHook = { ctx ->
+                reconcilerInvocations++
+                val queueIdsDuringReconcile = DirectBootAlarmCache.readQueue(ctx, now = now).map { it.alarmId }
+                events.add("RECONCILER:$queueIdsDuringReconcile")
+                com.sysadmindoc.alarmclock.directboot.ReconcilerResult.PlanningHalted(
+                    com.sysadmindoc.alarmclock.directboot.DirectBootRegistrationPlan.NoOp("test")
+                )
+            }
+
+            localScheduler.schedule(alarm, requestWidgetUpdate = false)
+            assertEquals("DEFAULT_DENY must NOT invoke reconciler", 0, reconcilerInvocations)
+            assertEquals(null, localScheduler.lastDirectBootReconcileResult)
+
+            // Part 2: Isolated opt-in capability proves Projector -> Reconciler ordering
+            localScheduler.v2RegistrationCapableProvider = { true }
+            localScheduler.schedule(alarm, requestWidgetUpdate = false)
+            assertEquals(1, reconcilerInvocations)
+            assertEquals(listOf("RECONCILER:[963]"), events)
+            assertTrue(localScheduler.lastDirectBootReconcileResult is com.sysadmindoc.alarmclock.directboot.ReconcilerResult.PlanningHalted)
+        } finally {
+            DirectBootAlarmCache.clear(context)
+            DirectBootAlarmCache.clearQueue(context)
+            dePrefs.edit().clear().commit()
+            roomDb.close()
+        }
     }
 
     private fun enabledAlarm(id: Long): Alarm = Alarm(

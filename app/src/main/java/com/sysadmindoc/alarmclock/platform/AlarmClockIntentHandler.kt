@@ -33,6 +33,7 @@ sealed interface AlarmClockHandleResult {
     data object Invalid : AlarmClockHandleResult
     data object Duplicate : AlarmClockHandleResult
     data object Unsupported : AlarmClockHandleResult
+    data class CancelFailed(val alarmId: Long) : AlarmClockHandleResult
 }
 
 @Singleton
@@ -161,9 +162,17 @@ class AlarmClockIntentHandler @Inject constructor(
         if (resolution.needsSelectionUi) {
             return AlarmClockHandleResult.Handled(ROUTE_ALARMS)
         }
+        var firstFailedAlarmId: Long? = null
         resolution.alarms
             .filterNot { it.id == resolution.ringingTarget }
-            .forEach { alarm -> dismissScheduledAlarm(alarm) }
+            .forEach { alarm ->
+                if (!dismissScheduledAlarm(alarm) && firstFailedAlarmId == null) {
+                    firstFailedAlarmId = alarm.id
+                }
+            }
+        if (firstFailedAlarmId != null) {
+            return AlarmClockHandleResult.CancelFailed(firstFailedAlarmId!!)
+        }
         return AlarmClockHandleResult.Handled()
     }
 
@@ -211,17 +220,21 @@ class AlarmClockIntentHandler @Inject constructor(
         )
     }
 
-    private suspend fun dismissScheduledAlarm(alarm: Alarm) {
-        scheduler.cancel(alarm.id)
+    private suspend fun dismissScheduledAlarm(alarm: Alarm): Boolean {
+        if (!scheduler.cancelSuspending(alarm.id)) {
+            android.util.Log.w("AlarmClockIntentHandler", "DISMISS_ALARM cancelSuspending failed for alarm ${alarm.id}")
+            return false
+        }
         if (!alarm.isRecurringSchedule) {
             repository.setEnabled(alarm.id, enabled = false, nextTrigger = 0L)
-            return
+            return true
         }
         val notBefore = System.currentTimeMillis() + 60_000L
         val outcome = scheduler.schedule(alarm, notBeforeMillis = notBefore)
         if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed) {
             android.util.Log.w("AlarmClockIntentHandler", "DISMISS_ALARM scheduled next occurrence for alarm ${alarm.id}, but OS registration failed; pending background recovery")
         }
+        return true
     }
 
     private fun timerLabel(totalSeconds: Int): String = buildString {

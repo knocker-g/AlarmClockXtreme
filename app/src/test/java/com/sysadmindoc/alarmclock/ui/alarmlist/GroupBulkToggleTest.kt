@@ -72,6 +72,7 @@ class GroupBulkToggleTest {
 
         mockNormalScheduler = mockk(relaxed = true)
         coEvery { mockNormalScheduler.schedule(any()) } returns ScheduleOutcome.Armed(1L, System.currentTimeMillis() + 600_000L)
+        coEvery { mockNormalScheduler.cancelSuspending(any()) } returns true
 
         quickScheduler = QuickAlarmScheduler(context, alarmRepo)
     }
@@ -231,7 +232,7 @@ class GroupBulkToggleTest {
         // Mock scheduler returning PermissionBlocked
         val blockingScheduler = mockk<AlarmScheduler>()
         coEvery { blockingScheduler.schedule(any()) } returns ScheduleOutcome.PermissionBlocked(alarm1, "Exact alarm permission missing")
-        coEvery { blockingScheduler.cancel(any()) } returns Unit
+        coEvery { blockingScheduler.cancelSuspending(any()) } returns true
         coEvery { blockingScheduler.syncBedtimeDndRule() } returns Unit
 
         val viewModel = AlarmListViewModel(
@@ -259,12 +260,12 @@ class GroupBulkToggleTest {
         val trackingScheduler = mockk<AlarmScheduler>()
 
         coEvery { trackingScheduler.schedule(any()) } returns ScheduleOutcome.Armed(1L, System.currentTimeMillis() + 600_000L)
-        coEvery { trackingScheduler.cancel(any()) } coAnswers {
+        coEvery { trackingScheduler.cancelSuspending(any()) } coAnswers {
             val id = firstArg<Long>()
             if (id == alarm1 && !cancelBarrier.isCompleted) {
                 cancelBarrier.complete(Unit)
             }
-            Unit
+            true
         }
         coEvery { trackingScheduler.syncBedtimeDndRule() } returns Unit
 
@@ -422,10 +423,10 @@ class GroupBulkToggleTest {
             ScheduleOutcome.Armed(alarm.id, alarm.nextTriggerTime)
         }
 
-        coEvery { trackingScheduler.cancel(any()) } coAnswers {
+        coEvery { trackingScheduler.cancelSuspending(any()) } coAnswers {
             val id = firstArg<Long>()
             registeredAlarmIds.remove(id)
-            Unit
+            true
         }
 
         coEvery { trackingScheduler.syncBedtimeDndRule() } returns Unit
@@ -496,10 +497,10 @@ class GroupBulkToggleTest {
             ScheduleOutcome.Armed(alarm.id, alarm.nextTriggerTime)
         }
 
-        coEvery { trackingScheduler.cancel(any()) } coAnswers {
+        coEvery { trackingScheduler.cancelSuspending(any()) } coAnswers {
             val id = firstArg<Long>()
             registeredAlarmIds.remove(id)
-            Unit
+            true
         }
 
         coEvery { trackingScheduler.syncBedtimeDndRule() } returns Unit
@@ -546,13 +547,13 @@ class GroupBulkToggleTest {
             ScheduleOutcome.Armed(alarm.id, alarm.nextTriggerTime)
         }
 
-        coEvery { trackingScheduler.cancel(any()) } coAnswers {
+        coEvery { trackingScheduler.cancelSuspending(any()) } coAnswers {
             val id = firstArg<Long>()
             registeredAlarmIds.remove(id)
             if (id == alarm1Id && !cancelBarrier.isCompleted) {
                 cancelBarrier.complete(Unit)
             }
-            Unit
+            true
         }
 
         coEvery { trackingScheduler.syncBedtimeDndRule() } returns Unit
@@ -591,7 +592,7 @@ class GroupBulkToggleTest {
         val syncDndBarrier = CompletableDeferred<Unit>()
         val trackingScheduler = mockk<AlarmScheduler>()
 
-        coEvery { trackingScheduler.cancel(any()) } returns Unit
+        coEvery { trackingScheduler.cancelSuspending(any()) } returns true
         coEvery { trackingScheduler.syncBedtimeDndRule() } coAnswers {
             if (!syncDndBarrier.isCompleted) {
                 syncDndBarrier.complete(Unit)
@@ -702,5 +703,138 @@ class GroupBulkToggleTest {
         viewModel.toggleAlarm(deletedSnapshot)
 
         assertEquals(null, alarmRepo.getById(alarm1Id))
+    }
+
+    @Test
+    fun `deleteSelected aborts DB deletion and withholds deleted feedback when cancelSuspending returns false`() = runBlocking {
+        val alarm1Id = alarmRepo.save(Alarm(hour = 7, minute = 0, isEnabled = true, group = "Work"))
+
+        val failingScheduler = mockk<AlarmScheduler>(relaxed = true)
+        coEvery { failingScheduler.cancelSuspending(alarm1Id) } returns false
+
+        val feedbackChannel = kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+        val viewModel = AlarmListViewModel(
+            context = context,
+            repository = alarmRepo,
+            scheduler = failingScheduler,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            eventRepository = eventRepo,
+            quickAlarmScheduler = quickScheduler
+        )
+        val collectJob = launch {
+            viewModel.feedbackEvents.collect { feedbackChannel.trySend(it) }
+        }
+
+        viewModel.selectMany(setOf(alarm1Id))
+        viewModel.deleteSelected()
+        val emittedFeedback = kotlinx.coroutines.withTimeout(2000L) { feedbackChannel.receive() }
+
+        assertTrue("Alarm MUST remain in DB when cancelSuspending returns false", alarmRepo.getById(alarm1Id) != null)
+        val deletedText = context.resources.getQuantityString(com.sysadmindoc.alarmclock.R.plurals.feedback_multialarm_deleted, 1, 1)
+        assertFalse("Success deleted feedback MUST NOT be emitted on cancel failure", emittedFeedback == deletedText)
+        collectJob.cancel()
+    }
+
+    @Test
+    fun `toggleAlarm OFF and forceDisableAlarm keep DB enabled and withhold paused feedback when cancelSuspending returns false`() = runBlocking {
+        val alarm1Id = alarmRepo.save(Alarm(hour = 7, minute = 0, isEnabled = true, group = "Work", nextTriggerTime = System.currentTimeMillis() + 600_000L))
+        val alarm1 = alarmRepo.getById(alarm1Id)!!
+
+        val failingScheduler = mockk<AlarmScheduler>(relaxed = true)
+        coEvery { failingScheduler.cancelSuspending(alarm1Id) } returns false
+
+        val feedbackChannel = kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+        val viewModel = AlarmListViewModel(
+            context = context,
+            repository = alarmRepo,
+            scheduler = failingScheduler,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            eventRepository = eventRepo,
+            quickAlarmScheduler = quickScheduler
+        )
+        val collectJob = launch {
+            viewModel.feedbackEvents.collect { feedbackChannel.trySend(it) }
+        }
+
+        viewModel.toggleAlarm(alarm1)
+        val toggleFeedback = kotlinx.coroutines.withTimeout(2000L) { feedbackChannel.receive() }
+        assertTrue("Alarm MUST remain enabled in DB when cancelSuspending returns false", alarmRepo.getById(alarm1Id)!!.isEnabled)
+        assertFalse("Paused feedback MUST NOT be emitted on cancel failure", toggleFeedback == context.getString(com.sysadmindoc.alarmclock.R.string.feedback_alarm_paused))
+
+        viewModel.forceDisableAlarm(alarm1)
+        val forceFeedback = kotlinx.coroutines.withTimeout(2000L) { feedbackChannel.receive() }
+        assertTrue("Alarm MUST remain enabled in DB after forceDisableAlarm when cancelSuspending returns false", alarmRepo.getById(alarm1Id)!!.isEnabled)
+        assertFalse(
+            "Override-paused feedback MUST NOT be emitted on cancel failure",
+            forceFeedback == context.getString(com.sysadmindoc.alarmclock.R.string.feedback_cancellation_lock_overridden_paused)
+        )
+        collectJob.cancel()
+    }
+
+    @Test
+    fun `disableSelected keeps DB enabled and withholds paused feedback when cancelSuspending returns false`() = runBlocking {
+        val alarm1Id = alarmRepo.save(Alarm(hour = 7, minute = 0, isEnabled = true, group = "Work"))
+
+        val failingScheduler = mockk<AlarmScheduler>(relaxed = true)
+        coEvery { failingScheduler.cancelSuspending(alarm1Id) } returns false
+
+        val feedbackChannel = kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+        val viewModel = AlarmListViewModel(
+            context = context,
+            repository = alarmRepo,
+            scheduler = failingScheduler,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            eventRepository = eventRepo,
+            quickAlarmScheduler = quickScheduler
+        )
+        val collectJob = launch {
+            viewModel.feedbackEvents.collect { feedbackChannel.trySend(it) }
+        }
+
+        viewModel.selectMany(setOf(alarm1Id))
+        viewModel.disableSelected()
+        val emittedFeedback = kotlinx.coroutines.withTimeout(2000L) { feedbackChannel.receive() }
+
+        assertTrue("Alarm MUST remain enabled in DB when cancelSuspending returns false", alarmRepo.getById(alarm1Id)!!.isEnabled)
+        val pausedText = context.resources.getQuantityString(com.sysadmindoc.alarmclock.R.plurals.feedback_multialarm_paused, 1, 1)
+        assertFalse("Success multi-paused feedback MUST NOT be emitted on cancel failure", emittedFeedback == pausedText)
+        collectJob.cancel()
+    }
+
+    @Test
+    fun `setGroupEnabled OFF keeps failed members enabled and reports scheduleFailedCount`() = runBlocking {
+        val alarm1Id = alarmRepo.save(Alarm(hour = 7, minute = 0, isEnabled = true, group = "Work"))
+        val alarm2Id = alarmRepo.save(Alarm(hour = 8, minute = 0, isEnabled = true, group = "Work"))
+
+        val partialFailScheduler = mockk<AlarmScheduler>(relaxed = true)
+        coEvery { partialFailScheduler.cancelSuspending(alarm1Id) } returns true
+        coEvery { partialFailScheduler.cancelSuspending(alarm2Id) } returns false
+
+        val feedbackList = mutableListOf<String>()
+        val viewModel = AlarmListViewModel(
+            context = context,
+            repository = alarmRepo,
+            scheduler = partialFailScheduler,
+            calculator = calculator,
+            preferencesManager = preferencesManager,
+            eventRepository = eventRepo,
+            quickAlarmScheduler = quickScheduler
+        )
+        val collectJob = launch {
+            viewModel.feedbackEvents.collect { feedbackList.add(it) }
+        }
+
+        val result = viewModel.setGroupEnabled("Work", targetEnabled = false)
+
+        assertEquals(1, result.changedCount)
+        assertEquals(1, result.scheduleFailedCount)
+        assertFalse("Succeeded member MUST be disabled in DB", alarmRepo.getById(alarm1Id)!!.isEnabled)
+        assertTrue("Failed member MUST remain enabled in DB", alarmRepo.getById(alarm2Id)!!.isEnabled)
+        val pureDisabledText = context.resources.getQuantityString(com.sysadmindoc.alarmclock.R.plurals.alarmlist_group_disabled, 2, 2, "Work")
+        assertFalse("Pure group disabled feedback MUST NOT be emitted on partial failure", pureDisabledText in feedbackList)
+        collectJob.cancel()
     }
 }

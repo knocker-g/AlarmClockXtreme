@@ -19,12 +19,20 @@ object AlarmFireDismissContract {
         context: Context,
         alarmId: Long,
         scheduledAt: Long,
-        fireId: String = fireId(alarmId, scheduledAt)
+        fireId: String = fireId(alarmId, scheduledAt),
+        restoreEpoch: Long = 0L,
+        isQuickAlarm: Boolean? = null
     ): Intent = Intent(context, AlarmService::class.java).apply {
         action = AlarmService.ACTION_START_ALARM
         putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
         putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, scheduledAt)
         putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, fireId)
+        if (restoreEpoch > 0L) {
+            putExtra(AlarmScheduler.EXTRA_RESTORE_EPOCH, restoreEpoch)
+        }
+        if (isQuickAlarm != null) {
+            putExtra(AlarmScheduler.EXTRA_QUICK_ALARM, isQuickAlarm)
+        }
     }
 
     fun snoozeServiceIntent(

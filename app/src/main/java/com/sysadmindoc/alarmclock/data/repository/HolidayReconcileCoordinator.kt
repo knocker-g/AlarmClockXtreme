@@ -241,9 +241,19 @@ class HolidayReconcileCoordinator @Inject constructor(
             val outcome = if (targetTrigger > 0L) {
                 alarmScheduler.reconcileRegistration(alarm, targetTrigger, isOsConfirmed = false)
             } else {
-                alarmScheduler.cancelScheduledEntries(alarm.id, expectedGeneration = alarm.generation)
-                alarmRepository.updateNextTrigger(alarm.id, 0L)
-                ScheduleOutcome.NoArm(alarm.id, "HOLIDAY_SUPPRESSED")
+                val cancelled = alarmScheduler.cancelScheduledEntriesSuspending(
+                    alarm.id,
+                    expectedGeneration = alarm.generation
+                )
+                if (cancelled) {
+                    alarmRepository.updateNextTrigger(alarm.id, 0L)
+                    ScheduleOutcome.NoArm(alarm.id, "HOLIDAY_SUPPRESSED")
+                } else {
+                    ScheduleOutcome.RegistrationFailed(
+                        alarm.id,
+                        IllegalStateException("Holiday suppression OS cancel failed or blocked for alarm ${alarm.id}")
+                    )
+                }
             }
 
             when (outcome) {

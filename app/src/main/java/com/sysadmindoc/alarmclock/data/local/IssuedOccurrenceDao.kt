@@ -38,14 +38,88 @@ abstract class IssuedOccurrenceDao {
     @Query("SELECT DISTINCT alarmId FROM issued_occurrences WHERE status IN ('PREPARED', 'ISSUED', 'ADMITTED')")
     abstract suspend fun getAlarmIdsWithActiveOccurrences(): List<Long>
 
+    @Query(
+        """
+        SELECT * FROM issued_occurrences
+        WHERE status IN ('PREPARED', 'ISSUED', 'ADMITTED')
+          AND restoreEpoch < :currentRestoreEpoch
+        ORDER BY alarmId ASC, generationId ASC
+        """
+    )
+    abstract suspend fun getActiveStaleRestoreOccurrences(currentRestoreEpoch: Long): List<IssuedOccurrence>
+
+    @Query(
+        """
+        UPDATE issued_occurrences
+        SET status = 'REVOKED', updatedAt = :updatedAt
+        WHERE issueToken = :issueToken
+          AND status = :expectedStatus
+          AND status IN ('PREPARED', 'ISSUED', 'ADMITTED')
+          AND restoreEpoch < :currentRestoreEpoch
+        """
+    )
+    abstract suspend fun casRevokeStalePreRestoreOccurrence(
+        issueToken: String,
+        expectedStatus: String,
+        currentRestoreEpoch: Long,
+        updatedAt: Long = System.currentTimeMillis()
+    ): Int
+
     @Query("UPDATE issued_occurrences SET status = 'ISSUED', activatedAt = :now, updatedAt = :now WHERE issueToken = :issueToken AND status = 'PREPARED'")
     abstract suspend fun casActivateOccurrence(issueToken: String, now: Long): Int
 
     @Query("SELECT currentIssueToken FROM issue_slots WHERE alarmId = :alarmId")
     abstract suspend fun getSlotCurrentToken(alarmId: Long): String?
 
+    @Query("SELECT instanceToken FROM schedule_authority WHERE alarmId = :alarmId")
+    abstract suspend fun getAuthorityInstanceToken(alarmId: Long): String?
+
+    @Query("SELECT restoreEpoch FROM schedule_authority WHERE alarmId = :alarmId")
+    abstract suspend fun getAuthorityRestoreEpoch(alarmId: Long): Long?
+
+    @Query("SELECT scheduleRevision FROM schedule_authority WHERE alarmId = :alarmId")
+    abstract suspend fun getAuthorityScheduleRevision(alarmId: Long): Long?
+
+    @Query("SELECT definitionRevision FROM schedule_authority WHERE alarmId = :alarmId")
+    abstract suspend fun getAuthorityDefinitionRevision(alarmId: Long): Long?
+
+    @Query("SELECT generation FROM alarms WHERE id = :alarmId")
+    abstract suspend fun getAlarmGeneration(alarmId: Long): Int?
+
     @Query("UPDATE issued_occurrences SET status = :newStatus, updatedAt = :updatedAt WHERE issueToken = :issueToken AND status = :expectedStatus")
     abstract suspend fun casUpdateOccurrenceStatus(issueToken: String, expectedStatus: String, newStatus: String, updatedAt: Long): Int
+
+    @Query(
+        """
+        UPDATE issued_occurrences
+        SET status = :newStatus, updatedAt = :now
+        WHERE issueToken = :issueToken
+          AND status = :expectedStatus
+          AND :expectedStatus = 'PREPARED'
+          AND :newStatus IN ('REVOKED', 'SUPPRESSED')
+          AND alarmId = :alarmId
+          AND generationId = :expectedSlotGenId
+          AND alarmId IN (
+              SELECT alarmId FROM issue_slots
+              WHERE alarmId = :alarmId
+                AND generationId = :expectedSlotGenId
+                AND (currentIssueToken = :expectedOwnerToken OR (currentIssueToken IS NULL AND :expectedOwnerToken IS NULL))
+                AND (currentIssueToken IS NULL OR currentIssueToken != :issueToken)
+          )
+        """
+    )
+    abstract suspend fun casUpdateNonCurrentOccurrenceStatus(
+        issueToken: String,
+        expectedStatus: String,
+        newStatus: String,
+        alarmId: Long,
+        expectedSlotGenId: Long,
+        expectedOwnerToken: String?,
+        now: Long = System.currentTimeMillis()
+    ): Int
+
+    @Query("SELECT * FROM issued_occurrences WHERE status IN ('PREPARED', 'SET_FAILED') AND createdAt < :thresholdMs ORDER BY createdAt ASC")
+    abstract suspend fun getExpiredOrphanOccurrences(thresholdMs: Long): List<IssuedOccurrence>
 
     @Query(
         """
@@ -142,6 +216,121 @@ abstract class IssuedOccurrenceDao {
     ): IssuedOccurrence? {
         return try {
             reserveIssuedOccurrenceTransaction(issueToken, alarmId, scheduledAt, fireId, now)
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            null
+        }
+    }
+
+    @Transaction
+    open suspend fun reserveIssuedOccurrenceWithAuthorityTransaction(
+        issueToken: String,
+        alarmId: Long,
+        scheduledAt: Long,
+        fireId: String,
+        authorityInstanceToken: String,
+        restoreEpoch: Long,
+        scheduleRevision: Long,
+        definitionRevision: Long,
+        alarmGeneration: Int,
+        baseTriggerTime: Long = scheduledAt,
+        now: Long = System.currentTimeMillis()
+    ): IssuedOccurrence {
+        val dbAuthToken = getAuthorityInstanceToken(alarmId)
+            ?: throw IllegalStateException("ScheduleAuthority missing for alarm $alarmId")
+        val dbRestoreEpoch = getAuthorityRestoreEpoch(alarmId)
+            ?: throw IllegalStateException("ScheduleAuthority restoreEpoch missing for alarm $alarmId")
+        val dbScheduleRevision = getAuthorityScheduleRevision(alarmId)
+            ?: throw IllegalStateException("ScheduleAuthority scheduleRevision missing for alarm $alarmId")
+        val dbDefRevision = getAuthorityDefinitionRevision(alarmId)
+            ?: throw IllegalStateException("ScheduleAuthority definitionRevision missing for alarm $alarmId")
+        val dbAlarmGeneration = getAlarmGeneration(alarmId)
+            ?: throw IllegalStateException("Alarm missing for alarmId $alarmId")
+
+        if (dbAuthToken != authorityInstanceToken ||
+            dbRestoreEpoch != restoreEpoch ||
+            dbScheduleRevision != scheduleRevision ||
+            dbDefRevision != definitionRevision ||
+            dbAlarmGeneration != alarmGeneration
+        ) {
+            throw IllegalStateException("Authority or Alarm witness mismatch with DB truth for alarm $alarmId")
+        }
+
+        var slot = getSlot(alarmId)
+        if (slot == null) {
+            insertSlotInitial(IssueSlot(alarmId = alarmId, currentIssueToken = null, generationId = 1L))
+            slot = getSlot(alarmId) ?: throw IllegalStateException("Failed to initialize slot for alarm $alarmId")
+        }
+
+        if (slot.generationId >= Long.MAX_VALUE - 100L) {
+            throw IllegalStateException("Generation ID overflow for alarm $alarmId")
+        }
+
+        val nextGenId = slot.generationId + 1L
+        val occurrence = IssuedOccurrence(
+            issueToken = issueToken,
+            alarmId = alarmId,
+            scheduledAt = scheduledAt,
+            fireId = fireId,
+            generationId = nextGenId,
+            status = IssuedOccurrence.STATUS_PREPARED,
+            outcome = IssuedOccurrence.OUTCOME_PENDING,
+            createdAt = now,
+            updatedAt = now,
+            baseTriggerTime = baseTriggerTime,
+            alarmGeneration = alarmGeneration,
+            authorityInstanceToken = authorityInstanceToken,
+            restoreEpoch = restoreEpoch,
+            scheduleRevision = scheduleRevision,
+            definitionRevision = definitionRevision
+        )
+
+        val insertResult = insertOccurrence(occurrence)
+        if (insertResult <= 0L) {
+            throw IllegalStateException("Failed to insert occurrence $issueToken")
+        }
+
+        val casResult = casIncrementSlotGeneration(
+            alarmId = alarmId,
+            expectedGenId = slot.generationId,
+            expectedToken = slot.currentIssueToken,
+            newToken = slot.currentIssueToken
+        )
+
+        if (casResult != 1) {
+            throw IllegalStateException("Slot generation CAS increment failed for alarm $alarmId")
+        }
+
+        return occurrence
+    }
+
+    suspend fun reserveIssuedOccurrenceWithAuthority(
+        issueToken: String,
+        alarmId: Long,
+        scheduledAt: Long,
+        fireId: String,
+        authorityInstanceToken: String,
+        restoreEpoch: Long,
+        scheduleRevision: Long,
+        definitionRevision: Long,
+        alarmGeneration: Int,
+        baseTriggerTime: Long = scheduledAt,
+        now: Long = System.currentTimeMillis()
+    ): IssuedOccurrence? {
+        return try {
+            reserveIssuedOccurrenceWithAuthorityTransaction(
+                issueToken = issueToken,
+                alarmId = alarmId,
+                scheduledAt = scheduledAt,
+                fireId = fireId,
+                authorityInstanceToken = authorityInstanceToken,
+                restoreEpoch = restoreEpoch,
+                scheduleRevision = scheduleRevision,
+                definitionRevision = definitionRevision,
+                alarmGeneration = alarmGeneration,
+                baseTriggerTime = baseTriggerTime,
+                now = now
+            )
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
             null

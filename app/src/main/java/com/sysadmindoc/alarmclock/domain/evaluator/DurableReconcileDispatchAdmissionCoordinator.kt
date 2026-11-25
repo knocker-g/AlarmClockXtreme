@@ -59,6 +59,18 @@ class DurableReconcileDispatchAdmissionCoordinator(
 
             val alarmId = intent.alarmId
 
+            // Isolate Rev2 / unknown-revision CANCEL intents from generic dispatch abortion
+            if (DurableCancelIntentValidator.isNonLegacyCancelIntent(intent)) {
+                return@withTransaction DurableDispatchResult(
+                    outcome = DurableDispatchOutcome.ADMISSION_REJECTED_QUARANTINED,
+                    alarmId = alarmId,
+                    intentToken = intentToken,
+                    adjudicationDecision = null,
+                    updatedIntent = intent,
+                    decisionReason = "NON_LEGACY_CANCEL_REVISION_ISOLATED_${intent.intentRevision}"
+                )
+            }
+
             // 2. Terminal phase safety check
             if (intent.phase == DurableOperationIntent.PHASE_COMPLETED ||
                 intent.phase == DurableOperationIntent.PHASE_ABORTED ||
@@ -188,6 +200,18 @@ class DurableReconcileDispatchAdmissionCoordinator(
                 )
 
             val alarmId = intent.alarmId
+
+            // Isolate Rev2 / unknown-revision CANCEL intents from generic settlement abortion
+            if (DurableCancelIntentValidator.isNonLegacyCancelIntent(intent)) {
+                return@withTransaction DurableDispatchResult(
+                    outcome = DurableDispatchOutcome.SETTLEMENT_REJECTED_FORGED_PROOF,
+                    alarmId = alarmId,
+                    intentToken = intentToken,
+                    adjudicationDecision = null,
+                    updatedIntent = intent,
+                    decisionReason = "NON_LEGACY_CANCEL_REVISION_ISOLATED_${intent.intentRevision}"
+                )
+            }
 
             // Fix C: Reject settlement for non-IN_FLIGHT intents without mutating terminal phases!
             if (intent.phase != DurableOperationIntent.PHASE_IN_FLIGHT) {

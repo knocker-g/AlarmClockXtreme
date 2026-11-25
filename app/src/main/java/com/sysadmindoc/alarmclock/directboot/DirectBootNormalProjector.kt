@@ -184,6 +184,49 @@ class DirectBootNormalProjector(
         WRITE_CONFIRMED
     }
 
+    private companion object {
+        val CONSUMED_RECEIPT_OUTCOMES: Set<String> = setOf("CONSUMED_DELIVERED", "CONSUMED_MISSED")
+    }
+
+    private fun isCandidateExcludedByReceipt(
+        candidate: DirectBootQueueItem,
+        receipt: com.sysadmindoc.alarmclock.data.local.entity.DirectBootOccurrenceReceipt?
+    ): Boolean {
+        if (receipt == null) return false
+        if (receipt.restoreEpoch <= 0L || receipt.restoreEpoch != candidate.restoreEpoch) return false
+        return receipt.alarmId == candidate.alarmId &&
+            receipt.triggerTime == candidate.triggerTime &&
+            receipt.generation == candidate.generation &&
+            receipt.instanceToken == candidate.instanceToken &&
+            receipt.consumerOutcome in CONSUMED_RECEIPT_OUTCOMES
+    }
+
+    private fun isCandidateExcludedByOwner(
+        candidate: DirectBootQueueItem,
+        owner: DirectBootDurableOwner?
+    ): Boolean {
+        if (owner == null || candidate.kind != DirectBootQueueItem.KIND_NORMAL) return false
+        return when (owner.state) {
+            OwnerState.IDLE -> false
+            OwnerState.HANDOVER_PENDING -> {
+                val claim = owner.handoverClaim ?: return false
+                claim.alarmId == candidate.alarmId &&
+                    claim.triggerTime == candidate.triggerTime &&
+                    claim.generation == candidate.generation &&
+                    claim.instanceToken == candidate.instanceToken &&
+                    claim.restoreEpoch == candidate.restoreEpoch
+            }
+            OwnerState.V2_ACTIVE -> {
+                val session = owner.activeSession ?: return false
+                session.alarmId == candidate.alarmId &&
+                    session.triggerTime == candidate.triggerTime &&
+                    session.generation == candidate.generation &&
+                    session.instanceToken == candidate.instanceToken &&
+                    session.restoreEpoch == candidate.restoreEpoch
+            }
+        }
+    }
+
     /**
      * Evaluates Coordinator at wall-clock time [now] and projects results to DE queue.
      */
@@ -286,9 +329,123 @@ class DirectBootNormalProjector(
 
                 preWriteHook()
 
-                // Mark writer invoked before calling queueUpdater
-                stage = ExecutionStage.WRITER_INVOKED
-                val updateResult = queueUpdater(context, canonicalCandidates.toList(), now)
+                // -------------------------------------------------------------
+                // P1-B Room 38 Receipt & Epoch Fence Check (outside DE lock)
+                // -------------------------------------------------------------
+                val receiptDao = database.directBootOccurrenceReceiptDao()
+                val receiptExcludedCandidates = mutableSetOf<DirectBootQueueItem>()
+                for (candidate in canonicalCandidates) {
+                    val occurrenceKey = DirectBootCeTakeoverStore.computeOccurrenceKey(
+                        alarmId = candidate.alarmId,
+                        triggerTime = candidate.triggerTime,
+                        generation = candidate.generation,
+                        instanceToken = candidate.instanceToken
+                    )
+                    val receipt = receiptDao.findByOccurrenceKey(occurrenceKey)
+                    if (isCandidateExcludedByReceipt(candidate, receipt)) {
+                        receiptExcludedCandidates.add(candidate)
+                    }
+                }
+
+                // -------------------------------------------------------------
+                // P1-B DE Ledger / Missed / DurableOwner Exclusion & Queue Write
+                // under DirectBootStorageLock.lock (no Room queries inside lock)
+                // -------------------------------------------------------------
+                val updateResult = synchronized(DirectBootStorageLock.lock) {
+                    val ledgerRecords: List<DirectBootDeliveryRecord> =
+                        when (val ledgerState = DirectBootDeliveryLedger.readUnacknowledgedRecords(context)) {
+                            is LedgerStorageState.Absent,
+                            is LedgerStorageState.ValidEmpty -> emptyList()
+                            is LedgerStorageState.ValidWithRecords -> ledgerState.records
+                            is LedgerStorageState.Corrupt -> {
+                                return@withTransaction DirectBootNormalProjectionResult.DeWriteRejected(
+                                    DeRejectionReason.StorageCorrupt("DeliveryLedger corrupt: ${ledgerState.reason}")
+                                )
+                            }
+                            is LedgerStorageState.UnsupportedSchema -> {
+                                return@withTransaction DirectBootNormalProjectionResult.DeWriteRejected(
+                                    DeRejectionReason.UnsupportedSchema(
+                                        foundVersion = ledgerState.foundVersion,
+                                        expectedVersion = ledgerState.expectedVersion
+                                    )
+                                )
+                            }
+                        }
+
+                    val missedRecords: List<DirectBootMissedRecord> =
+                        when (val missedState = DirectBootMissedStore.readUnacknowledgedRecords(context)) {
+                            is MissedStoreStorageState.Absent,
+                            is MissedStoreStorageState.ValidEmpty -> emptyList()
+                            is MissedStoreStorageState.ValidWithRecords -> missedState.records
+                            is MissedStoreStorageState.Corrupt -> {
+                                return@withTransaction DirectBootNormalProjectionResult.DeWriteRejected(
+                                    DeRejectionReason.StorageCorrupt("MissedStore corrupt: ${missedState.reason}")
+                                )
+                            }
+                            is MissedStoreStorageState.PersistenceUncertain -> {
+                                return@withTransaction DirectBootNormalProjectionResult.DeWriteRejected(
+                                    DeRejectionReason.StorageCorrupt("MissedStore uncertain: ${missedState.reason}")
+                                )
+                            }
+                            is MissedStoreStorageState.UnsupportedSchema -> {
+                                return@withTransaction DirectBootNormalProjectionResult.DeWriteRejected(
+                                    DeRejectionReason.UnsupportedSchema(
+                                        foundVersion = missedState.foundVersion,
+                                        expectedVersion = missedState.expectedVersion
+                                    )
+                                )
+                            }
+                        }
+
+                    val durableOwner: DirectBootDurableOwner? =
+                        when (val ownerState = DirectBootDurableOwnerStore.read(context)) {
+                            is OwnerReadResult.Absent -> null
+                            is OwnerReadResult.Success -> ownerState.owner
+                            is OwnerReadResult.Corrupt -> {
+                                return@withTransaction DirectBootNormalProjectionResult.DeWriteRejected(
+                                    DeRejectionReason.StorageCorrupt("DurableOwnerStore corrupt: ${ownerState.reason}")
+                                )
+                            }
+                            is OwnerReadResult.UnsupportedSchema -> {
+                                return@withTransaction DirectBootNormalProjectionResult.DeWriteRejected(
+                                    DeRejectionReason.UnsupportedSchema(
+                                        foundVersion = ownerState.foundVersion,
+                                        expectedVersion = ownerState.expectedVersion
+                                    )
+                                )
+                            }
+                        }
+
+                    val filteredCandidates = canonicalCandidates.filter { candidate ->
+                        if (candidate in receiptExcludedCandidates) return@filter false
+                        val inDeliveryLedger = ledgerRecords.any { rec ->
+                            rec.kind == candidate.kind &&
+                                rec.alarmId == candidate.alarmId &&
+                                rec.triggerTime == candidate.triggerTime &&
+                                rec.generation == candidate.generation &&
+                                rec.instanceToken == candidate.instanceToken &&
+                                rec.restoreEpoch == candidate.restoreEpoch
+                        }
+                        if (inDeliveryLedger) return@filter false
+
+                        val inMissedStore = missedRecords.any { rec ->
+                            rec.kind == candidate.kind &&
+                                rec.alarmId == candidate.alarmId &&
+                                rec.triggerTime == candidate.triggerTime &&
+                                rec.generation == candidate.generation &&
+                                rec.instanceToken == candidate.instanceToken &&
+                                rec.restoreEpoch == candidate.restoreEpoch
+                        }
+                        if (inMissedStore) return@filter false
+
+                        !isCandidateExcludedByOwner(candidate, durableOwner)
+                    }
+
+                    // Mark writer invoked immediately before calling queueUpdater
+                    stage = ExecutionStage.WRITER_INVOKED
+                    queueUpdater(context, filteredCandidates, now)
+                }
+
                 when (updateResult) {
                     is NormalQueueUpdateResult.Success -> {
                         stage = ExecutionStage.WRITE_CONFIRMED

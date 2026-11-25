@@ -5,6 +5,7 @@ import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
+import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
@@ -205,5 +206,68 @@ class ScheduleAuthorityCasTest {
     fun `absent authority returns null and does not imply OS armed`() = runBlocking {
         val authority = authorityDao.getAuthorityByAlarmId(999L)
         assertNull(authority)
+    }
+
+    @Test
+    fun `C2-RED-07 incrementRestoreEpoch bumps 100 to 101 and causes old epoch 100 CAS to return 0`() = runBlocking {
+        authorityDao.insertMeta(ScheduleAuthorityMeta(id = 1, restoreEpoch = 100L, bootstrapState = "INITIALIZED"))
+        authorityDao.insertAuthority(initialAuthority)
+
+        val bumpedRows = authorityDao.incrementRestoreEpoch()
+        assertEquals("incrementRestoreEpoch MUST update strictly 1 row", 1, bumpedRows)
+        assertEquals(101L, authorityDao.getMetaById(1)?.restoreEpoch)
+
+        // Simulate Replace restoring ScheduleAuthority under new epoch 101L
+        val bumpedAuthority = initialAuthority.copy(restoreEpoch = 101L)
+        authorityDao.insertAuthority(bumpedAuthority)
+
+        val staleClaimRows = authorityDao.casClaimAuthority(
+            alarmId = 42L,
+            instanceToken = "token-instance-42",
+            restoreEpoch = 100L,
+            expectedRevision = 1L,
+            expectedLifecycle = "LIVE",
+            desiredOperation = "CANCEL",
+            desiredTriggerMillis = null,
+            actionKey = "stale-epoch-claim"
+        )
+        assertEquals("Old epoch 100 CAS claim MUST return 0 after restoreEpoch bump", 0, staleClaimRows)
+
+        val staleScheduleRows = authorityDao.casUpdateScheduleAuthority(
+            alarmId = 42L,
+            instanceToken = "token-instance-42",
+            restoreEpoch = 100L,
+            expectedRevision = 1L,
+            newDefinitionRevision = 2L,
+            newLifecycle = "LIVE",
+            desiredOperation = "SET",
+            desiredTriggerMillis = 1700000100000L
+        )
+        assertEquals("Old epoch 100 schedule CAS MUST return 0", 0, staleScheduleRows)
+
+        assertEquals(bumpedAuthority, authorityDao.getAuthorityByAlarmId(42L))
+    }
+
+    @Test
+    fun `incrementRestoreEpoch fails closed when meta is missing non-positive or at Long MAX_VALUE`() = runBlocking {
+        // (a) Non-positive epoch = 0L
+        authorityDao.insertMeta(ScheduleAuthorityMeta(id = 1, restoreEpoch = 0L, bootstrapState = "INITIALIZED"))
+        assertEquals(0, authorityDao.incrementRestoreEpoch())
+        assertEquals(0L, authorityDao.getMetaById(1)?.restoreEpoch)
+
+        // (b) Negative epoch = -5L
+        authorityDao.insertMeta(ScheduleAuthorityMeta(id = 1, restoreEpoch = -5L, bootstrapState = "INITIALIZED"))
+        assertEquals(0, authorityDao.incrementRestoreEpoch())
+        assertEquals(-5L, authorityDao.getMetaById(1)?.restoreEpoch)
+
+        // (c) Overflow boundary = Long.MAX_VALUE
+        authorityDao.insertMeta(ScheduleAuthorityMeta(id = 1, restoreEpoch = Long.MAX_VALUE, bootstrapState = "INITIALIZED"))
+        assertEquals(0, authorityDao.incrementRestoreEpoch())
+        assertEquals(Long.MAX_VALUE, authorityDao.getMetaById(1)?.restoreEpoch)
+
+        // (d) Missing meta (id = 1 absent)
+        database.openHelper.writableDatabase.execSQL("DELETE FROM schedule_authority_meta")
+        assertEquals(0, authorityDao.incrementRestoreEpoch())
+        assertNull(authorityDao.getMetaById(1))
     }
 }
