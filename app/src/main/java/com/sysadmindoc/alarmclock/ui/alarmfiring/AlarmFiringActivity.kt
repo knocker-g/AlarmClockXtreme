@@ -867,17 +867,35 @@ class AlarmFiringActivity : ComponentActivity() {
     }
 
     private fun updateChallengeAudioDucking(command: ChallengeAudioDuckingCommand) {
-        if (alarmId <= 0L) return
+        if (alarmId <= 0L || scheduledAt <= 0L || terminalActionDispatched) return
+        val effectiveFireId = fireId.ifBlank { AlarmIncidentEvent.fireIdFor(alarmId, scheduledAt) }
+        if (
+            com.sysadmindoc.alarmclock.service.AlarmService.shouldRejectFiringUiLaunch(
+                alarmId = alarmId,
+                scheduledAt = scheduledAt,
+                fireId = effectiveFireId,
+                incomingState = null
+            ) != null
+        ) {
+            return
+        }
+        val active = com.sysadmindoc.alarmclock.service.AlarmService.activeAlarm.get()
+        if (
+            active == null ||
+            active.state != "FIRING" ||
+            !active.matches(
+                com.sysadmindoc.alarmclock.service.AlarmGeneration(alarmId, scheduledAt, effectiveFireId)
+            )
+        ) {
+            return
+        }
         runCatching {
             startService(
                 Intent(this, com.sysadmindoc.alarmclock.service.AlarmService::class.java)
                     .setAction(com.sysadmindoc.alarmclock.service.AlarmService.ACTION_SET_CHALLENGE_DUCKING)
                     .putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
                     .putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, scheduledAt)
-                    .putExtra(
-                        AlarmScheduler.EXTRA_ALARM_FIRE_ID,
-                        fireId.ifBlank { AlarmIncidentEvent.fireIdFor(alarmId, scheduledAt) }
-                    )
+                    .putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, effectiveFireId)
                     .putExtra(
                         com.sysadmindoc.alarmclock.service.AlarmService.EXTRA_CHALLENGE_DUCKING_ACTIVE,
                         command.active

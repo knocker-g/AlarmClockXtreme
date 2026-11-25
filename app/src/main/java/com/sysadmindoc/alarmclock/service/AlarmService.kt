@@ -578,6 +578,29 @@ class AlarmService : Service() {
         return AlarmGeneration(currentAlarmId, currentScheduledAt, currentFireId)
     }
 
+    private fun releaseWakeLockSafely() {
+        try {
+            wakeLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Wake lock release failed", e)
+        } finally {
+            wakeLock = null
+        }
+    }
+
+    private fun stopSelfIfIdle(startId: Int) {
+        if (!isForeground.get() && currentGeneration() == null) {
+            testOnStopSelfCalled?.invoke()
+            if (stopSelfResult(startId) && !isForeground.get() && currentGeneration() == null) {
+                releaseWakeLockSafely()
+            }
+        }
+    }
+
     private fun getPersistedActiveAlarmSnapshot(): ActiveAlarmSnapshot? {
         val memory = activeAlarm.get()
         if (memory != null && memory.alarmId > 0L && memory.scheduledAt > 0L && memory.fireId.isNotBlank()) {
@@ -603,6 +626,7 @@ class AlarmService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        try {
         when (intent?.action) {
             ACTION_START_ALARM -> {
                 val incomingGen = AlarmGeneration.fromStartIntent(intent)
@@ -619,6 +643,7 @@ class AlarmService : Service() {
                             reasonCode = "INVALID_START_COMMAND_REJECTED",
                             source = "AlarmService"
                         )
+                        stopSelfIfIdle(startId)
                         return START_NOT_STICKY
                     }
                     StartAdmissionDecision.DUPLICATE_IDEMPOTENT -> {
@@ -630,6 +655,7 @@ class AlarmService : Service() {
                             reasonCode = "DUPLICATE_START_COMMAND_IGNORED",
                             source = "AlarmService"
                         )
+                        stopSelfIfIdle(startId)
                         return START_NOT_STICKY
                     }
                     StartAdmissionDecision.REJECT_STALE -> {
@@ -641,6 +667,7 @@ class AlarmService : Service() {
                             reasonCode = "STALE_START_COMMAND_REJECTED",
                             source = "AlarmService"
                         )
+                        stopSelfIfIdle(startId)
                         return START_NOT_STICKY
                     }
                     StartAdmissionDecision.REJECT_CONFLICTING -> {
@@ -652,6 +679,7 @@ class AlarmService : Service() {
                             reasonCode = "CONFLICTING_START_COMMAND_REJECTED",
                             source = "AlarmService"
                         )
+                        stopSelfIfIdle(startId)
                         return START_NOT_STICKY
                     }
                     StartAdmissionDecision.ADMIT_NEW -> {
@@ -741,6 +769,7 @@ class AlarmService : Service() {
                             reasonCode = "INCOMPLETE_SNOOZE_ACTION_REJECTED",
                             source = "AlarmService"
                         )
+                        stopSelfIfIdle(startId)
                         return START_NOT_STICKY
                     }
                     ActionAdmissionDecision.REJECT_STALE -> {
@@ -751,6 +780,7 @@ class AlarmService : Service() {
                             reasonCode = "STALE_SNOOZE_GENERATION_MISMATCH",
                             source = "AlarmService"
                         )
+                        stopSelfIfIdle(startId)
                         return START_NOT_STICKY
                     }
                     ActionAdmissionDecision.REJECT_RESTART_NO_EVIDENCE -> {
@@ -827,10 +857,12 @@ class AlarmService : Service() {
                                                 reasonCode = "RESTART_SNOOZE_REJECTED_NO_ACTIVE_EVIDENCE",
                                                 source = "AlarmService"
                                             )
+                                            stopSelfIfIdle(startId)
                                         }
                                     }
                                 } catch (e: Exception) {
                                     Log.e(TAG, "Failed cold-start restart snooze for $incomingGen", e)
+                                    stopSelfIfIdle(startId)
                                 } finally {
                                     testColdStartAdmissionCompletionLatch?.complete(Unit)
                                     testColdStartAdmissionCompletionCallback?.invoke()
@@ -845,6 +877,7 @@ class AlarmService : Service() {
                             reasonCode = "RESTART_SNOOZE_REJECTED_NO_ACTIVE_EVIDENCE",
                             source = "AlarmService"
                         )
+                        stopSelfIfIdle(startId)
                         return START_NOT_STICKY
                     }
                     ActionAdmissionDecision.ADMIT_RESTART -> {
@@ -909,7 +942,11 @@ class AlarmService : Service() {
                 val incomingGen = AlarmGeneration.fromActionIntent(intent)
                 val currentGen = currentGeneration()
                 val decision = AlarmServiceAdmissionPolicy.classifyAction(currentGen, incomingGen, false, null)
-                if (decision == ActionAdmissionDecision.ADMIT_EXACT_MATCH) {
+                val isTerminalOrSuppressed = incomingGen != null && (
+                    AlarmServiceCallbackPolicy.defaultTracker.isFinalized(incomingGen) ||
+                        isUiSuppressedForGeneration(incomingGen)
+                    )
+                if (decision == ActionAdmissionDecision.ADMIT_EXACT_MATCH && !isTerminalOrSuppressed) {
                     challengeAudioDuckingActive = intent.getBooleanExtra(
                         EXTRA_CHALLENGE_DUCKING_ACTIVE,
                         false
@@ -920,7 +957,11 @@ class AlarmService : Service() {
                     ).coerceIn(10, 80)
                     applyPlaybackGain()
                 } else {
-                    Log.i(TAG, "Rejecting ACTION_SET_CHALLENGE_DUCKING for $incomingGen (active generation is $currentGen)")
+                    Log.i(
+                        TAG,
+                        "Rejecting ACTION_SET_CHALLENGE_DUCKING for $incomingGen (active generation is $currentGen, terminalOrSuppressed=$isTerminalOrSuppressed)"
+                    )
+                    stopSelfIfIdle(startId)
                     return START_NOT_STICKY
                 }
             }
@@ -940,6 +981,7 @@ class AlarmService : Service() {
                             reasonCode = "INCOMPLETE_DISMISS_ACTION_REJECTED",
                             source = "AlarmService"
                         )
+                        stopSelfIfIdle(startId)
                         return START_NOT_STICKY
                     }
                     ActionAdmissionDecision.REJECT_STALE -> {
@@ -950,6 +992,7 @@ class AlarmService : Service() {
                             reasonCode = "STALE_DISMISS_GENERATION_MISMATCH",
                             source = "AlarmService"
                         )
+                        stopSelfIfIdle(startId)
                         return START_NOT_STICKY
                     }
                     ActionAdmissionDecision.REJECT_RESTART_NO_EVIDENCE -> {
@@ -995,6 +1038,7 @@ class AlarmService : Service() {
                                                     fireId = incomingGen.fireId,
                                                     scheduledAt = incomingGen.scheduledAt
                                                 )
+                                                stopSelfIfIdle(startId)
                                                 return@withContext
                                             }
                                             if (!coldStartClaimedGenerations.add(incomingGen)) {
@@ -1031,10 +1075,12 @@ class AlarmService : Service() {
                                                 reasonCode = "RESTART_DISMISS_REJECTED_NO_ACTIVE_EVIDENCE",
                                                 source = "AlarmService"
                                             )
+                                            stopSelfIfIdle(startId)
                                         }
                                     }
                                 } catch (e: Exception) {
                                     Log.e(TAG, "Failed cold-start restart dismiss for $incomingGen", e)
+                                    stopSelfIfIdle(startId)
                                 } finally {
                                     testColdStartAdmissionCompletionLatch?.complete(Unit)
                                     testColdStartAdmissionCompletionCallback?.invoke()
@@ -1049,6 +1095,7 @@ class AlarmService : Service() {
                             reasonCode = "RESTART_DISMISS_REJECTED_NO_ACTIVE_EVIDENCE",
                             source = "AlarmService"
                         )
+                        stopSelfIfIdle(startId)
                         return START_NOT_STICKY
                     }
                     ActionAdmissionDecision.ADMIT_RESTART -> {
@@ -1064,6 +1111,7 @@ class AlarmService : Service() {
                                 fireId = acceptedGen.fireId,
                                 scheduledAt = acceptedGen.scheduledAt
                             )
+                            stopSelfIfIdle(startId)
                             return START_NOT_STICKY
                         }
                         markActionUiClosing(acceptedGen, "CLOSING_DISMISS")
@@ -1101,6 +1149,7 @@ class AlarmService : Service() {
                                 fireId = acceptedGen.fireId,
                                 scheduledAt = acceptedGen.scheduledAt
                             )
+                            stopSelfIfIdle(startId)
                             return START_NOT_STICKY
                         }
                         markActionUiClosing(acceptedGen, "CLOSING_DISMISS")
@@ -1123,7 +1172,12 @@ class AlarmService : Service() {
                 }
             }
         }
+        stopSelfIfIdle(startId)
         return START_NOT_STICKY
+        } catch (t: Throwable) {
+            stopSelfIfIdle(startId)
+            throw t
+        }
     }
 
     private suspend fun stopServiceDueToAuthorityRejection(startGen: AlarmGeneration, reason: String) {
@@ -1636,7 +1690,7 @@ class AlarmService : Service() {
                 if (currentGeneration()?.matches(startGen) != true) return@launch
                 val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager ?: return@launch
                 val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
-                if (backupSoundOriginalAlarmVolume == null || backupSoundOriginalGeneration == null) {
+                if (backupSoundOriginalAlarmVolume == null || backupSoundOriginalGeneration?.matches(startGen) != true) {
                     backupSoundOriginalAlarmVolume = audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
                     backupSoundOriginalGeneration = startGen
                 }
@@ -2202,7 +2256,7 @@ class AlarmService : Service() {
                             scheduledAt = startGen.scheduledAt
                         )
                         if (alarm.overrideSystemVolume) {
-                            setConfiguredAlarmStreamVolume(alarm)
+                            setConfiguredAlarmStreamVolume(alarm, attemptToken)
                         }
                         playbackRampGain = 1f
                         applyPlaybackGain()
@@ -2289,7 +2343,7 @@ class AlarmService : Service() {
                         cancelPlaybackWatchdog()
                         seekToRandomPoolOffset(alarm, playbackRef)
                         if (alarm.overrideSystemVolume) {
-                            setConfiguredAlarmStreamVolume(alarm)
+                            setConfiguredAlarmStreamVolume(alarm, attemptToken)
                         }
                         applyPlaybackGain()
                         updateAlarmMediaSessionState(PlaybackState.STATE_PLAYING)
@@ -2489,31 +2543,8 @@ class AlarmService : Service() {
         }
 
         playbackAuthority.setRoutingAttemptToken(fallbackToken)
-        val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager
-        if (audioManager != null) {
-            runCatching {
-                if (backupSoundOriginalAlarmVolume == null || backupSoundOriginalGeneration == null) {
-                    backupSoundOriginalAlarmVolume = audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
-                    backupSoundOriginalGeneration = fallbackToken.generation
-                }
-                if (playbackAuthority.shouldMutateAudio(currentGeneration(), fallbackToken)) {
-                    audioManager.setStreamVolume(
-                        AudioManager.STREAM_ALARM,
-                        audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM),
-                        0
-                    )
-                }
-            }.onFailure { error ->
-                recordIncidentAsync(
-                    type = AlarmIncidentEvent.TYPE_AUDIO,
-                    status = AlarmIncidentEvent.STATUS_FAILED,
-                    reasonCode = "MEDIA3_FALLBACK_VOLUME_FAILED_${error.javaClass.simpleName}",
-                    source = "AlarmService",
-                    alarmId = fallbackToken.generation.alarmId,
-                    fireId = fallbackToken.generation.fireId,
-                    scheduledAt = fallbackToken.generation.scheduledAt
-                )
-            }
+        if (alarm.overrideSystemVolume) {
+            setConfiguredAlarmStreamVolume(alarm, fallbackToken)
         }
         playbackAuthority.executeIfActive(currentGeneration(), fallbackToken) {
             recordIncidentAsync(
@@ -2657,10 +2688,38 @@ class AlarmService : Service() {
     }
 
     private fun setConfiguredAlarmStreamVolume(alarm: Alarm) {
-        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
-        val targetVol = (maxVol * alarm.volume / 100f).toInt().coerceIn(1, maxVol)
-        audioManager.setStreamVolume(AudioManager.STREAM_ALARM, targetVol, 0)
+        setConfiguredAlarmStreamVolume(alarm, null)
+    }
+
+    private fun setConfiguredAlarmStreamVolume(
+        alarm: Alarm,
+        token: PlaybackAttemptToken?
+    ) {
+        if (alarm.volume <= 0) return
+        val targetGen = token?.generation ?: currentGeneration() ?: return
+        if (token != null && !playbackAuthority.shouldMutateAudio(currentGeneration(), token)) {
+            return
+        }
+        val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager ?: return
+        runCatching {
+            if (backupSoundOriginalAlarmVolume == null || backupSoundOriginalGeneration?.matches(targetGen) != true) {
+                backupSoundOriginalAlarmVolume = audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
+                backupSoundOriginalGeneration = targetGen
+            }
+            val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+            val targetVol = (maxVol * alarm.volume / 100f).toInt().coerceIn(1, maxVol)
+            audioManager.setStreamVolume(AudioManager.STREAM_ALARM, targetVol, 0)
+        }.onFailure { error ->
+            recordIncidentAsync(
+                type = AlarmIncidentEvent.TYPE_AUDIO,
+                status = AlarmIncidentEvent.STATUS_FAILED,
+                reasonCode = "CONFIGURED_ALARM_VOLUME_FAILED_${error.javaClass.simpleName}",
+                source = "AlarmService",
+                alarmId = targetGen.alarmId,
+                fireId = targetGen.fireId,
+                scheduledAt = targetGen.scheduledAt
+            )
+        }
     }
 
     private fun startMediaPlayerAudioInternal(
@@ -2708,10 +2767,7 @@ class AlarmService : Service() {
                                 scheduledAt = startGen.scheduledAt
                             )
                             if (alarm.overrideSystemVolume) {
-                                val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-                                val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
-                                val targetVol = (maxVol * alarm.volume / 100f).toInt().coerceIn(1, maxVol)
-                                audioManager.setStreamVolume(AudioManager.STREAM_ALARM, targetVol, 0)
+                                setConfiguredAlarmStreamVolume(alarm, attemptToken)
                             }
                             playbackRampGain = 1f
                             applyPlaybackGain()
@@ -2825,12 +2881,7 @@ class AlarmService : Service() {
                         mediaPlayerStartAction = {
                             seekToRandomPoolOffset(alarm, playback)
                             if (alarm.overrideSystemVolume) {
-                                if (playbackAuthority.shouldMutateAudio(currentGeneration(), attemptToken)) {
-                                    val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-                                    val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
-                                    val targetVol = (maxVol * alarm.volume / 100f).toInt().coerceIn(1, maxVol)
-                                    audioManager.setStreamVolume(AudioManager.STREAM_ALARM, targetVol, 0)
-                                }
+                                setConfiguredAlarmStreamVolume(alarm, attemptToken)
                             }
                             playbackRampGain = if (fadeInMs > 0) 0f else 1f
                             val initialGain = alarmPlaybackGain(
@@ -2950,6 +3001,9 @@ class AlarmService : Service() {
                             currentGenSupplier = { currentGeneration() },
                             holder = holder,
                             mediaPlayerStartAction = {
+                                if (alarm.overrideSystemVolume) {
+                                    setConfiguredAlarmStreamVolume(alarm, fallbackToken)
+                                }
                                 playbackRampGain = 1f
                                 val gain = alarmPlaybackGain(
                                     callMuted = callMutedAudio,
@@ -4630,17 +4684,18 @@ class AlarmService : Service() {
     }
 
     override fun onDestroy() {
-        coldStartClaimedGenerations.clear()
-        val destroyGen = currentGeneration()
-        autoSilenceJob?.cancel()
-        backupSoundJob?.cancel()
-        flashlightJob?.cancel()
-        stopAlarmPlayback(destroyGen)
-        wakeLock?.let {
-            if (it.isHeld) it.release()
+        try {
+            coldStartClaimedGenerations.clear()
+            val destroyGen = currentGeneration()
+            autoSilenceJob?.cancel()
+            backupSoundJob?.cancel()
+            flashlightJob?.cancel()
+            stopAlarmPlayback(destroyGen)
+        } finally {
+            releaseWakeLockSafely()
+            serviceScope.cancel()
+            super.onDestroy()
         }
-        serviceScope.cancel()
-        super.onDestroy()
     }
 
 }
