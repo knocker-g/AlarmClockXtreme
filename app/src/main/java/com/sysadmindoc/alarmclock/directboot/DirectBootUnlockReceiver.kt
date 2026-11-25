@@ -110,6 +110,8 @@ class DirectBootUnlockReceiver : BroadcastReceiver() {
         @VisibleForTesting
         internal var onExecutionTerminatedSeam: (Throwable?) -> Unit = {}
 
+        private fun handoffBlockedReason(reason: String): String = reason
+
         internal fun performTargetedDeToCeHandoff(
         deContext: Context,
         ceContext: Context
@@ -119,9 +121,9 @@ class DirectBootUnlockReceiver : BroadcastReceiver() {
             is LedgerStorageState.ValidEmpty -> emptyList()
             is LedgerStorageState.ValidWithRecords -> ledgerState.records
             is LedgerStorageState.Corrupt ->
-                return "DE DeliveryLedger is corrupt: ${ledgerState.reason}"
+                return handoffBlockedReason("DE DeliveryLedger is corrupt: ${ledgerState.reason}")
             is LedgerStorageState.UnsupportedSchema ->
-                return "DE DeliveryLedger unsupported schema version ${ledgerState.foundVersion}"
+                return handoffBlockedReason("DE DeliveryLedger unsupported schema version ${ledgerState.foundVersion}")
         }
 
         val missedRecords = when (val missedState = DirectBootMissedStore.readUnacknowledgedRecords(deContext)) {
@@ -129,18 +131,18 @@ class DirectBootUnlockReceiver : BroadcastReceiver() {
             is MissedStoreStorageState.ValidEmpty -> emptyList()
             is MissedStoreStorageState.ValidWithRecords -> missedState.records
             is MissedStoreStorageState.Corrupt ->
-                return "DE MissedStore is corrupt: ${missedState.reason}"
+                return handoffBlockedReason("DE MissedStore is corrupt: ${missedState.reason}")
             is MissedStoreStorageState.UnsupportedSchema ->
-                return "DE MissedStore unsupported schema version ${missedState.foundVersion}"
+                return handoffBlockedReason("DE MissedStore unsupported schema version ${missedState.foundVersion}")
             is MissedStoreStorageState.PersistenceUncertain ->
-                return "DE MissedStore persistence uncertain: ${missedState.reason}"
+                return handoffBlockedReason("DE MissedStore persistence uncertain: ${missedState.reason}")
         }
 
         when (val witnessState = DirectBootFiredWitnessLedger.readWitnesses(deContext)) {
             is WitnessLedgerState.Corrupt ->
-                return "DE FiredWitnessLedger is corrupt: ${witnessState.reason}"
+                return handoffBlockedReason("DE FiredWitnessLedger is corrupt: ${witnessState.reason}")
             is WitnessLedgerState.UnsupportedSchema ->
-                return "DE FiredWitnessLedger unsupported schema version ${witnessState.foundVersion}"
+                return handoffBlockedReason("DE FiredWitnessLedger unsupported schema version ${witnessState.foundVersion}")
             is WitnessLedgerState.Absent,
             is WitnessLedgerState.ValidEmpty,
             is WitnessLedgerState.ValidWithRecords -> Unit
@@ -150,9 +152,9 @@ class DirectBootUnlockReceiver : BroadcastReceiver() {
             is OwnerReadResult.Absent -> null
             is OwnerReadResult.Success -> ownerRead.owner
             is OwnerReadResult.Corrupt ->
-                return "DE DurableOwnerStore is corrupt: ${ownerRead.reason}"
+                return handoffBlockedReason("DE DurableOwnerStore is corrupt: ${ownerRead.reason}")
             is OwnerReadResult.UnsupportedSchema ->
-                return "DE DurableOwnerStore unsupported schema version ${ownerRead.foundVersion}"
+                return handoffBlockedReason("DE DurableOwnerStore unsupported schema version ${ownerRead.foundVersion}")
         }
 
         val existingCeRecords = when (val ceState = DirectBootCeTakeoverStore.inspectStorageState(ceContext)) {
@@ -160,13 +162,13 @@ class DirectBootUnlockReceiver : BroadcastReceiver() {
             is CeTakeoverStorageState.ValidEmpty -> emptyList()
             is CeTakeoverStorageState.ValidWithRecords -> ceState.records
             is CeTakeoverStorageState.CeLocked ->
-                return "CE Storage is locked"
+                return handoffBlockedReason("CE Storage is locked")
             is CeTakeoverStorageState.CeContextRejected ->
                 return ceState.reason
             is CeTakeoverStorageState.Corrupt ->
-                return "CE Storage is corrupt: ${ceState.reason}"
+                return handoffBlockedReason("CE Storage is corrupt: ${ceState.reason}")
             is CeTakeoverStorageState.UnsupportedSchema ->
-                return "CE Storage unsupported schema version ${ceState.foundVersion}"
+                return handoffBlockedReason("CE Storage unsupported schema version ${ceState.foundVersion}")
         }
 
         if (deliveredRecords.isEmpty() && missedRecords.isEmpty()) {
@@ -204,18 +206,18 @@ class DirectBootUnlockReceiver : BroadcastReceiver() {
 
             when (val handoffRes = DirectBootCeHandoffCoordinator.handoffDelivered(deContext, ceContext, delRecord)) {
                 is CeHandoffResult.Confirmed -> Unit
-                is CeHandoffResult.Rejected.CeLocked -> return "CE Storage is locked"
+                is CeHandoffResult.Rejected.CeLocked -> return handoffBlockedReason("CE Storage is locked")
                 is CeHandoffResult.Rejected.CeContextInvalid -> return handoffRes.details
                 is CeHandoffResult.Rejected.DeStorageCorrupt ->
-                    return "${handoffRes.storeDomain} is corrupt: ${handoffRes.reason}"
+                    return handoffBlockedReason("${handoffRes.storeDomain} is corrupt: ${handoffRes.reason}")
                 is CeHandoffResult.Rejected.DeUnsupportedSchema ->
-                    return "${handoffRes.storeDomain} unsupported schema ${handoffRes.foundVersion}"
+                    return handoffBlockedReason("${handoffRes.storeDomain} unsupported schema ${handoffRes.foundVersion}")
                 is CeHandoffResult.Rejected.DeStorageUncertain ->
-                    return "${handoffRes.storeDomain} uncertain: ${handoffRes.reason}"
+                    return handoffBlockedReason("${handoffRes.storeDomain} uncertain: ${handoffRes.reason}")
                 is CeHandoffResult.Rejected.CeStorageCorrupt ->
-                    return "CE Storage is corrupt: ${handoffRes.reason}"
+                    return handoffBlockedReason("CE Storage is corrupt: ${handoffRes.reason}")
                 is CeHandoffResult.Rejected.CeUnsupportedSchema ->
-                    return "CE Storage unsupported schema ${handoffRes.foundVersion}"
+                    return handoffBlockedReason("CE Storage unsupported schema ${handoffRes.foundVersion}")
                 is CeHandoffResult.Rejected,
                 is CeHandoffResult.Uncertain,
                 is CeHandoffResult.PostCommitFailure,
@@ -248,18 +250,18 @@ class DirectBootUnlockReceiver : BroadcastReceiver() {
 
             when (val handoffRes = DirectBootCeHandoffCoordinator.handoffMissed(deContext, ceContext, missedRecord)) {
                 is CeHandoffResult.Confirmed -> Unit
-                is CeHandoffResult.Rejected.CeLocked -> return "CE Storage is locked"
+                is CeHandoffResult.Rejected.CeLocked -> return handoffBlockedReason("CE Storage is locked")
                 is CeHandoffResult.Rejected.CeContextInvalid -> return handoffRes.details
                 is CeHandoffResult.Rejected.DeStorageCorrupt ->
-                    return "${handoffRes.storeDomain} is corrupt: ${handoffRes.reason}"
+                    return handoffBlockedReason("${handoffRes.storeDomain} is corrupt: ${handoffRes.reason}")
                 is CeHandoffResult.Rejected.DeUnsupportedSchema ->
-                    return "${handoffRes.storeDomain} unsupported schema ${handoffRes.foundVersion}"
+                    return handoffBlockedReason("${handoffRes.storeDomain} unsupported schema ${handoffRes.foundVersion}")
                 is CeHandoffResult.Rejected.DeStorageUncertain ->
-                    return "${handoffRes.storeDomain} uncertain: ${handoffRes.reason}"
+                    return handoffBlockedReason("${handoffRes.storeDomain} uncertain: ${handoffRes.reason}")
                 is CeHandoffResult.Rejected.CeStorageCorrupt ->
-                    return "CE Storage is corrupt: ${handoffRes.reason}"
+                    return handoffBlockedReason("CE Storage is corrupt: ${handoffRes.reason}")
                 is CeHandoffResult.Rejected.CeUnsupportedSchema ->
-                    return "CE Storage unsupported schema ${handoffRes.foundVersion}"
+                    return handoffBlockedReason("CE Storage unsupported schema ${handoffRes.foundVersion}")
                 is CeHandoffResult.Rejected,
                 is CeHandoffResult.Uncertain,
                 is CeHandoffResult.PostCommitFailure,

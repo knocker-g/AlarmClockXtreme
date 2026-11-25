@@ -226,8 +226,9 @@ class AlarmScheduler @Inject constructor(
                 val token = "$LEGACY_V1_CANCEL_TOKEN_PREFIX${alarm.id}:${alarm.generation}:${java.util.UUID.randomUUID()}"
                 val now = System.currentTimeMillis().coerceAtLeast(1L)
                 val safeScheduledAt = expectedScheduledAt.coerceAtLeast(0L)
+                val fallbackFireId = "legacy-cancel-" + alarm.id + "-" + alarm.generation
                 val fireId = AlarmIncidentEvent.fireIdFor(alarm.id, safeScheduledAt)
-                    .ifBlank { "legacy-cancel-${alarm.id}-${alarm.generation}" }
+                    .ifBlank { fallbackFireId }
                 val intent = com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent(
                     operationToken = token,
                     alarmId = alarm.id,
