@@ -28,7 +28,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [30])
+@Config(sdk = [30], application = android.app.Application::class)
 class DirectBootDeliveryTransitionEngineTest {
 
     private lateinit var context: Context
