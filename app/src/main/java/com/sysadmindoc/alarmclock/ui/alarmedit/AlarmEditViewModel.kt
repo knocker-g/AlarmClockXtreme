@@ -822,27 +822,73 @@ class AlarmEditViewModel @Inject constructor(
             ).sanitized()
 
             try {
-                val targetId = if (s.isEditing) {
-                    repository.update(alarm)
-                    alarmId
-                } else {
-                    repository.save(alarm)
-                }
-                val savedAlarm = repository.getById(targetId) ?: alarm.copy(id = targetId)
-                if (savedAlarm.isEnabled) {
-                    val outcome = scheduler.schedule(savedAlarm)
-                    if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.PermissionBlocked) {
-                        android.util.Log.w("AlarmEditViewModel", "Alarm $targetId saved in DB, but exact alarm permission is revoked (${outcome.reason})")
-                    } else if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed) {
-                        android.util.Log.w("AlarmEditViewModel", "Alarm $targetId saved in DB; OS registration failed, pending background recovery")
+                if (s.isEditing && !alarm.isEnabled) {
+                    when (val persistResult = repository.updateDisabledWithLegacyV1CancelWitness(alarm)) {
+                        is com.sysadmindoc.alarmclock.data.repository.AlarmRepository.LegacyV1CancelWitnessPersistResult.Committed -> {
+                            val cancelled = scheduler.cancelSuspending(alarmId)
+                            if (!cancelled) {
+                                runCatching {
+                                    com.sysadmindoc.alarmclock.worker.BootRescheduleWorker.enqueue(
+                                        context = context,
+                                        sourceAction = "ALARM_EDIT_DISABLE_CANCEL_FAILED",
+                                        forceRecalculate = false
+                                    )
+                                }
+                                _uiState.value = _uiState.value.copy(
+                                    isSaving = false,
+                                    saveError = context.getString(R.string.alarm_edit_save_error_generic)
+                                )
+                                return@launch
+                            }
+                            val settled = AlarmScheduler.completePendingLegacyV1CancelWitness(
+                                repository,
+                                persistResult.witnessToken
+                            )
+                            if (!settled) {
+                                android.util.Log.w(
+                                    "AlarmEditViewModel",
+                                    "Edit-disable post-cancel witness settlement failed for alarm $alarmId (${persistResult.witnessToken}); enqueuing BootRescheduleWorker"
+                                )
+                                runCatching {
+                                    com.sysadmindoc.alarmclock.worker.BootRescheduleWorker.enqueue(
+                                        context = context,
+                                        sourceAction = "ALARM_EDIT_WITNESS_SETTLE_FAILED",
+                                        forceRecalculate = false
+                                    )
+                                }
+                            }
+                            scheduler.syncBedtimeDndRule()
+                            onComplete()
+                        }
+                        is com.sysadmindoc.alarmclock.data.repository.AlarmRepository.LegacyV1CancelWitnessPersistResult.RejectedByExistingNonLegacyIntent,
+                        com.sysadmindoc.alarmclock.data.repository.AlarmRepository.LegacyV1CancelWitnessPersistResult.CasRejected -> {
+                            _uiState.value = _uiState.value.copy(
+                                isSaving = false,
+                                saveError = context.getString(R.string.alarm_edit_save_error_generic)
+                            )
+                            return@launch
+                        }
                     }
                 } else {
-                    // Edit flow may have just disabled the alarm — make sure any
-                    // previously-armed AlarmManager / worker entry is torn down.
-                    if (s.isEditing) scheduler.cancel(alarmId)
-                    scheduler.syncBedtimeDndRule()
+                    val targetId = if (s.isEditing) {
+                        repository.update(alarm)
+                        alarmId
+                    } else {
+                        repository.save(alarm)
+                    }
+                    val savedAlarm = repository.getById(targetId) ?: alarm.copy(id = targetId)
+                    if (savedAlarm.isEnabled) {
+                        val outcome = scheduler.schedule(savedAlarm)
+                        if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.PermissionBlocked) {
+                            android.util.Log.w("AlarmEditViewModel", "Alarm $targetId saved in DB, but exact alarm permission is revoked (${outcome.reason})")
+                        } else if (outcome is com.sysadmindoc.alarmclock.domain.ScheduleOutcome.RegistrationFailed) {
+                            android.util.Log.w("AlarmEditViewModel", "Alarm $targetId saved in DB; OS registration failed, pending background recovery")
+                        }
+                    } else {
+                        scheduler.syncBedtimeDndRule()
+                    }
+                    onComplete()
                 }
-                onComplete()
             } catch (e: com.sysadmindoc.alarmclock.data.repository.StaleAlarmException) {
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,

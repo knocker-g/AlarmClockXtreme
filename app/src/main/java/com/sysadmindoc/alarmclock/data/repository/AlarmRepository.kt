@@ -134,82 +134,254 @@ class AlarmRepository @Inject constructor(
         return savedId
     }
 
+    sealed interface LegacyV1CancelWitnessPersistResult {
+        data class Committed(
+            val witnessToken: String,
+            val updatedAlarm: Alarm
+        ) : LegacyV1CancelWitnessPersistResult
+
+        data object CasRejected : LegacyV1CancelWitnessPersistResult
+
+        data class RejectedByExistingNonLegacyIntent(
+            val existingTokens: List<String>
+        ) : LegacyV1CancelWitnessPersistResult
+    }
+
     suspend fun update(alarm: Alarm) {
         alarm.requireValidHolidayPolicy()
         database.withTransaction {
-            val authorityDao = database.scheduleAuthorityDao()
-            val issuedDao = database.issuedOccurrenceDao()
             val existing = if (alarm.id != 0L) dao.getById(alarm.id) else null
             val versioned = prepareVersionedAlarmForUpdate(alarm, existing)
             val sanitized = versioned.sanitized()
-            dao.update(sanitized)
-
-            // KNO-30 P2 / KNO-159 P2: Fenced CAS update for ScheduleAuthority and revoke obsolete occurrences on schedule change
-            val existingAuthority = authorityDao.getAuthorityByAlarmId(sanitized.id)
-            if (existingAuthority != null && !sanitized.isQuickAlarm) {
-                val isScheduleChanged = existing != null && (
-                    existing.hour != sanitized.hour ||
-                    existing.minute != sanitized.minute ||
-                    existing.repeatDays != sanitized.repeatDays ||
-                    existing.specificDate != sanitized.specificDate ||
-                    existing.scheduleKind != sanitized.scheduleKind ||
-                    existing.canonicalHolidayPolicy() != sanitized.canonicalHolidayPolicy() ||
-                    existing.skipOnHolidays != sanitized.skipOnHolidays ||
-                    existing.solarOffsetMinutes != sanitized.solarOffsetMinutes ||
-                    existing.solarAnchor != sanitized.solarAnchor ||
-                    existing.timezonePolicy != sanitized.timezonePolicy ||
-                    existing.fixedTimezoneId != sanitized.fixedTimezoneId ||
-                    existing.shiftPattern != sanitized.shiftPattern ||
-                    existing.shiftPatternStartDate != sanitized.shiftPatternStartDate
-                )
-
-                val newDefRev = com.sysadmindoc.alarmclock.domain.ScheduleAuthorityBootstrapAdapter.computeDefinitionRevision(sanitized)
-                val newLifecycle = if (sanitized.isEnabled) "LIVE" else "DISABLED"
-                val newDesiredOperation = if (sanitized.isEnabled) "SET" else "CANCEL"
-                val newDesiredTriggerMillis = if (sanitized.isEnabled) sanitized.nextTriggerTime else null
-
-                val rows = if (isScheduleChanged) {
-                    authorityDao.casUpdateScheduleAuthority(
-                        alarmId = sanitized.id,
-                        instanceToken = existingAuthority.instanceToken,
-                        restoreEpoch = existingAuthority.restoreEpoch,
-                        expectedRevision = existingAuthority.scheduleRevision,
-                        newDefinitionRevision = newDefRev,
-                        newLifecycle = newLifecycle,
-                        desiredOperation = newDesiredOperation,
-                        desiredTriggerMillis = newDesiredTriggerMillis
-                    )
-                } else {
-                    authorityDao.casUpdateNonScheduleAuthority(
-                        alarmId = sanitized.id,
-                        instanceToken = existingAuthority.instanceToken,
-                        restoreEpoch = existingAuthority.restoreEpoch,
-                        expectedRevision = existingAuthority.scheduleRevision,
-                        newDefinitionRevision = newDefRev,
-                        newLifecycle = newLifecycle,
-                        desiredOperation = newDesiredOperation,
-                        desiredTriggerMillis = newDesiredTriggerMillis
-                    )
-                }
-
-                if (rows == 0) {
-                    throw StaleAlarmException("ScheduleAuthority CAS update failed for alarm ${sanitized.id}: stale token, revision, or epoch")
-                }
-
-                if (isScheduleChanged) {
-                    issuedDao.revokePendingOccurrencesForAlarm(sanitized.id, System.currentTimeMillis())
-                }
-                if (isScheduleChanged || !sanitized.isEnabled) {
-                    database.scheduleExceptionDao().deleteForAlarm(sanitized.id)
-                } else {
-                    // KNO-33: Non-schedule edit preserves existing exceptions ONLY if the target
-                    // remains the exact same canonical current-next occurrence.
-                    val adapter = com.sysadmindoc.alarmclock.domain.evaluator.DurableOneTimeOverrideAdapter(database)
-                    adapter.invalidateOverridesIfTargetChanged(sanitized.id, nowEpochMs = clockMillis())
-                }
-            }
+            updateInTx(existing, sanitized)
         }
         coordinator?.invalidateAlarm(alarm.id, InvalidationReason.ALARM_DEFINITION_CHANGED)
+    }
+
+    suspend fun updateDisabledWithLegacyV1CancelWitness(
+        alarm: Alarm
+    ): LegacyV1CancelWitnessPersistResult {
+        alarm.requireValidHolidayPolicy()
+        val result = database.withTransaction {
+            val existing = if (alarm.id != 0L) dao.getById(alarm.id) else null
+            val versioned = prepareVersionedAlarmForUpdate(alarm, existing)
+            val sanitized = versioned.sanitized()
+            require(!sanitized.isEnabled) {
+                "updateDisabledWithLegacyV1CancelWitness requires disabled alarm (id=${sanitized.id})"
+            }
+            if (sanitized.id <= 0L || sanitized.isQuickAlarm || sanitized.generation <= 0) {
+                throw IllegalStateException(
+                    "Cannot persist Legacy V1 cancel witness for invalid/quick alarm ${sanitized.id}"
+                )
+            }
+            val intentDao = database.durableOperationIntentDao()
+            val nonLegacyUnresolved = intentDao.getUnresolvedIntentsByAlarmId(sanitized.id)
+                .filter {
+                    !it.operationToken.startsWith(
+                        com.sysadmindoc.alarmclock.domain.AlarmScheduler.LEGACY_V1_CANCEL_TOKEN_PREFIX
+                    )
+                }
+            if (nonLegacyUnresolved.isNotEmpty()) {
+                return@withTransaction LegacyV1CancelWitnessPersistResult.RejectedByExistingNonLegacyIntent(
+                    nonLegacyUnresolved.map { it.operationToken }
+                )
+            }
+            val updatedAlarm = updateInTx(existing, sanitized)
+            val expectedScheduledAt = existing?.nextTriggerTime?.takeIf { it > 0L }
+                ?: updatedAlarm.nextTriggerTime
+            val witnessToken = persistLegacyV1CancelWitnessInTx(
+                alarm = updatedAlarm,
+                expectedScheduledAt = expectedScheduledAt
+            )
+            LegacyV1CancelWitnessPersistResult.Committed(
+                witnessToken = witnessToken,
+                updatedAlarm = updatedAlarm
+            )
+        }
+        if (result is LegacyV1CancelWitnessPersistResult.Committed) {
+            coordinator?.invalidateAlarm(alarm.id, InvalidationReason.ALARM_DEFINITION_CHANGED)
+        }
+        return result
+    }
+
+    suspend fun casDisableOneShotWithLegacyV1CancelWitness(
+        id: Long,
+        expectedTrigger: Long
+    ): LegacyV1CancelWitnessPersistResult {
+        if (id <= 0L || expectedTrigger <= 0L) {
+            return LegacyV1CancelWitnessPersistResult.CasRejected
+        }
+        val result = database.withTransaction {
+            val existing = dao.getById(id)
+                ?: return@withTransaction LegacyV1CancelWitnessPersistResult.CasRejected
+            if (existing.isQuickAlarm || existing.generation <= 0) {
+                throw IllegalStateException(
+                    "Cannot persist Legacy V1 cancel witness for invalid/quick alarm $id"
+                )
+            }
+            val intentDao = database.durableOperationIntentDao()
+            val nonLegacyUnresolved = intentDao.getUnresolvedIntentsByAlarmId(id)
+                .filter {
+                    !it.operationToken.startsWith(
+                        com.sysadmindoc.alarmclock.domain.AlarmScheduler.LEGACY_V1_CANCEL_TOKEN_PREFIX
+                    )
+                }
+            if (nonLegacyUnresolved.isNotEmpty()) {
+                return@withTransaction LegacyV1CancelWitnessPersistResult.RejectedByExistingNonLegacyIntent(
+                    nonLegacyUnresolved.map { it.operationToken }
+                )
+            }
+            val rowsUpdated = dao.casDisableOneShot(id, expectedTrigger = expectedTrigger)
+            if (rowsUpdated <= 0) {
+                return@withTransaction LegacyV1CancelWitnessPersistResult.CasRejected
+            }
+            val updatedAlarm = dao.getById(id)
+                ?: throw IllegalStateException("Alarm $id missing after casDisableOneShot")
+            val witnessToken = persistLegacyV1CancelWitnessInTx(
+                alarm = updatedAlarm,
+                expectedScheduledAt = expectedTrigger
+            )
+            LegacyV1CancelWitnessPersistResult.Committed(
+                witnessToken = witnessToken,
+                updatedAlarm = updatedAlarm
+            )
+        }
+        if (result is LegacyV1CancelWitnessPersistResult.Committed) {
+            coordinator?.invalidateAlarm(id, InvalidationReason.ALARM_TOGGLED)
+        }
+        return result
+    }
+
+    private suspend fun updateInTx(existing: Alarm?, sanitized: Alarm): Alarm {
+        val authorityDao = database.scheduleAuthorityDao()
+        val issuedDao = database.issuedOccurrenceDao()
+        dao.update(sanitized)
+
+        // KNO-30 P2 / KNO-159 P2: Fenced CAS update for ScheduleAuthority and revoke obsolete occurrences on schedule change
+        val existingAuthority = authorityDao.getAuthorityByAlarmId(sanitized.id)
+        if (existingAuthority != null && !sanitized.isQuickAlarm) {
+            val isScheduleChanged = existing != null && (
+                existing.hour != sanitized.hour ||
+                existing.minute != sanitized.minute ||
+                existing.repeatDays != sanitized.repeatDays ||
+                existing.specificDate != sanitized.specificDate ||
+                existing.scheduleKind != sanitized.scheduleKind ||
+                existing.canonicalHolidayPolicy() != sanitized.canonicalHolidayPolicy() ||
+                existing.skipOnHolidays != sanitized.skipOnHolidays ||
+                existing.solarOffsetMinutes != sanitized.solarOffsetMinutes ||
+                existing.solarAnchor != sanitized.solarAnchor ||
+                existing.timezonePolicy != sanitized.timezonePolicy ||
+                existing.fixedTimezoneId != sanitized.fixedTimezoneId ||
+                existing.shiftPattern != sanitized.shiftPattern ||
+                existing.shiftPatternStartDate != sanitized.shiftPatternStartDate
+            )
+
+            val newDefRev = com.sysadmindoc.alarmclock.domain.ScheduleAuthorityBootstrapAdapter.computeDefinitionRevision(sanitized)
+            val newLifecycle = if (sanitized.isEnabled) "LIVE" else "DISABLED"
+            val newDesiredOperation = if (sanitized.isEnabled) "SET" else "CANCEL"
+            val newDesiredTriggerMillis = if (sanitized.isEnabled) sanitized.nextTriggerTime else null
+
+            val rows = if (isScheduleChanged) {
+                authorityDao.casUpdateScheduleAuthority(
+                    alarmId = sanitized.id,
+                    instanceToken = existingAuthority.instanceToken,
+                    restoreEpoch = existingAuthority.restoreEpoch,
+                    expectedRevision = existingAuthority.scheduleRevision,
+                    newDefinitionRevision = newDefRev,
+                    newLifecycle = newLifecycle,
+                    desiredOperation = newDesiredOperation,
+                    desiredTriggerMillis = newDesiredTriggerMillis
+                )
+            } else {
+                authorityDao.casUpdateNonScheduleAuthority(
+                    alarmId = sanitized.id,
+                    instanceToken = existingAuthority.instanceToken,
+                    restoreEpoch = existingAuthority.restoreEpoch,
+                    expectedRevision = existingAuthority.scheduleRevision,
+                    newDefinitionRevision = newDefRev,
+                    newLifecycle = newLifecycle,
+                    desiredOperation = newDesiredOperation,
+                    desiredTriggerMillis = newDesiredTriggerMillis
+                )
+            }
+
+            if (rows == 0) {
+                throw StaleAlarmException("ScheduleAuthority CAS update failed for alarm ${sanitized.id}: stale token, revision, or epoch")
+            }
+
+            if (isScheduleChanged) {
+                issuedDao.revokePendingOccurrencesForAlarm(sanitized.id, System.currentTimeMillis())
+            }
+            if (isScheduleChanged || !sanitized.isEnabled) {
+                database.scheduleExceptionDao().deleteForAlarm(sanitized.id)
+            } else {
+                // KNO-33: Non-schedule edit preserves existing exceptions ONLY if the target
+                // remains the exact same canonical current-next occurrence.
+                val adapter = com.sysadmindoc.alarmclock.domain.evaluator.DurableOneTimeOverrideAdapter(database)
+                adapter.invalidateOverridesIfTargetChanged(sanitized.id, nowEpochMs = clockMillis())
+            }
+        }
+        return sanitized
+    }
+
+    private suspend fun persistLegacyV1CancelWitnessInTx(
+        alarm: Alarm,
+        expectedScheduledAt: Long
+    ): String {
+        if (alarm.id <= 0L || alarm.isQuickAlarm || alarm.generation <= 0) {
+            throw IllegalStateException("Cannot persist Legacy V1 cancel witness for invalid/quick alarm ${alarm.id}")
+        }
+        val intentDao = database.durableOperationIntentDao()
+        val unresolved = intentDao.getUnresolvedIntentsByAlarmId(alarm.id)
+        val nonLegacy = unresolved.filter {
+            !it.operationToken.startsWith(
+                com.sysadmindoc.alarmclock.domain.AlarmScheduler.LEGACY_V1_CANCEL_TOKEN_PREFIX
+            )
+        }
+        if (nonLegacy.isNotEmpty()) {
+            throw IllegalStateException(
+                "Unresolved non-Legacy intent(s) block Legacy V1 cancel witness for alarm ${alarm.id}: ${nonLegacy.map { it.operationToken }}"
+            )
+        }
+        unresolved.forEach { prior ->
+            val abortedRows = intentDao.updateIntentPhase(
+                prior.operationToken,
+                com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent.PHASE_ABORTED
+            )
+            if (abortedRows != 1) {
+                throw IllegalStateException(
+                    "Failed to supersede prior Legacy V1 cancel witness ${prior.operationToken} (rows=$abortedRows)"
+                )
+            }
+        }
+        val expectedRestoreEpoch = database.scheduleAuthorityDao().getMetaById(1)
+            ?.restoreEpoch
+            ?.takeIf { it > 0L }
+        val authority = database.scheduleAuthorityDao().getAuthorityByAlarmId(alarm.id)
+        val token = "${com.sysadmindoc.alarmclock.domain.AlarmScheduler.LEGACY_V1_CANCEL_TOKEN_PREFIX}${alarm.id}:${alarm.generation}:${java.util.UUID.randomUUID()}"
+        val now = System.currentTimeMillis().coerceAtLeast(1L)
+        val safeScheduledAt = expectedScheduledAt.coerceAtLeast(0L)
+        val fallbackFireId = "legacy-cancel-" + alarm.id + "-" + alarm.generation
+        val fireId = com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent.fireIdFor(alarm.id, safeScheduledAt)
+            .ifBlank { fallbackFireId }
+        val intent = com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent(
+            operationToken = token,
+            alarmId = alarm.id,
+            operationEpoch = now,
+            incarnationId = fireId,
+            operationKind = "CANCEL",
+            expectedOwnerToken = "gen:${alarm.generation}",
+            expectedScheduleRevision = authority?.scheduleRevision ?: alarm.revision.toLong(),
+            expectedRestoreEpoch = expectedRestoreEpoch,
+            phase = com.sysadmindoc.alarmclock.data.local.entity.DurableOperationIntent.PHASE_PENDING,
+            intentRevision = 1L,
+            originalFireId = fireId,
+            originalScheduledAt = expectedScheduledAt.takeIf { it > 0L }
+        )
+        intentDao.insertValidatedIntent(intent)
+        intentDao.getIntentByToken(token)
+            ?: throw IllegalStateException("Legacy V1 cancel witness readback missing for $token")
+        return token
     }
 
     private fun prepareVersionedAlarmForSave(alarm: Alarm, existing: Alarm?): Alarm {
@@ -550,14 +722,33 @@ class AlarmRepository @Inject constructor(
             val authorityDao = database.scheduleAuthorityDao()
             val issuedDao = database.issuedOccurrenceDao()
 
-            if (isReplace) {
+            val meta = if (isReplace) {
+                val existingMeta = authorityDao.getMetaById(1)
+                    ?: throw IllegalStateException("Cannot restore alarms: ScheduleAuthorityMeta missing")
+                if (existingMeta.restoreEpoch <= 0L || existingMeta.restoreEpoch == Long.MAX_VALUE) {
+                    throw IllegalStateException("Cannot restore alarms: invalid or overflow restoreEpoch ${existingMeta.restoreEpoch}")
+                }
+                val bumpedRows = authorityDao.incrementRestoreEpoch()
+                if (bumpedRows != 1) {
+                    throw IllegalStateException("Cannot restore alarms: failed to increment ScheduleAuthorityMeta restoreEpoch (rows=$bumpedRows)")
+                }
+                val updatedMeta = authorityDao.getMetaById(1)
+                    ?: throw IllegalStateException("Cannot restore alarms: ScheduleAuthorityMeta missing after increment")
+                if (updatedMeta.restoreEpoch <= 0L) {
+                    throw IllegalStateException("Cannot restore alarms: invalid post-increment restoreEpoch ${updatedMeta.restoreEpoch}")
+                }
                 dao.deleteAll()
                 authorityDao.getAllAuthorities().forEach { authorityDao.deleteAuthorityByAlarmId(it.alarmId) }
                 issuedDao.deleteAllSlots()
+                updatedMeta
+            } else {
+                val existingMeta = authorityDao.getMetaById(1)
+                    ?: throw IllegalStateException("Cannot restore alarms: ScheduleAuthorityMeta missing")
+                if (existingMeta.restoreEpoch <= 0L) {
+                    throw IllegalStateException("Cannot restore alarms: invalid restoreEpoch ${existingMeta.restoreEpoch}")
+                }
+                existingMeta
             }
-
-            val meta = authorityDao.getMetaById(1)
-                ?: throw IllegalStateException("Cannot restore alarms: ScheduleAuthorityMeta missing")
 
             val savedIds = mutableListOf<Long>()
             for (alarm in alarms) {

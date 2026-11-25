@@ -28,7 +28,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [30])
+@Config(sdk = [30], application = android.app.Application::class)
 class DirectBootDeliveryTransitionEngineTest {
 
     private lateinit var context: Context
@@ -1561,11 +1561,16 @@ class DirectBootDeliveryTransitionEngineTest {
             deliveredAt = triggerTime + 50L
         )
 
-        assertTrue("IDLE owner MUST be neutral and allow transitionNormal to confirm, got $result", result is DeliveryTransitionResult.Confirmed)
+        assertTrue("IDLE owner MUST allow transitionNormal to confirm and transition to HANDOVER_PENDING, got $result", result is DeliveryTransitionResult.Confirmed)
+        val confirmed = result as DeliveryTransitionResult.Confirmed
         assertEquals(0, DirectBootAlarmCache.readQueue(context, now = baseTime).size)
         val ledgerState = DirectBootDeliveryLedger.readUnacknowledgedRecords(context) as LedgerStorageState.ValidWithRecords
         assertEquals(1, ledgerState.records.size)
-        assertEquals(ownerRawBefore, getDePrefs().getString(DirectBootDurableOwnerStore.KEY_DIRECT_BOOT_DURABLE_OWNER, null))
+        val ownerAfter = DirectBootDurableOwnerStore.read(context) as OwnerReadResult.Success
+        assertEquals(OwnerState.HANDOVER_PENDING, ownerAfter.owner.state)
+        assertEquals(2L, ownerAfter.owner.ownerSeq)
+        assertEquals(confirmed.deliveryRecord.recordId, ownerAfter.owner.handoverClaim?.handoverId)
+        assertEquals(101L, ownerAfter.owner.handoverClaim?.alarmId)
     }
 
     @Test
@@ -1668,4 +1673,145 @@ class DirectBootDeliveryTransitionEngineTest {
         assertFalse("Editor.commit MUST NOT be invoked after pre-commit exception", editorCommitterCalled)
         assertEquals("Queue, Ledger, and Owner raw SharedPreferences MUST remain untouched", prefsBefore, getDePrefs().all.toMap())
     }
+
+    // =========================================================================
+    // KNO-75 G4-STEP6-P23 RED: Atomic 3-Key Commit (Queue + Ledger + Owner)
+    // =========================================================================
+
+    @Test
+    fun p2_01_atomicThreeKeyCommit_transitionsAbsentAndIdleToHandoverPendingWithSystemProvenance() {
+        val triggerTime1 = baseTime + 70_000L
+        val q1 = createNormalQueueItem(alarmId = 701L, triggerTime = triggerTime1, instanceToken = "tok_p2_701", restoreEpoch = 2L)
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(q1), now = baseTime))
+
+        // Case A: Absent -> HANDOVER_PENDING (seq=1)
+        val res1 = DirectBootDeliveryTransitionEngine.transitionNormal(
+            context = context,
+            firingIdentity = normalIdentity(
+                alarmId = 701L,
+                triggerTime = triggerTime1,
+                instanceToken = "tok_p2_701",
+                restoreEpoch = 2L
+            ),
+            deliveredAt = triggerTime1 + 50L
+        )
+        assertTrue("Expected Confirmed, got $res1", res1 is DeliveryTransitionResult.Confirmed)
+        val confirmed1 = res1 as DeliveryTransitionResult.Confirmed
+
+        val ownerAfter1 = DirectBootDurableOwnerStore.read(context)
+        assertTrue("transitionNormal MUST durably write HANDOVER_PENDING, got $ownerAfter1", ownerAfter1 is OwnerReadResult.Success)
+        val owner1 = (ownerAfter1 as OwnerReadResult.Success).owner
+        assertEquals(OwnerState.HANDOVER_PENDING, owner1.state)
+        assertEquals(1L, owner1.ownerSeq)
+        val claim1 = owner1.handoverClaim
+        assertNotNull(claim1)
+        assertEquals(confirmed1.deliveryRecord.recordId, claim1!!.handoverId)
+        assertEquals(701L, claim1.alarmId)
+        assertEquals(triggerTime1, claim1.triggerTime)
+        assertEquals(1, claim1.generation)
+        assertEquals("tok_p2_701", claim1.instanceToken)
+        assertEquals(2L, claim1.restoreEpoch)
+        assertFalse("BootProvenance must NOT be unknown", owner1.bootProvenance.isUnknown)
+        val currentBootEpoch = (System.currentTimeMillis() - android.os.SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+        val epochEstimate = owner1.bootProvenance.bootEpochEstimateMs
+        assertNotNull(epochEstimate)
+        assertTrue(
+            "bootEpochEstimateMs ($epochEstimate) MUST reflect system clock (~$currentBootEpoch), not synthetic deliveredAt",
+            kotlin.math.abs(epochEstimate!! - currentBootEpoch) <= DirectBootDurableOwnerStore.MAX_BOOT_EPOCH_DRIFT_MS
+        )
+
+        // Case B: IDLE (seq=2) -> HANDOVER_PENDING (seq=3)
+        val idleOwner = DirectBootDurableOwnerStore.createInitialIdle(
+            bootProvenance = owner1.bootProvenance,
+            nowEpochMs = baseTime
+        )
+        assertTrue(DirectBootDurableOwnerStore.write(context, idleOwner, expectedOwnerSeq = 1L) is OwnerWriteResult.Success)
+
+        val triggerTime2 = baseTime + 80_000L
+        val q2 = createNormalQueueItem(alarmId = 702L, triggerTime = triggerTime2, instanceToken = "tok_p2_702", restoreEpoch = 2L)
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(q2), now = baseTime))
+
+        val res2 = DirectBootDeliveryTransitionEngine.transitionNormal(
+            context = context,
+            firingIdentity = normalIdentity(
+                alarmId = 702L,
+                triggerTime = triggerTime2,
+                instanceToken = "tok_p2_702",
+                restoreEpoch = 2L
+            ),
+            deliveredAt = triggerTime2 + 50L
+        )
+        assertTrue(res2 is DeliveryTransitionResult.Confirmed)
+        val ownerAfter2 = DirectBootDurableOwnerStore.read(context) as OwnerReadResult.Success
+        assertEquals(OwnerState.HANDOVER_PENDING, ownerAfter2.owner.state)
+        assertEquals(3L, ownerAfter2.owner.ownerSeq)
+        assertEquals(702L, ownerAfter2.owner.handoverClaim?.alarmId)
+    }
+
+    @Test
+    fun p2_02_preemptionCommit_revokesActiveAlarm1AndCommitsHandoverPendingAlarm2Atomically() {
+        val t1 = baseTime + 90_000L
+        val t2 = baseTime + 100_000L
+        val activeAlarm1 = DirectBootDurableOwner(
+            schemaVersion = DirectBootDurableOwnerStore.CURRENT_SCHEMA_VERSION,
+            state = OwnerState.V2_ACTIVE,
+            ownerSeq = 0L,
+            bootProvenance = BootProvenance(bootCount = 1, lastElapsedRealtime = 5_000L, bootEpochEstimateMs = baseTime),
+            handoverClaim = null,
+            activeSession = ActiveOwnerSession(
+                alarmId = 801L,
+                triggerTime = t1,
+                generation = 1,
+                instanceToken = "tok_801",
+                restoreEpoch = 1L
+            ),
+            updatedAtEpochMs = baseTime
+        )
+        assertTrue(DirectBootDurableOwnerStore.write(context, activeAlarm1, expectedOwnerSeq = 0L) is OwnerWriteResult.Success)
+        val q2 = createNormalQueueItem(alarmId = 802L, triggerTime = t2, instanceToken = "tok_802", restoreEpoch = 1L)
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(q2), now = baseTime))
+
+        val result = DirectBootDeliveryTransitionEngine.transitionNormal(
+            context = context,
+            firingIdentity = normalIdentity(
+                alarmId = 802L,
+                triggerTime = t2,
+                instanceToken = "tok_802",
+                restoreEpoch = 1L
+            ),
+            deliveredAt = t2 + 10L
+        )
+        assertTrue("Different-occurrence V2_ACTIVE Alarm1 MUST allow Alarm2 HANDOVER_PENDING preemption, got $result", result is DeliveryTransitionResult.Confirmed)
+
+        val ownerAfter = DirectBootDurableOwnerStore.read(context) as OwnerReadResult.Success
+        assertEquals(OwnerState.HANDOVER_PENDING, ownerAfter.owner.state)
+        assertEquals(2L, ownerAfter.owner.ownerSeq)
+        assertNull(ownerAfter.owner.activeSession)
+        assertEquals(802L, ownerAfter.owner.handoverClaim?.alarmId)
+        assertEquals("tok_802", ownerAfter.owner.handoverClaim?.instanceToken)
+        assertEquals(0, DirectBootAlarmCache.readQueue(context, now = baseTime).size)
+        val ledger = DirectBootDeliveryLedger.readUnacknowledgedRecords(context) as LedgerStorageState.ValidWithRecords
+        assertEquals(1, ledger.records.size)
+        assertEquals(802L, ledger.records[0].alarmId)
+    }
+
+    @Test
+    fun p2_03_singleCommitFailureOrRollback_leavesQueueLedgerAndOwnerUntouched() {
+        val t1 = baseTime + 110_000L
+        val q1 = createNormalQueueItem(alarmId = 901L, triggerTime = t1, instanceToken = "tok_901", restoreEpoch = 1L)
+        assertTrue(DirectBootAlarmCache.writeQueue(context, listOf(q1), now = baseTime))
+        val idleOwner = DirectBootDurableOwnerStore.createInitialIdle(nowEpochMs = baseTime)
+        assertTrue(DirectBootDurableOwnerStore.write(context, idleOwner, expectedOwnerSeq = 0L) is OwnerWriteResult.Success)
+        val prefsBefore = getDePrefs().all.toMap()
+
+        val result = DirectBootDeliveryTransitionEngine.transitionNormalForTesting(
+            context = context,
+            firingIdentity = normalIdentity(alarmId = 901L, triggerTime = t1, instanceToken = "tok_901", restoreEpoch = 1L),
+            deliveredAt = t1 + 10L,
+            editorCommitter = { _, _, _ -> false }
+        )
+        assertTrue(result is DeliveryTransitionResult.Uncertain.CommitFailed)
+        assertEquals(prefsBefore, getDePrefs().all.toMap())
+    }
 }
+

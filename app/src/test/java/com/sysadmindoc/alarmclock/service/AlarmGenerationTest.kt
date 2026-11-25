@@ -6,6 +6,9 @@ import android.os.HandlerThread
 import android.os.Looper
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
+import io.mockk.coEvery
+import io.mockk.every
+import io.mockk.mockk
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -3628,5 +3631,378 @@ class AlarmGenerationTest {
         override fun durationMs(): Long = 0L
         override fun seekTo(positionMs: Long) {}
         override fun stopAndRelease() {}
+    }
+
+    @Test
+    fun `CE-B02-D-Service - startAlarm rejects PHASE_PREPARED, kind mismatch, stale restoreEpoch, and journal trigger mismatch`(): Unit = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val shadowApp = org.robolectric.Shadows.shadowOf(context.applicationContext as android.app.Application)
+        shadowApp.grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            context,
+            com.sysadmindoc.alarmclock.data.local.AlarmDatabase::class.java
+        ).allowMainThreadQueries().build()
+        val repo = com.sysadmindoc.alarmclock.data.repository.AlarmRepository(db, db.alarmDao(), db.alarmGroupDao())
+        val incidentRepo = com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository(db.alarmIncidentEventDao(), context)
+        val jFile = java.io.File(context.filesDir, com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator.JOURNAL_FILENAME)
+        val bFile = java.io.File(context.filesDir, "${com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator.JOURNAL_FILENAME}.bak")
+        jFile.delete()
+        bFile.delete()
+
+        val tOld = System.currentTimeMillis() - 5_000L
+        val tNew = System.currentTimeMillis() + 3_600_000L
+        val coordinator = com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator(
+            context = context,
+            database = db,
+            preferencesManager = mockk(relaxed = true),
+            alarmScheduler = mockk(relaxed = true),
+            moshi = com.squareup.moshi.Moshi.Builder().build()
+        )
+        val gate = com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate(
+            bootCount = 10L,
+            processSessionToken = "test-ce-b02-d"
+        ).apply { isEnabled = false }
+
+        fun buildIsolatedService(): Pair<org.robolectric.android.controller.ServiceController<AlarmService>, AlarmService> {
+            val controller = org.robolectric.Robolectric.buildService(AlarmService::class.java)
+            val svc = controller.create().get()
+            svc.repository = repo
+            svc.alarmIncidentRepository = incidentRepo
+            svc.outputAuthorityGate = gate
+            val mockPm = mockk<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager>(relaxed = true) {
+                every { getCachedSettings() } returns com.sysadmindoc.alarmclock.data.preferences.AppSettings()
+                coEvery { getCurrentSettings() } returns com.sysadmindoc.alarmclock.data.preferences.AppSettings()
+                every { isSettingsLoaded } returns true
+            }
+            svc.preferencesManager = mockPm
+            return controller to svc
+        }
+
+        try {
+            db.scheduleAuthorityDao().insertMeta(
+                com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta(1, restoreEpoch = 5L, bootstrapState = "COMPLETED")
+            )
+            repo.save(
+                com.sysadmindoc.alarmclock.data.model.Alarm(
+                    id = 4201L,
+                    hour = 8,
+                    minute = 0,
+                    label = "Normal 4201",
+                    isEnabled = true,
+                    nextTriggerTime = tNew
+                )
+            )
+
+            // Rule A: PHASE_PREPARED journal on disk
+            coordinator.prepareTransaction(com.sysadmindoc.alarmclock.data.preferences.AppSettings(), emptyList(), emptyList())
+            run {
+                val (ctrl, svc) = buildIsolatedService()
+                val latch = kotlinx.coroutines.CompletableDeferred<Unit>()
+                svc.testStartAlarmCompletionLatch = latch
+                svc.onStartCommand(Intent(svc, AlarmService::class.java).apply {
+                    action = AlarmService.ACTION_START_ALARM
+                    putExtra(AlarmScheduler.EXTRA_ALARM_ID, 4201L)
+                    putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, tNew)
+                    putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "alarm-4201-rule-a")
+                    putExtra("restore_epoch", 5L)
+                    putExtra("EXTRA_QUICK_ALARM", false)
+                }, 0, 1)
+                awaitColdStartCompletion(latch)
+                assertFalse("Rule A: PHASE_PREPARED MUST abort startAlarm without audio", svc.testAudioStarted.get())
+                val incidents = incidentRepo.getRecent(20)
+                assertTrue(
+                    "Rule A: Expected STALE_FIRE_REJECTED_RESTORE_PREPARED_FENCE",
+                    incidents.any { it.alarmId == 4201L && it.fireId == "alarm-4201-rule-a" && it.reasonCode == "STALE_FIRE_REJECTED_RESTORE_PREPARED_FENCE" }
+                )
+                ctrl.destroy()
+            }
+
+            // Transition to PHASE_COMMITTED for Rules B, C, D
+            coordinator.markCommitted()
+
+            // Rule B: Quick/Normal kind mismatch (Normal alarm in DB, EXTRA_QUICK_ALARM = true on intent)
+            run {
+                val (ctrl, svc) = buildIsolatedService()
+                val latch = kotlinx.coroutines.CompletableDeferred<Unit>()
+                svc.testStartAlarmCompletionLatch = latch
+                svc.onStartCommand(Intent(svc, AlarmService::class.java).apply {
+                    action = AlarmService.ACTION_START_ALARM
+                    putExtra(AlarmScheduler.EXTRA_ALARM_ID, 4201L)
+                    putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, tNew)
+                    putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "alarm-4201-rule-b")
+                    putExtra("restore_epoch", 5L)
+                    putExtra("EXTRA_QUICK_ALARM", true)
+                }, 0, 1)
+                awaitColdStartCompletion(latch)
+                assertFalse("Rule B: Kind mismatch MUST abort startAlarm without audio", svc.testAudioStarted.get())
+                val incidents = incidentRepo.getRecent(20)
+                assertTrue(
+                    "Rule B: Expected STALE_FIRE_REJECTED_ALARM_KIND_MISMATCH",
+                    incidents.any { it.alarmId == 4201L && it.fireId == "alarm-4201-rule-b" && it.reasonCode == "STALE_FIRE_REJECTED_ALARM_KIND_MISMATCH" }
+                )
+                ctrl.destroy()
+            }
+
+            // Rule C: Stale restore_epoch = 4L vs Meta restoreEpoch = 5L
+            run {
+                val (ctrl, svc) = buildIsolatedService()
+                val latch = kotlinx.coroutines.CompletableDeferred<Unit>()
+                svc.testStartAlarmCompletionLatch = latch
+                svc.onStartCommand(Intent(svc, AlarmService::class.java).apply {
+                    action = AlarmService.ACTION_START_ALARM
+                    putExtra(AlarmScheduler.EXTRA_ALARM_ID, 4201L)
+                    putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, tNew)
+                    putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "alarm-4201-rule-c")
+                    putExtra("restore_epoch", 4L)
+                    putExtra("EXTRA_QUICK_ALARM", false)
+                }, 0, 1)
+                awaitColdStartCompletion(latch)
+                assertFalse("Rule C: Stale restoreEpoch MUST abort startAlarm without audio", svc.testAudioStarted.get())
+                val incidents = incidentRepo.getRecent(20)
+                assertTrue(
+                    "Rule C: Expected STALE_FIRE_REJECTED_STALE_RESTORE_EPOCH",
+                    incidents.any { it.alarmId == 4201L && it.fireId == "alarm-4201-rule-c" && it.reasonCode == "STALE_FIRE_REJECTED_STALE_RESTORE_EPOCH" }
+                )
+                ctrl.destroy()
+            }
+
+            // Rule D: No restore_epoch extra while PHASE_COMMITTED journal exists and scheduledAt (tOld) != nextTriggerTime (tNew)
+            run {
+                val (ctrl, svc) = buildIsolatedService()
+                val latch = kotlinx.coroutines.CompletableDeferred<Unit>()
+                svc.testStartAlarmCompletionLatch = latch
+                svc.onStartCommand(Intent(svc, AlarmService::class.java).apply {
+                    action = AlarmService.ACTION_START_ALARM
+                    putExtra(AlarmScheduler.EXTRA_ALARM_ID, 4201L)
+                    putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, tOld)
+                    putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "alarm-4201-rule-d")
+                }, 0, 1)
+                awaitColdStartCompletion(latch)
+                assertFalse("Rule D: Journal trigger mismatch MUST abort startAlarm without audio", svc.testAudioStarted.get())
+                val incidents = incidentRepo.getRecent(20)
+                assertTrue(
+                    "Rule D: Expected STALE_FIRE_REJECTED_STALE_TRIGGER_DURING_PENDING_JOURNAL",
+                    incidents.any { it.alarmId == 4201L && it.fireId == "alarm-4201-rule-d" && it.reasonCode == "STALE_FIRE_REJECTED_STALE_TRIGGER_DURING_PENDING_JOURNAL" }
+                )
+                ctrl.destroy()
+            }
+        } finally {
+            jFile.delete()
+            bFile.delete()
+            db.close()
+        }
+    }
+
+    @Test
+    fun `CE-B02-ZFP-Service - preserves Snooze, One-Time, Delayed Fire, journal-absent Legacy PI, and WakeConfirm refire`(): Unit = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val shadowApp = org.robolectric.Shadows.shadowOf(context.applicationContext as android.app.Application)
+        shadowApp.grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            context,
+            com.sysadmindoc.alarmclock.data.local.AlarmDatabase::class.java
+        ).allowMainThreadQueries().build()
+        val repo = com.sysadmindoc.alarmclock.data.repository.AlarmRepository(db, db.alarmDao(), db.alarmGroupDao())
+        val incidentRepo = com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository(db.alarmIncidentEventDao(), context)
+        val jFile = java.io.File(context.filesDir, com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator.JOURNAL_FILENAME)
+        val bFile = java.io.File(context.filesDir, "${com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator.JOURNAL_FILENAME}.bak")
+        jFile.delete()
+        bFile.delete()
+
+        val coordinator = com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator(
+            context = context,
+            database = db,
+            preferencesManager = mockk(relaxed = true),
+            alarmScheduler = mockk(relaxed = true),
+            moshi = com.squareup.moshi.Moshi.Builder().build()
+        )
+        val gate = com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate(
+            bootCount = 10L,
+            processSessionToken = "test-ce-b02-zfp"
+        ).apply { isEnabled = false }
+
+        fun buildIsolatedService(): Pair<org.robolectric.android.controller.ServiceController<AlarmService>, AlarmService> {
+            val controller = org.robolectric.Robolectric.buildService(AlarmService::class.java)
+            val svc = controller.create().get()
+            svc.repository = repo
+            svc.alarmIncidentRepository = incidentRepo
+            svc.outputAuthorityGate = gate
+            val mockPm = mockk<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager>(relaxed = true) {
+                every { getCachedSettings() } returns com.sysadmindoc.alarmclock.data.preferences.AppSettings()
+                coEvery { getCurrentSettings() } returns com.sysadmindoc.alarmclock.data.preferences.AppSettings()
+                every { isSettingsLoaded } returns true
+            }
+            svc.preferencesManager = mockPm
+            return controller to svc
+        }
+
+        try {
+            db.scheduleAuthorityDao().insertMeta(
+                com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta(1, restoreEpoch = 2L, bootstrapState = "COMPLETED")
+            )
+            val now = System.currentTimeMillis()
+            val delayedTrigger = now - 30_000L
+            val snoozeTrigger = now + 600_000L
+
+            // 1. Journal-absent Delayed Fire / Legacy PI without restore_epoch extra -> MUST be admitted
+            repo.save(
+                com.sysadmindoc.alarmclock.data.model.Alarm(
+                    id = 4301L,
+                    hour = 7,
+                    minute = 0,
+                    label = "Legacy Delayed",
+                    isEnabled = true,
+                    nextTriggerTime = delayedTrigger + 86_400_000L
+                )
+            )
+            run {
+                val (ctrl, svc) = buildIsolatedService()
+                val latch = kotlinx.coroutines.CompletableDeferred<Unit>()
+                svc.testStartAlarmCompletionLatch = latch
+                svc.onStartCommand(Intent(svc, AlarmService::class.java).apply {
+                    action = AlarmService.ACTION_START_ALARM
+                    putExtra(AlarmScheduler.EXTRA_ALARM_ID, 4301L)
+                    putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, delayedTrigger)
+                    putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "alarm-4301-zfp-legacy")
+                }, 0, 1)
+                awaitColdStartCompletion(latch)
+                val incidents = incidentRepo.getRecent(20)
+                assertFalse(
+                    "ZFP-1: Journal-absent legacy delayed fire MUST NOT be stale-rejected",
+                    incidents.any { it.alarmId == 4301L && it.fireId == "alarm-4301-zfp-legacy" && it.reasonCode.startsWith("STALE_FIRE_REJECTED") }
+                )
+                assertTrue(
+                    "ZFP-1: Journal-absent legacy delayed fire MUST be admitted",
+                    incidents.any { it.alarmId == 4301L && it.fireId == "alarm-4301-zfp-legacy" && it.reasonCode == "ALARM_NOTIFICATION_POSTED" }
+                )
+                ctrl.destroy()
+            }
+
+            // Write PHASE_COMMITTED journal for remaining positive controls
+            coordinator.prepareTransaction(com.sysadmindoc.alarmclock.data.preferences.AppSettings(), emptyList(), emptyList())
+            coordinator.markCommitted()
+
+            // 2. Snooze with matching restore_epoch = 2L -> MUST be admitted even while PHASE_COMMITTED journal exists
+            repo.save(
+                com.sysadmindoc.alarmclock.data.model.Alarm(
+                    id = 4302L,
+                    hour = 7,
+                    minute = 15,
+                    label = "Snoozed Alarm",
+                    isEnabled = true,
+                    nextTriggerTime = snoozeTrigger
+                )
+            )
+            run {
+                val (ctrl, svc) = buildIsolatedService()
+                val latch = kotlinx.coroutines.CompletableDeferred<Unit>()
+                svc.testStartAlarmCompletionLatch = latch
+                svc.onStartCommand(Intent(svc, AlarmService::class.java).apply {
+                    action = AlarmService.ACTION_START_ALARM
+                    putExtra(AlarmScheduler.EXTRA_ALARM_ID, 4302L)
+                    putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, snoozeTrigger)
+                    putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "alarm-4302-zfp-snooze")
+                    putExtra("restore_epoch", 2L)
+                    putExtra("EXTRA_QUICK_ALARM", false)
+                }, 0, 1)
+                awaitColdStartCompletion(latch)
+                val incidents = incidentRepo.getRecent(20)
+                assertTrue(
+                    "ZFP-2: Snooze with matching restoreEpoch MUST be admitted",
+                    incidents.any { it.alarmId == 4302L && it.fireId == "alarm-4302-zfp-snooze" && it.reasonCode == "ALARM_NOTIFICATION_POSTED" }
+                )
+                ctrl.destroy()
+            }
+
+            // 3. One-Time alarm with nextTriggerTime = 0L and matching restoreEpoch -> MUST be admitted even while PHASE_COMMITTED journal exists
+            repo.save(
+                com.sysadmindoc.alarmclock.data.model.Alarm(
+                    id = 4303L,
+                    hour = 7,
+                    minute = 30,
+                    label = "One-Time Zero Trigger",
+                    isEnabled = true,
+                    nextTriggerTime = 0L
+                )
+            )
+            run {
+                val (ctrl, svc) = buildIsolatedService()
+                val latch = kotlinx.coroutines.CompletableDeferred<Unit>()
+                svc.testStartAlarmCompletionLatch = latch
+                svc.onStartCommand(Intent(svc, AlarmService::class.java).apply {
+                    action = AlarmService.ACTION_START_ALARM
+                    putExtra(AlarmScheduler.EXTRA_ALARM_ID, 4303L)
+                    putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, delayedTrigger)
+                    putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "alarm-4303-zfp-onetime")
+                    putExtra("restore_epoch", 2L)
+                    putExtra("EXTRA_QUICK_ALARM", false)
+                }, 0, 1)
+                awaitColdStartCompletion(latch)
+                val incidents = incidentRepo.getRecent(20)
+                assertTrue(
+                    "ZFP-3: One-Time alarm with nextTriggerTime = 0L and matching epoch MUST be admitted",
+                    incidents.any { it.alarmId == 4303L && it.fireId == "alarm-4303-zfp-onetime" && it.reasonCode == "ALARM_NOTIFICATION_POSTED" }
+                )
+                ctrl.destroy()
+            }
+
+            // 4. WakeConfirm refire > 0 -> bypasses Rules A-D even with stale epoch / trigger mismatch
+            repo.save(
+                com.sysadmindoc.alarmclock.data.model.Alarm(
+                    id = 4304L,
+                    hour = 7,
+                    minute = 45,
+                    label = "WakeConfirm Refire",
+                    isEnabled = false,
+                    nextTriggerTime = 0L
+                )
+            )
+            val lineageRes = com.sysadmindoc.alarmclock.worker.WakeConfirmOccurrenceStore.commitDismissLineage(
+                context = context,
+                alarmId = 4304L,
+                scheduledAt = delayedTrigger,
+                fireId = "alarm-4304-zfp-wakeconfirm",
+                refireCount = 0,
+                wakeConfirmEnabled = true,
+                isRecurringSchedule = false
+            ) as com.sysadmindoc.alarmclock.worker.WakeConfirmOccurrenceStore.CommitResult.Committed
+            com.sysadmindoc.alarmclock.worker.WakeConfirmOccurrenceStore.consumeRefireStep(
+                context = context,
+                alarmId = 4304L,
+                scheduledAt = delayedTrigger,
+                currentRefireCount = 0,
+                workerStepToken = lineageRes.record.stepToken
+            )
+            run {
+                val (ctrl, svc) = buildIsolatedService()
+                val latch = kotlinx.coroutines.CompletableDeferred<Unit>()
+                svc.testStartAlarmCompletionLatch = latch
+                svc.onStartCommand(Intent(svc, AlarmService::class.java).apply {
+                    action = AlarmService.ACTION_START_ALARM
+                    putExtra(AlarmScheduler.EXTRA_ALARM_ID, 4304L)
+                    putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, delayedTrigger)
+                    putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "alarm-4304-zfp-wakeconfirm")
+                    putExtra(AlarmService.EXTRA_WAKE_CONFIRM_REFIRE_COUNT, 1)
+                }, 0, 1)
+                awaitColdStartCompletion(latch)
+                val incidents = incidentRepo.getRecent(20)
+                assertFalse(
+                    "ZFP-4: WakeConfirm refire > 0 MUST NOT be blocked by stale-fire Rules A-D",
+                    incidents.any { it.alarmId == 4304L && it.fireId == "alarm-4304-zfp-wakeconfirm" && it.reasonCode.startsWith("STALE_FIRE_REJECTED") }
+                )
+                assertTrue(
+                    "ZFP-4: WakeConfirm refire > 0 MUST be admitted",
+                    incidents.any { it.alarmId == 4304L && it.fireId == "alarm-4304-zfp-wakeconfirm" && it.reasonCode == "ALARM_NOTIFICATION_POSTED" }
+                )
+                ctrl.destroy()
+            }
+        } finally {
+            com.sysadmindoc.alarmclock.worker.WakeConfirmOccurrenceStore.cancelAllForAlarm(context, 4304L)
+            jFile.delete()
+            bFile.delete()
+            db.close()
+        }
     }
 }

@@ -6,6 +6,7 @@ import androidx.room.Room
 import androidx.room.withTransaction
 import androidx.test.core.app.ApplicationProvider
 import com.sysadmindoc.alarmclock.data.local.AlarmDatabase
+import com.sysadmindoc.alarmclock.data.local.entity.DirectBootOccurrenceReceipt
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthority
 import com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta
 import com.sysadmindoc.alarmclock.data.model.Alarm
@@ -103,8 +104,11 @@ class DirectBootNormalProjectorTest {
 
     @After
     fun tearDown() {
+        DirectBootDeliveryLedger.resetSeamsForTesting()
+        DirectBootMissedStore.resetSeamsForTesting()
         DirectBootAlarmCache.clear(context)
         DirectBootAlarmCache.clearQueue(context)
+        getDePrefs().edit().clear().commit()
         database.close()
     }
 
@@ -819,5 +823,229 @@ class DirectBootNormalProjectorTest {
         assertTrue(failure.details.contains("Simulated SQLite failure before DE write"))
 
         assertTrue("DE queue must remain untouched", DirectBootAlarmCache.readQueue(context, now = baseTime).isEmpty())
+    }
+
+    @Test
+    fun scenario27_p1b_deliveryLedgerExclusion_excludesDeliveredCandidateAndPreservesOthers() = runBlocking {
+        seedAlarmAndAuthority(alarmId = 1L, triggerTime = baseTime + 1000L)
+        seedAlarmAndAuthority(alarmId = 2L, triggerTime = baseTime + 2000L)
+
+        val deliveredRecord = DirectBootDeliveryRecord(
+            recordId = DirectBootDeliveryRecord.computeRecordId(
+                kind = DirectBootDeliveryRecord.KIND_NORMAL,
+                alarmId = 1L,
+                triggerTime = baseTime + 1000L,
+                generation = 1,
+                instanceToken = "token_norm_1"
+            ),
+            kind = DirectBootDeliveryRecord.KIND_NORMAL,
+            alarmId = 1L,
+            triggerTime = baseTime + 1000L,
+            deliveredAt = baseTime + 1005L,
+            generation = 1,
+            instanceToken = "token_norm_1",
+            provenance = "BOOT",
+            restoreEpoch = 1L
+        )
+        val appendResult = DirectBootDeliveryLedger.appendRecord(context, deliveredRecord)
+        assertTrue("Expected Appended, was $appendResult", appendResult is DeliveryAppendResult.Appended)
+
+        val result = projector.project(now = baseTime)
+        assertTrue("Expected Success, was: $result", result is DirectBootNormalProjectionResult.Success)
+        val success = result as DirectBootNormalProjectionResult.Success
+        assertEquals(listOf(2L), success.enqueuedNormalCandidates.map { it.alarmId })
+        assertEquals(listOf(2L), DirectBootAlarmCache.readQueue(context, now = baseTime).map { it.alarmId })
+    }
+
+    @Test
+    fun scenario28_p1b_missedStoreExclusion_excludesMissedCandidate() = runBlocking {
+        seedAlarmAndAuthority(alarmId = 1L, triggerTime = baseTime + 1000L)
+        seedAlarmAndAuthority(alarmId = 2L, triggerTime = baseTime + 2000L)
+
+        val missedRecord = DirectBootMissedRecord(
+            recordId = DirectBootMissedRecord.computeRecordId(
+                alarmId = 1L,
+                triggerTime = baseTime + 1000L,
+                generation = 1,
+                instanceToken = "token_norm_1"
+            ),
+            kind = DirectBootMissedRecord.KIND_NORMAL,
+            alarmId = 1L,
+            triggerTime = baseTime + 1000L,
+            missedAt = baseTime + 5000L,
+            generation = 1,
+            instanceToken = "token_norm_1",
+            classification = DirectBootMissedRecord.CLASSIFICATION_OVERDUE,
+            restoreEpoch = 1L
+        )
+        val recordResult = DirectBootMissedStore.recordMissed(context, missedRecord)
+        assertTrue("Expected Recorded, was $recordResult", recordResult is MissedRecordResult.Recorded)
+
+        val result = projector.project(now = baseTime)
+        assertTrue("Expected Success, was: $result", result is DirectBootNormalProjectionResult.Success)
+        val success = result as DirectBootNormalProjectionResult.Success
+        assertEquals(listOf(2L), success.enqueuedNormalCandidates.map { it.alarmId })
+        assertEquals(listOf(2L), DirectBootAlarmCache.readQueue(context, now = baseTime).map { it.alarmId })
+    }
+
+    @Test
+    fun scenario29_p1b_durableOwnerExclusion_excludesHandoverAndActiveButNotIdle() = runBlocking {
+        seedAlarmAndAuthority(alarmId = 1L, triggerTime = baseTime + 1000L)
+        seedAlarmAndAuthority(alarmId = 2L, triggerTime = baseTime + 2000L)
+
+        val deCtx = context.createDeviceProtectedStorageContext()
+        val provenance = BootProvenance(bootCount = 1, lastElapsedRealtime = 1000L, bootEpochEstimateMs = 100_000L)
+        val handoverOwner = DirectBootDurableOwner(
+            state = OwnerState.HANDOVER_PENDING,
+            ownerSeq = 1L,
+            bootProvenance = provenance,
+            handoverClaim = HandoverClaim(
+                handoverId = "ho-1",
+                alarmId = 1L,
+                triggerTime = baseTime + 1000L,
+                generation = 1,
+                instanceToken = "token_norm_1",
+                restoreEpoch = 1L
+            ),
+            updatedAtEpochMs = baseTime
+        ).let { it.copy(payloadDigest = it.computeDigest()) }
+        val w1 = DirectBootDurableOwnerStore.write(deCtx, owner = handoverOwner, expectedOwnerSeq = 0L)
+        assertTrue("Expected HANDOVER_PENDING write success, was $w1", w1.isSuccess)
+
+        val r1 = projector.project(now = baseTime)
+        assertTrue("Expected Success, was: $r1", r1 is DirectBootNormalProjectionResult.Success)
+        assertEquals(listOf(2L), DirectBootAlarmCache.readQueue(context, now = baseTime).map { it.alarmId })
+
+        val activeOwner = DirectBootDurableOwner(
+            state = OwnerState.V2_ACTIVE,
+            ownerSeq = 2L,
+            bootProvenance = provenance,
+            activeSession = ActiveOwnerSession(
+                alarmId = 1L,
+                triggerTime = baseTime + 1000L,
+                generation = 1,
+                instanceToken = "token_norm_1",
+                restoreEpoch = 1L
+            ),
+            updatedAtEpochMs = baseTime + 10L
+        ).let { it.copy(payloadDigest = it.computeDigest()) }
+        val w2 = DirectBootDurableOwnerStore.write(deCtx, owner = activeOwner, expectedOwnerSeq = 1L)
+        assertTrue("Expected V2_ACTIVE write success, was $w2", w2.isSuccess)
+
+        val r2 = projector.project(now = baseTime)
+        assertTrue("Expected Success, was: $r2", r2 is DirectBootNormalProjectionResult.Success)
+        assertEquals(listOf(2L), DirectBootAlarmCache.readQueue(context, now = baseTime).map { it.alarmId })
+
+        val idleOwner = DirectBootDurableOwner(
+            state = OwnerState.IDLE,
+            ownerSeq = 3L,
+            bootProvenance = provenance,
+            updatedAtEpochMs = baseTime + 20L
+        ).let { it.copy(payloadDigest = it.computeDigest()) }
+        val w3 = DirectBootDurableOwnerStore.write(deCtx, owner = idleOwner, expectedOwnerSeq = 2L)
+        assertTrue("Expected IDLE write success, was $w3", w3.isSuccess)
+
+        val r3 = projector.project(now = baseTime)
+        assertTrue("Expected Success, was: $r3", r3 is DirectBootNormalProjectionResult.Success)
+        assertEquals(listOf(1L, 2L), DirectBootAlarmCache.readQueue(context, now = baseTime).map { it.alarmId })
+    }
+
+    @Test
+    fun scenario30_p1b_receiptAndEpochFence_excludesSameEpochConsumed_allowsDifferentRestoreEpoch() = runBlocking {
+        seedAlarmAndAuthority(alarmId = 1L, triggerTime = baseTime + 1000L)
+        seedAlarmAndAuthority(alarmId = 2L, triggerTime = baseTime + 2000L)
+
+        // Receipt for alarm 1 matching current restoreEpoch = 1L -> MUST exclude alarm 1
+        val occKey1 = DirectBootCeTakeoverStore.computeOccurrenceKey(
+            alarmId = 1L,
+            triggerTime = baseTime + 1000L,
+            generation = 1,
+            instanceToken = "token_norm_1"
+        )
+        database.directBootOccurrenceReceiptDao().insert(
+            DirectBootOccurrenceReceipt(
+                occurrenceKey = occKey1,
+                sourceRecordId = "src-1",
+                recordType = "DELIVERED",
+                alarmId = 1L,
+                triggerTime = baseTime + 1000L,
+                generation = 1,
+                instanceToken = "token_norm_1",
+                restoreEpoch = 1L,
+                sourcePayloadHash = "hash-1",
+                consumerOutcome = "CONSUMED_DELIVERED",
+                completionSequence = 1L,
+                completedAt = baseTime + 100L
+            )
+        )
+
+        // Receipt for alarm 2 from PRIOR restoreEpoch = 99L != current restoreEpoch (1L) -> MUST NOT suppress!
+        val occKey2 = DirectBootCeTakeoverStore.computeOccurrenceKey(
+            alarmId = 2L,
+            triggerTime = baseTime + 2000L,
+            generation = 1,
+            instanceToken = "token_norm_2"
+        )
+        database.directBootOccurrenceReceiptDao().insert(
+            DirectBootOccurrenceReceipt(
+                occurrenceKey = occKey2,
+                sourceRecordId = "src-2",
+                recordType = "MISSED",
+                alarmId = 2L,
+                triggerTime = baseTime + 2000L,
+                generation = 1,
+                instanceToken = "token_norm_2",
+                restoreEpoch = 99L,
+                sourcePayloadHash = "hash-2",
+                consumerOutcome = "CONSUMED_MISSED",
+                completionSequence = 2L,
+                completedAt = baseTime + 100L
+            )
+        )
+
+        val result = projector.project(now = baseTime)
+        assertTrue("Expected Success, was: $result", result is DirectBootNormalProjectionResult.Success)
+        val success = result as DirectBootNormalProjectionResult.Success
+        assertEquals(listOf(2L), success.enqueuedNormalCandidates.map { it.alarmId })
+        assertEquals(listOf(2L), DirectBootAlarmCache.readQueue(context, now = baseTime).map { it.alarmId })
+    }
+
+    @Test
+    fun scenario31_p1b_corruptAndUnsupportedDeStores_failClosedWithGuaranteedNoWrite() = runBlocking {
+        seedAlarmAndAuthority(alarmId = 1L, triggerTime = baseTime + 1000L)
+        val prefs = getDePrefs()
+
+        // 1. Corrupt DeliveryLedger
+        val corruptLedger = "{broken_delivery_ledger"
+        prefs.edit().putString(DirectBootDeliveryLedger.KEY_DELIVERY_LEDGER_PAYLOAD, corruptLedger).commit()
+        val r1 = projector.project(now = baseTime)
+        assertTrue("Expected DeWriteRejected for corrupt ledger, was: $r1", r1 is DirectBootNormalProjectionResult.DeWriteRejected)
+        assertTrue((r1 as DirectBootNormalProjectionResult.DeWriteRejected).reason is DeRejectionReason.StorageCorrupt)
+        assertTrue(r1.isGuaranteedNoWrite)
+        assertFalse(r1.deWriteAttempted)
+        assertEquals(corruptLedger, prefs.getString(DirectBootDeliveryLedger.KEY_DELIVERY_LEDGER_PAYLOAD, null))
+        assertTrue(DirectBootAlarmCache.readQueue(context, now = baseTime).isEmpty())
+        prefs.edit().remove(DirectBootDeliveryLedger.KEY_DELIVERY_LEDGER_PAYLOAD).commit()
+
+        // 2. Corrupt MissedStore
+        val corruptMissed = "{broken_missed_store"
+        prefs.edit().putString(DirectBootMissedStore.KEY_MISSED_STORE_PAYLOAD, corruptMissed).commit()
+        val r2 = projector.project(now = baseTime)
+        assertTrue("Expected DeWriteRejected for corrupt missed store, was: $r2", r2 is DirectBootNormalProjectionResult.DeWriteRejected)
+        assertTrue((r2 as DirectBootNormalProjectionResult.DeWriteRejected).reason is DeRejectionReason.StorageCorrupt)
+        assertTrue(r2.isGuaranteedNoWrite)
+        assertEquals(corruptMissed, prefs.getString(DirectBootMissedStore.KEY_MISSED_STORE_PAYLOAD, null))
+        assertTrue(DirectBootAlarmCache.readQueue(context, now = baseTime).isEmpty())
+        prefs.edit().remove(DirectBootMissedStore.KEY_MISSED_STORE_PAYLOAD).commit()
+
+        // 3. Unsupported schema in DurableOwnerStore
+        val unsupportedOwner = """{"schemaVersion":99,"state":"IDLE","ownerSeq":0,"updatedAtEpochMs":1,"payloadDigest":"x"}"""
+        prefs.edit().putString(DirectBootDurableOwnerStore.KEY_DIRECT_BOOT_DURABLE_OWNER, unsupportedOwner).commit()
+        val r3 = projector.project(now = baseTime)
+        assertTrue("Expected DeWriteRejected for unsupported owner, was: $r3", r3 is DirectBootNormalProjectionResult.DeWriteRejected)
+        assertTrue((r3 as DirectBootNormalProjectionResult.DeWriteRejected).reason is DeRejectionReason.UnsupportedSchema)
+        assertTrue(r3.isGuaranteedNoWrite)
+        assertEquals(unsupportedOwner, prefs.getString(DirectBootDurableOwnerStore.KEY_DIRECT_BOOT_DURABLE_OWNER, null))
+        assertTrue(DirectBootAlarmCache.readQueue(context, now = baseTime).isEmpty())
     }
 }

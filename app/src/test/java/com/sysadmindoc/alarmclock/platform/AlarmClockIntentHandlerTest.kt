@@ -36,7 +36,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [30])
+@Config(sdk = [30], application = Application::class)
 class AlarmClockIntentHandlerTest {
     private lateinit var context: Context
     private lateinit var repository: AlarmRepository
@@ -270,5 +270,46 @@ class AlarmClockIntentHandlerTest {
 
         assertEquals("com.android.alarm.permission.SET_ALARM", proxyInfo.permission)
         assertNull(launcherInfo.permission)
+    }
+
+    @Test
+    fun `dismissAlarm aborts one-shot DB disable and does not return Handled when cancelSuspending returns false`() = runTest {
+        val oneShot = Alarm(id = 15L, hour = 6, minute = 45, isEnabled = true, repeatDays = emptySet())
+        coEvery { repository.getEnabled() } returns listOf(oneShot)
+        coEvery { scheduler.cancelSuspending(15L) } returns false
+
+        val result = handler.handle(
+            Intent(AlarmClock.ACTION_DISMISS_ALARM)
+                .putExtra(AlarmClock.EXTRA_ALARM_SEARCH_MODE, AlarmClock.ALARM_SEARCH_MODE_TIME)
+                .putExtra(AlarmClock.EXTRA_HOUR, 6)
+                .putExtra(AlarmClock.EXTRA_MINUTES, 45)
+        )
+
+        assertFalse("Result MUST NOT be Handled when cancelSuspending fails", result is AlarmClockHandleResult.Handled)
+        coVerify(exactly = 0) { repository.setEnabled(15L, enabled = false, nextTrigger = any()) }
+    }
+
+    @Test
+    fun `dismissAlarm aborts recurring reschedule and does not return Handled when cancelSuspending returns false`() = runTest {
+        val recurring = Alarm(
+            id = 16L,
+            hour = 7,
+            minute = 15,
+            isEnabled = true,
+            repeatDays = setOf(java.time.DayOfWeek.MONDAY),
+            scheduleKind = Alarm.SCHEDULE_KIND_REPEATING
+        )
+        coEvery { repository.getEnabled() } returns listOf(recurring)
+        coEvery { scheduler.cancelSuspending(16L) } returns false
+
+        val result = handler.handle(
+            Intent(AlarmClock.ACTION_DISMISS_ALARM)
+                .putExtra(AlarmClock.EXTRA_ALARM_SEARCH_MODE, AlarmClock.ALARM_SEARCH_MODE_TIME)
+                .putExtra(AlarmClock.EXTRA_HOUR, 7)
+                .putExtra(AlarmClock.EXTRA_MINUTES, 15)
+        )
+
+        assertFalse("Result MUST NOT be Handled when cancelSuspending fails", result is AlarmClockHandleResult.Handled)
+        coVerify(exactly = 0) { scheduler.schedule(match { it.id == 16L }, any(), any()) }
     }
 }

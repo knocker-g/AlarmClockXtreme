@@ -4,9 +4,11 @@ import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
 import android.os.Build
+import android.provider.Settings
 import android.text.format.DateFormat
 import android.util.Log
 import androidx.annotation.VisibleForTesting
+import com.sysadmindoc.alarmclock.BuildConfig
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.util.AlarmTimeFormatter
 import org.json.JSONArray
@@ -32,6 +34,43 @@ object DirectBootAlarmCache {
 
     const val KEY_QUEUE_PAYLOAD = "direct_boot_queue_payload"
     const val QUEUE_MAX_CAPACITY = 5
+
+    const val KEY_D4_ISOLATED_CAPABILITY = "d4_isolated_capability_grant"
+    private const val D4_SCHEMA_VERSION = 1
+    private const val D4_TEST_SUITE_TAG = "D4_REAL_OS_FBE"
+    private const val D4_ALARM_ID_1 = 9996L
+    private const val D4_ALARM_ID_2 = 9999L
+    private const val D4_MAX_TTL_MS = 30L * 60_000L
+
+    @VisibleForTesting
+    internal var bootCountProvider: (Context) -> Int? = { ctx ->
+        try {
+            Settings.Global.getInt(ctx.contentResolver, Settings.Global.BOOT_COUNT)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private val defaultD4Clock: () -> Long = { System.currentTimeMillis() }
+
+    @VisibleForTesting
+    internal var d4ClockProvider: () -> Long = defaultD4Clock
+
+    @VisibleForTesting
+    internal var d4DebugBuildProvider: () -> Boolean = { BuildConfig.DEBUG }
+
+    @VisibleForTesting
+    internal fun resetD4TestingSeams() {
+        bootCountProvider = { ctx ->
+            try {
+                Settings.Global.getInt(ctx.contentResolver, Settings.Global.BOOT_COUNT)
+            } catch (_: Throwable) {
+                null
+            }
+        }
+        d4ClockProvider = defaultD4Clock
+        d4DebugBuildProvider = { BuildConfig.DEBUG }
+    }
 
     fun saveIfEarlier(
         context: Context,
@@ -1137,6 +1176,30 @@ object DirectBootAlarmCache {
                     )
                 }
             }
+
+            // B-C7-02: When V2 delivery IS genuinely capable, suppress V1 dual-registration even for a distinct alarmId
+            val activeId = (markerResult as? MarkerReadResult.Success)?.marker?.activeIdentity
+            if (activeId != null) {
+                return PreOsDecision.Blocked(
+                    DirectBootFallbackScheduleResult.AuthorityRejected(
+                        alarmId = snapshot.alarmId,
+                        triggerTime = snapshot.triggerTime,
+                        detail = "Verified V2 activeIdentity already owns DirectBoot delivery"
+                    )
+                )
+            }
+            if (queueState is QueueStorageState.ValidWithItems &&
+                queueState.items.any { it.triggerTime > now }
+            ) {
+                return PreOsDecision.Blocked(
+                    DirectBootFallbackScheduleResult.AuthorityUnknown(
+                        alarmId = snapshot.alarmId,
+                        triggerTime = snapshot.triggerTime,
+                        reason = AuthorityUnknownReason.V2_QUEUE_MARKER_MISMATCH_WHILE_V2_CAPABLE,
+                        detail = "Active V2 queue items present while V2 delivery capable"
+                    )
+                )
+            }
         }
 
         return PreOsDecision.Ready(snapshot = snapshot, v2Diagnostics = diagnostics)
@@ -1288,7 +1351,498 @@ object DirectBootAlarmCache {
 
     private fun formatTriggerTime(context: Context, triggerTime: Long): String =
         AlarmTimeFormatter.format(triggerTime, DateFormat.is24HourFormat(context))
+
+    // =========================================================================
+    // KNO-75 G4-STEP9-D4 Debug-Only Isolated DE Capability Grant
+    // =========================================================================
+
+    private fun isD4CapabilityAllowed(): Boolean = BuildConfig.DEBUG && d4DebugBuildProvider()
+
+    internal fun writeD4IsolatedCapability(
+        context: Context,
+        grant: D4IsolatedCapabilityGrant
+    ): Boolean {
+        if (!isD4CapabilityAllowed()) return false
+        val protectedContext = protectedContext(context)
+        val json = serializeD4GrantIfValid(grant) ?: return false
+        return synchronized(DirectBootStorageLock.lock) {
+            try {
+                prefs(protectedContext).edit()
+                    .putString(KEY_D4_ISOLATED_CAPABILITY, json)
+                    .commit()
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to persist D4 isolated capability grant", e)
+                false
+            }
+        }
+    }
+
+    internal fun readD4IsolatedCapability(context: Context): D4IsolatedCapabilityGrant? {
+        if (!isD4CapabilityAllowed()) return null
+        val protectedContext = protectedContext(context)
+        return synchronized(DirectBootStorageLock.lock) {
+            parseD4GrantLocked(prefs(protectedContext).getString(KEY_D4_ISOLATED_CAPABILITY, null))
+        }
+    }
+
+    internal fun revokeD4IsolatedCapability(context: Context): Boolean {
+        if (!isD4CapabilityAllowed()) return false
+        val protectedContext = protectedContext(context)
+        return synchronized(DirectBootStorageLock.lock) {
+            try {
+                val prefStore = prefs(protectedContext)
+                val raw = prefStore.getString(KEY_D4_ISOLATED_CAPABILITY, null) ?: return@synchronized true
+                val parsed = parseD4GrantLocked(raw)
+                if (parsed == null) {
+                    prefStore.edit().remove(KEY_D4_ISOLATED_CAPABILITY).commit()
+                } else {
+                    val revokedJson = serializeD4GrantUnchecked(parsed.copy(revoked = true))
+                    prefStore.edit().putString(KEY_D4_ISOLATED_CAPABILITY, revokedJson).commit()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to revoke D4 isolated capability grant", e)
+                false
+            }
+        }
+    }
+
+    internal fun hasValidD4CapabilityForBoot(
+        context: Context,
+        nowEpochMs: Long = d4ClockProvider()
+    ): Boolean {
+        if (!isD4CapabilityAllowed()) return false
+        val protectedContext = protectedContext(context)
+        return synchronized(DirectBootStorageLock.lock) {
+            val grant = parseD4GrantLocked(
+                prefs(protectedContext).getString(KEY_D4_ISOLATED_CAPABILITY, null)
+            ) ?: return@synchronized false
+            if (!isD4GrantActiveAtBootAndTimeLocked(protectedContext, grant, nowEpochMs)) {
+                return@synchronized false
+            }
+            val queueState = inspectQueueStorageState(protectedContext)
+            if (queueState !is QueueStorageState.ValidWithItems) {
+                return@synchronized false
+            }
+            val head = queueState.items.firstOrNull() ?: return@synchronized false
+            if (head.kind != DirectBootQueueItem.KIND_NORMAL) {
+                return@synchronized false
+            }
+            grant.allowedOccurrences.any { occ ->
+                !occ.admitted &&
+                    occ.alarmId == head.alarmId &&
+                    occ.generation == head.generation &&
+                    occ.instanceToken == head.instanceToken &&
+                    occ.triggerTime == head.triggerTime &&
+                    occ.restoreEpoch == head.restoreEpoch &&
+                    head.instanceToken.contains(grant.sessionToken)
+            }
+        }
+    }
+
+    internal fun isD4OccurrenceAdmissible(
+        context: Context,
+        identity: DirectBootV2NormalIntentIdentity,
+        nowEpochMs: Long = d4ClockProvider()
+    ): Boolean {
+        if (!isD4CapabilityAllowed()) return false
+        if (identity.kind != DirectBootV2NormalIntentIdentity.KIND_NORMAL) return false
+        val protectedContext = protectedContext(context)
+        return synchronized(DirectBootStorageLock.lock) {
+            val grant = parseD4GrantLocked(
+                prefs(protectedContext).getString(KEY_D4_ISOLATED_CAPABILITY, null)
+            ) ?: return@synchronized false
+            if (!isD4GrantActiveAtBootAndTimeLocked(protectedContext, grant, nowEpochMs)) {
+                return@synchronized false
+            }
+            grant.allowedOccurrences.any { occ ->
+                !occ.admitted &&
+                    occ.alarmId == identity.alarmId &&
+                    occ.generation == identity.generation &&
+                    occ.instanceToken == identity.instanceToken &&
+                    occ.triggerTime == identity.triggerTime &&
+                    occ.restoreEpoch == identity.restoreEpoch &&
+                    identity.instanceToken.contains(grant.sessionToken)
+            }
+        }
+    }
+
+    internal fun isD4OccurrenceAuthorizedForService(
+        context: Context,
+        candidate: IncomingStartCandidate,
+        nowEpochMs: Long = d4ClockProvider()
+    ): Boolean {
+        if (!isD4CapabilityAllowed()) return false
+        if (candidate.kind != DirectBootV2NormalIntentIdentity.KIND_NORMAL) return false
+        val protectedContext = protectedContext(context)
+        return synchronized(DirectBootStorageLock.lock) {
+            val grant = parseD4GrantLocked(
+                prefs(protectedContext).getString(KEY_D4_ISOLATED_CAPABILITY, null)
+            ) ?: return@synchronized false
+            if (!isD4GrantActiveAtBootAndTimeLocked(protectedContext, grant, nowEpochMs)) {
+                return@synchronized false
+            }
+            grant.allowedOccurrences.any { occ ->
+                occ.admitted &&
+                    occ.alarmId == candidate.alarmId &&
+                    occ.generation == candidate.generation &&
+                    occ.instanceToken == candidate.instanceToken &&
+                    occ.triggerTime == candidate.triggerTime &&
+                    occ.restoreEpoch == candidate.restoreEpoch &&
+                    candidate.instanceToken.contains(grant.sessionToken)
+            }
+        }
+    }
+
+    internal fun isD4ScopedOccurrence(identity: FiredOccurrenceIdentity): Boolean {
+        return identity.alarmId == D4_ALARM_ID_1 ||
+            identity.alarmId == D4_ALARM_ID_2 ||
+            identity.instanceToken.startsWith("d4-v2-token-") ||
+            identity.provenance == "D4_TEST"
+    }
+
+    internal fun prepareD4TransitionAdmissionLocked(
+        context: Context,
+        identity: FiredOccurrenceIdentity,
+        nowEpochMs: Long = d4ClockProvider()
+    ): D4TransitionAdmissionPrepResult {
+        if (!isD4ScopedOccurrence(identity)) {
+            return D4TransitionAdmissionPrepResult.NotD4Route
+        }
+        if (!isD4CapabilityAllowed()) {
+            return D4TransitionAdmissionPrepResult.Rejected("D4 capability disabled in non-Debug build")
+        }
+        if (identity.kind != DirectBootDeliveryRecord.KIND_NORMAL) {
+            return D4TransitionAdmissionPrepResult.Rejected("D4 transition requires NORMAL kind")
+        }
+        val protectedContext = protectedContext(context)
+        val raw = prefs(protectedContext).getString(KEY_D4_ISOLATED_CAPABILITY, null)
+            ?: return D4TransitionAdmissionPrepResult.Rejected("D4 capability grant absent")
+        val grant = parseD4GrantLocked(raw)
+            ?: return D4TransitionAdmissionPrepResult.Rejected("D4 capability grant corrupt or invalid schema")
+        if (grant.revoked) {
+            return D4TransitionAdmissionPrepResult.Rejected("D4 capability grant revoked")
+        }
+        if (nowEpochMs <= 0L || nowEpochMs < grant.issuedAtEpochMs || nowEpochMs > grant.expiryEpochMs) {
+            return D4TransitionAdmissionPrepResult.Rejected("D4 capability grant expired or clock invalid (now=$nowEpochMs)")
+        }
+        if (d4ClockProvider !== defaultD4Clock) {
+            val clockNow = d4ClockProvider()
+            if (clockNow <= 0L || clockNow < grant.issuedAtEpochMs || clockNow > grant.expiryEpochMs) {
+                return D4TransitionAdmissionPrepResult.Rejected("D4 capability clock outside valid TTL window (clock=$clockNow)")
+            }
+        }
+        val currentBootCount = bootCountProvider(protectedContext)
+            ?: return D4TransitionAdmissionPrepResult.Rejected("D4 BOOT_COUNT unavailable")
+        if (currentBootCount < 0 || currentBootCount != grant.targetBootCount) {
+            return D4TransitionAdmissionPrepResult.Rejected(
+                "D4 BOOT_COUNT mismatch (current=$currentBootCount, target=${grant.targetBootCount})"
+            )
+        }
+        val matchIndex = grant.allowedOccurrences.indexOfFirst { occ ->
+            occ.alarmId == identity.alarmId &&
+                occ.generation == identity.generation &&
+                occ.instanceToken == identity.instanceToken &&
+                occ.triggerTime == identity.triggerTime &&
+                occ.restoreEpoch == identity.restoreEpoch &&
+                identity.instanceToken.contains(grant.sessionToken)
+        }
+        if (matchIndex < 0) {
+            return D4TransitionAdmissionPrepResult.Rejected("D4 exact occurrence or sessionToken mismatch")
+        }
+        if (grant.allowedOccurrences[matchIndex].admitted) {
+            return D4TransitionAdmissionPrepResult.Rejected("D4 occurrence already admitted (replay/resend forbidden)")
+        }
+        val updatedOccurrences = grant.allowedOccurrences.mapIndexed { idx, occ ->
+            if (idx == matchIndex) occ.copy(admitted = true) else occ
+        }
+        val updatedJson = serializeD4GrantUnchecked(grant.copy(allowedOccurrences = updatedOccurrences))
+        if (parseD4GrantLocked(updatedJson) == null) {
+            return D4TransitionAdmissionPrepResult.Rejected("D4 updated grant failed structural verification")
+        }
+        return D4TransitionAdmissionPrepResult.Authorized(updatedJson)
+    }
+
+    internal fun prepareD4OccurrenceAdmittedJsonIfMatching(
+        context: Context,
+        identity: FiredOccurrenceIdentity,
+        nowEpochMs: Long = d4ClockProvider()
+    ): String? {
+        return (prepareD4TransitionAdmissionLocked(context, identity, nowEpochMs) as? D4TransitionAdmissionPrepResult.Authorized)
+            ?.updatedGrantJson
+    }
+
+    internal fun removeD4QueueItemsExact(context: Context): D4ExactCleanupResult {
+        if (!isD4CapabilityAllowed()) {
+            return D4ExactCleanupResult.Blocked("D4 capability disabled in non-Debug build")
+        }
+        val protectedContext = protectedContext(context)
+        return synchronized(DirectBootStorageLock.lock) {
+            val rawGrant = prefs(protectedContext).getString(KEY_D4_ISOLATED_CAPABILITY, null)
+            val parsedGrant = if (rawGrant != null) {
+                parseD4GrantLocked(rawGrant)
+                    ?: return@synchronized D4ExactCleanupResult.Blocked(
+                        "D4 isolated capability grant is corrupt or unsupported schema"
+                    )
+            } else {
+                null
+            }
+
+            when (val queueState = inspectQueueStorageState(protectedContext)) {
+                is QueueStorageState.Corrupt -> {
+                    D4ExactCleanupResult.Blocked("DE Queue storage is corrupt: ${queueState.reason}")
+                }
+                is QueueStorageState.UnsupportedSchema -> {
+                    D4ExactCleanupResult.Blocked("DE Queue unsupported schema version ${queueState.foundVersion}")
+                }
+                is QueueStorageState.Absent, is QueueStorageState.ValidEmpty -> {
+                    D4ExactCleanupResult.NothingToRemove(preservedCount = 0)
+                }
+                is QueueStorageState.ValidWithItems -> {
+                    val items = queueState.items
+                    val d4MarkerItems = items.filter {
+                        it.alarmId == D4_ALARM_ID_1 ||
+                            it.alarmId == D4_ALARM_ID_2 ||
+                            it.instanceToken.startsWith("d4-v2-token-")
+                    }
+                    if (d4MarkerItems.isEmpty()) {
+                        return@synchronized D4ExactCleanupResult.NothingToRemove(preservedCount = items.size)
+                    }
+                    if (parsedGrant == null) {
+                        return@synchronized D4ExactCleanupResult.Blocked(
+                            "D4 Queue contains D4-scoped item(s) but D4 capability grant is absent"
+                        )
+                    }
+                    if (parsedGrant.revoked ||
+                        parsedGrant.testSuiteTag != D4_TEST_SUITE_TAG ||
+                        parsedGrant.sessionToken.isBlank()
+                    ) {
+                        return@synchronized D4ExactCleanupResult.Blocked(
+                            "D4 capability grant is revoked or lacks D4 test ownership"
+                        )
+                    }
+
+                    val toRemove = HashSet<DirectBootQueueItem>(d4MarkerItems.size)
+                    for (item in d4MarkerItems) {
+                        val exactMatch = item.kind == DirectBootQueueItem.KIND_NORMAL &&
+                            parsedGrant.allowedOccurrences.any { occ ->
+                                occ.alarmId == item.alarmId &&
+                                    occ.generation == item.generation &&
+                                    occ.instanceToken == item.instanceToken &&
+                                    occ.triggerTime == item.triggerTime &&
+                                    occ.restoreEpoch == item.restoreEpoch &&
+                                    item.instanceToken.contains(parsedGrant.sessionToken) &&
+                                    parsedGrant.testSuiteTag == D4_TEST_SUITE_TAG
+                            }
+                        if (!exactMatch) {
+                            return@synchronized D4ExactCleanupResult.Blocked(
+                                "Mixed or unmatchable D4 queue item detected (alarmId=${item.alarmId}, token=${item.instanceToken}); zero queue mutation performed"
+                            )
+                        }
+                        toRemove.add(item)
+                    }
+
+                    val preserved = items.filterNot { it in toRemove }
+                    if (toRemove.isEmpty()) {
+                        D4ExactCleanupResult.NothingToRemove(preservedCount = preserved.size)
+                    } else if (writeQueueInternal(protectedContext, preserved)) {
+                        D4ExactCleanupResult.Removed(
+                            removedCount = toRemove.size,
+                            preservedCount = preserved.size
+                        )
+                    } else {
+                        D4ExactCleanupResult.PersistenceFailed("SharedPreferences commit returned false")
+                    }
+                }
+            }
+        }
+    }
+
+    internal fun isCeAlarmOwnedByD4Grant(
+        context: Context,
+        alarm: Alarm,
+        expectedLabel: String
+    ): Boolean {
+        if (!isD4CapabilityAllowed()) return false
+        if (expectedLabel.isBlank() || alarm.label != expectedLabel) return false
+        val grant = readD4IsolatedCapability(context) ?: return false
+        if (grant.revoked || grant.testSuiteTag != D4_TEST_SUITE_TAG || grant.sessionToken.isBlank()) {
+            return false
+        }
+        return grant.allowedOccurrences.any { occ ->
+            occ.alarmId == alarm.id &&
+                occ.triggerTime == alarm.nextTriggerTime &&
+                occ.instanceToken == "d4-v2-token-${alarm.id}-${grant.sessionToken}"
+        }
+    }
+
+    private fun isD4GrantActiveAtBootAndTimeLocked(
+        protectedContext: Context,
+        grant: D4IsolatedCapabilityGrant,
+        nowEpochMs: Long
+    ): Boolean {
+        if (grant.revoked) return false
+        if (nowEpochMs <= 0L || nowEpochMs < grant.issuedAtEpochMs || nowEpochMs > grant.expiryEpochMs) {
+            return false
+        }
+        val currentBootCount = bootCountProvider(protectedContext) ?: return false
+        if (currentBootCount < 0 || currentBootCount != grant.targetBootCount) {
+            return false
+        }
+        return true
+    }
+
+    private fun parseD4GrantLocked(raw: String?): D4IsolatedCapabilityGrant? {
+        if (raw.isNullOrBlank()) return null
+        return try {
+            val root = JSONObject(raw)
+            if (root.optInt("schemaVersion", -1) != D4_SCHEMA_VERSION) return null
+            if (root.optString("testSuiteTag", "") != D4_TEST_SUITE_TAG) return null
+            val sessionToken = root.optString("sessionToken", "")
+            if (sessionToken.isBlank()) return null
+            val issuedAtEpochMs = root.optLong("issuedAtEpochMs", -1L)
+            val expiryEpochMs = root.optLong("expiryEpochMs", -1L)
+            if (issuedAtEpochMs <= 0L || expiryEpochMs <= issuedAtEpochMs) return null
+            if ((expiryEpochMs - issuedAtEpochMs) > D4_MAX_TTL_MS) return null
+            if (!root.has("targetBootCount")) return null
+            val targetBootCount = root.optInt("targetBootCount", -1)
+            if (targetBootCount < 0) return null
+            val revoked = root.optBoolean("revoked", false)
+            val arr = root.optJSONArray("allowedOccurrences") ?: return null
+            if (arr.length() == 0 || arr.length() > 2) return null
+
+            val occurrences = ArrayList<D4IsolatedOccurrenceGrant>(arr.length())
+            val seenAlarmIds = HashSet<Long>(arr.length())
+            val seenTokens = HashSet<String>(arr.length())
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: return null
+                val alarmId = obj.optLong("alarmId", -1L)
+                if (alarmId != D4_ALARM_ID_1 && alarmId != D4_ALARM_ID_2) return null
+                val generation = obj.optInt("generation", 0)
+                if (generation < 1) return null
+                val instanceToken = obj.optString("instanceToken", "")
+                if (instanceToken.isBlank() || !instanceToken.contains(sessionToken)) return null
+                val triggerTime = obj.optLong("triggerTime", -1L)
+                if (triggerTime <= 0L) return null
+                val restoreEpoch = obj.optLong("restoreEpoch", -1L)
+                if (restoreEpoch <= 0L) return null
+                val admitted = obj.optBoolean("admitted", false)
+                if (!seenAlarmIds.add(alarmId) || !seenTokens.add(instanceToken)) return null
+                occurrences.add(
+                    D4IsolatedOccurrenceGrant(
+                        alarmId = alarmId,
+                        generation = generation,
+                        instanceToken = instanceToken,
+                        triggerTime = triggerTime,
+                        restoreEpoch = restoreEpoch,
+                        admitted = admitted
+                    )
+                )
+            }
+            D4IsolatedCapabilityGrant(
+                schemaVersion = D4_SCHEMA_VERSION,
+                testSuiteTag = D4_TEST_SUITE_TAG,
+                sessionToken = sessionToken,
+                issuedAtEpochMs = issuedAtEpochMs,
+                expiryEpochMs = expiryEpochMs,
+                targetBootCount = targetBootCount,
+                allowedOccurrences = occurrences,
+                revoked = revoked
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun serializeD4GrantIfValid(grant: D4IsolatedCapabilityGrant): String? {
+        if (grant.schemaVersion != D4_SCHEMA_VERSION ||
+            grant.testSuiteTag != D4_TEST_SUITE_TAG ||
+            grant.sessionToken.isBlank() ||
+            grant.issuedAtEpochMs <= 0L ||
+            grant.expiryEpochMs <= grant.issuedAtEpochMs ||
+            (grant.expiryEpochMs - grant.issuedAtEpochMs) > D4_MAX_TTL_MS ||
+            grant.targetBootCount < 0 ||
+            grant.allowedOccurrences.isEmpty() ||
+            grant.allowedOccurrences.size > 2
+        ) {
+            return null
+        }
+        val seenAlarmIds = HashSet<Long>(grant.allowedOccurrences.size)
+        val seenTokens = HashSet<String>(grant.allowedOccurrences.size)
+        for (occ in grant.allowedOccurrences) {
+            if ((occ.alarmId != D4_ALARM_ID_1 && occ.alarmId != D4_ALARM_ID_2) ||
+                occ.generation < 1 ||
+                occ.instanceToken.isBlank() ||
+                !occ.instanceToken.contains(grant.sessionToken) ||
+                occ.triggerTime <= 0L ||
+                occ.restoreEpoch <= 0L ||
+                !seenAlarmIds.add(occ.alarmId) ||
+                !seenTokens.add(occ.instanceToken)
+            ) {
+                return null
+            }
+        }
+        return serializeD4GrantUnchecked(grant)
+    }
+
+    private fun serializeD4GrantUnchecked(grant: D4IsolatedCapabilityGrant): String {
+        val arr = JSONArray()
+        grant.allowedOccurrences.forEach { occ ->
+            arr.put(
+                JSONObject().apply {
+                    put("alarmId", occ.alarmId)
+                    put("generation", occ.generation)
+                    put("instanceToken", occ.instanceToken)
+                    put("triggerTime", occ.triggerTime)
+                    put("restoreEpoch", occ.restoreEpoch)
+                    put("admitted", occ.admitted)
+                }
+            )
+        }
+        return JSONObject().apply {
+            put("schemaVersion", grant.schemaVersion)
+            put("testSuiteTag", grant.testSuiteTag)
+            put("sessionToken", grant.sessionToken)
+            put("issuedAtEpochMs", grant.issuedAtEpochMs)
+            put("expiryEpochMs", grant.expiryEpochMs)
+            put("targetBootCount", grant.targetBootCount)
+            put("allowedOccurrences", arr)
+            put("revoked", grant.revoked)
+        }.toString()
+    }
 }
+
+internal sealed interface D4TransitionAdmissionPrepResult {
+    data object NotD4Route : D4TransitionAdmissionPrepResult
+    data class Authorized(val updatedGrantJson: String) : D4TransitionAdmissionPrepResult
+    data class Rejected(val reason: String) : D4TransitionAdmissionPrepResult
+}
+
+internal sealed interface D4ExactCleanupResult {
+    data class Removed(val removedCount: Int, val preservedCount: Int) : D4ExactCleanupResult
+    data class NothingToRemove(val preservedCount: Int) : D4ExactCleanupResult
+    data class Blocked(val reason: String) : D4ExactCleanupResult
+    data class PersistenceFailed(val reason: String) : D4ExactCleanupResult
+}
+
+internal data class D4IsolatedOccurrenceGrant(
+    val alarmId: Long,
+    val generation: Int,
+    val instanceToken: String,
+    val triggerTime: Long,
+    val restoreEpoch: Long,
+    val admitted: Boolean = false
+)
+
+internal data class D4IsolatedCapabilityGrant(
+    val schemaVersion: Int = 1,
+    val testSuiteTag: String = "D4_REAL_OS_FBE",
+    val sessionToken: String,
+    val issuedAtEpochMs: Long,
+    val expiryEpochMs: Long,
+    val targetBootCount: Int,
+    val allowedOccurrences: List<D4IsolatedOccurrenceGrant>,
+    val revoked: Boolean = false
+)
 
 enum class OsRegistrationState {
     ARMED_CONFIRMED,

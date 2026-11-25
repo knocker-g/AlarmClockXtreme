@@ -28,6 +28,7 @@ import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.data.repository.AlarmIncidentRepository
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.service.AlarmFireDismissContract
+import com.sysadmindoc.alarmclock.service.AlarmGeneration
 import com.sysadmindoc.alarmclock.service.AlarmService
 import com.sysadmindoc.alarmclock.ui.alarmfiring.challenges.Challenge
 import com.sysadmindoc.alarmclock.ui.theme.AlarmClockXtremeTheme
@@ -76,6 +77,7 @@ class AlarmFiringActivity : ComponentActivity() {
     private var firedAt: Long = 0L
     private var alarmState: String = "FIRING"
     private var refireAt: Long = 0L
+    private var terminalActionDispatched = false
     private var wifiPollingJob: kotlinx.coroutines.Job? = null
     private var walkPermissionRequestInFlight = false
     private var wifiPermissionRequestInFlight = false
@@ -148,16 +150,25 @@ class AlarmFiringActivity : ComponentActivity() {
         firedAt = intent?.getLongExtra(AlarmService.EXTRA_FIRED_AT, 0L) ?: 0L
         alarmState = intent?.getStringExtra(AlarmService.EXTRA_ALARM_STATE) ?: "FIRING"
         refireAt = intent?.getLongExtra(AlarmService.EXTRA_REFIRE_AT, 0L) ?: 0L
-        // Defensive: if launched without a valid alarm id (rare — only really
-        // possible from a stale full-screen-intent or a third party), get out
-        // immediately rather than rendering broken state. The user will see
-        // the firing notification's actions if the AlarmService is still up.
-        if (alarmId == -1L) {
+        if (alarmId > 0L && fireId.isBlank()) {
+            fireId = AlarmIncidentEvent.fireIdFor(alarmId, scheduledAt)
+        }
+        val rejectReason = AlarmService.shouldRejectFiringUiLaunch(
+            alarmId = alarmId,
+            scheduledAt = scheduledAt,
+            fireId = fireId,
+            incomingState = alarmState
+        )
+        if (rejectReason != null) {
+            if (alarmId > 0L) {
+                recordIncidentAsync(
+                    type = AlarmIncidentEvent.TYPE_ACTIVITY_LAUNCH,
+                    status = AlarmIncidentEvent.STATUS_SKIPPED,
+                    reasonCode = "FIRING_ACTIVITY_REJECTED_$rejectReason"
+                )
+            }
             finish()
             return
-        }
-        if (fireId.isBlank()) {
-            fireId = AlarmIncidentEvent.fireIdFor(alarmId, scheduledAt)
         }
         recordIncidentAsync(
             type = AlarmIncidentEvent.TYPE_ACTIVITY_LAUNCH,
@@ -190,7 +201,7 @@ class AlarmFiringActivity : ComponentActivity() {
             )
         }
         val km = getSystemService(KeyguardManager::class.java)
-        km?.requestDismissKeyguard(this, null)
+        km?.requestDismissKeyguard(this, object : KeyguardManager.KeyguardDismissCallback() {})
 
         // Prevent accidental dismiss via back button
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -390,9 +401,27 @@ class AlarmFiringActivity : ComponentActivity() {
         // alarm — leaving the old screen up would show (and dismiss) an alarm
         // the service has already finalized as missed.
         val incomingAlarmId = intent.getLongExtra(AlarmScheduler.EXTRA_ALARM_ID, -1L)
-        if (incomingAlarmId != -1L && incomingAlarmId != alarmId) {
-            finish()
-            startActivity(Intent(intent).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val incomingScheduledAt = intent.getLongExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, 0L)
+        val incomingFireId = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID).orEmpty()
+            .ifBlank { if (incomingAlarmId > 0L) AlarmIncidentEvent.fireIdFor(incomingAlarmId, incomingScheduledAt) else "" }
+        val incomingState = intent.getStringExtra(AlarmService.EXTRA_ALARM_STATE) ?: "FIRING"
+        if (incomingAlarmId != -1L && (incomingAlarmId != alarmId || incomingScheduledAt != scheduledAt || incomingFireId != fireId)) {
+            val rejectReason = AlarmService.shouldRejectFiringUiLaunch(
+                alarmId = incomingAlarmId,
+                scheduledAt = incomingScheduledAt,
+                fireId = incomingFireId,
+                incomingState = incomingState
+            )
+            if (rejectReason == null) {
+                finish()
+                startActivity(Intent(intent).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            } else {
+                recordIncidentAsync(
+                    type = AlarmIncidentEvent.TYPE_ACTIVITY_LAUNCH,
+                    status = AlarmIncidentEvent.STATUS_SKIPPED,
+                    reasonCode = "FIRING_ACTIVITY_NEW_INTENT_REJECTED_$rejectReason"
+                )
+            }
         }
     }
 
@@ -705,6 +734,11 @@ class AlarmFiringActivity : ComponentActivity() {
             )
             return
         }
+        if (terminalActionDispatched) {
+            return
+        }
+        terminalActionDispatched = true
+        AlarmService.markActionUiClosing(AlarmGeneration(alarmId, scheduledAt, fireId), "CLOSING_SNOOZE")
         val intent = AlarmFireDismissContract.snoozeServiceIntent(
             context = this,
             alarmId = alarmId,
@@ -737,6 +771,11 @@ class AlarmFiringActivity : ComponentActivity() {
     }
 
     private fun dismiss() {
+        if (terminalActionDispatched) {
+            return
+        }
+        terminalActionDispatched = true
+        AlarmService.markActionUiClosing(AlarmGeneration(alarmId, scheduledAt, fireId), "CLOSING_DISMISS")
         val state = viewModel.uiState.value
         val challengeSolveTimeMs = state.challengeStartedAtMillis
             .takeIf { it > 0L && state.requiresChallenge }
@@ -828,17 +867,35 @@ class AlarmFiringActivity : ComponentActivity() {
     }
 
     private fun updateChallengeAudioDucking(command: ChallengeAudioDuckingCommand) {
-        if (alarmId <= 0L) return
+        if (alarmId <= 0L || scheduledAt <= 0L || terminalActionDispatched) return
+        val effectiveFireId = fireId.ifBlank { AlarmIncidentEvent.fireIdFor(alarmId, scheduledAt) }
+        if (
+            com.sysadmindoc.alarmclock.service.AlarmService.shouldRejectFiringUiLaunch(
+                alarmId = alarmId,
+                scheduledAt = scheduledAt,
+                fireId = effectiveFireId,
+                incomingState = null
+            ) != null
+        ) {
+            return
+        }
+        val active = com.sysadmindoc.alarmclock.service.AlarmService.activeAlarm.get()
+        if (
+            active == null ||
+            active.state != "FIRING" ||
+            !active.matches(
+                com.sysadmindoc.alarmclock.service.AlarmGeneration(alarmId, scheduledAt, effectiveFireId)
+            )
+        ) {
+            return
+        }
         runCatching {
             startService(
                 Intent(this, com.sysadmindoc.alarmclock.service.AlarmService::class.java)
                     .setAction(com.sysadmindoc.alarmclock.service.AlarmService.ACTION_SET_CHALLENGE_DUCKING)
                     .putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
                     .putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, scheduledAt)
-                    .putExtra(
-                        AlarmScheduler.EXTRA_ALARM_FIRE_ID,
-                        fireId.ifBlank { AlarmIncidentEvent.fireIdFor(alarmId, scheduledAt) }
-                    )
+                    .putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, effectiveFireId)
                     .putExtra(
                         com.sysadmindoc.alarmclock.service.AlarmService.EXTRA_CHALLENGE_DUCKING_ACTIVE,
                         command.active

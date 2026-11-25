@@ -17,7 +17,10 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import com.sysadmindoc.alarmclock.R
+import com.sysadmindoc.alarmclock.data.preferences.AppSettings
+import com.sysadmindoc.alarmclock.service.AlarmGeneration
 import com.sysadmindoc.alarmclock.service.AlarmService
+import com.sysadmindoc.alarmclock.service.AlarmServiceCallbackPolicy
 
 data class FiringUiState(
     val alarm: Alarm? = null,
@@ -224,6 +227,8 @@ class AlarmFiringViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val alarmId: Long = savedStateHandle.get<Long>(AlarmScheduler.EXTRA_ALARM_ID) ?: -1
+    private val scheduledAt: Long = savedStateHandle.get<Long>(AlarmScheduler.EXTRA_SCHEDULED_AT) ?: 0L
+    private val fireId: String = savedStateHandle.get<String>(AlarmScheduler.EXTRA_ALARM_FIRE_ID).orEmpty()
     private val initialActiveState: String = savedStateHandle.get<String>(AlarmService.EXTRA_ALARM_STATE) ?: "FIRING"
     private val initialRefireAt: Long = savedStateHandle.get<Long>(AlarmService.EXTRA_REFIRE_AT) ?: 0L
 
@@ -236,7 +241,7 @@ class AlarmFiringViewModel @Inject constructor(
      * manual row delete, etc.). Without this the activity would render a
      * blank firing screen with no user feedback and no way to clear it.
      */
-    private val _finish = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private val _finish = MutableSharedFlow<Unit>(replay = 1, extraBufferCapacity = 1)
     val finishEvents: SharedFlow<Unit> = _finish.asSharedFlow()
 
     /** Exposes the global flip-to-snooze preference so the Activity only registers
@@ -289,6 +294,40 @@ class AlarmFiringViewModel @Inject constructor(
         loadAlarm()
     }
 
+    private fun hasValidActiveSession(firingSettings: AppSettings): Boolean {
+        if (initialActiveState != "FIRING") return false
+        val hasOccurrenceContext = scheduledAt > 0L && fireId.isNotBlank()
+        val gen = if (hasOccurrenceContext) AlarmGeneration(alarmId, scheduledAt, fireId) else null
+        if (gen != null) {
+            if (AlarmService.isUiSuppressedForGeneration(gen)) return false
+            if (AlarmServiceCallbackPolicy.defaultTracker.isFinalized(gen)) return false
+        }
+
+        val memory = AlarmService.activeAlarm.get()
+        if (memory != null) {
+            if (memory.state != "FIRING") return false
+            if (gen != null) return memory.matches(gen)
+            return memory.alarmId == alarmId
+        }
+
+        val savedId = firingSettings.activeAlarmId
+        if (savedId != null && savedId > 0L) {
+            if (firingSettings.activeAlarmState != "FIRING") return false
+            if (gen != null) {
+                return savedId == gen.alarmId &&
+                    firingSettings.activeAlarmScheduledAt == gen.scheduledAt &&
+                    firingSettings.activeAlarmFireId == gen.fireId
+            }
+            return savedId == alarmId
+        }
+
+        if (gen != null && AlarmService.isFallbackActiveFor(gen)) {
+            return true
+        }
+
+        return !hasOccurrenceContext
+    }
+
     private fun loadAlarm() {
         viewModelScope.launch {
             // Dismiss is locked until alarmLoaded flips true, so any failure to
@@ -332,6 +371,11 @@ class AlarmFiringViewModel @Inject constructor(
         // v1.2.0: Adaptive difficulty — escalate if user snoozes a lot
         // Read recent events to decide if we should bump difficulty
         val firingSettings = preferencesManager.getCurrentSettings()
+        if (!hasValidActiveSession(firingSettings)) {
+            _uiState.value = _uiState.value.copy(alarmLoaded = true)
+            _finish.tryEmit(Unit)
+            return
+        }
         customPhrases = firingSettings.customTypingPhrases
         val adaptiveDifficultyEnabled = firingSettings.adaptiveDifficultyEnabled
         val adaptedChain = if (adaptiveDifficultyEnabled && chainTypes.isNotEmpty()) {

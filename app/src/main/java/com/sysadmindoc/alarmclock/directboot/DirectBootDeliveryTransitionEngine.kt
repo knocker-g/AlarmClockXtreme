@@ -2,6 +2,8 @@ package com.sysadmindoc.alarmclock.directboot
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.SystemClock
+import android.provider.Settings
 import android.util.Log
 import androidx.annotation.VisibleForTesting
 import kotlinx.coroutines.CancellationException
@@ -65,18 +67,22 @@ object DirectBootDeliveryTransitionEngine {
         COMMIT_CONFIRMED
     }
 
-    private val defaultEditorCommitter: (SharedPreferences, String, String) -> Boolean =
-        { prefs, queuePayload, ledgerPayload ->
-            prefs.edit()
+    private val defaultAtomicEditorCommitter: (SharedPreferences, String, String, String, String?) -> Boolean =
+        { prefs, queuePayload, ledgerPayload, ownerPayload, d4GrantPayload ->
+            val editor = prefs.edit()
                 .putString(DirectBootAlarmCache.KEY_QUEUE_PAYLOAD, queuePayload)
                 .putString(DirectBootDeliveryLedger.KEY_DELIVERY_LEDGER_PAYLOAD, ledgerPayload)
-                .commit()
+                .putString(DirectBootDurableOwnerStore.KEY_DIRECT_BOOT_DURABLE_OWNER, ownerPayload)
+            if (d4GrantPayload != null) {
+                editor.putString(DirectBootAlarmCache.KEY_D4_ISOLATED_CAPABILITY, d4GrantPayload)
+            }
+            editor.commit()
         }
 
     /**
      * Production entrypoint for executing an atomic delivery transition for a firing Normal alarm occurrence.
      * Always commits directly to device-protected SharedPreferences ([DirectBootDeliveryLedger.PREFS_NAME])
-     * via a single [SharedPreferences.Editor.commit] call updating both Queue and Ledger payloads.
+     * via a single [SharedPreferences.Editor.commit] call updating Queue, Delivery Ledger, and Durable Owner payloads.
      * Does not expose committer or test hooks to production callers.
      */
     fun transitionNormal(
@@ -90,7 +96,10 @@ object DirectBootDeliveryTransitionEngine {
             deliveredAt = deliveredAt,
             preCommitHook = {},
             postCommitHook = {},
-            editorCommitter = null
+            editorCommitter = null,
+            atomicEditorCommitter = null,
+            capabilityAtomicEditorCommitter = null,
+            bootProvenanceProvider = null
         )
     }
 
@@ -105,7 +114,10 @@ object DirectBootDeliveryTransitionEngine {
         deliveredAt: Long = System.currentTimeMillis(),
         preCommitHook: () -> Unit = {},
         postCommitHook: () -> Unit = {},
-        editorCommitter: ((SharedPreferences, String, String) -> Boolean)? = null
+        editorCommitter: ((SharedPreferences, String, String) -> Boolean)? = null,
+        atomicEditorCommitter: ((SharedPreferences, String, String, String) -> Boolean)? = null,
+        capabilityAtomicEditorCommitter: ((SharedPreferences, String, String, String, String?) -> Boolean)? = null,
+        bootProvenanceProvider: ((Context) -> BootProvenance)? = null
     ): DeliveryTransitionResult {
         return transitionNormalInternal(
             context = context,
@@ -113,7 +125,10 @@ object DirectBootDeliveryTransitionEngine {
             deliveredAt = deliveredAt,
             preCommitHook = preCommitHook,
             postCommitHook = postCommitHook,
-            editorCommitter = editorCommitter
+            editorCommitter = editorCommitter,
+            atomicEditorCommitter = atomicEditorCommitter,
+            capabilityAtomicEditorCommitter = capabilityAtomicEditorCommitter,
+            bootProvenanceProvider = bootProvenanceProvider
         )
     }
 
@@ -123,7 +138,10 @@ object DirectBootDeliveryTransitionEngine {
         deliveredAt: Long,
         preCommitHook: () -> Unit,
         postCommitHook: () -> Unit,
-        editorCommitter: ((SharedPreferences, String, String) -> Boolean)?
+        editorCommitter: ((SharedPreferences, String, String) -> Boolean)?,
+        atomicEditorCommitter: ((SharedPreferences, String, String, String) -> Boolean)?,
+        capabilityAtomicEditorCommitter: ((SharedPreferences, String, String, String, String?) -> Boolean)?,
+        bootProvenanceProvider: ((Context) -> BootProvenance)?
     ): DeliveryTransitionResult {
         // Step 1: Validate Kind & Authorization
         if (firingIdentity.kind == DirectBootDeliveryRecord.KIND_QUICK) {
@@ -392,15 +410,146 @@ object DirectBootDeliveryTransitionEngine {
                 put("records", array)
             }
 
+            // Step 10b: Prepare Atomic Durable Owner HANDOVER_PENDING Payload (CAS over currentOwner seq)
+            val provenance = try {
+                bootProvenanceProvider?.invoke(context) ?: defaultBootProvenance(context)
+            } catch (e: Exception) {
+                return DeliveryTransitionResult.Rejected.PreCommitFailure(
+                    details = "Failed to capture boot provenance: ${e.message}",
+                    cause = e
+                )
+            }
+            val expectedSeq = currentOwner?.ownerSeq ?: 0L
+            val nextOwner = DirectBootDurableOwner(
+                schemaVersion = DirectBootDurableOwnerStore.CURRENT_SCHEMA_VERSION,
+                state = OwnerState.HANDOVER_PENDING,
+                ownerSeq = expectedSeq,
+                bootProvenance = provenance,
+                handoverClaim = HandoverClaim(
+                    handoverId = newDeliveryRecord.recordId,
+                    alarmId = firingIdentity.alarmId,
+                    triggerTime = firingIdentity.triggerTime,
+                    generation = firingIdentity.generation,
+                    instanceToken = firingIdentity.instanceToken,
+                    restoreEpoch = firingIdentity.restoreEpoch
+                ),
+                activeSession = null,
+                updatedAtEpochMs = deliveredAt.coerceAtLeast(0L)
+            )
+            val ownerPrep = DirectBootDurableOwnerStore.prepareAtomicWritePayload(
+                context = context,
+                owner = nextOwner,
+                expectedOwnerSeq = expectedSeq
+            )
+            val ownerPayloadJson = when (ownerPrep) {
+                is OwnerAtomicWritePrepResult.Prepared -> ownerPrep.payloadJson
+                is OwnerAtomicWritePrepResult.StorageCorrupt -> {
+                    return DeliveryTransitionResult.Rejected.OwnerStorageCorrupt(ownerPrep.reason)
+                }
+                is OwnerAtomicWritePrepResult.UnsupportedSchema -> {
+                    return DeliveryTransitionResult.Rejected.UnsupportedSchema(
+                        domain = "DurableOwner",
+                        found = ownerPrep.foundVersion,
+                        expected = ownerPrep.expectedVersion
+                    )
+                }
+                is OwnerAtomicWritePrepResult.SequenceMismatch -> {
+                    val msg = "Durable owner CAS sequence mismatch: expected=${ownerPrep.expectedSeq}, actual=${ownerPrep.actualSeq}"
+                    return DeliveryTransitionResult.Rejected.PreCommitFailure(msg, IllegalStateException(msg))
+                }
+                is OwnerAtomicWritePrepResult.SequenceOverflow -> {
+                    val msg = "Durable owner sequence overflow: current=${ownerPrep.currentSeq}"
+                    return DeliveryTransitionResult.Rejected.PreCommitFailure(msg, IllegalStateException(msg))
+                }
+                is OwnerAtomicWritePrepResult.InvalidTransition -> {
+                    val msg = "Durable owner transition invalid: ${ownerPrep.reason}"
+                    return DeliveryTransitionResult.Rejected.PreCommitFailure(msg, IllegalStateException(msg))
+                }
+            }
+
+            val preD4Prep = DirectBootAlarmCache.prepareD4TransitionAdmissionLocked(
+                context = context,
+                identity = firingIdentity,
+                nowEpochMs = deliveredAt
+            )
+            if (preD4Prep is D4TransitionAdmissionPrepResult.Rejected) {
+                return DeliveryTransitionResult.Rejected.PreCommitFailure(
+                    details = preD4Prep.reason,
+                    cause = IllegalStateException(preD4Prep.reason)
+                )
+            }
+
             val prefs = prefs(context)
             var stage = ExecutionStage.BEFORE_COMMIT
-            val committer = editorCommitter ?: defaultEditorCommitter
 
             return try {
                 preCommitHook()
 
+                // Revalidate D4 Grant immediately before Editor.commit() under the same DE Storage Lock
+                val d4Prep = DirectBootAlarmCache.prepareD4TransitionAdmissionLocked(
+                    context = context,
+                    identity = firingIdentity,
+                    nowEpochMs = deliveredAt
+                )
+                val d4GrantPayloadJson: String? = when (d4Prep) {
+                    is D4TransitionAdmissionPrepResult.Rejected -> {
+                        return DeliveryTransitionResult.Rejected.PreCommitFailure(
+                            details = d4Prep.reason,
+                            cause = IllegalStateException(d4Prep.reason)
+                        )
+                    }
+                    is D4TransitionAdmissionPrepResult.Authorized -> {
+                        if (d4Prep.updatedGrantJson.isBlank()) {
+                            val msg = "D4 route produced blank Grant JSON; 3-key fallback forbidden"
+                            return DeliveryTransitionResult.Rejected.PreCommitFailure(msg, IllegalStateException(msg))
+                        }
+                        if (editorCommitter != null || atomicEditorCommitter != null) {
+                            val msg = "D4 route forbids 2-key or 3-key editor committer; 4-key atomic commit required"
+                            return DeliveryTransitionResult.Rejected.PreCommitFailure(msg, IllegalStateException(msg))
+                        }
+                        d4Prep.updatedGrantJson
+                    }
+                    is D4TransitionAdmissionPrepResult.NotD4Route -> {
+                        if (DirectBootAlarmCache.isD4ScopedOccurrence(firingIdentity)) {
+                            val msg = "D4-scoped occurrence cannot fall back to 3-key commit"
+                            return DeliveryTransitionResult.Rejected.PreCommitFailure(msg, IllegalStateException(msg))
+                        }
+                        null
+                    }
+                }
+
                 stage = ExecutionStage.COMMIT_INVOKED
-                val success = committer(prefs, queueRoot.toString(), ledgerRoot.toString())
+                val success = when {
+                    d4GrantPayloadJson != null -> {
+                        (capabilityAtomicEditorCommitter ?: defaultAtomicEditorCommitter)(
+                            prefs,
+                            queueRoot.toString(),
+                            ledgerRoot.toString(),
+                            ownerPayloadJson,
+                            d4GrantPayloadJson
+                        )
+                    }
+                    editorCommitter != null -> {
+                        editorCommitter(prefs, queueRoot.toString(), ledgerRoot.toString())
+                    }
+                    atomicEditorCommitter != null -> {
+                        atomicEditorCommitter(
+                            prefs,
+                            queueRoot.toString(),
+                            ledgerRoot.toString(),
+                            ownerPayloadJson
+                        )
+                    }
+                    else -> {
+                        (capabilityAtomicEditorCommitter ?: defaultAtomicEditorCommitter)(
+                            prefs,
+                            queueRoot.toString(),
+                            ledgerRoot.toString(),
+                            ownerPayloadJson,
+                            null
+                        )
+                    }
+                }
 
                 if (success) {
                     stage = ExecutionStage.COMMIT_CONFIRMED
@@ -461,6 +610,24 @@ object DirectBootDeliveryTransitionEngine {
                 }
             }
         }
+    }
+
+    private fun defaultBootProvenance(context: Context): BootProvenance {
+        val bootCount = try {
+            Settings.Global.getInt(
+                context.contentResolver,
+                Settings.Global.BOOT_COUNT
+            )
+        } catch (_: Throwable) {
+            null
+        }
+        val elapsed = SystemClock.elapsedRealtime().coerceAtLeast(0L)
+        val bootEpoch = (System.currentTimeMillis() - elapsed).coerceAtLeast(0L)
+        return BootProvenance(
+            bootCount = bootCount,
+            lastElapsedRealtime = elapsed,
+            bootEpochEstimateMs = bootEpoch
+        )
     }
 
     private fun prefs(context: Context): SharedPreferences {

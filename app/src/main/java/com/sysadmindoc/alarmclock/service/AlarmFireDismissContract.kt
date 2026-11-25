@@ -1,14 +1,19 @@
 package com.sysadmindoc.alarmclock.service
 
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmEvent
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.data.model.Alarm
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
+import com.sysadmindoc.alarmclock.receiver.DismissReceiver
+import com.sysadmindoc.alarmclock.receiver.SnoozeReceiver
 import com.sysadmindoc.alarmclock.ui.alarmfiring.AlarmFiringActivity
 import java.time.Instant
 import java.time.ZoneId
+import java.util.Objects
 
 object AlarmFireDismissContract {
 
@@ -19,12 +24,20 @@ object AlarmFireDismissContract {
         context: Context,
         alarmId: Long,
         scheduledAt: Long,
-        fireId: String = fireId(alarmId, scheduledAt)
+        fireId: String = fireId(alarmId, scheduledAt),
+        restoreEpoch: Long = 0L,
+        isQuickAlarm: Boolean? = null
     ): Intent = Intent(context, AlarmService::class.java).apply {
         action = AlarmService.ACTION_START_ALARM
         putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
         putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, scheduledAt)
         putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, fireId)
+        if (restoreEpoch > 0L) {
+            putExtra(AlarmScheduler.EXTRA_RESTORE_EPOCH, restoreEpoch)
+        }
+        if (isQuickAlarm != null) {
+            putExtra(AlarmScheduler.EXTRA_QUICK_ALARM, isQuickAlarm)
+        }
     }
 
     fun snoozeServiceIntent(
@@ -89,6 +102,96 @@ object AlarmFireDismissContract {
         if (firedAt > 0L) {
             putExtra(AlarmService.EXTRA_FIRED_AT, firedAt)
         }
+    }
+
+    fun occurrenceUri(
+        kind: String,
+        alarmId: Long,
+        scheduledAt: Long,
+        fireId: String
+    ): Uri = Uri.Builder()
+        .scheme("alarmclock")
+        .authority("occurrence")
+        .appendPath(kind)
+        .appendPath(alarmId.toString())
+        .appendPath(scheduledAt.toString())
+        .appendQueryParameter("fireId", fireId)
+        .build()
+
+    fun occurrenceRequestCode(
+        kind: String,
+        alarmId: Long,
+        scheduledAt: Long,
+        fireId: String
+    ): Int = Objects.hash(kind, alarmId, scheduledAt, fireId)
+
+    fun firingFullScreenPendingIntent(
+        context: Context,
+        alarmId: Long,
+        scheduledAt: Long,
+        fireId: String = fireId(alarmId, scheduledAt),
+        firedAt: Long = 0L,
+        kind: String = "fsi"
+    ): PendingIntent {
+        val intent = firingActivityIntent(
+            context = context,
+            alarmId = alarmId,
+            scheduledAt = scheduledAt,
+            fireId = fireId,
+            firedAt = firedAt
+        ).apply {
+            data = occurrenceUri(kind, alarmId, scheduledAt, fireId)
+        }
+        return PendingIntent.getActivity(
+            context,
+            occurrenceRequestCode(kind, alarmId, scheduledAt, fireId),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    fun snoozeActionPendingIntent(
+        context: Context,
+        alarmId: Long,
+        scheduledAt: Long,
+        fireId: String = fireId(alarmId, scheduledAt),
+        firedAt: Long = 0L
+    ): PendingIntent {
+        val intent = Intent(context, SnoozeReceiver::class.java).apply {
+            data = occurrenceUri("snooze", alarmId, scheduledAt, fireId)
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, scheduledAt)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, fireId)
+            putExtra(AlarmService.EXTRA_FIRED_AT, firedAt)
+        }
+        return PendingIntent.getBroadcast(
+            context,
+            occurrenceRequestCode("snooze", alarmId, scheduledAt, fireId),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    fun dismissActionPendingIntent(
+        context: Context,
+        alarmId: Long,
+        scheduledAt: Long,
+        fireId: String = fireId(alarmId, scheduledAt),
+        firedAt: Long = 0L
+    ): PendingIntent {
+        val intent = Intent(context, DismissReceiver::class.java).apply {
+            data = occurrenceUri("dismiss", alarmId, scheduledAt, fireId)
+            putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarmId)
+            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, scheduledAt)
+            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, fireId)
+            putExtra(AlarmService.EXTRA_FIRED_AT, firedAt)
+        }
+        return PendingIntent.getBroadcast(
+            context,
+            occurrenceRequestCode("dismiss", alarmId, scheduledAt, fireId),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
     }
 
     fun alarmEvent(

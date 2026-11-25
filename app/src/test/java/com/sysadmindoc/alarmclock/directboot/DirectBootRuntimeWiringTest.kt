@@ -150,13 +150,22 @@ class DirectBootRuntimeWiringTest {
             putExtra(DirectBootDeliveryAuthorizer.EXTRA_TICKET_ID, ticketId)
         }
 
-        val receiver = DirectBootAlarmReceiver()
-        receiver.onReceive(ceContext, firingIntent)
+        val gate = com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate.getInstance(ceContext).apply { isEnabled = true }
+        DirectBootAlarmReceiver.outputAuthorityGateSeam = gate
+        DirectBootAlarmReceiver.v2DeliveryCapableProvider = { true }
 
-        // Verify next candidate B is armed on boundary
-        val calls = fakeBoundary.registerCalls
-        assertFalse("Reconciler MUST be invoked for next candidate after A's commit", calls.isEmpty())
-        assertEquals(202L, calls.last().alarmId)
+        val receiver = DirectBootAlarmReceiver()
+        try {
+            receiver.onReceive(ceContext, firingIntent)
+
+            // Verify next candidate B is armed on boundary
+            val calls = fakeBoundary.registerCalls
+            assertFalse("Reconciler MUST be invoked for next candidate after A's commit", calls.isEmpty())
+            assertEquals(202L, calls.last().alarmId)
+        } finally {
+            DirectBootAlarmReceiver.resetSeamsForTesting()
+            gate.isEnabled = false
+        }
     }
 
     @Test
@@ -272,4 +281,259 @@ class DirectBootRuntimeWiringTest {
             return ExactCancellationResult.Accepted(identity)
         }
     }
+
+    // =========================================================================
+    // KNO-75 G4-STEP6-P23 RED: M1 Two-Alarm Preemption, M5 Rollback, Cross-Lane
+    // =========================================================================
+
+    private class CapturingStartServiceContext(
+        base: Context,
+        private val shouldThrowOnStart: Boolean = false
+    ) : android.content.ContextWrapper(base) {
+        val startedIntents = mutableListOf<Intent>()
+        override fun startForegroundService(service: Intent?): android.content.ComponentName? {
+            if (shouldThrowOnStart) {
+                throw IllegalStateException("Background foreground service start blocked")
+            }
+            if (service != null) startedIntents.add(service)
+            return android.content.ComponentName(packageName, DirectBootAlarmService::class.java.name)
+        }
+    }
+
+    @Test
+    fun p23_m1_twoAlarmSequentialPreemption_stopAndAutoStopFencing_andCleanIdleRelease() {
+        DirectBootServiceTestFixture.clearAllDirectBootPrefs(deContext)
+        DirectBootServiceTestFixture.configureAudioAndVibrationEnvironment(ceContext)
+        DirectBootAlarmReceiver.resetSeamsForTesting()
+
+        val now = System.currentTimeMillis()
+        val t1 = now - 20_000L
+        val t2 = now - 10_000L
+        val q1 = DirectBootQueueItem(
+            kind = DirectBootQueueItem.KIND_NORMAL,
+            alarmId = 810L,
+            triggerTime = t1,
+            generation = 1,
+            instanceToken = "tok_m1_810",
+            restoreEpoch = 2L
+        )
+        val q2 = DirectBootQueueItem(
+            kind = DirectBootQueueItem.KIND_NORMAL,
+            alarmId = 820L,
+            triggerTime = t2,
+            generation = 1,
+            instanceToken = "tok_m1_820",
+            restoreEpoch = 2L
+        )
+        assertTrue(DirectBootAlarmCache.writeQueue(deContext, listOf(q1, q2), now = t1 - 5_000L))
+
+        val fakeBoundary = FakeExactAlarmBoundary()
+        DirectBootAlarmReceiver.reconcilerSeam = { ctx ->
+            DirectBootRegistrationReconciler.createForTesting(
+                context = ctx,
+                osBoundary = fakeBoundary,
+                clock = { now },
+                bootProvenanceProvider = { BootProvenance(bootCount = null, lastElapsedRealtime = android.os.SystemClock.elapsedRealtime(), bootEpochEstimateMs = now - android.os.SystemClock.elapsedRealtime()) }
+            )
+        }
+
+        val gate = com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate.getInstance(ceContext).apply { isEnabled = true }
+        DirectBootAlarmReceiver.outputAuthorityGateSeam = gate
+        DirectBootAlarmReceiver.v2DeliveryCapableProvider = { true }
+
+        val captureCtx = CapturingStartServiceContext(ceContext)
+        val receiver = DirectBootAlarmReceiver()
+        val svcController = org.robolectric.Robolectric.buildService(DirectBootAlarmService::class.java)
+        val service = svcController.create().get()
+        service.outputAuthorityGate = gate
+        service.v2DeliveryCapableProvider = { true }
+        try {
+            // Alarm 1 fires (ticketless OS intent) -> Receiver commits HANDOVER_PENDING(seq=1) -> Service promotes V2_ACTIVE(seq=2)
+            receiver.onReceive(captureCtx, DirectBootV2NormalIntentIdentity.fromQueueItem(q1).createIntent(ceContext))
+            assertEquals(1, captureCtx.startedIntents.size)
+            service.onStartCommand(captureCtx.startedIntents[0], 0, 1)
+
+            val snap1 = DirectBootServiceTestFixture.captureEffects(service)
+            assertEquals(810L, snap1.alarmId)
+            assertEquals("tok_m1_810", snap1.instanceToken)
+            assertTrue("M1: Alarm 1 MUST play audio", snap1.mediaPlayerPlaying)
+            val owner1 = DirectBootDurableOwnerStore.read(deContext) as OwnerReadResult.Success
+            assertEquals(OwnerState.V2_ACTIVE, owner1.owner.state)
+            assertEquals(810L, owner1.owner.activeSession?.alarmId)
+            val oldPlayer = snap1.mediaPlayer
+
+            // Alarm 2 arrives -> Receiver commits HANDOVER_PENDING(A2, seq=3) -> Service stops A1 & promotes V2_ACTIVE(A2, seq=4)
+            receiver.onReceive(captureCtx, DirectBootV2NormalIntentIdentity.fromQueueItem(q2).createIntent(ceContext))
+            assertEquals(2, captureCtx.startedIntents.size)
+            service.onStartCommand(captureCtx.startedIntents[1], 0, 2)
+
+            val snap2 = DirectBootServiceTestFixture.captureEffects(service)
+            assertEquals(820L, snap2.alarmId)
+            assertEquals("tok_m1_820", snap2.instanceToken)
+            assertTrue("M1: Alarm 2 MUST play audio", snap2.mediaPlayerPlaying)
+            assertTrue("M1: Alarm 1 player MUST be replaced", oldPlayer !== snap2.mediaPlayer)
+            val owner2 = DirectBootDurableOwnerStore.read(deContext) as OwnerReadResult.Success
+            assertEquals(OwnerState.V2_ACTIVE, owner2.owner.state)
+            assertEquals(820L, owner2.owner.activeSession?.alarmId)
+
+            // Stale STOP for Alarm 1 MUST be rejected without stopping Alarm 2
+            val staleStopA1 = Intent(ceContext, DirectBootAlarmService::class.java).apply {
+                action = DirectBootAlarmService.ACTION_STOP
+                putExtra(DirectBootAlarmReceiver.EXTRA_ALARM_ID, 810L)
+                putExtra(DirectBootAlarmReceiver.EXTRA_TRIGGER_TIME, t1)
+                putExtra(DirectBootV2NormalIntentIdentity.EXTRA_GENERATION, 1)
+                putExtra(DirectBootV2NormalIntentIdentity.EXTRA_INSTANCE_TOKEN, "tok_m1_810")
+                putExtra(DirectBootV2NormalIntentIdentity.EXTRA_RESTORE_EPOCH, 2L)
+            }
+            service.onStartCommand(staleStopA1, 0, 3)
+            assertFalse("Stale A1 STOP MUST NOT stop active A2", DirectBootServiceTestFixture.captureEffects(service).stoppedBySelf)
+            assertEquals(OwnerState.V2_ACTIVE, (DirectBootDurableOwnerStore.read(deContext) as OwnerReadResult.Success).owner.state)
+
+            // Valid STOP for Alarm 2 cleanly stops output and CAS-releases V2_ACTIVE -> IDLE (M11)
+            val stopA2 = Intent(ceContext, DirectBootAlarmService::class.java).apply {
+                action = DirectBootAlarmService.ACTION_STOP
+                putExtra(DirectBootAlarmReceiver.EXTRA_ALARM_ID, 820L)
+                putExtra(DirectBootAlarmReceiver.EXTRA_TRIGGER_TIME, t2)
+                putExtra(DirectBootV2NormalIntentIdentity.EXTRA_GENERATION, 1)
+                putExtra(DirectBootV2NormalIntentIdentity.EXTRA_INSTANCE_TOKEN, "tok_m1_820")
+                putExtra(DirectBootV2NormalIntentIdentity.EXTRA_RESTORE_EPOCH, 2L)
+            }
+            service.onStartCommand(stopA2, 0, 4)
+            val snapAfterStop = DirectBootServiceTestFixture.captureEffects(service)
+            assertTrue("M11: Valid STOP for A2 MUST stopSelf", snapAfterStop.stoppedBySelf)
+            assertFalse(snapAfterStop.mediaPlayerPlaying)
+            assertEquals(OwnerState.IDLE, (DirectBootDurableOwnerStore.read(deContext) as OwnerReadResult.Success).owner.state)
+        } finally {
+            svcController.destroy()
+            DirectBootAlarmReceiver.resetSeamsForTesting()
+            DirectBootServiceTestFixture.clearAllDirectBootPrefs(deContext)
+        }
+    }
+
+    @Test
+    fun p23_m5_serviceStartFailure_recordsMissedAndReleasesHandoverPendingToIdle() {
+        DirectBootServiceTestFixture.clearAllDirectBootPrefs(deContext)
+        DirectBootAlarmReceiver.resetSeamsForTesting()
+        try {
+            val now = System.currentTimeMillis()
+            val t1 = now - 5_000L
+            val q1 = DirectBootQueueItem(
+                kind = DirectBootQueueItem.KIND_NORMAL,
+                alarmId = 830L,
+                triggerTime = t1,
+                generation = 1,
+                instanceToken = "tok_m5_830",
+                restoreEpoch = 2L
+            )
+            assertTrue(DirectBootAlarmCache.writeQueue(deContext, listOf(q1), now = t1 - 5_000L))
+
+            val gate = com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate.getInstance(ceContext).apply { isEnabled = true }
+            DirectBootAlarmReceiver.outputAuthorityGateSeam = gate
+            DirectBootAlarmReceiver.v2DeliveryCapableProvider = { true }
+
+            val throwingCtx = CapturingStartServiceContext(ceContext, shouldThrowOnStart = true)
+            DirectBootAlarmReceiver().onReceive(throwingCtx, DirectBootV2NormalIntentIdentity.fromQueueItem(q1).createIntent(ceContext))
+
+            val missed = DirectBootMissedStore.readUnacknowledgedRecords(deContext)
+            assertTrue(missed is MissedStoreStorageState.ValidWithRecords)
+            assertEquals(DirectBootMissedRecord.CLASSIFICATION_SERVICE_START_FAILED, (missed as MissedStoreStorageState.ValidWithRecords).records.single().classification)
+
+            val ownerRead = DirectBootDurableOwnerStore.read(deContext)
+            assertTrue("M5: Owner MUST be released to IDLE on startForegroundService failure, got $ownerRead", ownerRead is OwnerReadResult.Success)
+            assertEquals(OwnerState.IDLE, (ownerRead as OwnerReadResult.Success).owner.state)
+        } finally {
+            DirectBootAlarmReceiver.resetSeamsForTesting()
+            DirectBootServiceTestFixture.clearAllDirectBootPrefs(deContext)
+        }
+    }
+
+    @Test
+    fun p23_crossLane_gateEnabled_blocksSameOccurrenceLegacyV1ClaimAndPreemptsDifferentOccurrenceViaArbiter() {
+        DirectBootServiceTestFixture.clearAllDirectBootPrefs(deContext)
+        DirectBootServiceTestFixture.configureAudioAndVibrationEnvironment(ceContext)
+        DirectBootAlarmReceiver.resetSeamsForTesting()
+
+        val gate = com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate().apply {
+            isEnabled = true
+            bootCount = 1L
+        }
+        DirectBootAlarmReceiver.outputAuthorityGateSeam = gate
+        DirectBootAlarmReceiver.v2DeliveryCapableProvider = { true }
+        try {
+            val now = System.currentTimeMillis()
+            val t1 = now - 20_000L
+            val t2 = now - 10_000L
+
+            // Case A: Same occurrence already claimed by Legacy V1 -> V2 Receiver MUST reject fail-closed
+            val v1Key = OutputOccurrenceKey(alarmId = 840L, scheduledAt = t1, refireCount = 0)
+            val reserveRes = gate.reserveForServiceStart(ceContext, v1Key, LegacyClaimSource.ALARM_RECEIVER, directBootModeOnly = true)
+            assertTrue(reserveRes is com.sysadmindoc.alarmclock.directboot.outputauthority.OutputAuthorizationResult.Authorized)
+
+            val qSame = DirectBootQueueItem(
+                kind = DirectBootQueueItem.KIND_NORMAL,
+                alarmId = 840L,
+                triggerTime = t1,
+                generation = 1,
+                instanceToken = "tok_same_840",
+                restoreEpoch = 2L
+            )
+            assertTrue(DirectBootAlarmCache.writeQueue(deContext, listOf(qSame), now = t1 - 5_000L))
+            val captureSame = CapturingStartServiceContext(ceContext)
+            DirectBootAlarmReceiver().onReceive(captureSame, DirectBootV2NormalIntentIdentity.fromQueueItem(qSame).createIntent(ceContext))
+            assertEquals("Same-occurrence Legacy V1 claim MUST block V2 Receiver", 0, captureSame.startedIntents.size)
+            assertEquals(1, DirectBootAlarmCache.readQueue(deContext, now = t1 - 5_000L).size)
+
+            // Case B: Different occurrence (841, t2) arrives while V1 (840, t1) holds Arbiter -> Arbiter stops V1 before V2 plays
+            val claimNonce = (reserveRes as com.sysadmindoc.alarmclock.directboot.outputauthority.OutputAuthorizationResult.Authorized).activeNonce
+            val claimed = gate.claimOutput(ceContext, v1Key, claimNonce, com.sysadmindoc.alarmclock.directboot.outputauthority.OutputSinkType.DIRECT_BOOT_SERVICE_1011, directBootModeOnly = true)
+            assertTrue(claimed is com.sysadmindoc.alarmclock.directboot.outputauthority.OutputAuthorizationResult.Authorized)
+            val v1ActiveNonce = (claimed as com.sysadmindoc.alarmclock.directboot.outputauthority.OutputAuthorizationResult.Authorized).activeNonce
+            gate.observePhysicalOutput(ceContext, v1Key, v1ActiveNonce, com.sysadmindoc.alarmclock.directboot.outputauthority.OutputSinkType.DIRECT_BOOT_SERVICE_1011)
+
+            val qOther = DirectBootQueueItem(
+                kind = DirectBootQueueItem.KIND_NORMAL,
+                alarmId = 841L,
+                triggerTime = t2,
+                generation = 1,
+                instanceToken = "tok_other_841",
+                restoreEpoch = 2L
+            )
+            assertTrue(DirectBootAlarmCache.writeQueue(deContext, listOf(qOther), now = t2 - 5_000L))
+            val captureOther = CapturingStartServiceContext(ceContext)
+            DirectBootAlarmReceiver().onReceive(captureOther, DirectBootV2NormalIntentIdentity.fromQueueItem(qOther).createIntent(ceContext))
+            assertEquals(1, captureOther.startedIntents.size)
+
+            val svcController = org.robolectric.Robolectric.buildService(DirectBootAlarmService::class.java)
+            val service = svcController.create().get()
+            service.outputAuthorityGate = gate
+            service.v2DeliveryCapableProvider = { true }
+            try {
+                // Inject matching active handle state on Service or let Arbiter confirm preempted handle via handlePreemptedOwner:
+                DirectBootServiceTestFixture.seedActiveState(
+                    service = service,
+                    context = ceContext,
+                    alarmId = 840L,
+                    triggerTime = t1,
+                    generation = 0,
+                    instanceToken = "",
+                    restoreEpoch = 0L
+                )
+                DirectBootAlarmService::class.java.getDeclaredField("currentActiveNonce").apply { isAccessible = true }.set(service, v1ActiveNonce)
+                DirectBootAlarmService::class.java.getDeclaredField("currentActiveOccurrenceKey").apply { isAccessible = true }.set(service, v1Key)
+
+                service.onStartCommand(captureOther.startedIntents[0], 0, 1)
+                val snap = DirectBootServiceTestFixture.captureEffects(service)
+                assertEquals(841L, snap.alarmId)
+                assertTrue(snap.mediaPlayerPlaying)
+                assertEquals(841L, gate.arbiter.activeHandle?.key?.alarmId)
+            } finally {
+                svcController.destroy()
+            }
+        } finally {
+            gate.arbiter.clearForTesting()
+            DirectBootAlarmReceiver.resetSeamsForTesting()
+            DirectBootServiceTestFixture.clearAllDirectBootPrefs(deContext)
+        }
+    }
 }
+

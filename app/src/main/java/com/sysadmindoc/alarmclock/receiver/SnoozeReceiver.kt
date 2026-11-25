@@ -7,6 +7,7 @@ import android.util.Log
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
 import com.sysadmindoc.alarmclock.service.AlarmFireDismissContract
+import com.sysadmindoc.alarmclock.service.AlarmGeneration
 import com.sysadmindoc.alarmclock.service.AlarmService
 
 /**
@@ -20,6 +21,28 @@ class SnoozeReceiver : BroadcastReceiver() {
         val fireId = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID)
             ?: AlarmIncidentEvent.fireIdFor(alarmId, scheduledAt)
         val firedAt = intent.getLongExtra(AlarmService.EXTRA_FIRED_AT, 0L)
+        val incomingGen = AlarmGeneration(alarmId, scheduledAt, fireId)
+        val active = AlarmService.activeAlarm.get()
+        if (
+            (incomingGen.isValid && AlarmService.isUiSuppressedAsSnoozed(incomingGen)) ||
+            (active != null && active.matches(incomingGen) && active.state == "SNOOZED")
+        ) {
+            recordAlarmIncidentsAsync(
+                context,
+                listOf(
+                    ReceiverAlarmIncident(
+                        alarmId = alarmId,
+                        fireId = fireId,
+                        scheduledAt = scheduledAt,
+                        type = AlarmIncidentEvent.TYPE_BROADCAST,
+                        status = AlarmIncidentEvent.STATUS_SKIPPED,
+                        reasonCode = "SNOOZE_REJECTED_ALREADY_SNOOZED",
+                        source = "SnoozeReceiver"
+                    )
+                )
+            )
+            return
+        }
 
         val serviceIntent = AlarmFireDismissContract.snoozeServiceIntent(context, alarmId, scheduledAt, fireId, firedAt)
         try {

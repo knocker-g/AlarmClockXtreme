@@ -217,18 +217,26 @@ object DirectBootCeHandoffCoordinator {
                 is DeStoresSnapshot.Valid -> s
             }
 
-            // Mutual exclusion check across DE stores for the same occurrence (epoch-scoped)
-            val conflictingDeMissed = snapshot.missedRecords.firstOrNull {
+            // Mutual exclusion check across DE stores for the same occurrence (epoch-scoped).
+            // Allow same-epoch coexistence exclusively when all matching DE missed records are
+            // CLASSIFICATION_SERVICE_START_FAILED (matched by acknowledgeDeliveredInternal co-retirement).
+            val conflictingDeMissedRecords = snapshot.missedRecords.filter {
                 it.alarmId == candidateRecord.alarmId &&
                     it.triggerTime == candidateRecord.triggerTime &&
                     it.generation == candidateRecord.generation &&
                     it.instanceToken == candidateRecord.instanceToken &&
                     isSameEpochOrUnqualified(it.restoreEpoch, candidateRecord.restoreEpoch)
             }
-            if (conflictingDeMissed != null) {
+            val allowServiceStartFailedCoexistence = conflictingDeMissedRecords.isNotEmpty() &&
+                candidateRecord.restoreEpoch > 0L &&
+                conflictingDeMissedRecords.all {
+                    it.classification == DirectBootMissedRecord.CLASSIFICATION_SERVICE_START_FAILED &&
+                        it.restoreEpoch == candidateRecord.restoreEpoch
+                }
+            if (conflictingDeMissedRecords.isNotEmpty() && !allowServiceStartFailedCoexistence) {
                 return CeHandoffResult.Rejected.DeCrossStoreConflict(
                     deliveryRecord = candidateRecord,
-                    missedRecord = conflictingDeMissed,
+                    missedRecord = conflictingDeMissedRecords.first(),
                     details = "Mutual exclusion violation: occurrence exists in both DE DeliveryLedger and DE MissedStore"
                 )
             }

@@ -17,9 +17,13 @@ class RealMainSlotApplier @Inject constructor(
 ) : MainSlotApplier {
 
     override suspend fun applySlotOperation(authority: ScheduleAuthority): Boolean {
+        if (authority.alarmId <= 0L) return false
+        if (authority.reconcileState == "QUARANTINE") return false
+        if (authority.restoreEpoch <= 0L) return false
         return when (authority.desiredOperation) {
             "SET" -> {
-                val triggerMillis = authority.desiredTriggerMillis ?: return false
+                if (authority.lifecycle == "DISABLED") return false
+                val triggerMillis = authority.desiredTriggerMillis?.takeIf { it > 0L } ?: return false
                 alarmScheduler.applyRawOsSet(authority.alarmId, triggerMillis)
             }
             "CANCEL" -> {

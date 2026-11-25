@@ -41,6 +41,7 @@ object AlarmFullScreenFallback {
             inFlightReservations.clear()
             postedNonces.clear()
         }
+        AlarmService.clearUiGuardsForTesting()
     }
 
     /**
@@ -127,14 +128,12 @@ object AlarmFullScreenFallback {
             }
             activeNonce = auth.activeNonce
 
-            val firingIntent = AlarmFireDismissContract.firingActivityIntent(
-                context, alarmId, scheduledAt, fireId
-            )
-            val fullScreenPi = PendingIntent.getActivity(
-                context,
-                alarmId.toInt() + 30000,
-                firingIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            val fullScreenPi = AlarmFireDismissContract.firingFullScreenPendingIntent(
+                context = context,
+                alarmId = alarmId,
+                scheduledAt = scheduledAt,
+                fireId = fireId,
+                kind = "fallback-fsi"
             )
             val builder = NotificationCompat.Builder(context, AlarmService.CHANNEL_ALARM)
                 .setSmallIcon(R.drawable.ic_alarm)
@@ -180,6 +179,7 @@ object AlarmFullScreenFallback {
 
             NotificationManagerCompat.from(context)
                 .notify(AlarmService.NOTIFICATION_ID, builder.build())
+            AlarmService.markFallbackPosted(AlarmGeneration(alarmId, scheduledAt, fireId))
 
             synchronized(reservationLock) {
                 postedNonces[claimNonce] = occKey
@@ -213,14 +213,12 @@ object AlarmFullScreenFallback {
             PackageManager.PERMISSION_GRANTED
         ) return false
         return try {
-            val firingIntent = AlarmFireDismissContract.firingActivityIntent(
-                context, alarmId, scheduledAt, fireId
-            )
-            val fullScreenPi = PendingIntent.getActivity(
-                context,
-                alarmId.toInt() + 30000,
-                firingIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            val fullScreenPi = AlarmFireDismissContract.firingFullScreenPendingIntent(
+                context = context,
+                alarmId = alarmId,
+                scheduledAt = scheduledAt,
+                fireId = fireId,
+                kind = "fallback-fsi"
             )
             val builder = NotificationCompat.Builder(context, AlarmService.CHANNEL_ALARM)
                 .setSmallIcon(R.drawable.ic_alarm)
@@ -252,6 +250,7 @@ object AlarmFullScreenFallback {
             }
             NotificationManagerCompat.from(context)
                 .notify(AlarmService.NOTIFICATION_ID, builder.build())
+            AlarmService.markFallbackPosted(AlarmGeneration(alarmId, scheduledAt, fireId))
             true
         } catch (e: Exception) {
             Log.e(TAG, "Legacy full-screen fallback failed for $alarmId", e)

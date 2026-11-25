@@ -64,6 +64,10 @@ class HandoffFailureHardeningTest {
         testAlarmRepository = null
         testIncidentRepository = null
         testIssuedOccurrenceDao = null
+        val jFile = java.io.File(context.filesDir, com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator.JOURNAL_FILENAME)
+        if (jFile.exists()) jFile.delete()
+        val bFile = java.io.File(context.filesDir, "${com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator.JOURNAL_FILENAME}.bak")
+        if (bFile.exists()) bFile.delete()
         inMemoryDb.close()
     }
 
@@ -750,7 +754,14 @@ class HandoffFailureHardeningTest {
             inMemoryDb.issuedOccurrenceDao().activateIssuedOccurrence(tokenC)
         }
 
-        // Simulate app restart / reconciliation pass
+        // Simulate app restart / reconciliation pass with valid ScheduleAuthorityOwner fixture
+        val ownerProvider = javax.inject.Provider {
+            com.sysadmindoc.alarmclock.domain.ScheduleAuthorityOwner(
+                authorityDao = inMemoryDb.scheduleAuthorityDao(),
+                mainSlotApplier = com.sysadmindoc.alarmclock.domain.MainSlotApplier { true },
+                exactPermissionChecker = { true }
+            )
+        }
         val scheduler = com.sysadmindoc.alarmclock.domain.AlarmScheduler(
             context = context,
             repository = alarmRepo,
@@ -758,10 +769,37 @@ class HandoffFailureHardeningTest {
             preferencesManager = mockk(relaxed = true),
             holidayRepository = mockk(relaxed = true),
             alarmIncidentRepository = mockk(relaxed = true),
-            weatherRepository = mockk(relaxed = true)
+            weatherRepository = mockk(relaxed = true),
+            scheduleAuthorityOwnerProvider = ownerProvider
         )
 
+        // Production default (LEGACY_ONLY) must fail closed and preserve tokenized occurrence
         runBlocking { scheduler.rescheduleAllInBatches() }
+        val legacyOccC = runBlocking { inMemoryDb.issuedOccurrenceDao().getOccurrence(tokenC) }
+        assertNotNull(legacyOccC)
+        assertEquals(
+            "LEGACY_ONLY fail-closed MUST preserve orphan tokenized occurrence",
+            com.sysadmindoc.alarmclock.data.local.entity.IssuedOccurrence.STATUS_ISSUED,
+            legacyOccC!!.status
+        )
+
+        // Explicit test Owner Route fixture reconciles orphan tokenized occurrence to REVOKED
+        val ownerRouteAuthority = mockk<com.sysadmindoc.alarmclock.domain.ProductionSchedulingRouteAuthority> {
+            every { isOwnerRouteActive() } returns true
+        }
+        val ownerScheduler = com.sysadmindoc.alarmclock.domain.AlarmScheduler(
+            context = context,
+            repository = alarmRepo,
+            calculator = mockk(relaxed = true),
+            preferencesManager = mockk(relaxed = true),
+            holidayRepository = mockk(relaxed = true),
+            alarmIncidentRepository = mockk(relaxed = true),
+            weatherRepository = mockk(relaxed = true),
+            scheduleAuthorityOwnerProvider = ownerProvider,
+            routeAuthority = ownerRouteAuthority
+        )
+
+        runBlocking { ownerScheduler.rescheduleAllInBatches() }
 
         val occC = runBlocking { inMemoryDb.issuedOccurrenceDao().getOccurrence(tokenC) }
 
@@ -815,5 +853,210 @@ class HandoffFailureHardeningTest {
 
         assertNull("Disabled alarm MUST NOT post fallback or record STATUS_SUCCEEDED", successIncident)
         assertEquals(0, runBlocking { incidentRepo.occurrenceDeliveryCount(108L, scheduledAt) })
+    }
+
+    @Test
+    fun `CE-B02-D-Receiver - AlarmReceiver fallback rejects PHASE_PREPARED, kind mismatch, stale restoreEpoch, and journal trigger mismatch`() {
+        val shadowApp = org.robolectric.Shadows.shadowOf(context.applicationContext as android.app.Application)
+        shadowApp.grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+
+        val now = System.currentTimeMillis()
+        val tOld = now - 5_000L
+        val tNew = now + 3_600_000L
+
+        val coordinator = com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator(
+            context = context,
+            database = inMemoryDb,
+            preferencesManager = mockk(relaxed = true),
+            alarmScheduler = mockk(relaxed = true),
+            moshi = com.squareup.moshi.Moshi.Builder().build()
+        )
+
+        runBlocking {
+            inMemoryDb.scheduleAuthorityDao().insertMeta(
+                com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta(1, restoreEpoch = 5L, bootstrapState = "COMPLETED")
+            )
+            alarmRepo.save(
+                com.sysadmindoc.alarmclock.data.model.Alarm(
+                    id = 201L,
+                    hour = 8,
+                    minute = 0,
+                    label = "Normal 201",
+                    isEnabled = true,
+                    nextTriggerTime = tNew
+                )
+            )
+        }
+
+        val spyContext = spyk(context) {
+            every { applicationContext } returns context.applicationContext
+            every { startForegroundService(any()) } throws IllegalStateException("Background start restricted")
+        }
+
+        // Rule A: PHASE_PREPARED journal on disk
+        runBlocking {
+            coordinator.prepareTransaction(com.sysadmindoc.alarmclock.data.preferences.AppSettings(), emptyList(), emptyList())
+        }
+        run {
+            val latch = CountDownLatch(1)
+            testOnIncidentRecordedCompletion = { latch.countDown() }
+            val intent = Intent().apply {
+                putExtra(AlarmScheduler.EXTRA_ALARM_ID, 201L)
+                putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, tNew)
+                putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "alarm-201-rule-a")
+                putExtra("restore_epoch", 5L)
+                putExtra("EXTRA_QUICK_ALARM", false)
+            }
+            AlarmReceiver().onReceive(spyContext, intent)
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            assertTrue(latch.await(5, TimeUnit.SECONDS))
+            val incidents = runBlocking { incidentRepo.getRecent(50) }
+            assertNull(incidents.find { it.alarmId == 201L && it.fireId == "alarm-201-rule-a" && it.status == AlarmIncidentEvent.STATUS_SUCCEEDED })
+            assertNotNull(incidents.find { it.alarmId == 201L && it.fireId == "alarm-201-rule-a" && it.reasonCode == "STALE_FIRE_REJECTED_RESTORE_PREPARED_FENCE" })
+        }
+
+        // Transition journal to PHASE_COMMITTED for Rules B, C, D
+        runBlocking { coordinator.markCommitted() }
+
+        // Rule B: Kind mismatch (Normal alarm in DB, EXTRA_QUICK_ALARM = true)
+        run {
+            val latch = CountDownLatch(1)
+            testOnIncidentRecordedCompletion = { latch.countDown() }
+            val intent = Intent().apply {
+                putExtra(AlarmScheduler.EXTRA_ALARM_ID, 201L)
+                putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, tNew + 1000L)
+                putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "alarm-201-rule-b")
+                putExtra("restore_epoch", 5L)
+                putExtra("EXTRA_QUICK_ALARM", true)
+            }
+            AlarmReceiver().onReceive(spyContext, intent)
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            assertTrue(latch.await(5, TimeUnit.SECONDS))
+            val incidents = runBlocking { incidentRepo.getRecent(50) }
+            assertNull(incidents.find { it.alarmId == 201L && it.fireId == "alarm-201-rule-b" && it.status == AlarmIncidentEvent.STATUS_SUCCEEDED })
+            assertNotNull(incidents.find { it.alarmId == 201L && it.fireId == "alarm-201-rule-b" && it.reasonCode == "STALE_FIRE_REJECTED_ALARM_KIND_MISMATCH" })
+        }
+
+        // Rule C: Stale restore_epoch = 4L vs Meta restoreEpoch = 5L
+        run {
+            val latch = CountDownLatch(1)
+            testOnIncidentRecordedCompletion = { latch.countDown() }
+            val intent = Intent().apply {
+                putExtra(AlarmScheduler.EXTRA_ALARM_ID, 201L)
+                putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, tNew + 2000L)
+                putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "alarm-201-rule-c")
+                putExtra("restore_epoch", 4L)
+                putExtra("EXTRA_QUICK_ALARM", false)
+            }
+            AlarmReceiver().onReceive(spyContext, intent)
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            assertTrue(latch.await(5, TimeUnit.SECONDS))
+            val incidents = runBlocking { incidentRepo.getRecent(50) }
+            assertNull(incidents.find { it.alarmId == 201L && it.fireId == "alarm-201-rule-c" && it.status == AlarmIncidentEvent.STATUS_SUCCEEDED })
+            assertNotNull(incidents.find { it.alarmId == 201L && it.fireId == "alarm-201-rule-c" && it.reasonCode == "STALE_FIRE_REJECTED_STALE_RESTORE_EPOCH" })
+        }
+
+        // Rule D: No restore_epoch extra while PHASE_COMMITTED journal exists and scheduledAt (tOld) != nextTriggerTime (tNew)
+        run {
+            val latch = CountDownLatch(1)
+            testOnIncidentRecordedCompletion = { latch.countDown() }
+            val intent = Intent().apply {
+                putExtra(AlarmScheduler.EXTRA_ALARM_ID, 201L)
+                putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, tOld)
+                putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "alarm-201-rule-d")
+            }
+            AlarmReceiver().onReceive(spyContext, intent)
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            assertTrue(latch.await(5, TimeUnit.SECONDS))
+            val incidents = runBlocking { incidentRepo.getRecent(50) }
+            assertNull(incidents.find { it.alarmId == 201L && it.fireId == "alarm-201-rule-d" && it.status == AlarmIncidentEvent.STATUS_SUCCEEDED })
+            assertNotNull(incidents.find { it.alarmId == 201L && it.fireId == "alarm-201-rule-d" && it.reasonCode == "STALE_FIRE_REJECTED_STALE_TRIGGER_DURING_PENDING_JOURNAL" })
+        }
+    }
+
+    @Test
+    fun `CE-B02-ZFP-Receiver - AlarmReceiver admits valid legacy PI without extras when journal absent and tokenized PI with matching epoch`() {
+        val shadowApp = org.robolectric.Shadows.shadowOf(context.applicationContext as android.app.Application)
+        shadowApp.grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+
+        val jFile = java.io.File(context.filesDir, com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator.JOURNAL_FILENAME)
+        if (jFile.exists()) jFile.delete()
+        val bFile = java.io.File(context.filesDir, "${com.sysadmindoc.alarmclock.data.backup.RestoreJournalCoordinator.JOURNAL_FILENAME}.bak")
+        if (bFile.exists()) bFile.delete()
+
+        val now = System.currentTimeMillis()
+        val spyContext = spyk(context) {
+            every { applicationContext } returns context.applicationContext
+            every { startForegroundService(any()) } throws IllegalStateException("Background start restricted")
+        }
+
+        // Case 1: Journal absent, enabled legacy alarm 202L with no restore_epoch extra -> ADMITTED
+        val scheduledLegacy = now - 10_000L
+        runBlocking {
+            inMemoryDb.scheduleAuthorityDao().insertMeta(
+                com.sysadmindoc.alarmclock.data.local.entity.ScheduleAuthorityMeta(1, restoreEpoch = 3L, bootstrapState = "COMPLETED")
+            )
+            alarmRepo.save(
+                com.sysadmindoc.alarmclock.data.model.Alarm(
+                    id = 202L,
+                    hour = 7,
+                    minute = 0,
+                    label = "Legacy ZFP",
+                    isEnabled = true,
+                    nextTriggerTime = scheduledLegacy + 86_400_000L
+                )
+            )
+        }
+        run {
+            val latch = CountDownLatch(1)
+            testOnIncidentRecordedCompletion = { latch.countDown() }
+            val intent = Intent().apply {
+                putExtra(AlarmScheduler.EXTRA_ALARM_ID, 202L)
+                putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, scheduledLegacy)
+                putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "alarm-202-zfp-legacy")
+            }
+            AlarmReceiver().onReceive(spyContext, intent)
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            assertTrue(latch.await(5, TimeUnit.SECONDS))
+            val incidents = runBlocking { incidentRepo.getRecent(50) }
+            val ok = incidents.find { it.alarmId == 202L && it.fireId == "alarm-202-zfp-legacy" && it.status == AlarmIncidentEvent.STATUS_SUCCEEDED }
+            assertNotNull("ZFP-Receiver-1: Journal-absent legacy PI MUST be admitted", ok)
+        }
+
+        // Case 2: Tokenized occurrence 203L with matching restore_epoch = 3L and EXTRA_QUICK_ALARM = false -> ADMITTED
+        val scheduledV2 = now - 2_000L
+        val tokenV2 = "token-zfp-203"
+        runBlocking {
+            alarmRepo.save(
+                com.sysadmindoc.alarmclock.data.model.Alarm(
+                    id = 203L,
+                    hour = 7,
+                    minute = 30,
+                    label = "Tokenized ZFP",
+                    isEnabled = true,
+                    nextTriggerTime = scheduledV2
+                )
+            )
+            inMemoryDb.issuedOccurrenceDao().reserveIssuedOccurrence(tokenV2, 203L, scheduledV2, "alarm-203-zfp-v2")
+            inMemoryDb.issuedOccurrenceDao().activateIssuedOccurrence(tokenV2)
+        }
+        run {
+            val latch = CountDownLatch(1)
+            testOnIncidentRecordedCompletion = { latch.countDown() }
+            val intent = Intent().apply {
+                putExtra(AlarmScheduler.EXTRA_ALARM_ID, 203L)
+                putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, scheduledV2)
+                putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, "alarm-203-zfp-v2")
+                putExtra(AlarmScheduler.EXTRA_ISSUE_TOKEN, tokenV2)
+                putExtra("restore_epoch", 3L)
+                putExtra("EXTRA_QUICK_ALARM", false)
+            }
+            AlarmReceiver().onReceive(spyContext, intent)
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            assertTrue(latch.await(5, TimeUnit.SECONDS))
+            val incidents = runBlocking { incidentRepo.getRecent(50) }
+            val ok = incidents.find { it.alarmId == 203L && it.fireId == "alarm-203-zfp-v2" && it.status == AlarmIncidentEvent.STATUS_SUCCEEDED }
+            assertNotNull("ZFP-Receiver-2: Tokenized PI with matching restoreEpoch MUST be admitted", ok)
+        }
     }
 }

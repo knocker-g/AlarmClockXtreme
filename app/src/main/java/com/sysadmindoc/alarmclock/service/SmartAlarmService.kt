@@ -62,6 +62,8 @@ class SmartAlarmService : Service(), SensorEventListener {
         const val ACTION_START_SMART = "com.sysadmindoc.alarmclock.SMART_ALARM_START"
         const val EXTRA_ALARM_ID = "smart_alarm_id"
         const val EXTRA_TARGET_TIME = "smart_target_time"
+        const val EXTRA_GENERATION = "smart_generation"
+        const val EXTRA_SCHEDULE_REVISION = "smart_schedule_revision"
         const val CHANNEL_SMART = "smart_alarm_channel"
         const val NOTIF_ID_SMART = 2003
         private const val MAX_SMART_WAKELOCK_MS = 65 * 60 * 1000L
@@ -75,10 +77,14 @@ class SmartAlarmService : Service(), SensorEventListener {
     private var alarmId: Long = -1L
     private var targetTimeMs: Long = 0L
     private var issueToken: String? = null
+    private var expectedGeneration: Int = 0
+    private var expectedRestoreEpoch: Long = 0L
+    private var expectedScheduleRevision: Long = 0L
     private var windowMotionMax = 0f
     private var windowStartMs = 0L
     private var sessionStartMs = 0L
     private val sessionClosed = AtomicBoolean(false)
+    private var latestReceivedStartId: Int = 0
     private var latestDecision: SmartWakeDecisionResult? = null
     private val WINDOW_MS = 30_000L  // 30-second motion sampling windows
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -107,17 +113,18 @@ class SmartAlarmService : Service(), SensorEventListener {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action != ACTION_START_SMART) return START_NOT_STICKY
+        latestReceivedStartId = startId
 
-        alarmId = intent.getLongExtra(EXTRA_ALARM_ID, -1L)
-        targetTimeMs = intent.getLongExtra(EXTRA_TARGET_TIME, 0L)
-        issueToken = intent.getStringExtra(AlarmScheduler.EXTRA_ISSUE_TOKEN)
-
-        if (alarmId == -1L || targetTimeMs == 0L) {
-            stopSelf()
+        if (intent?.action != ACTION_START_SMART) {
+            terminateSafely(latestReceivedStartId)
             return START_NOT_STICKY
         }
 
+        // KNO-75 Step 6 / KNO-76: Personal edition retires Smart early-fire runtime.
+        // Satisfy Android O+ startForegroundService contract when invoked from a
+        // pre-upgrade Smart PendingIntent, immediately drop foreground, perform
+        // zero WakeLock / Sensor / monitoring / early-fire side effects, and
+        // terminate via stopSelfResult(latestReceivedStartId).
         val notification = NotificationCompat.Builder(this, CHANNEL_SMART)
             .setSmallIcon(R.drawable.ic_alarm)
             .setContentTitle(getString(R.string.notif_smart_alarm_title))
@@ -125,33 +132,94 @@ class SmartAlarmService : Service(), SensorEventListener {
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
-        startForeground(NOTIF_ID_SMART, notification)
 
-        val now = System.currentTimeMillis()
-        // v1.13.11 (roadmap A4): the UI/product cap is 60 minutes, so the
-        // wake lock now follows the remaining smart window plus a small
-        // teardown buffer instead of a stale 90-minute hard cap.
-        val wakeLockTimeoutMs = (targetTimeMs - now + WAKELOCK_TEARDOWN_BUFFER_MS)
-            .coerceIn(WAKELOCK_TEARDOWN_BUFFER_MS, MAX_SMART_WAKELOCK_MS)
-        // v1.11.4 (roadmap N4) Play wake-lock policy audit:
-        //   SmartAlarmService is the one PARTIAL_WAKE_LOCK acquisition in the
-        //   app that is NOT exempt under the March-2026 Play policy — it
-        //   wraps a `dataSync` foreground service (not media playback) and
-        //   the accelerometer monitoring isn't an exempted activity. The
-        //   65-minute command-local cap keeps one default smart-wake run
-        //   under the 2 h / 24 h non-exempt budget with margin.
-        wakeLock?.acquire(wakeLockTimeoutMs)
-        accelerometer?.let {
-            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
+        var foregroundStarted = false
+        try {
+            startForeground(NOTIF_ID_SMART, notification)
+            foregroundStarted = true
+        } catch (e: Exception) {
+            android.util.Log.e(
+                "SmartAlarmService",
+                "SmartAlarmService retired ingress startForeground failed (startId=$startId)",
+                e
+            )
+            val incomingAlarmId = intent.getLongExtra(EXTRA_ALARM_ID, -1L)
+            val incomingTargetTime = intent.getLongExtra(EXTRA_TARGET_TIME, 0L)
+            if (incomingAlarmId > 0L && incomingTargetTime > 0L && ::alarmIncidentRepository.isInitialized) {
+                runCatching {
+                    alarmIncidentRepository.recordAsync(
+                        alarmId = incomingAlarmId,
+                        fireId = com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent.fireIdFor(
+                            incomingAlarmId,
+                            incomingTargetTime
+                        ),
+                        scheduledAt = incomingTargetTime,
+                        type = com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
+                        status = com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent.STATUS_FAILED,
+                        reasonCode = "SMART_PERSONAL_RETIRED_START_FOREGROUND_FAILED",
+                        source = "SmartAlarmService"
+                    )
+                }
+            }
+        } finally {
+            if (foregroundStarted) {
+                runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+            }
+            terminateSafely(latestReceivedStartId)
         }
-        windowStartMs = now
-        sessionStartMs = now
-        sessionClosed.set(false)
-        latestDecision = null
-        halfMinuteMotion.clear()
-        actigraphyEpochs.clear()
-
         return START_NOT_STICKY
+    }
+
+    private fun terminateSafely(startId: Int) {
+        if (startId > 0) {
+            stopSelfResult(startId)
+        } else {
+            stopSelf()
+        }
+    }
+
+    private suspend fun verifyOccurrenceFresh(
+        id: Long = alarmId,
+        expectedTargetMs: Long = targetTimeMs,
+        expGen: Int = expectedGeneration,
+        expEpoch: Long = expectedRestoreEpoch,
+        expRev: Long = expectedScheduleRevision
+    ): Boolean {
+        if (id <= 0L || expectedTargetMs <= 0L) return false
+        val alarm = try {
+            alarmRepository.getById(id)
+        } catch (_: Throwable) {
+            return false
+        } ?: return false
+        if (!alarm.isEnabled) return false
+        if (expGen > 0) {
+            if (!alarm.smartAlarmEnabled) return false
+            if (!alarm.isQuickAlarm && alarm.generation != expGen) return false
+            if (alarm.nextTriggerTime != expectedTargetMs) return false
+        } else if (alarm.nextTriggerTime > 0L && alarm.nextTriggerTime != expectedTargetMs) {
+            return false
+        }
+        if (expEpoch > 0L) {
+            val currentEpoch = try {
+                alarmRepository.database.scheduleAuthorityDao().getMetaById(1)?.restoreEpoch
+            } catch (_: Throwable) {
+                null
+            }
+            if (currentEpoch == null || currentEpoch <= 0L || currentEpoch != expEpoch) {
+                return false
+            }
+        }
+        if (expRev > 0L) {
+            val auth = try {
+                alarmRepository.getAuthorityByAlarmId(id)
+            } catch (_: Throwable) {
+                null
+            }
+            if (auth != null && auth.scheduleRevision != expRev) {
+                return false
+            }
+        }
+        return true
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
@@ -238,13 +306,14 @@ class SmartAlarmService : Service(), SensorEventListener {
             ?: latestDecision
             ?: SmartWakeDecisionEngine.reachedTarget(scored)
         serviceScope.launch {
+            val isFresh = if (launchAlarm) verifyOccurrenceFresh() else true
             runCatching {
                 actigraphyRepository.record(
                     alarmId = alarmId,
                     startedAt = sessionStartMs,
                     endedAt = endedAt,
                     targetTime = targetTimeMs,
-                    firedEarly = firedEarly,
+                    firedEarly = firedEarly && isFresh,
                     summary = summary,
                     decisionReason = finalDecision.reasonCode,
                     observedMinutesBeforeDecision = finalDecision.observedMinutes,
@@ -252,13 +321,23 @@ class SmartAlarmService : Service(), SensorEventListener {
                 )
             }
             withContext(Dispatchers.Main) {
-                if (launchAlarm) startAlarmService()
+                if (launchAlarm && isFresh) startAlarmService()
                 stopSelf()
             }
         }
     }
 
     private fun startAlarmService() {
+        val isFresh = try {
+            kotlinx.coroutines.runBlocking { verifyOccurrenceFresh() }
+        } catch (_: Throwable) {
+            false
+        }
+        if (!isFresh) {
+            android.util.Log.w("SmartAlarmService", "Rejecting stale/disabled SmartAlarm fire for alarm $alarmId @ $targetTimeMs")
+            return
+        }
+
         val gate = smartAlarmOutputAuthorityGateSeam ?: com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate.getInstance(this)
         var claimNonce: String? = null
         val occKey = if (gate.isEnabled) {

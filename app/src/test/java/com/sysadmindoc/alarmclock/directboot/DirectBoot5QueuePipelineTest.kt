@@ -54,6 +54,11 @@ class DirectBoot5QueuePipelineTest {
             .build()
         DirectBootCeTakeoverStore.unlockGateSeam = { true }
         DirectBootCeTakeoverStore.clear(ceContext)
+        val gate = com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate.getInstance(appContext).apply {
+            isEnabled = true
+        }
+        DirectBootAlarmReceiver.outputAuthorityGateSeam = gate
+        DirectBootAlarmReceiver.v2DeliveryCapableProvider = { true }
         clearDeStorage()
     }
 
@@ -62,6 +67,11 @@ class DirectBoot5QueuePipelineTest {
         database.close()
         DirectBootCeTakeoverStore.clear(ceContext)
         DirectBootCeTakeoverStore.resetSeamsForTesting()
+        DirectBootAlarmReceiver.resetSeamsForTesting()
+        com.sysadmindoc.alarmclock.directboot.outputauthority.SharedOutputAuthorityGate.getInstance(ceContext).apply {
+            isEnabled = false
+            arbiter.clearForTesting()
+        }
         clearDeStorage()
     }
 

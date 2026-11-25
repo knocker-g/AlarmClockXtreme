@@ -239,9 +239,12 @@ class DurableOneTimeOverrideAdapter(
             }
 
             // Abort any prior unresolved intent for this alarm before producing new reconcile
+            // Rev2 / unknown-revision CANCEL intents are strictly isolated from generic PHASE_ABORTED
             val unresolved = durableDao.getUnresolvedIntentsByAlarmId(alarmId)
             for (pending in unresolved) {
-                durableDao.updateIntentPhase(pending.operationToken, DurableOperationIntent.PHASE_ABORTED)
+                if (!DurableCancelIntentValidator.isNonLegacyCancelIntent(pending)) {
+                    durableDao.updateIntentPhase(pending.operationToken, DurableOperationIntent.PHASE_ABORTED)
+                }
             }
 
             // 5. Produce Reconcile: updates alarm.nextTriggerTime, issues occurrence, records durable intent
@@ -490,9 +493,12 @@ class DurableOneTimeOverrideAdapter(
             } else null
 
             // Abort any prior unresolved intent for this alarm before inserting the cancel intent
+            // Rev2 / unknown-revision CANCEL intents are strictly isolated from generic PHASE_ABORTED
             val unresolved = durableDao.getUnresolvedIntentsByAlarmId(alarmId)
             for (pending in unresolved) {
-                durableDao.updateIntentPhase(pending.operationToken, DurableOperationIntent.PHASE_ABORTED)
+                if (!DurableCancelIntentValidator.isNonLegacyCancelIntent(pending)) {
+                    durableDao.updateIntentPhase(pending.operationToken, DurableOperationIntent.PHASE_ABORTED)
+                }
             }
 
             val durableIntent = DurableOperationIntent(

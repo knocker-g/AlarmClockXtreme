@@ -946,4 +946,47 @@ class DirectBootAlarmCacheRegistrationTruthTest {
         )
         assertFalse(DirectBootAlarmCache.scheduleCachedAlarm(wrapWithAlarmManager(okAm), now))
     }
+
+    @Test
+    fun t17_bc7_02_v2CapableBlocksV1DualRegistrationForDistinctAlarmIdWhileDefaultDenyPreservesV1() {
+        val v1Trigger = now + 60_000L
+        val v2Trigger = now + 120_000L
+        DirectBootAlarmCache.saveIfEarlier(appContext, alarm(117L), v1Trigger, now)
+
+        val v2QueueItem = DirectBootQueueItem(
+            kind = DirectBootQueueItem.KIND_NORMAL,
+            alarmId = 217L,
+            triggerTime = v2Trigger,
+            generation = 1,
+            instanceToken = "tok-v2-217",
+            restoreEpoch = 1L
+        )
+        assertTrue(DirectBootAlarmCache.writeQueue(appContext, listOf(v2QueueItem), now = now))
+
+        val okAm = mockk<AlarmManager>(relaxed = true) { every { canScheduleExactAlarms() } returns true }
+        val wrappedCtx = wrapWithAlarmManager(okAm)
+
+        // Under V2_OUTPUT = DEFAULT_DENY (v2DeliveryCapable = false), V1 fallback MUST still arm
+        val defaultDenyResult = DirectBootAlarmCache.scheduleCachedAlarmWithResult(wrappedCtx, now)
+        assertTrue(
+            "Under DEFAULT_DENY, V2 queue presence alone MUST NOT suppress V1 fallback, got $defaultDenyResult",
+            defaultDenyResult is DirectBootFallbackScheduleResult.ArmedAlarmClock
+        )
+
+        // When V2 delivery IS capable (v2DeliveryCapable = true), V1 MUST fail closed even for distinct alarmId
+        val v2CapableResult = DirectBootAlarmCache.scheduleCachedAlarmWithResultInternal(
+            context = wrappedCtx,
+            now = now,
+            v2DeliveryCapable = true
+        )
+        assertFalse(
+            "B-C7-02: V1 fallback MUST NOT arm alongside active V2 queue when v2DeliveryCapable = true, got $v2CapableResult",
+            v2CapableResult.isArmed
+        )
+        assertTrue(
+            "B-C7-02: Expected AuthorityUnknown or AuthorityRejected when V2 queue exists and v2DeliveryCapable = true, got $v2CapableResult",
+            v2CapableResult is DirectBootFallbackScheduleResult.AuthorityUnknown ||
+                v2CapableResult is DirectBootFallbackScheduleResult.AuthorityRejected
+        )
+    }
 }

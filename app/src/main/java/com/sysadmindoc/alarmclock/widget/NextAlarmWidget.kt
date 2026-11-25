@@ -118,11 +118,24 @@ class AdjustAlarmAction : ActionCallback {
                 context.applicationContext,
                 AlarmClockApp.AppEntryPoint::class.java
             )
-            val alarm = ep.alarmRepository().getNextAlarm() ?: return
+            val repo = ep.alarmRepository()
+            val alarm = repo.getNextAlarm() ?: return
             if (alarm.nextTriggerTime <= System.currentTimeMillis()) return
             val newTrigger = alarm.nextTriggerTime + deltaMs
             if (newTrigger <= System.currentTimeMillis()) return
-            ep.alarmScheduler().scheduleAt(alarm, newTrigger)
+            val originAuthority = if (!alarm.isQuickAlarm) repo.getAuthorityByAlarmId(alarm.id) else null
+            val originMetaEpoch = runCatching {
+                repo.database.scheduleAuthorityDao().getMetaById(1)?.restoreEpoch
+            }.getOrNull()?.takeIf { it > 0L }
+            val expectedEpoch = originMetaEpoch ?: originAuthority?.restoreEpoch?.takeIf { it > 0L }
+            ep.alarmScheduler().scheduleAt(
+                alarm = alarm,
+                triggerTime = newTrigger,
+                expectedRevision = originAuthority?.scheduleRevision,
+                expectedInstanceToken = originAuthority?.instanceToken,
+                expectedRestoreEpoch = expectedEpoch,
+                expectedDefinitionRevision = originAuthority?.definitionRevision
+            )
         } catch (_: Exception) {
             // Non-fatal — widget tap should never crash
         }

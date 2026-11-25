@@ -4,7 +4,14 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import com.sysadmindoc.alarmclock.BuildConfig
 import com.sysadmindoc.alarmclock.directboot.DirectBootAlarmCache
+import com.sysadmindoc.alarmclock.directboot.DirectBootFallbackScheduleResult
+import com.sysadmindoc.alarmclock.directboot.DirectBootRegistrationPlan
+import com.sysadmindoc.alarmclock.directboot.DirectBootRegistrationReconciler
+import com.sysadmindoc.alarmclock.directboot.ExactRegistrationResult
+import com.sysadmindoc.alarmclock.directboot.ReconcilerResult
+import com.sysadmindoc.alarmclock.directboot.RegistrationRequest
 import com.sysadmindoc.alarmclock.ui.timer.TimerNotifications
 import com.sysadmindoc.alarmclock.ui.timer.TimerStore
 import com.sysadmindoc.alarmclock.util.ReliabilityDoctor
@@ -49,6 +56,25 @@ class BootReceiver : BroadcastReceiver() {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     internal var testScope: CoroutineScope? = null
 
+    @androidx.annotation.VisibleForTesting
+    internal var reconcilerProvider: (Context) -> DirectBootRegistrationReconciler = { ctx ->
+        DirectBootRegistrationReconciler.getInstance(ctx)
+    }
+
+    @androidx.annotation.VisibleForTesting
+    internal var v2DeliveryCapableProvider: () -> Boolean = { false }
+
+    @androidx.annotation.VisibleForTesting
+    internal var legacyFallbackScheduler: (Context) -> DirectBootFallbackScheduleResult = { ctx ->
+        DirectBootAlarmCache.scheduleCachedAlarmWithResult(ctx)
+    }
+
+    @androidx.annotation.VisibleForTesting
+    internal var lastReconcileResult: ReconcilerResult? = null
+
+    @androidx.annotation.VisibleForTesting
+    internal var lastLegacyFallbackResult: DirectBootFallbackScheduleResult? = null
+
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
         if (action != Intent.ACTION_LOCKED_BOOT_COMPLETED &&
@@ -63,8 +89,37 @@ class BootReceiver : BroadcastReceiver() {
         activeScope.launch {
             try {
                 if (action == Intent.ACTION_LOCKED_BOOT_COMPLETED) {
-                    com.sysadmindoc.alarmclock.directboot.DirectBootRegistrationReconciler.getInstance(context).reconcile()
-                    DirectBootAlarmCache.scheduleCachedAlarm(appContext)
+                    val isV2Capable = v2DeliveryCapableProvider() ||
+                        (BuildConfig.DEBUG && DirectBootAlarmCache.hasValidD4CapabilityForBoot(appContext))
+                    val reconcileResult = if (isV2Capable) {
+                        reconcilerProvider(context).reconcile(
+                            RegistrationRequest(
+                                requestId = "LOCKED_BOOT_COMPLETED",
+                                reason = "LOCKED_BOOT_COMPLETED"
+                            )
+                        )
+                    } else {
+                        null
+                    }
+                    lastReconcileResult = reconcileResult
+                    val v2ArmedAndCapable = isV2Capable &&
+                        reconcileResult is ReconcilerResult.StableSuccess &&
+                        (reconcileResult.plan is DirectBootRegistrationPlan.ArmNormal ||
+                            reconcileResult.plan is DirectBootRegistrationPlan.AlreadyArmed) &&
+                        (reconcileResult.registrationResult == null ||
+                            reconcileResult.registrationResult is ExactRegistrationResult.Accepted)
+                    if (v2ArmedAndCapable) {
+                        lastLegacyFallbackResult = null
+                        Log.i("BootReceiver", "V2 DirectBoot reconciler armed and capable; skipping legacy V1 fallback")
+                    } else {
+                        val fallbackResult = legacyFallbackScheduler(appContext)
+                        lastLegacyFallbackResult = fallbackResult
+                        if (!fallbackResult.isArmed &&
+                            fallbackResult !is DirectBootFallbackScheduleResult.NoSchedulableTarget
+                        ) {
+                            Log.w("BootReceiver", "DirectBoot fallback not armed: $fallbackResult")
+                        }
+                    }
                     return@launch
                 }
 

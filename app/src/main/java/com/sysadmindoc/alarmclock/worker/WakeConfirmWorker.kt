@@ -394,6 +394,24 @@ class WakeConfirmWorker @AssistedInject constructor(
             return Result.success()
         }
 
+        val latestAlarmBeforeRefire = alarmRepository.getById(alarmId)
+        val stillEligible = latestAlarmBeforeRefire != null &&
+            (latestAlarmBeforeRefire.isEnabled || !latestAlarmBeforeRefire.isRecurringSchedule)
+        if (!stillEligible) {
+            recordIncident(
+                alarmId = alarmId,
+                fireId = fireId,
+                scheduledAt = scheduledAt,
+                status = AlarmIncidentEvent.STATUS_SKIPPED,
+                reasonCode = if (latestAlarmBeforeRefire == null) {
+                    "WAKE_CONFIRM_ALARM_ROW_MISSING"
+                } else {
+                    "WAKE_CONFIRM_ALARM_DISABLED"
+                }
+            )
+            return Result.success()
+        }
+
         val consumeResult = WakeConfirmOccurrenceStore.consumeRefireStep(
             context = context,
             alarmId = alarmId,

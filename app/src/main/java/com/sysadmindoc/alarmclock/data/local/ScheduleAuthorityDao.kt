@@ -61,6 +61,19 @@ interface ScheduleAuthorityDao {
     suspend fun getAllMeta(): List<ScheduleAuthorityMeta>
 
     /**
+     * Atomically increments the singleton restoreEpoch in schedule_authority_meta (id = 1).
+     * Fails closed (updates 0 rows) if Meta is missing, restoreEpoch <= 0, or restoreEpoch == Long.MAX_VALUE.
+     */
+    @Query("""
+        UPDATE schedule_authority_meta
+        SET restoreEpoch = restoreEpoch + 1
+        WHERE id = 1
+          AND restoreEpoch > 0
+          AND restoreEpoch < 9223372036854775807
+    """)
+    suspend fun incrementRestoreEpoch(): Int
+
+    /**
      * Generation-qualified CAS claim update for ScheduleAuthority.
      * Strictly increments scheduleRevision by 1 and sets reconcileState = 'RECONCILING'.
      *

@@ -123,16 +123,29 @@ class CalendarAutoAlarmWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result = runLock.withLock { syncAutoAlarm() }
 
+    private data class AutoAlarmLookup(
+        val primary: Alarm?,
+        val strayCancelFailed: Boolean
+    )
+
+    private fun boundedRetryResult(): Result =
+        if (runAttemptCount >= MAX_RETRY_ATTEMPTS) Result.failure() else Result.retry()
+
     private suspend fun syncAutoAlarm(): Result {
         val settings = preferencesManager.getCurrentSettings()
         if (!settings.calendarAutoAlarmEnabled) {
             // Feature disabled — also disable any existing auto-alarm so it
             // doesn't keep firing after the user toggled it off.
-            findExistingAutoAlarm()?.let { existing ->
-                if (existing.isEnabled) {
-                    repository.setEnabled(existing.id, enabled = false, nextTrigger = 0)
-                    scheduler.cancel(existing.id)
+            val lookup = findExistingAutoAlarm()
+            val existing = lookup.primary
+            if (existing != null && existing.isEnabled) {
+                if (!scheduler.cancelSuspending(existing.id)) {
+                    return boundedRetryResult()
                 }
+                repository.setEnabled(existing.id, enabled = false, nextTrigger = 0)
+            }
+            if (lookup.strayCancelFailed) {
+                return boundedRetryResult()
             }
             return Result.success()
         }
@@ -151,19 +164,29 @@ class CalendarAutoAlarmWorker @AssistedInject constructor(
         } catch (_: Exception) {
             // Bounded: an unbounded retry keeps a broken provider read alive in
             // WorkManager's queue forever.
-            return if (runAttemptCount >= MAX_RETRY_ATTEMPTS) Result.failure() else Result.retry()
+            return boundedRetryResult()
         }
 
-        val existing = findExistingAutoAlarm()
+        val lookup = findExistingAutoAlarm()
+        val existing = lookup.primary
 
         if (firstEvent == null) {
             // Tomorrow is event-free: park any existing auto-alarm in disabled
             // state so it doesn't surprise-fire from a stale schedule.
             if (existing != null && existing.isEnabled) {
+                if (!scheduler.cancelSuspending(existing.id)) {
+                    return boundedRetryResult()
+                }
                 repository.setEnabled(existing.id, enabled = false, nextTrigger = 0)
-                scheduler.cancel(existing.id)
+            }
+            if (lookup.strayCancelFailed) {
+                return boundedRetryResult()
             }
             return Result.success()
+        }
+
+        if (lookup.strayCancelFailed) {
+            return boundedRetryResult()
         }
 
         val commuteResolution = resolveCommuteAdjustment(settings, firstEvent, minutesBefore)
@@ -191,24 +214,33 @@ class CalendarAutoAlarmWorker @AssistedInject constructor(
         )
 
         // Cancel any previous schedule before re-arming with the new time/date.
-        if (existing != null) scheduler.cancel(existing.id)
+        if (existing != null && !scheduler.cancelSuspending(existing.id)) {
+            return boundedRetryResult()
+        }
         val savedId = repository.save(updated)
         scheduler.schedule(updated.copy(id = savedId))
         return Result.success()
     }
 
-    private suspend fun findExistingAutoAlarm(): Alarm? {
+    private suspend fun findExistingAutoAlarm(): AutoAlarmLookup {
         // The auto-alarm is uniquely identified by profileName, so a single
         // table scan over (typically a handful of) rows suffices. Avoids
         // adding a dedicated DAO query just for one feature.
         val owned = repository.getAll().filter { it.profileName == AUTO_PROFILE }
         // Older builds could race two workers into inserting a second row.
         // Keep the oldest and clear the strays out so the invariant holds.
+        var strayCancelFailed = false
         owned.drop(1).forEach { stray ->
-            scheduler.cancel(stray.id)
-            repository.delete(stray)
+            if (scheduler.cancelSuspending(stray.id)) {
+                repository.delete(stray)
+            } else {
+                strayCancelFailed = true
+            }
         }
-        return owned.firstOrNull()
+        return AutoAlarmLookup(
+            primary = owned.firstOrNull(),
+            strayCancelFailed = strayCancelFailed
+        )
     }
 
     private suspend fun resolveCommuteAdjustment(
