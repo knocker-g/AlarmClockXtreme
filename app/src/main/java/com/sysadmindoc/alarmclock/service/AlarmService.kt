@@ -1,6 +1,8 @@
 package com.sysadmindoc.alarmclock.service
 
 import android.annotation.SuppressLint
+import android.app.ActivityManager
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -8,6 +10,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
@@ -29,6 +32,8 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.annotation.VisibleForTesting
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.work.*
 import com.sysadmindoc.alarmclock.data.local.entity.AlarmIncidentEvent
 import com.sysadmindoc.alarmclock.R
@@ -66,6 +71,7 @@ import com.sysadmindoc.alarmclock.worker.WakeConfirmWorker
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -134,7 +140,137 @@ class AlarmService : Service() {
             val firedAt: Long,
             val state: String = "FIRING",
             val refireAt: Long = 0L
-        )
+        ) {
+            internal fun matches(gen: AlarmGeneration?): Boolean =
+                gen != null && alarmId == gen.alarmId && scheduledAt == gen.scheduledAt && fireId == gen.fireId
+        }
+
+        internal enum class FiringUiReadinessReason {
+            READY,
+            POST_NOTIFICATIONS_DENIED,
+            NOTIFICATIONS_DISABLED,
+            ALARM_CHANNEL_IMPORTANCE_LOW,
+            FULL_SCREEN_INTENT_DENIED
+        }
+
+        internal fun assessFiringUiReadiness(context: Context): FiringUiReadinessReason {
+            if (
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                return FiringUiReadinessReason.POST_NOTIFICATIONS_DENIED
+            }
+            if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+                return FiringUiReadinessReason.NOTIFICATIONS_DISABLED
+            }
+            val nm = context.getSystemService(NotificationManager::class.java)
+            val channel = nm?.getNotificationChannel(CHANNEL_ALARM)
+            if (channel != null) {
+                if (channel.importance == NotificationManager.IMPORTANCE_NONE) {
+                    return FiringUiReadinessReason.NOTIFICATIONS_DISABLED
+                }
+                if (channel.importance < NotificationManager.IMPORTANCE_HIGH) {
+                    return FiringUiReadinessReason.ALARM_CHANNEL_IMPORTANCE_LOW
+                }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && nm?.canUseFullScreenIntent() == false) {
+                return FiringUiReadinessReason.FULL_SCREEN_INTENT_DENIED
+            }
+            return FiringUiReadinessReason.READY
+        }
+
+        private val uiSuppressedGenerations = ConcurrentHashMap<AlarmGeneration, String>()
+        private val activeFallbackGenerations = ConcurrentHashMap.newKeySet<AlarmGeneration>()
+
+        internal fun markActionUiClosing(gen: AlarmGeneration?, reason: String) {
+            if (gen == null || !gen.isValid) return
+            uiSuppressedGenerations[gen] = reason
+        }
+
+        internal fun clearUiSuppressionForNewStart(gen: AlarmGeneration?) {
+            if (gen == null || !gen.isValid) return
+            uiSuppressedGenerations.remove(gen)
+            activeFallbackGenerations.remove(gen)
+        }
+
+        internal fun clearUiSuppressionOnFailure(gen: AlarmGeneration?) {
+            if (gen == null || !gen.isValid) return
+            val current = uiSuppressedGenerations[gen]
+            if (current != null && current.startsWith("CLOSING_")) {
+                uiSuppressedGenerations.remove(gen, current)
+            }
+        }
+
+        internal fun isUiSuppressedForGeneration(gen: AlarmGeneration?): Boolean {
+            if (gen == null || !gen.isValid) return false
+            return uiSuppressedGenerations.containsKey(gen)
+        }
+
+        internal fun isUiSuppressedAsSnoozed(gen: AlarmGeneration?): Boolean {
+            if (gen == null || !gen.isValid) return false
+            val reason = uiSuppressedGenerations[gen] ?: return false
+            return reason == "SNOOZED" || reason == "CLOSING_SNOOZE"
+        }
+
+        internal fun markFallbackPosted(gen: AlarmGeneration?) {
+            if (gen == null || !gen.isValid) return
+            activeFallbackGenerations.add(gen)
+        }
+
+        internal fun clearFallbackPosted(gen: AlarmGeneration?) {
+            if (gen == null || !gen.isValid) return
+            activeFallbackGenerations.remove(gen)
+        }
+
+        internal fun isFallbackActiveFor(gen: AlarmGeneration?): Boolean {
+            if (gen == null || !gen.isValid) return false
+            return activeFallbackGenerations.contains(gen)
+        }
+
+        @VisibleForTesting
+        internal fun clearUiGuardsForTesting() {
+            uiSuppressedGenerations.clear()
+            activeFallbackGenerations.clear()
+        }
+
+        internal fun shouldRejectFiringUiLaunch(
+            alarmId: Long,
+            scheduledAt: Long,
+            fireId: String,
+            incomingState: String?
+        ): String? {
+            if (alarmId <= 0L) return "INVALID_ALARM_ID"
+            if (!incomingState.isNullOrBlank() && incomingState != "FIRING") {
+                return "NON_FIRING_INCOMING_STATE_$incomingState"
+            }
+            val gen = if (scheduledAt > 0L && fireId.isNotBlank()) {
+                AlarmGeneration(alarmId, scheduledAt, fireId)
+            } else {
+                null
+            }
+            if (gen != null) {
+                if (isUiSuppressedForGeneration(gen)) {
+                    return "UI_SUPPRESSED_FOR_GENERATION"
+                }
+                if (AlarmServiceCallbackPolicy.defaultTracker.isFinalized(gen)) {
+                    return "GENERATION_ALREADY_FINALIZED"
+                }
+            }
+            val mem = activeAlarm.get()
+            if (mem != null) {
+                if (mem.state != "FIRING") {
+                    return "ACTIVE_ALARM_NOT_FIRING_${mem.state}"
+                }
+                if (gen != null && !mem.matches(gen)) {
+                    return "ACTIVE_GENERATION_MISMATCH"
+                }
+                if (gen == null && mem.alarmId != alarmId) {
+                    return "ACTIVE_ALARM_ID_MISMATCH"
+                }
+            }
+            return null
+        }
 
         /**
          * v1.5.1: Live-alarm state surfaced to [MissedAlarmUnlockReceiver] and
@@ -215,6 +351,7 @@ class AlarmService : Service() {
     private var currentFireId: String = ""
     private var currentScheduledAt: Long = 0L
     private var alarmFiredAt: Long = 0
+    private var lastForegroundFsiGen: AlarmGeneration? = null
     private var autoSilenceJob: Job? = null
     private var backupSoundJob: Job? = null
     @Volatile
@@ -551,6 +688,7 @@ class AlarmService : Service() {
                         currentScheduledAt = scheduledAt
                         currentFireId = fireId
                         alarmFiredAt = System.currentTimeMillis()
+                        clearUiSuppressionForNewStart(startGen)
                         updateActiveAlarm(ActiveAlarmSnapshot(
                             alarmId = alarmId,
                             scheduledAt = scheduledAt,
@@ -576,7 +714,7 @@ class AlarmService : Service() {
                             source = "AlarmService"
                         )
                         activateAlarmMediaSession("START_COMMAND")
-                        startForegroundWithPlaceholder()
+                        startForegroundWithPlaceholder(startGen, alarmFiredAt)
                         serviceScope.launch(Dispatchers.Main.immediate) {
                             try {
                                 startAlarm(startGen, incomingRestoreEpoch, incomingIsQuick)
@@ -673,6 +811,8 @@ class AlarmService : Service() {
 
                                             if (snoozeActionInFlight.compareAndSet(false, true)) {
                                                 try {
+                                                    markActionUiClosing(incomingGen, "CLOSING_SNOOZE")
+                                                    clearFallbackPosted(incomingGen)
                                                     testColdStartSnoozeCount.incrementAndGet()
                                                     snoozeAlarm(alarmId, incomingGen, customMinutes, snoozeAtMillis)
                                                 } finally {
@@ -724,6 +864,8 @@ class AlarmService : Service() {
 
                         if (snoozeActionInFlight.compareAndSet(false, true)) {
                             val acceptedGen = incomingGen!!
+                            markActionUiClosing(acceptedGen, "CLOSING_SNOOZE")
+                            clearFallbackPosted(acceptedGen)
                             serviceScope.launch {
                                 try {
                                     snoozeAlarm(alarmId, acceptedGen, customMinutes, snoozeAtMillis)
@@ -747,6 +889,8 @@ class AlarmService : Service() {
                         if (intentFiredAt > 0L) alarmFiredAt = intentFiredAt
 
                         if (snoozeActionInFlight.compareAndSet(false, true)) {
+                            markActionUiClosing(acceptedGen, "CLOSING_SNOOZE")
+                            clearFallbackPosted(acceptedGen)
                             serviceScope.launch {
                                 try {
                                     snoozeAlarm(alarmId, acceptedGen, customMinutes, snoozeAtMillis)
@@ -840,11 +984,26 @@ class AlarmService : Service() {
                                             return@withContext
                                         }
                                         if (asyncDecision == ActionAdmissionDecision.ADMIT_RESTART && loadedActive != null && incomingGen != null) {
+                                            if (loadedActive.state == "SNOOZED" || isUiSuppressedAsSnoozed(incomingGen)) {
+                                                Log.i(TAG, "Rejecting cold-start ACTION_DISMISS for already-SNOOZED $incomingGen")
+                                                recordIncidentAsync(
+                                                    type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                                                    status = AlarmIncidentEvent.STATUS_SKIPPED,
+                                                    reasonCode = "DISMISS_REJECTED_ALREADY_SNOOZED",
+                                                    source = "AlarmService",
+                                                    alarmId = incomingGen.alarmId,
+                                                    fireId = incomingGen.fireId,
+                                                    scheduledAt = incomingGen.scheduledAt
+                                                )
+                                                return@withContext
+                                            }
                                             if (!coldStartClaimedGenerations.add(incomingGen)) {
                                                 Log.i(TAG, "Aborting cold-start restart dismiss for $incomingGen: generation already claimed")
                                                 return@withContext
                                             }
                                             val acceptedGen = incomingGen
+                                            markActionUiClosing(acceptedGen, "CLOSING_DISMISS")
+                                            clearFallbackPosted(acceptedGen)
                                             val alarmId = acceptedGen.alarmId
                                             currentAlarmId = loadedActive.alarmId
                                             currentScheduledAt = loadedActive.scheduledAt
@@ -894,6 +1053,21 @@ class AlarmService : Service() {
                     }
                     ActionAdmissionDecision.ADMIT_RESTART -> {
                         val acceptedGen = incomingGen!!
+                        if (isAlreadySnoozedForDismiss(acceptedGen, active)) {
+                            Log.i(TAG, "Rejecting ACTION_DISMISS on restart for already-SNOOZED $acceptedGen")
+                            recordIncidentAsync(
+                                type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                                status = AlarmIncidentEvent.STATUS_SKIPPED,
+                                reasonCode = "DISMISS_REJECTED_ALREADY_SNOOZED",
+                                source = "AlarmService",
+                                alarmId = acceptedGen.alarmId,
+                                fireId = acceptedGen.fireId,
+                                scheduledAt = acceptedGen.scheduledAt
+                            )
+                            return START_NOT_STICKY
+                        }
+                        markActionUiClosing(acceptedGen, "CLOSING_DISMISS")
+                        clearFallbackPosted(acceptedGen)
                         val alarmId = acceptedGen.alarmId
                         currentAlarmId = active!!.alarmId
                         currentScheduledAt = active.scheduledAt
@@ -916,6 +1090,21 @@ class AlarmService : Service() {
                     }
                     ActionAdmissionDecision.ADMIT_EXACT_MATCH -> {
                         val acceptedGen = incomingGen!!
+                        if (isAlreadySnoozedForDismiss(acceptedGen, active)) {
+                            Log.i(TAG, "Rejecting ACTION_DISMISS for already-SNOOZED $acceptedGen")
+                            recordIncidentAsync(
+                                type = AlarmIncidentEvent.TYPE_USER_ACTION,
+                                status = AlarmIncidentEvent.STATUS_SKIPPED,
+                                reasonCode = "DISMISS_REJECTED_ALREADY_SNOOZED",
+                                source = "AlarmService",
+                                alarmId = acceptedGen.alarmId,
+                                fireId = acceptedGen.fireId,
+                                scheduledAt = acceptedGen.scheduledAt
+                            )
+                            return START_NOT_STICKY
+                        }
+                        markActionUiClosing(acceptedGen, "CLOSING_DISMISS")
+                        clearFallbackPosted(acceptedGen)
                         val alarmId = acceptedGen.alarmId
                         val challengeRetryCount = intent.getIntExtra(EXTRA_CHALLENGE_RETRY_COUNT, 0).coerceAtLeast(0)
                         val challengeSolveTimeMs = intent.getLongExtra(EXTRA_CHALLENGE_SOLVE_TIME_MS, 0L).coerceAtLeast(0L)
@@ -949,8 +1138,13 @@ class AlarmService : Service() {
         )
         val current = currentGeneration()
         if (current != null && current.matches(startGen)) {
+            clearFallbackPosted(startGen)
             clearAlarmRuntimeState(startGen.alarmId)
             currentWakeConfirmRefireCount = 0
+            currentAlarmId = -1
+            currentScheduledAt = 0L
+            currentFireId = ""
+            lastForegroundFsiGen = null
             currentActiveNonce = null
             currentClaimNonce = null
             updateActiveAlarm(null, targetGen = startGen)
@@ -978,8 +1172,13 @@ class AlarmService : Service() {
         )
         val current = currentGeneration()
         if (current != null && current.matches(startGen)) {
+            clearFallbackPosted(startGen)
             clearAlarmRuntimeState(startGen.alarmId)
             currentWakeConfirmRefireCount = 0
+            currentAlarmId = -1
+            currentScheduledAt = 0L
+            currentFireId = ""
+            lastForegroundFsiGen = null
             currentActiveNonce = null
             currentClaimNonce = null
             updateActiveAlarm(null, targetGen = startGen)
@@ -1022,8 +1221,13 @@ class AlarmService : Service() {
             )
             val current = currentGeneration()
             if (current != null && current.matches(startGen)) {
+                clearFallbackPosted(startGen)
                 clearAlarmRuntimeState(alarmId)
                 currentWakeConfirmRefireCount = 0
+                currentAlarmId = -1
+                currentScheduledAt = 0L
+                currentFireId = ""
+                lastForegroundFsiGen = null
                 updateActiveAlarm(null, targetGen = startGen)
                 releaseAlarmMediaSession()
                 stopSelf()
@@ -1045,8 +1249,13 @@ class AlarmService : Service() {
             )
             val current = currentGeneration()
             if (current != null && current.matches(startGen)) {
+                clearFallbackPosted(startGen)
                 clearAlarmRuntimeState(alarmId)
                 currentWakeConfirmRefireCount = 0
+                currentAlarmId = -1
+                currentScheduledAt = 0L
+                currentFireId = ""
+                lastForegroundFsiGen = null
                 updateActiveAlarm(null, targetGen = startGen)
                 releaseAlarmMediaSession()
                 stopSelf()
@@ -1075,8 +1284,13 @@ class AlarmService : Service() {
                 )
                 val current = currentGeneration()
                 if (current != null && current.matches(startGen)) {
+                    clearFallbackPosted(startGen)
                     clearAlarmRuntimeState(alarmId)
                     currentWakeConfirmRefireCount = 0
+                    currentAlarmId = -1
+                    currentScheduledAt = 0L
+                    currentFireId = ""
+                    lastForegroundFsiGen = null
                     updateActiveAlarm(null, targetGen = startGen)
                     releaseAlarmMediaSession()
                     stopSelf()
@@ -1236,26 +1450,43 @@ class AlarmService : Service() {
 
         if (currentGeneration()?.matches(startGen) != true) return
 
-        val firingIntent = AlarmFireDismissContract.firingActivityIntent(
-            context = this,
-            alarmId = alarmId,
-            scheduledAt = currentScheduledAt,
-            fireId = currentFireId,
-            firedAt = alarmFiredAt
-        )
-        try {
-            startActivity(firingIntent)
-            recordIncident(
-                type = AlarmIncidentEvent.TYPE_ACTIVITY_LAUNCH,
-                status = AlarmIncidentEvent.STATUS_SUCCEEDED,
-                reasonCode = "FIRING_ACTIVITY_LAUNCHED",
-                source = "AlarmService"
-            )
-        } catch (e: Exception) {
+        val readiness = assessFiringUiReadiness(this)
+        if (readiness != FiringUiReadinessReason.READY) {
             recordIncident(
                 type = AlarmIncidentEvent.TYPE_ACTIVITY_LAUNCH,
                 status = AlarmIncidentEvent.STATUS_FAILED,
-                reasonCode = "FIRING_ACTIVITY_FAILED_${e.javaClass.simpleName}",
+                reasonCode = "FIRING_UI_UNREACHABLE_${readiness.name}",
+                source = "AlarmService"
+            )
+        } else if (canAttemptForegroundDirectActivityLaunch()) {
+            val firingIntent = AlarmFireDismissContract.firingActivityIntent(
+                context = this,
+                alarmId = alarmId,
+                scheduledAt = currentScheduledAt,
+                fireId = currentFireId,
+                firedAt = alarmFiredAt
+            )
+            try {
+                startActivity(firingIntent)
+                recordIncident(
+                    type = AlarmIncidentEvent.TYPE_ACTIVITY_LAUNCH,
+                    status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                    reasonCode = "FIRING_ACTIVITY_LAUNCHED",
+                    source = "AlarmService"
+                )
+            } catch (e: Exception) {
+                recordIncident(
+                    type = AlarmIncidentEvent.TYPE_ACTIVITY_LAUNCH,
+                    status = AlarmIncidentEvent.STATUS_FAILED,
+                    reasonCode = "FIRING_ACTIVITY_FAILED_${e.javaClass.simpleName}",
+                    source = "AlarmService"
+                )
+            }
+        } else {
+            recordIncident(
+                type = AlarmIncidentEvent.TYPE_ACTIVITY_LAUNCH,
+                status = AlarmIncidentEvent.STATUS_SUCCEEDED,
+                reasonCode = "FIRING_ACTIVITY_FSI_POSTED",
                 source = "AlarmService"
             )
         }
@@ -1363,11 +1594,16 @@ class AlarmService : Service() {
                 }
                 if (currentGeneration()?.matches(startGen) == true) {
                     val refireAtSilence = currentWakeConfirmRefireCount
+                    markActionUiClosing(startGen, "AUTO_SILENCED")
+                    clearFallbackPosted(startGen)
                     cancelGuardianWork(startGen.alarmId, startGen.scheduledAt)
                     clearAlarmRuntimeState(alarmId)
                     currentWakeConfirmRefireCount = 0
                     currentSnoozeCount = 0
                     currentAlarmId = -1
+                    currentScheduledAt = 0L
+                    currentFireId = ""
+                    lastForegroundFsiGen = null
                     val activeNonce = currentActiveNonce
                     if (getGate().isEnabled && activeNonce != null) {
                         withContext(NonCancellable + Dispatchers.IO) {
@@ -1493,18 +1729,50 @@ class AlarmService : Service() {
         }
     }
 
+    private fun canAttemptForegroundDirectActivityLaunch(): Boolean {
+        val powerManager = getSystemService(PowerManager::class.java)
+        val keyguardManager = getSystemService(KeyguardManager::class.java)
+        if (powerManager?.isInteractive != true) return false
+        if (keyguardManager?.isKeyguardLocked != false) return false
+        val appProcessInfo = ActivityManager.RunningAppProcessInfo()
+        ActivityManager.getMyMemoryState(appProcessInfo)
+        return appProcessInfo.importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+    }
+
+    private fun isAlreadySnoozedForDismiss(
+        incomingGen: AlarmGeneration,
+        evidence: ActiveAlarmSnapshot?
+    ): Boolean {
+        if (evidence != null && evidence.matches(incomingGen) && evidence.state == "SNOOZED") {
+            return true
+        }
+        val mem = activeAlarm.get()
+        if (mem != null && mem.matches(incomingGen) && mem.state == "SNOOZED") {
+            return true
+        }
+        return isUiSuppressedAsSnoozed(incomingGen)
+    }
+
     /**
      * v1.5.4: Synchronous foreground promotion with a minimal notification so
      * Android 14+'s 5-second startForeground() deadline is always met. The
      * real labelled notification replaces this via NotificationManager.notify()
      * once the alarm row has been fetched from Room.
      */
-    private fun startForegroundWithPlaceholder() {
+    private fun startForegroundWithPlaceholder(startGen: AlarmGeneration, firedAtMillis: Long) {
         // compareAndSet ensures only one caller wins the foreground transition;
         // a concurrent ACTION_START_ALARM (rare but possible if the AlarmReceiver
         // re-fires while we're still tearing down) won't double-start.
         if (!isForeground.compareAndSet(false, true)) return
         try {
+            val fullScreenPi = AlarmFireDismissContract.firingFullScreenPendingIntent(
+                context = this,
+                alarmId = startGen.alarmId,
+                scheduledAt = startGen.scheduledAt,
+                fireId = startGen.fireId,
+                firedAt = firedAtMillis,
+                kind = "fsi"
+            )
             val placeholder = NotificationCompat.Builder(this, CHANNEL_ALARM)
                 .setSmallIcon(R.drawable.ic_alarm)
                 .setContentTitle(getString(R.string.notif_alarm_title))
@@ -1512,10 +1780,13 @@ class AlarmService : Service() {
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setCategory(NotificationCompat.CATEGORY_ALARM)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setFullScreenIntent(fullScreenPi, true)
+                .setContentIntent(fullScreenPi)
                 .setOngoing(true)
                 .setAutoCancel(false)
                 .build()
             startForeground(NOTIFICATION_ID, placeholder)
+            lastForegroundFsiGen = startGen
             recordIncidentAsync(
                 type = AlarmIncidentEvent.TYPE_FOREGROUND_PROMOTION,
                 status = AlarmIncidentEvent.STATUS_SUCCEEDED,
@@ -1540,42 +1811,32 @@ class AlarmService : Service() {
     }
 
     private fun buildAlarmNotification(alarm: Alarm): Notification {
-        val fullScreenIntent = AlarmFireDismissContract.firingActivityIntent(
+        val fullScreenPi = AlarmFireDismissContract.firingFullScreenPendingIntent(
+            context = this,
+            alarmId = alarm.id,
+            scheduledAt = currentScheduledAt,
+            fireId = currentFireId,
+            firedAt = alarmFiredAt,
+            kind = "fsi"
+        )
+        val snoozePi = AlarmFireDismissContract.snoozeActionPendingIntent(
             context = this,
             alarmId = alarm.id,
             scheduledAt = currentScheduledAt,
             fireId = currentFireId,
             firedAt = alarmFiredAt
         )
-        val fullScreenPi = PendingIntent.getActivity(
-            this, alarm.id.toInt(), fullScreenIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val snoozeIntent = Intent(this, SnoozeReceiver::class.java).apply {
-            putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarm.id)
-            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, currentScheduledAt)
-            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, currentFireId)
-            putExtra(EXTRA_FIRED_AT, alarmFiredAt)
-        }
-        val snoozePi = PendingIntent.getBroadcast(
-            this, alarm.id.toInt() + 10000, snoozeIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val dismissIntent = Intent(this, DismissReceiver::class.java).apply {
-            putExtra(AlarmScheduler.EXTRA_ALARM_ID, alarm.id)
-            putExtra(AlarmScheduler.EXTRA_SCHEDULED_AT, currentScheduledAt)
-            putExtra(AlarmScheduler.EXTRA_ALARM_FIRE_ID, currentFireId)
-            putExtra(EXTRA_FIRED_AT, alarmFiredAt)
-        }
-        val dismissPi = PendingIntent.getBroadcast(
-            this, alarm.id.toInt() + 20000, dismissIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        val dismissPi = AlarmFireDismissContract.dismissActionPendingIntent(
+            context = this,
+            alarmId = alarm.id,
+            scheduledAt = currentScheduledAt,
+            fireId = currentFireId,
+            firedAt = alarmFiredAt
         )
 
         val timeText = displayAlarmTime(alarm)
         val hideLabel = preferencesManager.shouldHideLabelsOnPublicSurfaces()
+        val sameOccurrencePlaceholder = lastForegroundFsiGen?.matches(currentGeneration()) == true
 
         return NotificationCompat.Builder(this, CHANNEL_ALARM)
             .setSmallIcon(R.drawable.ic_alarm)
@@ -1592,6 +1853,7 @@ class AlarmService : Service() {
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setFullScreenIntent(fullScreenPi, true)
             .setContentIntent(fullScreenPi)
+            .setOnlyAlertOnce(sameOccurrencePlaceholder)
             .setOngoing(true)
             .setAutoCancel(false)
             .apply {
@@ -1690,7 +1952,15 @@ class AlarmService : Service() {
     ): Boolean {
         // Do NOT mutate activeAlarm in memory before DataStore ACK for Snooze state.
         // Memory update for SNOOZED occurs only upon confirmed COMMITTED result.
-        if (snapshot == null || snapshot.state == "FIRING") {
+        if (snapshot == null) {
+            if (targetGen != null) {
+                activeAlarm.updateAndGet { current ->
+                    if (current == null || current.matches(targetGen)) null else current
+                }
+            } else {
+                activeAlarm.set(null)
+            }
+        } else if (snapshot.state == "FIRING") {
             activeAlarm.set(snapshot)
         }
         val enqueued = preferencesManager.enqueueActiveAlarmUpdate(snapshot, targetGen, ack)
@@ -2904,6 +3174,7 @@ class AlarmService : Service() {
         val snapshot = activeAlarm.get()
         if (snapshot?.alarmId == alarmId && snapshot.state == "SNOOZED") {
             Log.i(TAG, "Rejecting redundant snooze for alarm $alarmId (already SNOOZED)")
+            markActionUiClosing(acceptedGen, "SNOOZED")
             return
         }
 
@@ -2915,6 +3186,7 @@ class AlarmService : Service() {
         if (capped != null &&
             SnoozeCapPolicy.outcomeFor(capped, currentSnoozeCount) == SnoozeCapOutcome.REFUSE
         ) {
+            clearUiSuppressionOnFailure(acceptedGen)
             if (currentGeneration()?.matches(acceptedGen) == true) {
                 recordIncident(
                     type = AlarmIncidentEvent.TYPE_USER_ACTION,
@@ -2932,6 +3204,7 @@ class AlarmService : Service() {
         // If exact alarm capability is revoked or unavailable, reject snooze BEFORE
         // owner-guarded teardown so audio playback stays active and audible.
         if (!alarmScheduler.canScheduleExactAlarms()) {
+            clearUiSuppressionOnFailure(acceptedGen)
             if (currentGeneration()?.matches(acceptedGen) == true) {
                 recordIncidentAsync(
                     type = AlarmIncidentEvent.TYPE_USER_ACTION,
@@ -2951,6 +3224,7 @@ class AlarmService : Service() {
 
         val alarm = repository.getById(alarmId)?.sanitized()
         if (alarm == null) {
+            clearUiSuppressionOnFailure(acceptedGen)
             recordIncidentAsync(
                 type = AlarmIncidentEvent.TYPE_USER_ACTION,
                 status = AlarmIncidentEvent.STATUS_FAILED,
@@ -3056,10 +3330,15 @@ class AlarmService : Service() {
                     currentClaimNonce = null
                 }
                 cancelGuardianWork(acceptedGen.alarmId, acceptedGen.scheduledAt)
+                markActionUiClosing(acceptedGen, "DISMISSED")
+                clearFallbackPosted(acceptedGen)
                 clearAlarmRuntimeState(alarmId)
                 currentWakeConfirmRefireCount = 0
                 currentSnoozeCount = 0
                 currentAlarmId = -1
+                currentScheduledAt = 0L
+                currentFireId = ""
+                lastForegroundFsiGen = null
 
                 val dismissAck = CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
                 val enqueued = updateActiveAlarm(null, targetGen = acceptedGen, ack = dismissAck)
@@ -3150,6 +3429,7 @@ class AlarmService : Service() {
             // EXACT SNOOZE REGISTRATION FAILED:
             // Do NOT tear down audio/haptics! Do NOT stop Service! Do NOT increment snooze count or cancel Guardian!
             // Keep FIRING generation active and audible with functional controls!
+            clearUiSuppressionOnFailure(acceptedGen)
             Log.w(TAG, "Exact Snooze registration failed for $acceptedGen; keeping FIRING generation active and audible")
             if (currentGeneration()?.matches(acceptedGen) == true) {
                 recordIncidentAsync(
@@ -3204,6 +3484,8 @@ class AlarmService : Service() {
                     }
 
                     activeAlarm.set(snoozeSnapshot)
+                    markActionUiClosing(acceptedGen, "SNOOZED")
+                    clearFallbackPosted(acceptedGen)
 
                     if (!performOwnerGuardedTeardown(acceptedGen)) {
                         Log.i(TAG, "Post-commit teardown skipped for $acceptedGen: generation superseded")
@@ -3284,6 +3566,10 @@ class AlarmService : Service() {
                         displayTime = wireAlarmTime(alarm), fireId = acceptedGen.fireId
                     )
                     wearNextAlarmBridge.publishAlarmIdle(alarm.id)
+                    currentAlarmId = -1
+                    currentScheduledAt = 0L
+                    currentFireId = ""
+                    lastForegroundFsiGen = null
                     if (isForeground.compareAndSet(true, false)) {
                         stopForeground(STOP_FOREGROUND_REMOVE)
                     }
@@ -3295,9 +3581,11 @@ class AlarmService : Service() {
                 Log.i(TAG, "Snooze state update was idempotent no-op for $acceptedGen")
             }
             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.REJECTED_STALE -> {
+                clearUiSuppressionOnFailure(acceptedGen)
                 Log.i(TAG, "Snooze state write rejected for $acceptedGen: DataStore holds newer active generation")
             }
             com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult.FAILED_COMMIT -> {
+                clearUiSuppressionOnFailure(acceptedGen)
                 Log.w(TAG, "Failed to commit DataStore snooze state for $acceptedGen: launching background retry")
                 recordIncidentAsync(
                     type = AlarmIncidentEvent.TYPE_FOREGROUND_SERVICE,
@@ -3365,10 +3653,15 @@ class AlarmService : Service() {
                     scheduledAt = acceptedGen.scheduledAt
                 )
                 cancelGuardianWork(acceptedGen.alarmId, acceptedGen.scheduledAt)
+                markActionUiClosing(acceptedGen, "DISMISSED")
+                clearFallbackPosted(acceptedGen)
                 clearAlarmRuntimeState(alarmId)
                 currentWakeConfirmRefireCount = 0
                 currentSnoozeCount = 0
                 currentAlarmId = -1
+                currentScheduledAt = 0L
+                currentFireId = ""
+                lastForegroundFsiGen = null
 
                 val clearAck = CompletableDeferred<com.sysadmindoc.alarmclock.data.preferences.PreferencesManager.ActiveAlarmUpdateResult>()
                 val enqueued = updateActiveAlarm(null, targetGen = acceptedGen, ack = clearAck)
@@ -3505,10 +3798,15 @@ class AlarmService : Service() {
                     alarmId = alarmId
                 )
                 cancelGuardianWork(acceptedGen.alarmId, acceptedGen.scheduledAt)
+                markActionUiClosing(acceptedGen, "DISMISSED")
+                clearFallbackPosted(acceptedGen)
                 clearAlarmRuntimeState(alarmId)
                 currentWakeConfirmRefireCount = 0
                 currentSnoozeCount = 0
                 currentAlarmId = -1
+                currentScheduledAt = 0L
+                currentFireId = ""
+                lastForegroundFsiGen = null
                 updateActiveAlarm(null, targetGen = acceptedGen)
             }
             alarmScheduler.handleAlarmFired(alarmId, acceptedGen.scheduledAt)

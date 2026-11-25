@@ -39,8 +39,10 @@ import com.sysadmindoc.alarmclock.data.preferences.PreferencesManager
 import com.sysadmindoc.alarmclock.data.repository.AlarmRepository
 import com.sysadmindoc.alarmclock.data.share.AlarmShareCodec
 import com.sysadmindoc.alarmclock.domain.AlarmScheduler
+import com.sysadmindoc.alarmclock.service.AlarmGeneration
 import com.sysadmindoc.alarmclock.service.AlarmService
 import com.sysadmindoc.alarmclock.service.AlarmService.Companion.ActiveAlarmSnapshot
+import com.sysadmindoc.alarmclock.service.AlarmServiceCallbackPolicy
 import com.sysadmindoc.alarmclock.ui.alarmfiring.AlarmFiringActivity
 import com.sysadmindoc.alarmclock.ui.alarmlist.AlarmListViewModel
 import com.sysadmindoc.alarmclock.ui.components.WhatsNewDialog
@@ -161,7 +163,18 @@ class MainActivity : ComponentActivity() {
         // 1. Prioritize memory state (fastest)
         val memorySnapshot = AlarmService.activeAlarm.get()
         if (memorySnapshot != null) {
-            launchFiringActivity(memorySnapshot)
+            val memoryGen = AlarmGeneration(
+                memorySnapshot.alarmId,
+                memorySnapshot.scheduledAt,
+                memorySnapshot.fireId
+            )
+            if (
+                memorySnapshot.state == "FIRING" &&
+                !AlarmService.isUiSuppressedForGeneration(memoryGen) &&
+                !AlarmServiceCallbackPolicy.defaultTracker.isFinalized(memoryGen)
+            ) {
+                launchFiringActivity(memorySnapshot)
+            }
             return
         }
 
@@ -169,12 +182,25 @@ class MainActivity : ComponentActivity() {
         val settings = preferencesManager.getCachedSettings()
         val savedId = settings.activeAlarmId
         if (savedId != null && savedId > 0L) {
+            val expectedGen = AlarmGeneration(
+                savedId,
+                settings.activeAlarmScheduledAt,
+                settings.activeAlarmFireId
+            )
             // v1.11.3 (ALA-88): Robust persistent session recovery.
             lifecycleScope.launch {
                 val alarm = repository.getById(savedId)
-                val state = settings.activeAlarmState
-                val scheduledAt = settings.activeAlarmScheduledAt
-                val refireAt = settings.activeAlarmRefireAt
+                val latestSettings = preferencesManager.getCurrentSettings()
+                if (
+                    latestSettings.activeAlarmId != savedId ||
+                    latestSettings.activeAlarmScheduledAt != expectedGen.scheduledAt ||
+                    latestSettings.activeAlarmFireId != expectedGen.fireId
+                ) {
+                    return@launch
+                }
+                val state = latestSettings.activeAlarmState
+                val scheduledAt = latestSettings.activeAlarmScheduledAt
+                val refireAt = latestSettings.activeAlarmRefireAt
 
                 // Session is valid if alarm exists, is enabled, and nextTrigger
                 // is consistent with the persisted session state.
@@ -188,18 +214,33 @@ class MainActivity : ComponentActivity() {
                     val restored = ActiveAlarmSnapshot(
                         alarmId = savedId,
                         scheduledAt = scheduledAt,
-                        fireId = settings.activeAlarmFireId,
-                        firedAt = settings.activeAlarmFiredAt,
+                        fireId = latestSettings.activeAlarmFireId,
+                        firedAt = latestSettings.activeAlarmFiredAt,
                         state = state,
                         refireAt = refireAt
                     )
-                    // compareAndSet prevents multiple restores if onResume fires again
-                    if (AlarmService.activeAlarm.compareAndSet(null, restored)) {
-                        launchFiringActivity(restored)
+                    if (state == "SNOOZED") {
+                        // Restore memory state cleanly without launching zombie firing UI.
+                        AlarmService.activeAlarm.compareAndSet(null, restored)
+                        return@launch
                     }
+                    if (
+                        state == "FIRING" &&
+                        !AlarmService.isUiSuppressedForGeneration(expectedGen) &&
+                        !AlarmServiceCallbackPolicy.defaultTracker.isFinalized(expectedGen)
+                    ) {
+                        // compareAndSet prevents multiple restores if onResume fires again
+                        if (AlarmService.activeAlarm.compareAndSet(null, restored)) {
+                            launchFiringActivity(restored)
+                        }
+                    }
+                } else if (expectedGen.isValid) {
+                    // Generation-qualified clear so a newer occurrence cannot be wiped.
+                    preferencesManager.enqueueActiveAlarmUpdate(null, targetGen = expectedGen)
                 } else {
-                    // Stale or invalid session: clear persistence
-                    preferencesManager.update { it.copy(activeAlarmId = null) }
+                    preferencesManager.update { current ->
+                        if (current.activeAlarmId == savedId) current.copy(activeAlarmId = null) else current
+                    }
                 }
             }
         }
