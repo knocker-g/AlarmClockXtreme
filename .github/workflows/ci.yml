@@ -26,8 +26,104 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
+      - name: Cache Robolectric Android SDKs
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository/org/robolectric/android-all-instrumented
+          key: robolectric-4.14.1-sdks-28-30-31-33-34-35-v1
+
+      - name: Pre-fetch and verify Robolectric SDK artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          M2_BASE="$HOME/.m2/repository/org/robolectric/android-all-instrumented"
+          REPOS=(
+            "https://repo1.maven.org/maven2"
+            "https://repo.maven.apache.org/maven2"
+          )
+          VERSIONS=(
+            "9-robolectric-4913185-2-i7"
+            "11-robolectric-6757853-i7"
+            "12-robolectric-7732740-i7"
+            "13-robolectric-9030017-i7"
+            "14-robolectric-10818077-i7"
+            "15-robolectric-12650502-i7"
+          )
+
+          verify_sha512() {
+            local file="$1"
+            local sha_file="$2"
+            [[ -f "$file" && -f "$sha_file" ]] || return 1
+            local expected actual
+            expected="$(tr -d '[:space:]' < "$sha_file" | tr '[:upper:]' '[:lower:]')"
+            actual="$(sha512sum "$file" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')"
+            [[ -n "$expected" && "$expected" == "$actual" ]]
+          }
+
+          fetch_with_retry() {
+            local rel_path="$1"
+            local dest="$2"
+            for repo in "${REPOS[@]}"; do
+              local url="$repo/$rel_path"
+              echo "Fetching $url"
+              local rc=0
+              curl --http1.1 --fail --show-error --silent --location \
+                --retry 4 --retry-delay 5 --retry-all-errors \
+                --connect-timeout 15 --max-time 180 \
+                -w "http=%{http_code} size=%{size_download} time=%{time_total}s remote=%{remote_ip}\n" \
+                "$url" -o "$dest" || rc=$?
+              if [ "$rc" -eq 0 ]; then
+                return 0
+              fi
+              echo "::warning::Download failed from $url (exit=$rc)"
+            done
+            return 1
+          }
+
+          for ver in "${VERSIONS[@]}"; do
+            dir="$M2_BASE/$ver"
+            base="android-all-instrumented-$ver"
+            mkdir -p "$dir"
+            if verify_sha512 "$dir/$base.jar" "$dir/$base.jar.sha512" && \
+               verify_sha512 "$dir/$base.pom" "$dir/$base.pom.sha512"; then
+              echo "Verified cached Robolectric artifact: $base"
+              continue
+            fi
+
+            stage="$(mktemp -d)"
+            rel_dir="org/robolectric/android-all-instrumented/$ver"
+            for ext in pom.sha512 pom jar.sha512 jar; do
+              fetch_with_retry "$rel_dir/$base.$ext" "$stage/$base.$ext"
+            done
+
+            verify_sha512 "$stage/$base.pom" "$stage/$base.pom.sha512" || {
+              echo "::error::SHA-512 verification failed for $base.pom"
+              exit 1
+            }
+            verify_sha512 "$stage/$base.jar" "$stage/$base.jar.sha512" || {
+              echo "::error::SHA-512 verification failed for $base.jar"
+              exit 1
+            }
+
+            mv -f "$stage/$base.pom.sha512" "$stage/$base.pom" "$stage/$base.jar.sha512" "$stage/$base.jar" "$dir/"
+            rmdir "$stage"
+            echo "Verified & cached Robolectric artifact: $base"
+          done
+
+          ls -lh "$M2_BASE"/*/*.jar
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
       - name: Run CI Verification Gates
         run: ./gradlew app:testDebugUnitTest app:assembleDebug app:lintDebug app:verifyLocalizedPrimaryScreens app:verifyRoomSchemaExports :verifyReleaseMetadata --no-daemon
+
+      - name: Upload Failure Test Diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-failure-test-reports
+          path: |
+            app/build/test-results/testDebugUnitTest
+            app/build/reports/tests/testDebugUnitTest
+          retention-days: 7
