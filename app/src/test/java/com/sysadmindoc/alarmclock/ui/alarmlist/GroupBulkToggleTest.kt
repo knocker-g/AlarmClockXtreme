@@ -538,6 +538,7 @@ class GroupBulkToggleTest {
         val alarm1Id = alarmRepo.save(Alarm(hour = 7, minute = 0, isEnabled = false, group = "Work"))
 
         val cancelBarrier = CompletableDeferred<Unit>()
+        val syncDndAfterCancelBarrier = CompletableDeferred<Unit>()
         val registeredAlarmIds = mutableSetOf<Long>()
         val trackingScheduler = mockk<AlarmScheduler>()
 
@@ -556,7 +557,12 @@ class GroupBulkToggleTest {
             true
         }
 
-        coEvery { trackingScheduler.syncBedtimeDndRule() } returns Unit
+        coEvery { trackingScheduler.syncBedtimeDndRule() } coAnswers {
+            if (cancelBarrier.isCompleted && !syncDndAfterCancelBarrier.isCompleted) {
+                syncDndAfterCancelBarrier.complete(Unit)
+            }
+            Unit
+        }
 
         val viewModel = AlarmListViewModel(
             context = context,
@@ -577,8 +583,9 @@ class GroupBulkToggleTest {
         val enabledAlarm1 = alarmRepo.getById(alarm1Id)!!
         viewModel.toggleAlarm(enabledAlarm1)
 
-        // Wait deterministically for toggleAlarm coroutine to complete cancellation
+        // Wait deterministically for toggleAlarm coroutine to finish both OS cancellation and DB update
         cancelBarrier.await()
+        syncDndAfterCancelBarrier.await()
 
         assertFalse("Room DB truth: Alarm 1 is disabled", alarmRepo.getById(alarm1Id)!!.isEnabled)
         assertFalse("OS AlarmManager state: Alarm 1 is cancelled", registeredAlarmIds.contains(alarm1Id))
